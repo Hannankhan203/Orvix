@@ -4,10 +4,6 @@
   <strong>An Intelligent, Modern AI Conversation Companion</strong>
 </p>
 
-<p align="center">
-  <img src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" alt="Orvix AI Banner" width="800" />
-</p>
-
 ---
 
 ## 1. Project Overview
