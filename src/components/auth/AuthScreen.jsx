@@ -168,7 +168,7 @@ export default function AuthScreen() {
                   id="auth-username"
                   type="text"
                   className="form-input"
-                  placeholder="e.g. Hannan Khan"
+                  placeholder="e.g. John Doe"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="nickname"
