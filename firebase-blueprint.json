@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "Chat": {
+      "title": "Chat",
+      "description": "A conversation thread owned by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the chat conversation."
+        },
+        "title": {
+          "type": "string",
+          "description": "Display title of the conversation."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase UID of the owner."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the chat was initiated."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the most recent message in the chat."
+        },
+        "isPinned": {
+          "type": "boolean",
+          "description": "Whether the user pinned this conversation to the top."
+        },
+        "pinnedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the chat was pinned."
+        }
+      },
+      "required": ["id", "title", "userId"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "An individual message within a conversation subcollection.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique stable identifier for the message."
+        },
+        "sender": {
+          "type": "string",
+          "enum": ["user", "assistant"],
+          "description": "Sender role for the message."
+        },
+        "content": {
+          "type": "string",
+          "description": "Message text or markdown content."
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "Identifier of the AI model that produced the message if applicable."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "clientTimestamp": {
+          "type": "string",
+          "description": "Formatted local timestamp for immediate display."
+        }
+      },
+      "required": ["id", "sender", "content"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/chats/{chatId}": {
+      "schema": {
+        "$ref": "Chat"
+      },
+      "description": "Stores conversation metadata for each authenticated user."
+    },
+    "/users/{userId}/chats/{chatId}/messages/{messageId}": {
+      "schema": {
+        "$ref": "ChatMessage"
+      },
+      "description": "Subcollection holding chronological messages belonging to a specific conversation."
+    }
+  }
+}

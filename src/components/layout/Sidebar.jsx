@@ -1,0 +1,211 @@
+import React from 'react';
+import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, Pin } from 'lucide-react';
+import Button from '../ui/Button.jsx';
+import SidebarChatItem from './SidebarChatItem.jsx';
+import { APP_CONFIG } from '../../config/appConfig.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+
+/**
+ * Sidebar Component
+ * Displays conversations list with Firestore synchronization, active conversation tracking,
+ * rename/delete management actions, pinned conversations grouping, and user profile actions.
+ *
+ * @param {Object} props
+ * @param {boolean} props.isOpen
+ * @param {() => void} props.onClose
+ * @param {() => void} props.onNewChat
+ * @param {Array} [props.recentChats=[]]
+ * @param {string|null} [props.activeChatId=null]
+ * @param {(chatId: string) => void} [props.onSelectChat]
+ * @param {(chatId: string, newTitle: string) => Promise<void>} [props.onRenameChat]
+ * @param {(chatId: string) => Promise<void>} [props.onDeleteChat]
+ * @param {(chatId: string) => Promise<void>} [props.onTogglePin]
+ * @param {boolean} [props.chatsLoading=false]
+ * @param {boolean} [props.isCloudSynced=false]
+ */
+export default function Sidebar({
+  isOpen,
+  onClose,
+  onNewChat,
+  recentChats = [],
+  activeChatId = null,
+  onSelectChat,
+  onRenameChat,
+  onDeleteChat,
+  onTogglePin,
+  chatsLoading = false,
+  isCloudSynced = false
+}) {
+  const { currentUser, logout, actionLoading } = useAuth();
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+  };
+
+  const pinnedChats = recentChats.filter((c) => Boolean(c.isPinned));
+  const unpinnedChats = recentChats.filter((c) => !c.isPinned);
+
+  return (
+    <aside
+      className={`chatora-sidebar ${!isOpen ? 'collapsed' : ''}`}
+      aria-label="Sidebar navigation"
+    >
+      {/* Branding & Close Toggle */}
+      <div className="sidebar-header">
+        <div className="sidebar-brand">
+          <div className="brand-icon-wrapper" aria-hidden="true">
+            <Bot size={18} />
+          </div>
+          <span className="brand-title">{APP_CONFIG.name}</span>
+        </div>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onClose}
+          title="Close sidebar"
+          ariaLabel="Close sidebar"
+          icon={<X size={18} />}
+        />
+      </div>
+
+      {/* New Chat Primary Action */}
+      <div className="sidebar-actions">
+        <Button
+          variant="primary"
+          size="md"
+          onClick={onNewChat}
+          icon={<Plus size={16} />}
+          className="new-chat-btn"
+          title="Start a fresh conversation"
+        >
+          New Chat
+        </Button>
+      </div>
+
+      {/* Saved Conversations Section */}
+      <div className="sidebar-content">
+        {chatsLoading ? (
+          <div className="sidebar-loading-box">
+            <Loader2 size={16} className="animate-spin text-muted" />
+            <span>Loading conversations...</span>
+          </div>
+        ) : recentChats.length === 0 ? (
+          <div className="sidebar-empty-box">
+            <MessageSquare size={18} className="empty-icon" />
+            <p>No saved conversations yet.</p>
+            <span>Messages will be stored here automatically.</span>
+          </div>
+        ) : (
+          <>
+            {/* Dedicated Pinned Conversations Section */}
+            {pinnedChats.length > 0 && (
+              <div className="sidebar-section pinned-chats-section">
+                <div className="sidebar-section-header">
+                  <div className="sidebar-section-title-wrapper flex items-center gap-1.5">
+                    <Pin size={12} className="text-amber-400 rotate-45 inline" />
+                    <span className="sidebar-section-title">Pinned</span>
+                    <span className="sidebar-pin-count">({pinnedChats.length}/5)</span>
+                  </div>
+                </div>
+                <nav className="recent-chats-list" aria-label="Pinned chats list">
+                  {pinnedChats.map((chat) => (
+                    <SidebarChatItem
+                      key={chat.id}
+                      chat={chat}
+                      isActive={activeChatId === chat.id}
+                      onSelect={() => onSelectChat && onSelectChat(chat.id)}
+                      onRename={onRenameChat ? (newTitle) => onRenameChat(chat.id, newTitle) : null}
+                      onDelete={onDeleteChat ? () => onDeleteChat(chat.id) : null}
+                      onTogglePin={onTogglePin ? () => onTogglePin(chat.id) : null}
+                    />
+                  ))}
+                </nav>
+              </div>
+            )}
+
+            {/* Regular Chat History Section */}
+            <div className="sidebar-section">
+              <div className="sidebar-section-header">
+                <span className="sidebar-section-title">
+                  {pinnedChats.length > 0 ? 'Recent' : 'Conversations'}
+                </span>
+                {isCloudSynced ? (
+                  <span className="demo-data-badge synced-badge" title="Conversations are saved to Cloud Firestore">
+                    <Cloud size={11} className="inline mr-1" />
+                    Synced
+                  </span>
+                ) : (
+                  <span className="demo-data-badge" title="Sample conversations for preview">
+                    Demo
+                  </span>
+                )}
+              </div>
+
+              {unpinnedChats.length === 0 && pinnedChats.length > 0 ? (
+                <div className="sidebar-empty-subtext">
+                  <span>All conversations are pinned above.</span>
+                </div>
+              ) : (
+                <nav className="recent-chats-list" aria-label="Recent chats list">
+                  {unpinnedChats.map((chat) => (
+                    <SidebarChatItem
+                      key={chat.id}
+                      chat={chat}
+                      isActive={activeChatId === chat.id}
+                      onSelect={() => onSelectChat && onSelectChat(chat.id)}
+                      onRename={onRenameChat ? (newTitle) => onRenameChat(chat.id, newTitle) : null}
+                      onDelete={onDeleteChat ? () => onDeleteChat(chat.id) : null}
+                      onTogglePin={onTogglePin ? () => onTogglePin(chat.id) : null}
+                    />
+                  ))}
+                </nav>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Sidebar Footer with Auth Status */}
+      <div className="sidebar-footer">
+        {currentUser ? (
+          <div className="sidebar-user-card">
+            <div className="sidebar-user-details">
+              <span className="status-dot" aria-hidden="true" />
+              <div className="sidebar-user-text">
+                <span className="user-email-text" title={currentUser.email || ''}>
+                  {currentUser.isAnonymous ? 'Guest Explorer' : currentUser.email}
+                </span>
+                <span className="user-state-text">
+                  {currentUser.isAnonymous ? 'Demo session' : 'Active session'}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="sidebar-logout-btn"
+              onClick={handleLogout}
+              disabled={actionLoading}
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+        ) : (
+          <div className="user-status">
+            <span className="status-dot" aria-hidden="true" />
+            <div className="status-text-block">
+              <span className="status-label">Orvix v{APP_CONFIG.version}</span>
+              <span className="status-sublabel">Authentication active</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}

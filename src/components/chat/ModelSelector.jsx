@@ -1,0 +1,48 @@
+import React from 'react';
+import { Cpu, ChevronDown } from 'lucide-react';
+import { PROVIDER_OPTIONS, DEFAULT_PROVIDER } from '../../services/aiRouter.js';
+
+/**
+ * ModelSelector Component
+ * Dropdown selector allowing users to switch between Gemini, Groq, and OpenRouter.
+ *
+ * @param {Object} props
+ * @param {string} props.selectedProvider
+ * @param {(provider: string) => void} props.onSelectProvider
+ * @param {boolean} [props.disabled=false]
+ * @param {string} [props.className='']
+ */
+export default function ModelSelector({
+  selectedProvider = DEFAULT_PROVIDER,
+  onSelectProvider,
+  disabled = false,
+  className = ''
+}) {
+  return (
+    <div className={`model-selector-container ${className}`}>
+      <label htmlFor="ai-model-select" className="model-selector-label" title="Select active AI provider and model">
+        <Cpu size={13} className="model-selector-icon" aria-hidden="true" />
+        <span className="model-selector-title">AI Model</span>
+      </label>
+
+      <div className="model-selector-dropdown-wrapper">
+        <select
+          id="ai-model-select"
+          value={selectedProvider}
+          onChange={(e) => onSelectProvider && onSelectProvider(e.target.value)}
+          disabled={disabled}
+          className="model-selector-select"
+          aria-label="Select AI Model"
+          title="Choose AI provider: Google Gemini, Groq, or OpenRouter"
+        >
+          {PROVIDER_OPTIONS.map((opt) => (
+            <option key={opt.id} value={opt.id}>
+              {opt.name} ({opt.modelTag})
+            </option>
+          ))}
+        </select>
+        <ChevronDown size={12} className="model-selector-chevron" aria-hidden="true" />
+      </div>
+    </div>
+  );
+}
