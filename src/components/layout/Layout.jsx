@@ -55,6 +55,34 @@ export default function Layout({
     return () => window.removeEventListener('resize', handleResize);
   }, [sidebarOpen]);
 
+  // Lock background body scrolling when mobile drawer is open
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isMobile = window.innerWidth < 768;
+    if (sidebarOpen && isMobile) {
+      document.body.style.overflow = 'hidden';
+      document.body.style.touchAction = 'none';
+    } else {
+      document.body.style.overflow = '';
+      document.body.style.touchAction = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+      document.body.style.touchAction = '';
+    };
+  }, [sidebarOpen]);
+
+  // Handle Escape key to close mobile sidebar
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && sidebarOpen && window.innerWidth < 768) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [sidebarOpen]);
+
   const toggleSidebar = () => {
     setSidebarOpen((prev) => !prev);
   };
