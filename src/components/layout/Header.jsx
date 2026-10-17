@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, CheckCircle2 } from 'lucide-react';
+import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import ModelSelector from '../chat/ModelSelector.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { validateUsername } from '../../services/userProfileService.js';
 
 /**
  * Header Component
@@ -12,7 +13,8 @@ import { useAuth } from '../../context/AuthContext.jsx';
  * - Mobile: Purpose-built 2-tier header preventing overflow:
  *     Tier 1: Hamburger toggle, brand mark, compact New Chat, and user avatar button.
  *     Tier 2: Compact AI model selector pill and active thread context.
- * - Accessible account popover menu revealing full user email, account status, and Sign Out action.
+ * - Accessible account popover menu revealing username above email address,
+ *   inline username editing/adding, and Sign Out action.
  *
  * @param {Object} props
  * @param {boolean} props.sidebarOpen
@@ -30,23 +32,37 @@ export default function Header({
   selectedProvider = 'gemini',
   onSelectProvider
 }) {
-  const { currentUser, logout, actionLoading } = useAuth();
+  const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef(null);
 
+  // Username editing state in account popover
+  const [isEditingUsername, setIsEditingUsername] = useState(false);
+  const [editUsernameInput, setEditUsernameInput] = useState('');
+  const [editError, setEditError] = useState('');
+  const [isSavingUsername, setIsSavingUsername] = useState(false);
+
   // Close account menu on outside click
   useEffect(() => {
-    if (!accountMenuOpen) return;
+    if (!accountMenuOpen) {
+      setIsEditingUsername(false);
+      setEditError('');
+      return;
+    }
 
     const handleClickOutside = (e) => {
       if (accountMenuRef.current && !accountMenuRef.current.contains(e.target)) {
         setAccountMenuOpen(false);
+        setIsEditingUsername(false);
+        setEditError('');
       }
     };
 
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         setAccountMenuOpen(false);
+        setIsEditingUsername(false);
+        setEditError('');
       }
     };
 
@@ -70,13 +86,46 @@ export default function Header({
     }
   };
 
-  const userInitial = currentUser?.email
+  const handleStartEdit = () => {
+    setIsEditingUsername(true);
+    setEditUsernameInput(username || '');
+    setEditError('');
+  };
+
+  const handleSaveUsername = async (e) => {
+    e.preventDefault();
+    setEditError('');
+
+    const validation = validateUsername(editUsernameInput);
+    if (!validation.isValid) {
+      setEditError(validation.error);
+      return;
+    }
+
+    setIsSavingUsername(true);
+    try {
+      await updateUsername(validation.sanitized);
+      setIsEditingUsername(false);
+    } catch (err) {
+      setEditError(err?.message || 'Failed to update username.');
+    } finally {
+      setIsSavingUsername(false);
+    }
+  };
+
+  const userInitial = username
+    ? username.trim().charAt(0).toUpperCase()
+    : currentUser?.email
     ? currentUser.email.charAt(0).toUpperCase()
     : 'U';
 
-  const userDisplayName = currentUser?.isAnonymous
+  const userDisplayName = username
+    ? username
+    : currentUser?.isAnonymous
     ? 'Guest Explorer'
     : currentUser?.email || 'Logged in user';
+
+  const userDisplayEmail = currentUser?.email || (currentUser?.isAnonymous ? 'guest@orvix.ai' : '');
 
   return (
     <header className="chatora-header-wrapper" ref={accountMenuRef}>
@@ -143,7 +192,7 @@ export default function Header({
                 aria-haspopup="dialog"
               >
                 <span className="user-avatar-badge" aria-hidden="true">
-                  {currentUser.isAnonymous ? <User size={13} /> : userInitial}
+                  {currentUser.isAnonymous && !username ? <User size={13} /> : userInitial}
                 </span>
                 <span className="header-user-email" title={userDisplayName}>
                   {userDisplayName}
@@ -218,7 +267,7 @@ export default function Header({
                 aria-haspopup="dialog"
               >
                 <span className="mobile-avatar-circle">
-                  {currentUser.isAnonymous ? <User size={14} /> : userInitial}
+                  {currentUser.isAnonymous && !username ? <User size={14} /> : userInitial}
                 </span>
               </button>
             )}
@@ -256,8 +305,8 @@ export default function Header({
 
       {/* ====================================================================
           Universal Account Popover Menu (Mobile & Desktop)
-          Fully exposes the user's complete email address without truncating
-          and provides accessible Sign Out and session details.
+          Shows Username prominently above Email address.
+          Includes inline username editor and accessible Sign Out.
           ==================================================================== */}
       {accountMenuOpen && currentUser && (
         <div
@@ -267,26 +316,102 @@ export default function Header({
         >
           <div className="account-popover-header">
             <div className="account-avatar-large">
-              {currentUser.isAnonymous ? <User size={20} /> : userInitial}
+              {currentUser.isAnonymous && !username ? <User size={20} /> : userInitial}
             </div>
+
             <div className="account-info-block">
               <span className="account-type-badge">
                 {currentUser.isAnonymous ? 'Guest Demo Session' : 'Active Account'}
               </span>
-              <span className="account-full-email" title={currentUser.email || 'Guest user'}>
-                {currentUser.email || 'Guest Explorer'}
+
+              {/* Username prominently above Email address */}
+              <div className="account-username-display-wrap">
+                {username ? (
+                  <strong className="account-full-username" title={username}>
+                    {username}
+                  </strong>
+                ) : (
+                  <span className="account-no-username">No username set</span>
+                )}
+
+                {!isEditingUsername && (
+                  <button
+                    type="button"
+                    className="account-username-edit-trigger"
+                    onClick={handleStartEdit}
+                    title={username ? 'Edit username' : 'Add username'}
+                    aria-label={username ? 'Edit username' : 'Add username'}
+                  >
+                    <Edit2 size={12} />
+                    <span>{username ? 'Edit' : 'Add username'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Email address displayed underneath username */}
+              <span className="account-full-email" title={userDisplayEmail}>
+                {userDisplayEmail}
               </span>
             </div>
+
             <button
               type="button"
               className="account-popover-close"
-              onClick={() => setAccountMenuOpen(false)}
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setIsEditingUsername(false);
+              }}
               title="Close account menu"
               aria-label="Close account menu"
             >
               <X size={15} />
             </button>
           </div>
+
+          {/* Inline Username Editing Form */}
+          {isEditingUsername && (
+            <form onSubmit={handleSaveUsername} className="account-inline-edit-form">
+              <div className="account-inline-input-row">
+                <input
+                  type="text"
+                  className="account-inline-input"
+                  value={editUsernameInput}
+                  onChange={(e) => setEditUsernameInput(e.target.value)}
+                  placeholder="Enter username (2-30 chars)"
+                  maxLength={30}
+                  disabled={isSavingUsername}
+                  autoFocus
+                />
+                <button
+                  type="submit"
+                  className="account-inline-save-btn"
+                  disabled={isSavingUsername}
+                  title="Save username"
+                >
+                  {isSavingUsername ? <span className="auth-spinner mini" /> : <Check size={14} />}
+                  <span>Save</span>
+                </button>
+                <button
+                  type="button"
+                  className="account-inline-cancel-btn"
+                  onClick={() => {
+                    setIsEditingUsername(false);
+                    setEditError('');
+                  }}
+                  disabled={isSavingUsername}
+                  title="Cancel editing"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {editError && (
+                <div className="account-inline-error">
+                  <AlertCircle size={12} />
+                  <span>{editError}</span>
+                </div>
+              )}
+            </form>
+          )}
 
           <div className="account-popover-divider" />
 

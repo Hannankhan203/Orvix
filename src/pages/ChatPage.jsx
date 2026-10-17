@@ -24,7 +24,7 @@ import { AlertCircle, X } from 'lucide-react';
  * and rock-solid error/race-condition mitigation.
  */
 export default function ChatPage() {
-  const { currentUser } = useAuth();
+  const { currentUser, username } = useAuth();
   const isCloudEnabled = isFirebaseConfigured() && Boolean(currentUser?.uid);
 
   // Conversation list & active chat state
@@ -367,11 +367,12 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      // Call selected AI provider API (Gemini, Groq, OpenRouter) with conversation history context
+      // Call selected AI provider API (Gemini, Groq, OpenRouter) with conversation history context and personalized username
       const result = await sendAIMessage({
         provider: selectedProvider,
         prompt: promptText,
-        history: historyContext
+        history: historyContext,
+        username: username || currentUser?.displayName || null
       });
 
       const aiResponse = {

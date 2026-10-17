@@ -46,9 +46,24 @@ function formatGeminiHistory(
   return contents;
 }
 
+// Helper to format system instruction with dynamic username personalization
+function buildSystemInstruction(username?: string | null) {
+  const baseInstruction =
+    'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.';
+
+  if (!username || !username.trim()) {
+    return baseInstruction;
+  }
+
+  const cleanName = username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ');
+  return `${baseInstruction} The user's preferred name is ${cleanName}. You may address the user by this name naturally when appropriate. Do not overuse the name, do not invent additional personal information, and do not claim to remember information that has not been provided.`;
+}
+
 // Simulated fallback response for demo / guest mode
-function generateSimulatedResponse(promptText = '') {
+function generateSimulatedResponse(promptText = '', username: string | null = null) {
   const promptLower = promptText.toLowerCase();
+  const greetingName = username ? ` ${username}` : '';
+  const personalSignoff = username ? `, ${username}` : '';
 
   let body = '';
   if (promptLower.includes('code') || promptLower.includes('react') || promptLower.includes('javascript') || promptLower.includes('bug')) {
@@ -80,7 +95,7 @@ async function handleUserMessage(prompt, context = []) {
 
 *Tip: You can select any conversation from the sidebar or click "+ New Chat" to start fresh.*`;
   } else if (promptLower.startsWith('hi') || promptLower.startsWith('hello') || promptLower.startsWith('hey')) {
-    body = `Hello! I am **Orvix**, your intelligent AI conversation companion.
+    body = `Hello${greetingName}! I am **Orvix**, your intelligent AI conversation companion.
 
 I can help you with:
 • **Writing & Editing:** Craft essays, draft professional emails, and summarize reports.
@@ -88,7 +103,7 @@ I can help you with:
 • **Brainstorming:** Generate fresh ideas, project names, and creative outlines.
 • **Learning:** Break down complex topics simply and concisely.`;
   } else {
-    body = `Thank you for your prompt:
+    body = `Thank you for your prompt${personalSignoff}:
 > "${promptText}"
 
 I am ready to assist with your questions, code samples, or writing projects. Feel free to ask more details or explore specific topics!`;
@@ -122,16 +137,23 @@ app.get('/api/config', (_req, res) => {
 // Central AI Chat Dispatch Endpoint
 app.post('/api/chat', async (req, res) => {
   try {
-    const { provider = 'gemini', prompt, history = [] } = req.body as {
+    const { provider = 'gemini', prompt, history = [], username = null } = req.body as {
       provider?: string;
       prompt?: string;
       history?: Array<{ sender?: string; content?: string }>;
+      username?: string | null;
     };
 
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
+    const cleanUsername =
+      typeof username === 'string' && username.trim()
+        ? username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ')
+        : null;
+
+    const systemInstruction = buildSystemInstruction(cleanUsername);
     const normalizedProvider = String(provider).toLowerCase();
 
     // 1. Google Gemini Provider
@@ -140,7 +162,7 @@ app.post('/api/chat', async (req, res) => {
 
       // If no API key is configured, return the high-quality simulated response gracefully
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        const text = generateSimulatedResponse(prompt);
+        const text = generateSimulatedResponse(prompt, cleanUsername);
         return res.json({
           text,
           modelUsed: 'gemini-3.1-flash-lite (demo)',
@@ -167,8 +189,7 @@ app.post('/api/chat', async (req, res) => {
             model,
             contents,
             config: {
-              systemInstruction:
-                'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.'
+              systemInstruction
             }
           });
 
@@ -196,7 +217,7 @@ app.post('/api/chat', async (req, res) => {
     if (normalizedProvider === 'groq') {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
       if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
-        const text = generateSimulatedResponse(prompt);
+        const text = generateSimulatedResponse(prompt, cleanUsername);
         return res.json({
           text,
           modelUsed: 'Llama 3.3 70B (demo)',
@@ -207,7 +228,7 @@ app.post('/api/chat', async (req, res) => {
       const messages = [
         {
           role: 'system',
-          content: 'You are Orvix, an intelligent, helpful, and concise AI conversation companion.'
+          content: systemInstruction
         }
       ];
 
@@ -252,7 +273,7 @@ app.post('/api/chat', async (req, res) => {
     if (normalizedProvider === 'openrouter') {
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
       if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-        const text = generateSimulatedResponse(prompt);
+        const text = generateSimulatedResponse(prompt, cleanUsername);
         return res.json({
           text,
           modelUsed: 'openrouter/free (demo)',
@@ -263,7 +284,7 @@ app.post('/api/chat', async (req, res) => {
       const messages = [
         {
           role: 'system',
-          content: 'You are Orvix, an intelligent, helpful, and concise AI conversation companion.'
+          content: systemInstruction
         }
       ];
 

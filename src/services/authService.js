@@ -10,6 +10,7 @@ import {
   onAuthStateChanged
 } from 'firebase/auth';
 import { auth, isFirebaseConfigured } from '../config/firebaseConfig.js';
+export { getUserProfile, saveUserProfile, validateUsername } from './userProfileService.js';
 
 /**
  * Normalizes Firebase Auth error codes into clear, user-friendly messages.

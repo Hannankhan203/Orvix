@@ -70,9 +70,10 @@ export function isProviderConfigured(provider) {
  * @param {string} [params.provider='gemini'] - The selected provider ('gemini' | 'groq' | 'openrouter')
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
+ * @param {string|null} [params.username=null] - Current user's preferred username for personalization
  * @returns {Promise<{ text: string, modelUsed: string, provider: string }>}
  */
-export async function sendAIMessage({ provider = DEFAULT_PROVIDER, prompt, history = [] }) {
+export async function sendAIMessage({ provider = DEFAULT_PROVIDER, prompt, history = [], username = null }) {
   const normalizedProvider = provider.toLowerCase();
 
   // Primary path: Use secure server-side proxy route /api/chat
@@ -85,7 +86,8 @@ export async function sendAIMessage({ provider = DEFAULT_PROVIDER, prompt, histo
       body: JSON.stringify({
         provider: normalizedProvider,
         prompt,
-        history
+        history,
+        username: username ? String(username).trim() : null
       })
     });
 
@@ -131,7 +133,7 @@ export async function sendAIMessage({ provider = DEFAULT_PROVIDER, prompt, histo
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await sendGeminiMessage({ prompt, history });
+      const result = await sendGeminiMessage({ prompt, history, username });
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI

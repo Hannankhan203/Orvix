@@ -36,7 +36,7 @@ export default function Sidebar({
   chatsLoading = false,
   isCloudSynced = false
 }) {
-  const { currentUser, logout, actionLoading } = useAuth();
+  const { currentUser, username, logout, actionLoading } = useAuth();
 
   const handleLogout = async () => {
     try {
@@ -177,11 +177,11 @@ export default function Sidebar({
             <div className="sidebar-user-details">
               <span className="status-dot" aria-hidden="true" />
               <div className="sidebar-user-text">
-                <span className="user-email-text" title={currentUser.email || ''}>
-                  {currentUser.isAnonymous ? 'Guest Explorer' : currentUser.email}
+                <span className="user-email-text" title={username || currentUser.email || ''}>
+                  {username || (currentUser.isAnonymous ? 'Guest Explorer' : currentUser.email)}
                 </span>
                 <span className="user-state-text">
-                  {currentUser.isAnonymous ? 'Demo session' : 'Active session'}
+                  {username && currentUser.email ? currentUser.email : currentUser.isAnonymous ? 'Demo session' : 'Active session'}
                 </span>
               </div>
             </div>

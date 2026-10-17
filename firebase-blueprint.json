@@ -1,5 +1,37 @@
 {
   "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile document containing preferred username and account metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase UID of the user."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 30,
+          "description": "Preferred display name and username of the user."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the user."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the profile was initialized."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the profile was last modified."
+        }
+      },
+      "required": ["uid", "username"]
+    },
     "Chat": {
       "title": "Chat",
       "description": "A conversation thread owned by an authenticated user.",
@@ -75,6 +107,12 @@
     }
   },
   "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "UserProfile"
+      },
+      "description": "Stores user profile and preferred username for the authenticated user."
+    },
     "/users/{userId}/chats/{chatId}": {
       "schema": {
         "$ref": "Chat"

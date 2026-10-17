@@ -12,9 +12,24 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Direct access to /users/{userId} document is prohibited
+    // User profile document: strictly restricted to authenticated owner
     match /users/{userId} {
-      allow read, write: if false;
+      allow read, delete: if isOwner(userId);
+
+      allow create: if isOwner(userId)
+                    && request.resource.data.keys().hasAll(['uid', 'username'])
+                    && request.resource.data.keys().hasOnly(['uid', 'username', 'email', 'createdAt', 'updatedAt'])
+                    && request.resource.data.uid == userId
+                    && request.resource.data.username is string
+                    && request.resource.data.username.size() >= 2
+                    && request.resource.data.username.size() <= 30;
+
+      allow update: if isOwner(userId)
+                    && request.resource.data.keys().hasOnly(['uid', 'username', 'email', 'createdAt', 'updatedAt'])
+                    && request.resource.data.uid == resource.data.uid
+                    && request.resource.data.username is string
+                    && request.resource.data.username.size() >= 2
+                    && request.resource.data.username.size() <= 30;
 
       // User chats collection
       match /chats/{chatId} {

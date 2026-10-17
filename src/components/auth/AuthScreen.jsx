@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
-import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Button from '../ui/Button.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
+import { USERNAME_CONSTRAINTS } from '../../services/userProfileService.js';
 
 /**
  * AuthScreen Component
- * Authentication view providing Email/Password signup and login
- * styled consistently with Orvix's obsidian design system.
+ * Authentication view providing Email/Password signup with required Username,
+ * existing user login, and guest demo mode.
  */
 export default function AuthScreen() {
   const { login, signup, actionLoading, error, clearError, isConfigured, continueAsGuest } = useAuth();
 
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -29,7 +31,31 @@ export default function AuthScreen() {
     setLocalValidation('');
     clearError();
 
-    // Client-side validations
+    // Sign-up specific validations: Username
+    if (mode === 'signup') {
+      const trimmedUsername = username.trim();
+      if (!trimmedUsername) {
+        setLocalValidation('Please enter a username.');
+        return;
+      }
+
+      if (trimmedUsername.length < USERNAME_CONSTRAINTS.MIN_LENGTH) {
+        setLocalValidation(`Username must be at least ${USERNAME_CONSTRAINTS.MIN_LENGTH} characters long.`);
+        return;
+      }
+
+      if (trimmedUsername.length > USERNAME_CONSTRAINTS.MAX_LENGTH) {
+        setLocalValidation(`Username cannot exceed ${USERNAME_CONSTRAINTS.MAX_LENGTH} characters.`);
+        return;
+      }
+
+      if (!USERNAME_CONSTRAINTS.PATTERN.test(trimmedUsername)) {
+        setLocalValidation('Username can only contain letters, numbers, spaces, hyphens, underscores, and periods.');
+        return;
+      }
+    }
+
+    // Common validations: Email & Password
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
       setLocalValidation('Please enter your email address.');
@@ -53,7 +79,7 @@ export default function AuthScreen() {
 
     try {
       if (mode === 'signup') {
-        await signup(trimmedEmail, password);
+        await signup(trimmedEmail, password, username.trim());
       } else {
         await login(trimmedEmail, password);
       }
@@ -127,6 +153,33 @@ export default function AuthScreen() {
 
         {/* Authentication Form */}
         <form onSubmit={handleSubmit} className="auth-form" noValidate>
+          {/* Username Input (Only for Sign Up) */}
+          {mode === 'signup' && (
+            <div className="form-group">
+              <div className="form-label-row">
+                <label htmlFor="auth-username" className="form-label">
+                  Username
+                </label>
+                <span className="form-hint">2-30 characters</span>
+              </div>
+              <div className="form-input-wrapper">
+                <User size={16} className="input-adornment-icon" aria-hidden="true" />
+                <input
+                  id="auth-username"
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. Hannan Khan"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="nickname"
+                  disabled={actionLoading}
+                  required
+                  maxLength={30}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Email Input */}
           <div className="form-group">
             <label htmlFor="auth-email" className="form-label">
@@ -210,7 +263,7 @@ export default function AuthScreen() {
             type="button"
             variant="secondary"
             size="md"
-            onClick={continueAsGuest}
+            onClick={() => continueAsGuest()}
             className="auth-guest-btn w-full"
             icon={<Sparkles size={16} />}
           >
