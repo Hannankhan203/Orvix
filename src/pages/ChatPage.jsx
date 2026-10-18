@@ -1,8 +1,9 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import Layout from '../components/layout/Layout.jsx';
 import ChatArea from '../components/chat/ChatArea.jsx';
 import { SAMPLE_CHATS } from '../config/sampleData.js';
-import { sendAIMessage, streamAIMessage, DEFAULT_PROVIDER } from '../services/aiRouter.js';
+import { streamAIMessage, DEFAULT_PROVIDER } from '../services/aiRouter.js';
 import {
   createChatDocument,
   saveChatMessage,
@@ -17,19 +18,14 @@ import { isFirebaseConfigured } from '../config/firebaseConfig.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { AlertCircle, X } from 'lucide-react';
 
-/**
- * ChatPage Component
- * Orchestrates live Gemini interactions with Cloud Firestore persistence,
- * conversation switching, title generation, renaming, atomic deletion,
- * and rock-solid error/race-condition mitigation.
- */
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
-  const isCloudEnabled = isFirebaseConfigured() && Boolean(currentUser?.uid);
+  const isCloudEnabled =
+    isFirebaseConfigured() && Boolean(currentUser?.uid);
 
-  // Conversation list & active chat state
   const [userChats, setUserChats] = useState([]);
   const [chatsLoading, setChatsLoading] = useState(isCloudEnabled);
+
   const [activeChatId, setActiveChatId] = useState(() => {
     if (typeof window !== 'undefined') {
       return (
@@ -41,14 +37,12 @@ export default function ChatPage() {
     return null;
   });
 
-  // Active conversation messages & composer state
   const [messages, setMessages] = useState([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [persistenceError, setPersistenceError] = useState(null);
 
-  // AI Provider State (Gemini, Groq, OpenRouter) with local storage persistence
   const [selectedProvider, setSelectedProvider] = useState(() => {
     if (typeof window !== 'undefined') {
       return (
@@ -60,26 +54,26 @@ export default function ChatPage() {
     return DEFAULT_PROVIDER;
   });
 
+  const isSubmittingRef = useRef(false);
+  const persistedMessageIdsRef = useRef(new Set());
+  const activeChatIdRef = useRef(activeChatId);
+  const fetchRequestIdRef = useRef(0);
+  const skipNextChatLoadRef = useRef(null);
+  const activeAnimationRef = useRef(null);
+
+  // Keep the active conversation ref synchronized with React state.
+  activeChatIdRef.current = activeChatId;
+
   const handleSelectProvider = (provider) => {
     setSelectedProvider(provider);
+
     if (typeof window !== 'undefined') {
       localStorage.setItem('orvix_selected_provider', provider);
       localStorage.setItem('chatora_selected_provider', provider);
     }
   };
 
-  // Synchronous submission lock to prevent duplicate async submissions
-  const isSubmittingRef = useRef(false);
-  // Set of message IDs already persisted to Firestore to prevent duplicate writes
-  const persistedMessageIdsRef = useRef(new Set());
-  // Active chat ID ref for cross-turn race-condition checks
-  const activeChatIdRef = useRef(activeChatId);
-  activeChatIdRef.current = activeChatId;
-  // Request sequence counter for rapid chat switching
-  const fetchRequestIdRef = useRef(0);
-  // Active animation cancellation ref to clean up timers across unmounts or chat transitions
-  const activeAnimationRef = useRef(null);
-
+  // Stop any running animation when the page unmounts.
   useEffect(() => {
     return () => {
       if (activeAnimationRef.current) {
@@ -88,26 +82,38 @@ export default function ChatPage() {
     };
   }, []);
 
-  // Helper for guest mode pin and conversation persistence
+  // Guest storage helpers.
   const getGuestPinnedIds = () => {
     try {
       if (typeof window !== 'undefined') {
         const stored =
           localStorage.getItem('orvix_guest_pins') ||
           localStorage.getItem('chatora_guest_pins');
+
         return stored ? JSON.parse(stored) : [];
       }
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Could not read guest pins:', error);
+    }
+
     return [];
   };
 
   const saveGuestPinnedIds = (pinnedIds) => {
     try {
       if (typeof window !== 'undefined') {
-        localStorage.setItem('orvix_guest_pins', JSON.stringify(pinnedIds));
-        localStorage.setItem('chatora_guest_pins', JSON.stringify(pinnedIds));
+        localStorage.setItem(
+          'orvix_guest_pins',
+          JSON.stringify(pinnedIds)
+        );
+        localStorage.setItem(
+          'chatora_guest_pins',
+          JSON.stringify(pinnedIds)
+        );
       }
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Could not save guest pins:', error);
+    }
   };
 
   const getGuestChats = () => {
@@ -116,46 +122,67 @@ export default function ChatPage() {
         const stored =
           localStorage.getItem('orvix_guest_chats') ||
           localStorage.getItem('chatora_guest_chats');
-        if (stored) return JSON.parse(stored);
+
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          return Array.isArray(parsed) ? parsed : null;
+        }
       }
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Could not read guest chats:', error);
+    }
+
     return null;
   };
 
   const saveGuestChats = (chats) => {
     try {
       if (typeof window !== 'undefined') {
-        localStorage.setItem('orvix_guest_chats', JSON.stringify(chats));
-        localStorage.setItem('chatora_guest_chats', JSON.stringify(chats));
+        localStorage.setItem(
+          'orvix_guest_chats',
+          JSON.stringify(chats)
+        );
+        localStorage.setItem(
+          'chatora_guest_chats',
+          JSON.stringify(chats)
+        );
       }
-    } catch (_) {}
+    } catch (error) {
+      console.warn('Could not save guest chats:', error);
+    }
   };
 
-  // 1. Subscribe to real-time conversation list in Firestore (or load guest demo chats)
+  // 1. Subscribe to the conversation list.
   useEffect(() => {
     if (!isCloudEnabled || !currentUser?.uid) {
       const guestPinned = getGuestPinnedIds();
       const savedGuestChats = getGuestChats();
       const baseChats = savedGuestChats || SAMPLE_CHATS;
-      const initialGuestChats = baseChats.map((c) => ({
-        ...c,
-        isPinned: guestPinned.includes(c.id) || Boolean(c.isPinned)
+
+      const initialGuestChats = baseChats.map((chat) => ({
+        ...chat,
+        isPinned:
+          guestPinned.includes(chat.id) || Boolean(chat.isPinned)
       }));
+
       setUserChats(initialGuestChats);
       setChatsLoading(false);
-      return;
+      return undefined;
     }
 
     setChatsLoading(true);
+
     const unsubscribe = subscribeToUserChats(
       currentUser.uid,
       (chats) => {
         setUserChats(chats);
         setChatsLoading(false);
       },
-      (err) => {
-        console.warn('Firestore subscription error:', err);
-        setPersistenceError('Unable to sync conversation list from Cloud Firestore.');
+      (error) => {
+        console.warn('Firestore subscription error:', error);
+        setPersistenceError(
+          'Unable to sync conversation list from Cloud Firestore.'
+        );
         setChatsLoading(false);
       }
     );
@@ -163,220 +190,364 @@ export default function ChatPage() {
     return () => unsubscribe();
   }, [isCloudEnabled, currentUser?.uid]);
 
-  // 2. Restore active conversation messages after refresh or when activeChatId changes
+  // 2. Restore conversation messages safely.
   useEffect(() => {
+    const currentRequestId = ++fetchRequestIdRef.current;
+
+    // A newly created chat already has messages in component state.
+    // Do not load an empty Firestore document over those messages.
+    if (
+      activeChatId &&
+      skipNextChatLoadRef.current === activeChatId
+    ) {
+      skipNextChatLoadRef.current = null;
+
+      sessionStorage.setItem('orvix_active_chat', activeChatId);
+      sessionStorage.setItem('chatora_active_chat', activeChatId);
+
+      setMessagesLoading(false);
+      return undefined;
+    }
+
     if (!activeChatId) {
       setMessages([]);
+      setMessagesLoading(false);
       sessionStorage.removeItem('orvix_active_chat');
       sessionStorage.removeItem('chatora_active_chat');
-      return;
+      return undefined;
     }
 
     sessionStorage.setItem('orvix_active_chat', activeChatId);
     sessionStorage.setItem('chatora_active_chat', activeChatId);
 
-    // If it's one of the demo sample chats
-    const sample = SAMPLE_CHATS.find((c) => c.id === activeChatId);
+    // Demo conversations.
+    const sample = SAMPLE_CHATS.find(
+      (chat) => chat.id === activeChatId
+    );
+
     if (sample) {
       setMessages([...sample.messages]);
-      return;
+      setMessagesLoading(false);
+      return undefined;
     }
 
-    // If it's a guest conversation stored in state or local storage
-    const guestChat = userChats.find((c) => c.id === activeChatId);
-    if (!isCloudEnabled && guestChat && guestChat.messages) {
+    // Guest conversations.
+    const guestChat = userChats.find(
+      (chat) => chat.id === activeChatId
+    );
+
+    if (
+      !isCloudEnabled &&
+      guestChat &&
+      Array.isArray(guestChat.messages)
+    ) {
       setMessages([...guestChat.messages]);
-      return;
+      setMessagesLoading(false);
+      return undefined;
     }
 
-    // Load from Firestore if cloud is enabled
+    // Cloud conversations.
     if (isCloudEnabled && currentUser?.uid) {
-      fetchRequestIdRef.current += 1;
-      const currentRequestId = fetchRequestIdRef.current;
+      let cancelled = false;
+
       setMessagesLoading(true);
 
       loadConversationMessages(currentUser.uid, activeChatId)
         .then((loadedMessages) => {
-          // Race-condition guard: Only apply if this request is still the active one
-          if (fetchRequestIdRef.current === currentRequestId && activeChatIdRef.current === activeChatId) {
-            setMessages(loadedMessages);
-            loadedMessages.forEach((m) => persistedMessageIdsRef.current.add(m.id));
+          if (
+            cancelled ||
+            fetchRequestIdRef.current !== currentRequestId ||
+            activeChatIdRef.current !== activeChatId
+          ) {
+            return;
           }
+
+          const safeMessages = Array.isArray(loadedMessages)
+            ? loadedMessages
+            : [];
+
+          setMessages(safeMessages);
+
+          safeMessages.forEach((message) => {
+            if (message.id) {
+              persistedMessageIdsRef.current.add(message.id);
+            }
+          });
         })
-        .catch((err) => {
-          console.error('Failed to load conversation messages:', err);
-          if (fetchRequestIdRef.current === currentRequestId) {
-            setPersistenceError('Failed to load conversation history from Cloud Firestore.');
+        .catch((error) => {
+          if (
+            cancelled ||
+            fetchRequestIdRef.current !== currentRequestId
+          ) {
+            return;
           }
+
+          console.error(
+            'Failed to load conversation messages:',
+            error
+          );
+
+          setPersistenceError(
+            'Failed to load conversation history from Cloud Firestore.'
+          );
         })
         .finally(() => {
-          if (fetchRequestIdRef.current === currentRequestId) {
+          if (
+            !cancelled &&
+            fetchRequestIdRef.current === currentRequestId
+          ) {
             setMessagesLoading(false);
           }
         });
+
+      return () => {
+        cancelled = true;
+      };
     }
+
+    setMessagesLoading(false);
+    return undefined;
   }, [activeChatId, isCloudEnabled, currentUser?.uid]);
 
-  // Active chat title for header breadcrumb
-  const currentChat = userChats.find((c) => c.id === activeChatId);
+  const currentChat = userChats.find(
+    (chat) => chat.id === activeChatId
+  );
+
   const activeTitle = currentChat
     ? currentChat.title
     : messages.length > 0
-    ? 'Current Conversation'
-    : null;
+      ? 'Current Conversation'
+      : null;
 
-  // New Chat: Resets active view cleanly without creating an empty document
+  // Start a fresh conversation.
   const handleNewChat = () => {
     if (activeAnimationRef.current) {
       activeAnimationRef.current();
+      activeAnimationRef.current = null;
     }
+
+    // Invalidate any outstanding history load.
+    fetchRequestIdRef.current += 1;
+    activeChatIdRef.current = null;
+
     setActiveChatId(null);
     setMessages([]);
     setInputValue('');
     setIsLoading(false);
+    setMessagesLoading(false);
     isSubmittingRef.current = false;
+
     sessionStorage.removeItem('orvix_active_chat');
     sessionStorage.removeItem('chatora_active_chat');
   };
 
-  // Switch to an existing conversation
+  // Switch conversations without allowing old history to overwrite new messages.
   const handleSelectChat = (chatId) => {
-    if (chatId === activeChatId) return;
+    if (chatId === activeChatIdRef.current) return;
+
+    if (activeAnimationRef.current) {
+      // The animation cancels its UI updates; its request can still finish
+      // and save the response to the original conversation.
+      activeAnimationRef.current();
+      activeAnimationRef.current = null;
+    }
+
+    fetchRequestIdRef.current += 1;
+    activeChatIdRef.current = chatId;
+
     setActiveChatId(chatId);
     setInputValue('');
-    // Do not abort pending in-flight Gemini generation for previous chat,
-    // but the response will be saved to its own collection without leaking into this chat!
+    setMessages([]);
+    setMessagesLoading(Boolean(isCloudEnabled));
   };
 
-  // Rename a conversation
+  // Rename a conversation.
   const handleRenameChat = async (chatId, newTitle) => {
     const sanitized = (newTitle || '').trim();
     if (!sanitized) return;
 
     try {
       if (isCloudEnabled && currentUser?.uid) {
-        await renameConversation(currentUser.uid, chatId, sanitized);
+        await renameConversation(
+          currentUser.uid,
+          chatId,
+          sanitized
+        );
       } else {
-        setUserChats((prev) => {
-          const next = prev.map((c) => (c.id === chatId ? { ...c, title: sanitized } : c));
+        setUserChats((previous) => {
+          const next = previous.map((chat) =>
+            chat.id === chatId
+              ? { ...chat, title: sanitized }
+              : chat
+          );
+
           saveGuestChats(next);
           return next;
         });
       }
-    } catch (err) {
-      console.error('Failed to rename conversation:', err);
+    } catch (error) {
+      console.error('Failed to rename conversation:', error);
       setPersistenceError('Failed to rename conversation.');
     }
   };
 
-  // Delete a conversation and its messages
+  // Delete a conversation.
   const handleDeleteChat = async (chatId) => {
     try {
       if (isCloudEnabled && currentUser?.uid) {
         await deleteConversation(currentUser.uid, chatId);
       } else {
-        setUserChats((prev) => {
-          const next = prev.filter((c) => c.id !== chatId);
+        setUserChats((previous) => {
+          const next = previous.filter(
+            (chat) => chat.id !== chatId
+          );
+
           saveGuestChats(next);
           return next;
         });
       }
 
-      // If the deleted chat was currently open, return to new chat empty state
       if (activeChatIdRef.current === chatId) {
         handleNewChat();
       }
 
-      // If guest mode, clean up guest pinned IDs
       if (!isCloudEnabled || !currentUser?.uid) {
-        const guestPinned = getGuestPinnedIds().filter((id) => id !== chatId);
-        saveGuestPinnedIds(guestPinned);
+        const remainingPins = getGuestPinnedIds().filter(
+          (id) => id !== chatId
+        );
+
+        saveGuestPinnedIds(remainingPins);
       }
-    } catch (err) {
-      console.error('Failed to delete conversation:', err);
-      setPersistenceError('Failed to delete conversation from Cloud Firestore.');
+    } catch (error) {
+      console.error('Failed to delete conversation:', error);
+      setPersistenceError(
+        'Failed to delete conversation from Cloud Firestore.'
+      );
     }
   };
 
-  // Pin or unpin a conversation with strict 5-chat limit per user
+  // Pin/unpin conversations, with a maximum of five pinned chats.
   const handleTogglePin = async (chatId) => {
-    const targetChat = userChats.find((c) => c.id === chatId);
+    const targetChat = userChats.find(
+      (chat) => chat.id === chatId
+    );
+
     if (!targetChat) return;
 
     const willPin = !targetChat.isPinned;
 
-    if (willPin) {
-      const currentPinnedCount = userChats.filter((c) => c.isPinned).length;
-      if (currentPinnedCount >= 5) {
-        setPersistenceError('You can pin up to 5 chats. Unpin a chat before pinning another.');
-        return;
-      }
+    if (
+      willPin &&
+      userChats.filter((chat) => chat.isPinned).length >= 5
+    ) {
+      setPersistenceError(
+        'You can pin up to 5 chats. Unpin a chat before pinning another.'
+      );
+      return;
     }
 
-    // Clear any previous error banner
     setPersistenceError(null);
 
     if (isCloudEnabled && currentUser?.uid) {
       try {
-        await toggleChatPinned(currentUser.uid, chatId, willPin);
-        // Real-time Firestore snapshot listener updates userChats automatically
-      } catch (err) {
-        console.error('Failed to toggle pin in Firestore:', err);
-        setPersistenceError(err.message || 'Failed to update pin status in Cloud Firestore.');
-      }
-    } else {
-      // Guest mode local persistence
-      const now = Date.now();
-      setUserChats((prev) => {
-        const next = prev.map((c) =>
-          c.id === chatId ? { ...c, isPinned: willPin, pinnedAt: willPin ? now : null } : c
+        await toggleChatPinned(
+          currentUser.uid,
+          chatId,
+          willPin
         );
-        saveGuestChats(next);
-        const guestPinnedIds = next.filter((c) => c.isPinned).map((c) => c.id);
-        saveGuestPinnedIds(guestPinnedIds);
-        return next;
-      });
+      } catch (error) {
+        console.error('Failed to toggle pin in Firestore:', error);
+        setPersistenceError(
+          error.message ||
+            'Failed to update pin status in Cloud Firestore.'
+        );
+      }
+
+      return;
     }
+
+    setUserChats((previous) => {
+      const next = previous.map((chat) =>
+        chat.id === chatId
+          ? {
+              ...chat,
+              isPinned: willPin,
+              pinnedAt: willPin ? Date.now() : null
+            }
+          : chat
+      );
+
+      saveGuestChats(next);
+      saveGuestPinnedIds(
+        next.filter((chat) => chat.isPinned).map((chat) => chat.id)
+      );
+
+      return next;
+    });
   };
 
-  /**
-   * Helper to persist a message to Firestore or guest storage with duplicate prevention
-   */
-  const persistMessageSafe = async (chatId, messageObj) => {
-    if (!chatId || !messageObj) return;
-    if (persistedMessageIdsRef.current.has(messageObj.id)) return;
+  // Persist messages without duplicate writes.
+  const persistMessageSafe = async (chatId, message) => {
+    if (!chatId || !message?.id) return;
+
+    if (persistedMessageIdsRef.current.has(message.id)) {
+      return;
+    }
+
+    // Reserve the ID before starting the asynchronous write.
+    persistedMessageIdsRef.current.add(message.id);
 
     if (isCloudEnabled && currentUser?.uid) {
       try {
-        persistedMessageIdsRef.current.add(messageObj.id);
-        await saveChatMessage(currentUser.uid, chatId, messageObj);
-      } catch (err) {
-        console.warn('Firestore write warning:', err);
-        setPersistenceError('Notice: Could not save message to Cloud Firestore. Kept in memory.');
-      }
-    } else {
-      persistedMessageIdsRef.current.add(messageObj.id);
-      setUserChats((prev) => {
-        const next = prev.map((c) =>
-          c.id === chatId
-            ? {
-                ...c,
-                rawUpdatedAt: Date.now(),
-                messages: [...(c.messages || []), messageObj]
-              }
-            : c
+        await saveChatMessage(
+          currentUser.uid,
+          chatId,
+          message
         );
-        saveGuestChats(next);
-        return next;
-      });
+      } catch (error) {
+        // Allow a future retry if this write failed.
+        persistedMessageIdsRef.current.delete(message.id);
+
+        console.warn('Firestore write warning:', error);
+        setPersistenceError(
+          'Notice: Could not save message to Cloud Firestore. Kept in memory.'
+        );
+      }
+
+      return;
     }
+
+    setUserChats((previous) => {
+      const next = previous.map((chat) => {
+        if (chat.id !== chatId) return chat;
+
+        const existing = (chat.messages || []).some(
+          (item) => item.id === message.id
+        );
+
+        if (existing) return chat;
+
+        return {
+          ...chat,
+          rawUpdatedAt: Date.now(),
+          messages: [...(chat.messages || []), message]
+        };
+      });
+
+      saveGuestChats(next);
+      return next;
+    });
   };
 
   /**
-   * Dispatches a prompt with progressive streaming animation and persists results upon completion.
-   * Protects against cross-chat state pollution during rapid chat switching.
+   * Run the AI request and animate its response.
    */
-  const executePrompt = async (promptText, historyContext, targetChatId, assistantMessageId) => {
+  const executePrompt = async (
+    promptText,
+    historyContext,
+    targetChatId,
+    assistantMessageId
+  ) => {
     setIsLoading(true);
 
     let targetText = '';
@@ -386,61 +557,81 @@ export default function ChatPage() {
     let isStreamDone = false;
     let timerId = null;
     let isCancelled = false;
+    let isFinalized = false;
 
-    // Check accessibility settings for reduced motion
     const prefersReducedMotion =
       typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')
+        ?.matches;
 
-    // Clean up any previously running animation
+    // Stop an older animation, without cancelling its network request.
     if (activeAnimationRef.current) {
       activeAnimationRef.current();
     }
 
     const cancelCurrentAnimation = () => {
       isCancelled = true;
-      if (timerId) {
+
+      if (timerId !== null) {
         clearTimeout(timerId);
         timerId = null;
       }
     };
+
     activeAnimationRef.current = cancelCurrentAnimation;
 
-    // Finalizes the assistant message once the animation has caught up to the complete response
-    const finalizeAssistantMessage = async (contentToSave, modelToUse, providerToUse) => {
-      if (isCancelled) return;
+    // Finalize exactly once. Do not call cancelCurrentAnimation first:
+    // cancellation intentionally prevents this function from running.
+    const finalizeAssistantMessage = async (
+      contentToSave,
+      modelToUse,
+      providerToUse
+    ) => {
+      if (isCancelled || isFinalized) return;
+
+      isFinalized = true;
 
       const completedMessage = {
         id: assistantMessageId,
         sender: 'assistant',
-        provider: providerToUse || selectedProvider,
+        provider: providerToUse || finalProvider || selectedProvider,
         modelUsed: modelToUse || activeModel,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
         content: contentToSave,
         isStreaming: false
       };
 
-      // Only update active UI if user is STILL viewing targetChatId
       if (activeChatIdRef.current === targetChatId) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === assistantMessageId ? completedMessage : m))
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantMessageId
+              ? completedMessage
+              : message
+          )
         );
       }
 
-      // Safely persist completed message to Firestore or guest storage
       if (targetChatId) {
         await persistMessageSafe(targetChatId, completedMessage);
+      }
+
+      if (activeAnimationRef.current === cancelCurrentAnimation) {
+        activeAnimationRef.current = null;
       }
 
       setIsLoading(false);
       isSubmittingRef.current = false;
     };
 
-    // Progressive animation pump loop
+    // Gradually reveal the received response.
     const pumpAnimation = () => {
-      if (isCancelled) return;
+      timerId = null;
 
-      // If user navigated away from target chat, stop UI pump
+      if (isCancelled || isFinalized) return;
+
       if (activeChatIdRef.current !== targetChatId) {
         return;
       }
@@ -451,172 +642,245 @@ export default function ChatPage() {
         if (prefersReducedMotion) {
           displayedText = targetText;
         } else {
-          // Adaptive pacing:
-          // Smooth 1-2 chars at a time when backlog is small (~50 chars/sec).
-          // Automatically scales up for larger chunks so responses finish promptly.
           let stepSize = 1;
+
           if (backlog > 500) {
-            stepSize = Math.min(backlog, Math.ceil(backlog / 16));
+            stepSize = Math.ceil(backlog / 16);
           } else if (backlog > 200) {
-            stepSize = Math.min(backlog, Math.ceil(backlog / 12));
+            stepSize = Math.ceil(backlog / 12);
           } else if (backlog > 80) {
-            stepSize = Math.min(backlog, Math.ceil(backlog / 8));
+            stepSize = Math.ceil(backlog / 8);
           } else if (backlog > 30) {
-            stepSize = Math.min(backlog, Math.ceil(backlog / 5));
+            stepSize = Math.ceil(backlog / 5);
           } else if (backlog > 8) {
-            stepSize = Math.min(backlog, 2);
-          } else {
-            stepSize = 1;
+            stepSize = 2;
           }
 
-          displayedText = targetText.slice(0, displayedText.length + stepSize);
+          displayedText = targetText.slice(
+            0,
+            displayedText.length + stepSize
+          );
         }
 
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMessageId
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantMessageId
               ? {
-                  ...m,
+                  ...message,
                   content: displayedText,
-                  modelUsed: activeModel || m.modelUsed,
-                  provider: finalProvider || m.provider,
+                  modelUsed: activeModel || message.modelUsed,
+                  provider: finalProvider || message.provider,
                   isStreaming: true
                 }
-              : m
+              : message
           )
         );
 
-        // Schedule next character tick (18ms provides smooth ~55fps typing cadence)
         timerId = setTimeout(pumpAnimation, 18);
-      } else {
-        // Backlog is 0 (displayedText has caught up to targetText)
-        if (isStreamDone) {
-          // Provider stream has finished, and animation has revealed all characters!
-          finalizeAssistantMessage(targetText, activeModel, finalProvider);
-        } else {
-          // Waiting for more chunks from the provider; pump pauses until onChunk triggers it
-          timerId = null;
-        }
+        return;
+      }
+
+      if (isStreamDone) {
+        void finalizeAssistantMessage(
+          targetText,
+          activeModel,
+          finalProvider
+        );
       }
     };
 
-    // Ensure the animation loop is running if there is text in the buffer
     const triggerPump = () => {
-      if (isCancelled) return;
-      if (!timerId) {
-        timerId = setTimeout(pumpAnimation, 10);
-      }
+      if (isCancelled || isFinalized || timerId !== null) return;
+
+      timerId = setTimeout(pumpAnimation, 10);
     };
 
     try {
-      // Call selected AI provider API with streaming chunks and personalized username
       const result = await streamAIMessage({
         provider: selectedProvider,
         prompt: promptText,
         history: historyContext,
-        username: username || currentUser?.displayName || null,
-        onStart: ({ modelUsed, provider }) => {
+        username:
+          username || currentUser?.displayName || null,
+
+        onStart: ({ modelUsed, provider } = {}) => {
           if (modelUsed) activeModel = modelUsed;
           if (provider) finalProvider = provider;
+
           if (activeChatIdRef.current === targetChatId) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMessageId
-                  ? { ...m, modelUsed: activeModel, provider: finalProvider }
-                  : m
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      modelUsed: activeModel,
+                      provider: finalProvider
+                    }
+                  : message
               )
             );
           }
         },
+
         onChunk: (_chunkText, currentAccumulated) => {
-          targetText = currentAccumulated;
+          // Accept the cumulative text supplied by the router.
+          if (typeof currentAccumulated === 'string') {
+            targetText = currentAccumulated;
+          }
+
           triggerPump();
         }
       });
 
-      // Stream reception finished
-      const resolvedText = result.text || targetText;
+      const resolvedText =
+        typeof result?.text === 'string'
+          ? result.text
+          : targetText;
+
       targetText = resolvedText;
-      if (result.modelUsed) activeModel = result.modelUsed;
-      if (result.provider) finalProvider = result.provider;
+
+      if (result?.modelUsed) activeModel = result.modelUsed;
+      if (result?.provider) finalProvider = result.provider;
+
       isStreamDone = true;
 
-      // If user switched away, finish up and persist directly to target conversation
+      // If the user has switched chats, persist this answer in the
+      // original conversation without touching the currently visible chat.
       if (activeChatIdRef.current !== targetChatId) {
         cancelCurrentAnimation();
+
         const completedMessage = {
           id: assistantMessageId,
           sender: 'assistant',
-          provider: finalProvider,
+          provider: finalProvider || selectedProvider,
           modelUsed: activeModel,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
           content: resolvedText,
           isStreaming: false
         };
+
         if (targetChatId) {
           await persistMessageSafe(targetChatId, completedMessage);
         }
+
         setIsLoading(false);
         isSubmittingRef.current = false;
         return;
       }
 
-      // If there is still backlog to animate, let the pump finish typing the remaining text;
-      // otherwise, finalize immediately.
-      if (displayedText.length < targetText.length && !prefersReducedMotion) {
+      // FIX: Do not cancel the animation before finalizing. Cancellation
+      // sets isCancelled, which would cause finalization to return early.
+      if (
+        !prefersReducedMotion &&
+        displayedText.length < targetText.length
+      ) {
         triggerPump();
       } else {
-        cancelCurrentAnimation();
-        await finalizeAssistantMessage(targetText, activeModel, finalProvider);
+        if (timerId !== null) {
+          clearTimeout(timerId);
+          timerId = null;
+        }
+
+        displayedText = targetText;
+
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  content: targetText,
+                  modelUsed: activeModel || message.modelUsed,
+                  provider: finalProvider || message.provider,
+                  isStreaming: false
+                }
+              : message
+          )
+        );
+
+        await finalizeAssistantMessage(
+          targetText,
+          activeModel,
+          finalProvider
+        );
       }
-    } catch (err) {
-      console.error('Streaming prompt execution error:', err);
+    } catch (error) {
+      console.error('Streaming prompt execution error:', error);
+
       isStreamDone = true;
       cancelCurrentAnimation();
 
+      if (activeAnimationRef.current === cancelCurrentAnimation) {
+        activeAnimationRef.current = null;
+      }
+
       if (activeChatIdRef.current === targetChatId) {
         if (targetText.trim().length > 0) {
-          // Display whatever was received plus interrupted notice
           const partialMessage = {
             id: assistantMessageId,
             sender: 'assistant',
-            provider: selectedProvider,
+            provider: finalProvider || selectedProvider,
             modelUsed: activeModel,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `${targetText}\n\n*[Response interrupted: ${err.message || 'Connection lost'}]*`,
+            timestamp: new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit'
+            }),
+            content: `${targetText}\n\n*[Response interrupted: ${
+              error?.message || 'Connection lost'
+            }]*`,
             isStreaming: false
           };
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantMessageId ? partialMessage : m))
+
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? partialMessage
+                : message
+            )
           );
+
           if (targetChatId) {
             await persistMessageSafe(targetChatId, partialMessage);
           }
         } else {
-          // Replace with clean error bubble
           const errorMessage = {
             id: `error-${Date.now()}`,
             sender: 'assistant',
             isError: true,
             failedPrompt: promptText,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: err.message || `An unexpected error occurred while communicating with ${selectedProvider}.`
+            timestamp: new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit'
+            }),
+            content:
+              error?.message ||
+              `An unexpected error occurred while communicating with ${selectedProvider}.`
           };
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantMessageId ? errorMessage : m))
+
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? errorMessage
+                : message
+            )
           );
         }
       } else if (targetChatId && targetText.trim().length > 0) {
-        // Save partial response to background chat
         const partialMessage = {
           id: assistantMessageId,
           sender: 'assistant',
-          provider: selectedProvider,
+          provider: finalProvider || selectedProvider,
           modelUsed: activeModel,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
           content: `${targetText}\n\n*[Response interrupted]*`,
           isStreaming: false
         };
+
         await persistMessageSafe(targetChatId, partialMessage);
       }
 
@@ -625,34 +889,49 @@ export default function ChatPage() {
     }
   };
 
-  // Message submission handler with immediate assistant message & streaming dispatch
+  // Submit a new message.
   const handleSubmit = async () => {
-    // Strip standard whitespace and invisible zero-width spaces
-    const trimmed = inputValue.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    const trimmed = inputValue
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .trim();
+
     if (!trimmed || isLoading || isSubmittingRef.current) return;
 
-    // Immediate lock before any async operations begin
     isSubmittingRef.current = true;
     setIsLoading(true);
+    setPersistenceError(null);
 
-    let currentChatId = activeChatId;
+    let currentChatId = activeChatIdRef.current;
 
     try {
-      // If starting a fresh chat, initialize new chat in Firestore first (or in-memory for guest mode)
+      // Create a conversation only when the user sends their first message.
       if (!currentChatId) {
         const titleSnippet = generateChatTitle(trimmed);
+
         if (isCloudEnabled && currentUser?.uid) {
           try {
-            currentChatId = await createChatDocument(currentUser.uid, titleSnippet);
-            setActiveChatId(currentChatId);
-            sessionStorage.setItem('orvix_active_chat', currentChatId);
-            sessionStorage.setItem('chatora_active_chat', currentChatId);
-          } catch (err) {
-            console.warn('Could not create Firestore chat doc:', err);
-            setPersistenceError('Failed to initialize conversation in Cloud Firestore.');
+            currentChatId = await createChatDocument(
+              currentUser.uid,
+              titleSnippet
+            );
+
+            // Prevent the history effect from replacing the new chat's
+            // messages with an empty database result.
+            skipNextChatLoadRef.current = currentChatId;
+          } catch (error) {
+            console.warn('Could not create Firestore chat doc:', error);
+
+            setPersistenceError(
+              'Failed to initialize conversation in Cloud Firestore.'
+            );
+
+            setIsLoading(false);
+            isSubmittingRef.current = false;
+            return;
           }
         } else {
           currentChatId = `guest-${Date.now()}`;
+
           const newGuestChat = {
             id: currentChatId,
             title: titleSnippet,
@@ -662,84 +941,147 @@ export default function ChatPage() {
             pinnedAt: null,
             messages: []
           };
-          setUserChats((prev) => {
-            const next = [newGuestChat, ...prev];
+
+          setUserChats((previous) => {
+            const next = [newGuestChat, ...previous];
             saveGuestChats(next);
             return next;
           });
-          setActiveChatId(currentChatId);
-          sessionStorage.setItem('orvix_active_chat', currentChatId);
-          sessionStorage.setItem('chatora_active_chat', currentChatId);
         }
+
+        // Update the ref immediately; setState alone does not do this
+        // synchronously, and the first AI chunks may arrive before rerender.
+        activeChatIdRef.current = currentChatId;
+        setActiveChatId(currentChatId);
+
+        sessionStorage.setItem(
+          'orvix_active_chat',
+          currentChatId
+        );
+        sessionStorage.setItem(
+          'chatora_active_chat',
+          currentChatId
+        );
       }
 
+      const now = Date.now();
+
       const userMessage = {
-        id: `user-${Date.now()}`,
+        id: `user-${now}`,
         sender: 'user',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
         content: trimmed
       };
 
-      // Create immediate assistant message placeholder
-      const assistantMessageId = `${selectedProvider}-${Date.now()}`;
+      const assistantMessageId =
+        `${selectedProvider}-${now}-assistant`;
+
       const initialAssistantMessage = {
         id: assistantMessageId,
         sender: 'assistant',
         provider: selectedProvider,
         modelUsed: null,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
         content: '',
         isStreaming: true
       };
 
-      // Filter out temporary error bubbles from multi-turn context
-      const validHistory = messages.filter((m) => !m.isError);
+      const validHistory = messages.filter(
+        (message) => !message.isError
+      );
 
-      // Immediately render both user message and streaming assistant placeholder
-      setMessages((prev) => [...prev, userMessage, initialAssistantMessage]);
+      setMessages((previous) => [
+        ...previous,
+        userMessage,
+        initialAssistantMessage
+      ]);
+
       setInputValue('');
 
-      // Persist user message to Firestore
       if (currentChatId) {
-        persistMessageSafe(currentChatId, userMessage);
+        void persistMessageSafe(currentChatId, userMessage);
       }
 
-      // Execute AI streaming dispatch
-      executePrompt(trimmed, validHistory, currentChatId, assistantMessageId);
-    } catch (unexpectedErr) {
-      console.error('Submission error:', unexpectedErr);
+      await executePrompt(
+        trimmed,
+        validHistory,
+        currentChatId,
+        assistantMessageId
+      );
+    } catch (error) {
+      console.error('Submission error:', error);
       setIsLoading(false);
       isSubmittingRef.current = false;
     }
   };
 
-  // Retry handler for failed messages
+  // Retry a failed AI response.
   const handleRetry = (failedMessage) => {
-    if (isLoading || isSubmittingRef.current || !failedMessage?.failedPrompt) return;
+    if (
+      isLoading ||
+      isSubmittingRef.current ||
+      !failedMessage?.failedPrompt
+    ) {
+      return;
+    }
+
+    isSubmittingRef.current = true;
+    setIsLoading(true);
 
     const currentChatId = activeChatIdRef.current;
-    const updatedMessages = messages.filter((m) => m.id !== failedMessage.id);
 
-    const assistantMessageId = `${selectedProvider}-${Date.now()}`;
+    const updatedMessages = messages.filter(
+      (message) => message.id !== failedMessage.id
+    );
+
+    const assistantMessageId =
+      `${selectedProvider}-${Date.now()}-retry`;
+
     const initialAssistantMessage = {
       id: assistantMessageId,
       sender: 'assistant',
       provider: selectedProvider,
       modelUsed: null,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
       content: '',
       isStreaming: true
     };
 
-    setMessages([...updatedMessages, initialAssistantMessage]);
-    const validHistory = updatedMessages.filter((m) => !m.isError);
-    executePrompt(failedMessage.failedPrompt, validHistory, currentChatId, assistantMessageId);
+    setMessages([
+      ...updatedMessages,
+      initialAssistantMessage
+    ]);
+
+    const validHistory = updatedMessages.filter(
+      (message) => !message.isError
+    );
+
+    void executePrompt(
+      failedMessage.failedPrompt,
+      validHistory,
+      currentChatId,
+      assistantMessageId
+    );
   };
 
-  // Restore prompt text to the composer for editing
+  // Restore a failed prompt to the input field.
   const handleRestorePrompt = (promptText) => {
     setInputValue(promptText);
-    setMessages((prev) => prev.filter((m) => m.failedPrompt !== promptText));
+
+    setMessages((previous) =>
+      previous.filter(
+        (message) => message.failedPrompt !== promptText
+      )
+    );
   };
 
   return (
@@ -757,11 +1099,20 @@ export default function ChatPage() {
       selectedProvider={selectedProvider}
       onSelectProvider={handleSelectProvider}
     >
-      {/* Persistence Error / Offline Alert Banner */}
       {persistenceError && (
-        <div className="persistence-alert-banner" role="status">
-          <AlertCircle size={15} className="persistence-alert-icon" />
-          <span className="persistence-alert-text">{persistenceError}</span>
+        <div
+          className="persistence-alert-banner"
+          role="status"
+        >
+          <AlertCircle
+            size={15}
+            className="persistence-alert-icon"
+          />
+
+          <span className="persistence-alert-text">
+            {persistenceError}
+          </span>
+
           <button
             type="button"
             className="persistence-alert-close"
