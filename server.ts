@@ -12,6 +12,17 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Permissive CORS middleware for cross-origin and Vercel preview environments
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 
 // Helper to format conversation history for Gemini
@@ -88,10 +99,10 @@ async function handleUserMessage(prompt, context = []) {
   } else if (promptLower.includes('brainstorm') || promptLower.includes('idea') || promptLower.includes('startup') || promptLower.includes('name')) {
     body = `Here are 4 creative concepts for your consideration:
 
-1. **NexusPulse** — Ambient conversational workspace for asynchronous team synthesis.
-2. **KiteFlow** — Low-friction, lightweight drafting engine for technical creators.
-3. **OmniCanvas** — Multimodal canvas bringing notes, documents, and chat threads into one view.
-4. **SpectraAI** — Precision intelligence layer tailored for high-speed research.
+1. **NexusPulse** — Ambient conversational workspace for asynchronous team synthesis.
+2. **KiteFlow** — Low-friction, lightweight drafting engine for technical creators.
+3. **OmniCanvas** — Multimodal canvas bringing notes, documents, and chat threads into one view.
+4. **SpectraAI** — Precision intelligence layer tailored for high-speed research.
 
 *Tip: You can select any conversation from the sidebar or click "+ New Chat" to start fresh.*`;
   } else if (promptLower.startsWith('hi') || promptLower.startsWith('hello') || promptLower.startsWith('hey')) {
@@ -112,8 +123,8 @@ I am ready to assist with your questions, code samples, or writing projects. Fee
   return body;
 }
 
-// API Health Check
-app.get('/api/health', (_req, res) => {
+// API Health Check (supports both standalone and Vercel sub-route paths)
+app.get(['/api/health', '/health'], (_req, res) => {
   res.json({
     status: 'ok',
     uptime: process.uptime(),
@@ -122,7 +133,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // API Config Check (indicates configured providers without leaking keys)
-app.get('/api/config', (_req, res) => {
+app.get(['/api/config', '/config'], (_req, res) => {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
   const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
   const openrouterKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
@@ -136,7 +147,7 @@ app.get('/api/config', (_req, res) => {
 
 // Helper utilities for Server-Sent Events (SSE) streaming
 function initSSE(res: express.Response) {
-  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
@@ -144,14 +155,15 @@ function initSSE(res: express.Response) {
 }
 
 function sendSSE(res: express.Response, data: object) {
+  if (res.writableEnded) return;
   res.write(`data: ${JSON.stringify(data)}\n\n`);
   if (typeof (res as any).flush === 'function') {
     (res as any).flush();
   }
 }
 
-// Central AI Chat Dispatch Endpoint (Supports genuine SSE streaming and non-streaming fallback)
-app.post('/api/chat', async (req, res) => {
+// Central AI Chat Dispatch Endpoint (supports /api/chat, /chat, and root / for Vercel functions)
+app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   try {
     const {
       provider = 'gemini',
@@ -171,9 +183,12 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
+    // Accurately track client response disconnection (res.on('close')), NOT request stream upload end
     let isClientClosed = false;
-    req.on('close', () => {
-      isClientClosed = true;
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        isClientClosed = true;
+      }
     });
 
     const cleanUsername =
@@ -207,7 +222,7 @@ app.post('/api/chat', async (req, res) => {
           sendSSE(res, { type: 'chunk', text: token });
           await new Promise((r) => setTimeout(r, 20));
         }
-        if (!isClientClosed && !res.writableEnded) {
+        if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text, modelUsed: 'gemini-3.1-flash-lite (demo)', provider: 'gemini' });
           res.end();
         }
@@ -280,7 +295,7 @@ app.post('/api/chat', async (req, res) => {
               }
             }
 
-            if (!isClientClosed && !res.writableEnded) {
+            if (!res.writableEnded) {
               sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
               res.end();
             }
@@ -290,7 +305,7 @@ app.post('/api/chat', async (req, res) => {
             const msg = String(err?.message || err);
             if (res.headersSent) {
               sendSSE(res, { type: 'error', error: msg });
-              res.end();
+              if (!res.writableEnded) res.end();
               return;
             }
             if ((msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('404')) && model !== 'gemini-3.8-flash') {
@@ -319,11 +334,14 @@ app.post('/api/chat', async (req, res) => {
         sendSSE(res, { type: 'start', modelUsed: 'Llama 3.3 70B (demo)', provider: 'groq' });
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
+          if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
           await new Promise((r) => setTimeout(r, 20));
         }
-        sendSSE(res, { type: 'done', text, modelUsed: 'Llama 3.3 70B (demo)', provider: 'groq' });
-        res.end();
+        if (!res.writableEnded) {
+          sendSSE(res, { type: 'done', text, modelUsed: 'Llama 3.3 70B (demo)', provider: 'groq' });
+          res.end();
+        }
         return;
       }
 
@@ -427,7 +445,7 @@ app.post('/api/chat', async (req, res) => {
           }
         }
 
-        if (!isClientClosed && !res.writableEnded) {
+        if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'groq' });
           res.end();
         }
@@ -451,11 +469,14 @@ app.post('/api/chat', async (req, res) => {
         sendSSE(res, { type: 'start', modelUsed: 'openrouter/free (demo)', provider: 'openrouter' });
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
+          if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
           await new Promise((r) => setTimeout(r, 20));
         }
-        sendSSE(res, { type: 'done', text, modelUsed: 'openrouter/free (demo)', provider: 'openrouter' });
-        res.end();
+        if (!res.writableEnded) {
+          sendSSE(res, { type: 'done', text, modelUsed: 'openrouter/free (demo)', provider: 'openrouter' });
+          res.end();
+        }
         return;
       }
 
@@ -561,7 +582,7 @@ app.post('/api/chat', async (req, res) => {
           }
         }
 
-        if (!isClientClosed && !res.writableEnded) {
+        if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'openrouter' });
           res.end();
         }
@@ -574,7 +595,7 @@ app.post('/api/chat', async (req, res) => {
     console.error('API Error in /api/chat:', error);
     if (res.headersSent) {
       sendSSE(res, { type: 'error', error: error?.message || 'Internal server error while streaming response.' });
-      res.end();
+      if (!res.writableEnded) res.end();
     } else {
       res.status(500).json({
         error: error?.message || 'Internal server error while processing AI chat request.'

@@ -1034,6 +1034,10 @@ export default function ChatPage() {
         } else {
           currentChatId = `guest-${Date.now()}`;
 
+          // Prevent the history effect from replacing the new chat's
+          // messages with an empty guest list before they are persisted.
+          skipNextChatLoadRef.current = currentChatId;
+
           const newGuestChat = {
             id: currentChatId,
             title: titleSnippet,

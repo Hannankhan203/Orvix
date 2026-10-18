@@ -205,10 +205,13 @@ export async function streamAIMessage({
     }
   } catch (apiErr) {
     if (signal?.aborted) throw apiErr;
-    if (apiErr.message && !apiErr.message.includes('fetch') && !apiErr.message.includes('Failed to fetch')) {
+
+    // Only attempt client direct fallback if provider has a direct client API key configured
+    if (isProviderConfigured(normalizedProvider)) {
+      console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
+    } else {
       throw apiErr;
     }
-    console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
   }
 
   // Client-side direct service fallback
