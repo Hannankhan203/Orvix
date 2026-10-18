@@ -83,25 +83,25 @@ async function handleUserMessage(prompt, context = []) {
 }
 \`\`\`
 
-â€¢ **State updates:** Messages are updated immutably in memory or synced to Firestore.
-â€¢ **Responsive design:** Markdown blocks format with syntax highlights.`;
+Ã¢â‚¬Â¢ **State updates:** Messages are updated immutably in memory or synced to Firestore.
+Ã¢â‚¬Â¢ **Responsive design:** Markdown blocks format with syntax highlights.`;
   } else if (promptLower.includes('brainstorm') || promptLower.includes('idea') || promptLower.includes('startup') || promptLower.includes('name')) {
     body = `Here are 4 creative concepts for your consideration:
 
-1. **NexusPulse** â€” Ambient conversational workspace for asynchronous team synthesis.
-2. **KiteFlow** â€” Low-friction, lightweight drafting engine for technical creators.
-3. **OmniCanvas** â€” Multimodal canvas bringing notes, documents, and chat threads into one view.
-4. **SpectraAI** â€” Precision intelligence layer tailored for high-speed research.
+1. **NexusPulse** Ã¢â‚¬â€ Ambient conversational workspace for asynchronous team synthesis.
+2. **KiteFlow** Ã¢â‚¬â€ Low-friction, lightweight drafting engine for technical creators.
+3. **OmniCanvas** Ã¢â‚¬â€ Multimodal canvas bringing notes, documents, and chat threads into one view.
+4. **SpectraAI** Ã¢â‚¬â€ Precision intelligence layer tailored for high-speed research.
 
 *Tip: You can select any conversation from the sidebar or click "+ New Chat" to start fresh.*`;
   } else if (promptLower.startsWith('hi') || promptLower.startsWith('hello') || promptLower.startsWith('hey')) {
     body = `Hello${greetingName}! I am **Orvix**, your intelligent AI conversation companion.
 
 I can help you with:
-â€¢ **Writing & Editing:** Craft essays, draft professional emails, and summarize reports.
-â€¢ **Coding & Tech:** Debug React/Node code, explain architectures, and review syntax.
-â€¢ **Brainstorming:** Generate fresh ideas, project names, and creative outlines.
-â€¢ **Learning:** Break down complex topics simply and concisely.`;
+Ã¢â‚¬Â¢ **Writing & Editing:** Craft essays, draft professional emails, and summarize reports.
+Ã¢â‚¬Â¢ **Coding & Tech:** Debug React/Node code, explain architectures, and review syntax.
+Ã¢â‚¬Â¢ **Brainstorming:** Generate fresh ideas, project names, and creative outlines.
+Ã¢â‚¬Â¢ **Learning:** Break down complex topics simply and concisely.`;
   } else {
     body = `Thank you for your prompt${personalSignoff}:
 > "${promptText}"
@@ -248,7 +248,7 @@ app.post('/api/chat', async (req, res) => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
+          model: 'openai/gpt-oss-120b',
           messages,
           temperature: 0.7
         })
@@ -264,7 +264,7 @@ app.post('/api/chat', async (req, res) => {
       const data = await groqRes.json();
       return res.json({
         text: data?.choices?.[0]?.message?.content || '',
-        modelUsed: data.model || 'llama-3.3-70b-versatile',
+        modelUsed: data.model || 'openai/gpt-oss-120b',
         provider: 'groq'
       });
     }
