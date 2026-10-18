@@ -47,6 +47,8 @@ export default function ChatArea({
   activeTitle = null,
   onRetry,
   onRestorePrompt,
+  onRegenerate,
+  onStopGenerating,
   selectedProvider = 'gemini'
 }) {
   const textareaRef = useRef(null);
@@ -125,6 +127,12 @@ export default function ChatArea({
   };
 
   const handleKeyDown = (e) => {
+    if (e.key === 'Escape' && isLoading && onStopGenerating) {
+      e.preventDefault();
+      onStopGenerating();
+      return;
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (recordingState !== 'idle') {
@@ -221,6 +229,8 @@ Transcript:
               isLoading={isLoading}
               onRetry={onRetry}
               onRestorePrompt={onRestorePrompt}
+              onRegenerate={onRegenerate}
+              onStopGenerating={onStopGenerating}
             />
           )}
         </div>
@@ -534,17 +544,30 @@ Transcript:
                 }
               />
 
-              {/* Message Submission Button */}
-              <Button
-                type="submit"
-                variant={hasContent && !isLoading ? 'primary' : 'ghost'}
-                size="icon-round"
-                disabled={!hasContent || isLoading}
-                title={isLoading ? 'Orvix is responding...' : 'Send message (Enter)'}
-                ariaLabel="Send message"
-                className="composer-send-btn"
-                icon={<ArrowUp size={18} />}
-              />
+              {/* Message Submission or Stop Generating Button */}
+              {isLoading ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-round"
+                  onClick={onStopGenerating}
+                  title="Stop generating response (Esc)"
+                  ariaLabel="Stop generating response"
+                  className="composer-stop-btn"
+                  icon={<Square size={13} fill="currentColor" />}
+                />
+              ) : (
+                <Button
+                  type="submit"
+                  variant={hasContent ? 'primary' : 'ghost'}
+                  size="icon-round"
+                  disabled={!hasContent}
+                  title="Send message (Enter)"
+                  ariaLabel="Send message"
+                  className="composer-send-btn"
+                  icon={<ArrowUp size={18} />}
+                />
+              )}
             </div>
           </form>
 

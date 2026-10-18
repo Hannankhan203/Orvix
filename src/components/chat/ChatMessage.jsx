@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Bot, User, Copy, Check, AlertCircle, RotateCcw, Edit3 } from 'lucide-react';
+import {
+  User,
+  Copy,
+  Check,
+  AlertCircle,
+  RotateCcw,
+  Edit3,
+  Square
+} from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 
@@ -23,11 +31,35 @@ function extractNodeText(node) {
 function CodeCopyButton({ text }) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    if (navigator?.clipboard && text) {
-      navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    if (!text) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+        return;
+      }
+      throw new Error('Clipboard API unavailable');
+    } catch (_) {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const success = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (success) {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        }
+      } catch (err) {
+        console.warn('Code snippet copy failed:', err);
+      }
     }
   };
 
@@ -136,20 +168,78 @@ const markdownComponents = {
 /**
  * ChatMessage Component
  * Visually distinct user and AI messages with Markdown & Code rendering,
- * error handling, and copy action
+ * error handling, and assistant message controls: Copy, Regenerate, and Stop Generating.
+ *
+ * @param {Object} props
+ * @param {Object} props.message
+ * @param {(failedMessage: Object) => void} [props.onRetry]
+ * @param {(promptText: string) => void} [props.onRestorePrompt]
+ * @param {(assistantMessage: Object) => void} [props.onRegenerate]
+ * @param {() => void} [props.onStopGenerating]
+ * @param {boolean} [props.isLoading=false]
  */
-export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
+export default function ChatMessage({
+  message,
+  onRetry,
+  onRestorePrompt,
+  onRegenerate,
+  onStopGenerating,
+  isLoading = false
+}) {
   const isUser = message?.sender === 'user';
   const isError = Boolean(message?.isError);
   const isStreaming = Boolean(message?.isStreaming);
+  const isStopped = Boolean(message?.isStopped);
   const hasContent = Boolean(message?.content && message.content.length > 0);
-  const [copied, setCopied] = useState(false);
 
-  const handleCopyMessage = () => {
-    if (navigator?.clipboard && message?.content) {
-      navigator.clipboard.writeText(message.content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+  const [copied, setCopied] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState('Copy');
+
+  const handleCopyMessage = async () => {
+    if (!message?.content) return;
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(message.content);
+        setCopied(true);
+        setCopyFeedback('Copied');
+        setTimeout(() => {
+          setCopied(false);
+          setCopyFeedback('Copy');
+        }, 2000);
+        return;
+      }
+      throw new Error('Clipboard API unavailable');
+    } catch (err) {
+      // Graceful fallback for restricted contexts (e.g. iframes / permissions)
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = message.content;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const success = document.execCommand('copy');
+        document.body.removeChild(textarea);
+
+        if (success) {
+          setCopied(true);
+          setCopyFeedback('Copied');
+          setTimeout(() => {
+            setCopied(false);
+            setCopyFeedback('Copy');
+          }, 2000);
+          return;
+        }
+      } catch (fallbackErr) {
+        console.warn('Fallback copy failed:', fallbackErr);
+      }
+
+      console.warn('Clipboard write failed:', err);
+      setCopyFeedback('Failed to copy');
+      setTimeout(() => setCopyFeedback('Copy'), 2500);
     }
   };
 
@@ -157,7 +247,7 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
 
   return (
     <article
-      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''}`}
+      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''} ${isStopped ? 'stopped-wrapper' : ''}`}
       aria-label={`${isUser ? 'User' : 'Orvix AI'} message`}
     >
       <div
@@ -170,9 +260,17 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
       <div className={`message-body ${isUser ? 'user-body' : 'assistant-body'} ${isError ? 'error-body' : ''}`}>
         <div className="message-sender-line">
           <span className="sender-name">{isUser ? 'You' : 'Orvix'}</span>
+
           {isStreaming && !hasContent && (
             <span className="sender-status">thinking...</span>
           )}
+
+          {isStopped && (
+            <span className="message-stopped-badge" title="Response generation stopped">
+              Stopped
+            </span>
+          )}
+
           {message.modelUsed && (
             <span
               className="model-badge"
@@ -182,6 +280,7 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
               {message.modelUsed}
             </span>
           )}
+
           {message.timestamp && <span className="message-timestamp">{message.timestamp}</span>}
         </div>
 
@@ -237,19 +336,58 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
           )}
         </div>
 
-        {!isUser && !isError && !isStreaming && (
+        {/* Assistant Message Actions: Copy, Regenerate, Stop Generating */}
+        {!isUser && !isError && (
           <div className="message-action-bar">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleCopyMessage}
-              className="message-action-btn"
-              title="Copy message text"
-              ariaLabel="Copy message text"
-              icon={copied ? <Check size={13} /> : <Copy size={13} />}
-            >
-              {copied ? 'Copied' : 'Copy'}
-            </Button>
+            {/* When streaming: display immediate Stop Generating control */}
+            {isStreaming ? (
+              onStopGenerating && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onStopGenerating}
+                  className="message-action-btn stop-generating-btn"
+                  title="Stop generating response (Esc)"
+                  ariaLabel="Stop generating response"
+                  icon={<Square size={11} fill="currentColor" />}
+                >
+                  Stop
+                </Button>
+              )
+            ) : (
+              <>
+                {/* Copy Response Button (copies raw content, never rendered HTML) */}
+                {hasContent && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleCopyMessage}
+                    className={`message-action-btn ${copied ? 'copied' : ''}`}
+                    title="Copy response text"
+                    ariaLabel="Copy response text"
+                    icon={copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                  >
+                    {copyFeedback}
+                  </Button>
+                )}
+
+                {/* Regenerate Response Button */}
+                {onRegenerate && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onRegenerate(message)}
+                    disabled={isLoading}
+                    className="message-action-btn regenerate-btn"
+                    title={isLoading ? 'Generation in progress...' : 'Regenerate response'}
+                    ariaLabel="Regenerate response"
+                    icon={<RotateCcw size={13} />}
+                  >
+                    Regenerate
+                  </Button>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

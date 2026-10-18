@@ -4,20 +4,24 @@ import TypingIndicator from './TypingIndicator.jsx';
 
 /**
  * MessageList Component
- * Renders the sequence of user and AI messages with automatic scroll pinning
- * and error action callbacks.
+ * Renders the sequence of user and AI messages with automatic scroll pinning,
+ * error action callbacks, and assistant message controls (Copy, Regenerate, Stop).
  *
  * @param {Object} props
  * @param {Array} props.messages
  * @param {boolean} [props.isLoading=false]
  * @param {(failedMessage: Object) => void} [props.onRetry]
  * @param {(promptText: string) => void} [props.onRestorePrompt]
+ * @param {(assistantMessage: Object) => void} [props.onRegenerate]
+ * @param {() => void} [props.onStopGenerating]
  */
 export default function MessageList({
   messages = [],
   isLoading = false,
   onRetry,
-  onRestorePrompt
+  onRestorePrompt,
+  onRegenerate,
+  onStopGenerating
 }) {
   const bottomAnchorRef = useRef(null);
   const prevMessagesLengthRef = useRef(messages.length);
@@ -56,6 +60,9 @@ export default function MessageList({
           message={msg}
           onRetry={onRetry}
           onRestorePrompt={onRestorePrompt}
+          onRegenerate={onRegenerate}
+          onStopGenerating={onStopGenerating}
+          isLoading={isLoading}
         />
       ))}
 

@@ -171,6 +171,11 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
+    let isClientClosed = false;
+    req.on('close', () => {
+      isClientClosed = true;
+    });
+
     const cleanUsername =
       typeof username === 'string' && username.trim()
         ? username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ')
@@ -198,11 +203,14 @@ app.post('/api/chat', async (req, res) => {
         sendSSE(res, { type: 'start', modelUsed: 'gemini-3.1-flash-lite (demo)', provider: 'gemini' });
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
+          if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
           await new Promise((r) => setTimeout(r, 20));
         }
-        sendSSE(res, { type: 'done', text, modelUsed: 'gemini-3.1-flash-lite (demo)', provider: 'gemini' });
-        res.end();
+        if (!isClientClosed && !res.writableEnded) {
+          sendSSE(res, { type: 'done', text, modelUsed: 'gemini-3.1-flash-lite (demo)', provider: 'gemini' });
+          res.end();
+        }
         return;
       }
 
@@ -264,6 +272,7 @@ app.post('/api/chat', async (req, res) => {
 
             let fullText = '';
             for await (const chunk of responseStream) {
+              if (isClientClosed || res.writableEnded) break;
               const chunkText = chunk.text;
               if (chunkText) {
                 fullText += chunkText;
@@ -271,8 +280,10 @@ app.post('/api/chat', async (req, res) => {
               }
             }
 
-            sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
-            res.end();
+            if (!isClientClosed && !res.writableEnded) {
+              sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
+              res.end();
+            }
             return;
           } catch (err: any) {
             lastErr = err;
@@ -392,6 +403,7 @@ app.post('/api/chat', async (req, res) => {
         let modelUsed = 'openai/gpt-oss-120b';
 
         while (true) {
+          if (isClientClosed || res.writableEnded) break;
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
@@ -415,8 +427,10 @@ app.post('/api/chat', async (req, res) => {
           }
         }
 
-        sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'groq' });
-        res.end();
+        if (!isClientClosed && !res.writableEnded) {
+          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'groq' });
+          res.end();
+        }
         return;
       }
     }
@@ -523,6 +537,7 @@ app.post('/api/chat', async (req, res) => {
         let modelUsed = 'openrouter/free';
 
         while (true) {
+          if (isClientClosed || res.writableEnded) break;
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
@@ -546,8 +561,10 @@ app.post('/api/chat', async (req, res) => {
           }
         }
 
-        sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'openrouter' });
-        res.end();
+        if (!isClientClosed && !res.writableEnded) {
+          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'openrouter' });
+          res.end();
+        }
         return;
       }
     }

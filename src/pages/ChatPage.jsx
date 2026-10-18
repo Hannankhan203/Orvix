@@ -60,6 +60,8 @@ export default function ChatPage() {
   const fetchRequestIdRef = useRef(0);
   const skipNextChatLoadRef = useRef(null);
   const activeAnimationRef = useRef(null);
+  const activeAbortControllerRef = useRef(null);
+  const isUserStoppedRef = useRef(false);
 
   // Keep the active conversation ref synchronized with React state.
   activeChatIdRef.current = activeChatId;
@@ -73,9 +75,14 @@ export default function ChatPage() {
     }
   };
 
-  // Stop any running animation when the page unmounts.
+  // Stop any running animation and network request when the page unmounts.
   useEffect(() => {
     return () => {
+      if (activeAbortControllerRef.current) {
+        try {
+          activeAbortControllerRef.current.abort();
+        } catch (_) {}
+      }
       if (activeAnimationRef.current) {
         activeAnimationRef.current();
       }
@@ -321,6 +328,13 @@ export default function ChatPage() {
 
   // Start a fresh conversation.
   const handleNewChat = () => {
+    if (activeAbortControllerRef.current) {
+      try {
+        activeAbortControllerRef.current.abort();
+      } catch (_) {}
+      activeAbortControllerRef.current = null;
+    }
+
     if (activeAnimationRef.current) {
       activeAnimationRef.current();
       activeAnimationRef.current = null;
@@ -345,12 +359,20 @@ export default function ChatPage() {
   const handleSelectChat = (chatId) => {
     if (chatId === activeChatIdRef.current) return;
 
+    if (activeAbortControllerRef.current) {
+      try {
+        activeAbortControllerRef.current.abort();
+      } catch (_) {}
+      activeAbortControllerRef.current = null;
+    }
+
     if (activeAnimationRef.current) {
-      // The animation cancels its UI updates; its request can still finish
-      // and save the response to the original conversation.
       activeAnimationRef.current();
       activeAnimationRef.current = null;
     }
+
+    setIsLoading(false);
+    isSubmittingRef.current = false;
 
     fetchRequestIdRef.current += 1;
     activeChatIdRef.current = chatId;
@@ -521,16 +543,18 @@ export default function ChatPage() {
       const next = previous.map((chat) => {
         if (chat.id !== chatId) return chat;
 
-        const existing = (chat.messages || []).some(
+        const hasExisting = (chat.messages || []).some(
           (item) => item.id === message.id
         );
 
-        if (existing) return chat;
+        const updatedMessages = hasExisting
+          ? (chat.messages || []).map((item) => (item.id === message.id ? message : item))
+          : [...(chat.messages || []), message];
 
         return {
           ...chat,
           rawUpdatedAt: Date.now(),
-          messages: [...(chat.messages || []), message]
+          messages: updatedMessages
         };
       });
 
@@ -549,6 +573,23 @@ export default function ChatPage() {
     assistantMessageId
   ) => {
     setIsLoading(true);
+    isUserStoppedRef.current = false;
+
+    // Stop any existing network request and animation pump.
+    if (activeAbortControllerRef.current) {
+      try {
+        activeAbortControllerRef.current.abort();
+      } catch (_) {}
+      activeAbortControllerRef.current = null;
+    }
+
+    if (activeAnimationRef.current) {
+      activeAnimationRef.current();
+      activeAnimationRef.current = null;
+    }
+
+    const abortController = new AbortController();
+    activeAbortControllerRef.current = abortController;
 
     let targetText = '';
     let displayedText = '';
@@ -563,11 +604,6 @@ export default function ChatPage() {
       typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-reduced-motion: reduce)')
         ?.matches;
-
-    // Stop an older animation, without cancelling its network request.
-    if (activeAnimationRef.current) {
-      activeAnimationRef.current();
-    }
 
     const cancelCurrentAnimation = () => {
       isCancelled = true;
@@ -585,7 +621,8 @@ export default function ChatPage() {
     const finalizeAssistantMessage = async (
       contentToSave,
       modelToUse,
-      providerToUse
+      providerToUse,
+      isStopped = false
     ) => {
       if (isCancelled || isFinalized) return;
 
@@ -601,7 +638,8 @@ export default function ChatPage() {
           minute: '2-digit'
         }),
         content: contentToSave,
-        isStreaming: false
+        isStreaming: false,
+        isStopped: Boolean(isStopped)
       };
 
       if (activeChatIdRef.current === targetChatId) {
@@ -620,6 +658,10 @@ export default function ChatPage() {
 
       if (activeAnimationRef.current === cancelCurrentAnimation) {
         activeAnimationRef.current = null;
+      }
+
+      if (activeAbortControllerRef.current === abortController) {
+        activeAbortControllerRef.current = null;
       }
 
       setIsLoading(false);
@@ -702,6 +744,7 @@ export default function ChatPage() {
         history: historyContext,
         username:
           username || currentUser?.displayName || null,
+        signal: abortController.signal,
 
         onStart: ({ modelUsed, provider } = {}) => {
           if (modelUsed) activeModel = modelUsed;
@@ -807,6 +850,61 @@ export default function ChatPage() {
         );
       }
     } catch (error) {
+      isStreamDone = true;
+      cancelCurrentAnimation();
+
+      if (activeAnimationRef.current === cancelCurrentAnimation) {
+        activeAnimationRef.current = null;
+      }
+
+      if (activeAbortControllerRef.current === abortController) {
+        activeAbortControllerRef.current = null;
+      }
+
+      const isAbortedByUser =
+        isUserStoppedRef.current ||
+        abortController.signal.aborted ||
+        error?.name === 'AbortError' ||
+        String(error?.message || '').toLowerCase().includes('aborted');
+
+      if (isAbortedByUser) {
+        // Distinguish intentional stop from genuine error: preserve partial response
+        const stoppedText =
+          targetText.trim().length > 0 ? targetText : 'Response generation stopped.';
+
+        const stoppedMessage = {
+          id: assistantMessageId,
+          sender: 'assistant',
+          provider: finalProvider || selectedProvider,
+          modelUsed: activeModel,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          content: stoppedText,
+          isStreaming: false,
+          isStopped: true
+        };
+
+        if (activeChatIdRef.current === targetChatId) {
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === assistantMessageId
+                ? stoppedMessage
+                : message
+            )
+          );
+        }
+
+        if (targetChatId) {
+          await persistMessageSafe(targetChatId, stoppedMessage);
+        }
+
+        setIsLoading(false);
+        isSubmittingRef.current = false;
+        return;
+      }
+
       console.error('Streaming prompt execution error:', error);
 
       isStreamDone = true;
@@ -1084,6 +1182,86 @@ export default function ChatPage() {
     );
   };
 
+  // Regenerate an assistant response in-place using current model & preserved conversation context
+  const handleRegenerate = async (assistantMessage) => {
+    if (isLoading || isSubmittingRef.current || !assistantMessage?.id) return;
+
+    const currentChatId = activeChatIdRef.current;
+    const msgIndex = messages.findIndex((m) => m.id === assistantMessage.id);
+    if (msgIndex === -1) return;
+
+    // Find the user prompt preceding this assistant message
+    const precedingUserMessage = [...messages.slice(0, msgIndex)]
+      .reverse()
+      .find((m) => m.sender === 'user');
+
+    if (!precedingUserMessage || !precedingUserMessage.content) {
+      console.warn('Cannot regenerate: preceding user prompt not found.');
+      return;
+    }
+
+    const userPromptText = precedingUserMessage.content;
+    const userMsgIndex = messages.findIndex((m) => m.id === precedingUserMessage.id);
+    const validHistory = messages.slice(0, userMsgIndex).filter((m) => !m.isError);
+
+    isSubmittingRef.current = true;
+    setIsLoading(true);
+    setPersistenceError(null);
+
+    const targetAssistantId = assistantMessage.id;
+
+    // Allow cache/Firestore overwrite for this message ID
+    persistedMessageIdsRef.current.delete(targetAssistantId);
+
+    // Update in-place to streaming state without creating duplicate messages
+    setMessages((previous) =>
+      previous.map((m) =>
+        m.id === targetAssistantId
+          ? {
+              ...m,
+              content: '',
+              modelUsed: null,
+              provider: selectedProvider,
+              timestamp: new Date().toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit'
+              }),
+              isStreaming: true,
+              isError: false,
+              isStopped: false
+            }
+          : m
+      )
+    );
+
+    await executePrompt(
+      userPromptText,
+      validHistory,
+      currentChatId,
+      targetAssistantId
+    );
+  };
+
+  // Stop active AI response generation
+  const handleStopGenerating = () => {
+    isUserStoppedRef.current = true;
+
+    if (activeAbortControllerRef.current) {
+      try {
+        activeAbortControllerRef.current.abort();
+      } catch (_) {}
+      activeAbortControllerRef.current = null;
+    }
+
+    if (activeAnimationRef.current) {
+      activeAnimationRef.current();
+      activeAnimationRef.current = null;
+    }
+
+    setIsLoading(false);
+    isSubmittingRef.current = false;
+  };
+
   return (
     <Layout
       onNewChat={handleNewChat}
@@ -1136,6 +1314,8 @@ export default function ChatPage() {
         activeTitle={activeTitle}
         onRetry={handleRetry}
         onRestorePrompt={handleRestorePrompt}
+        onRegenerate={handleRegenerate}
+        onStopGenerating={handleStopGenerating}
         selectedProvider={selectedProvider}
       />
     </Layout>
