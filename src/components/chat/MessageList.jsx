@@ -21,7 +21,11 @@ export default function MessageList({
   onRetry,
   onRestorePrompt,
   onRegenerate,
-  onStopGenerating
+  onStopGenerating,
+  onEditResend,
+  editingMessageId = null,
+  onStartEdit,
+  onCancelEdit
 }) {
   const bottomAnchorRef = useRef(null);
   const prevMessagesLengthRef = useRef(messages.length);
@@ -63,6 +67,10 @@ export default function MessageList({
           onRegenerate={onRegenerate}
           onStopGenerating={onStopGenerating}
           isLoading={isLoading}
+          isEditing={editingMessageId === msg.id}
+          onStartEdit={onStartEdit ? () => onStartEdit(msg.id) : undefined}
+          onCancelEdit={onCancelEdit}
+          onEditResend={onEditResend}
         />
       ))}
 

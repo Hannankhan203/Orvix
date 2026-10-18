@@ -9,6 +9,7 @@ import {
   saveChatMessage,
   renameConversation,
   deleteConversation,
+  deleteChatMessages,
   toggleChatPinned,
   subscribeToUserChats,
   loadConversationMessages,
@@ -42,6 +43,7 @@ export default function ChatPage() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [persistenceError, setPersistenceError] = useState(null);
+  const [editingMessageId, setEditingMessageId] = useState(null);
 
   const [selectedProvider, setSelectedProvider] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -347,6 +349,7 @@ export default function ChatPage() {
     setActiveChatId(null);
     setMessages([]);
     setInputValue('');
+    setEditingMessageId(null);
     setIsLoading(false);
     setMessagesLoading(false);
     isSubmittingRef.current = false;
@@ -373,6 +376,7 @@ export default function ChatPage() {
 
     setIsLoading(false);
     isSubmittingRef.current = false;
+    setEditingMessageId(null);
 
     fetchRequestIdRef.current += 1;
     activeChatIdRef.current = chatId;
@@ -1262,6 +1266,163 @@ export default function ChatPage() {
     isSubmittingRef.current = false;
   };
 
+  // Start inline editing mode for a user message
+  const handleStartEdit = (messageId) => {
+    if (isLoading || isSubmittingRef.current) return;
+    setEditingMessageId(messageId);
+  };
+
+  // Cancel inline editing mode
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+  };
+
+  // Edit and resend an eligible user message with contextual branch truncation
+  const handleEditResend = async (userMessageId, newPromptText) => {
+    const trimmed = (newPromptText || '')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .trim();
+
+    if (!trimmed || isLoading || isSubmittingRef.current) return;
+
+    const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
+    if (userMsgIndex === -1) return;
+
+    // Reset inline edit mode
+    setEditingMessageId(null);
+
+    isSubmittingRef.current = true;
+    setIsLoading(true);
+    setPersistenceError(null);
+
+    let currentChatId = activeChatIdRef.current;
+
+    // Ensure we have an active chat ID
+    if (!currentChatId) {
+      const titleSnippet = generateChatTitle(trimmed);
+      if (isCloudEnabled && currentUser?.uid) {
+        try {
+          currentChatId = await createChatDocument(currentUser.uid, titleSnippet);
+          skipNextChatLoadRef.current = currentChatId;
+        } catch (error) {
+          console.warn('Could not create Firestore chat doc for edit:', error);
+          setPersistenceError('Failed to initialize conversation in Cloud Firestore.');
+          setIsLoading(false);
+          isSubmittingRef.current = false;
+          return;
+        }
+      } else {
+        currentChatId = `guest-${Date.now()}`;
+        const newGuestChat = {
+          id: currentChatId,
+          title: titleSnippet,
+          timestamp: 'Just now',
+          rawUpdatedAt: Date.now(),
+          isPinned: false,
+          pinnedAt: null,
+          messages: []
+        };
+        setUserChats((previous) => {
+          const next = [newGuestChat, ...previous];
+          saveGuestChats(next);
+          return next;
+        });
+      }
+
+      activeChatIdRef.current = currentChatId;
+      setActiveChatId(currentChatId);
+      sessionStorage.setItem('orvix_active_chat', currentChatId);
+      sessionStorage.setItem('chatora_active_chat', currentChatId);
+    }
+
+    // 1. Context: identify all previous non-error messages strictly before this message
+    const earlierMessages = messages.slice(0, userMsgIndex);
+    const validHistory = earlierMessages.filter((m) => !m.isError);
+
+    // 2. Truncation: identify all contradictory later messages to be removed from the thread
+    const laterMessages = messages.slice(userMsgIndex + 1);
+    const laterMessageIds = laterMessages.map((m) => m.id).filter(Boolean);
+
+    // 3. Invalidate persistence cache for truncated message IDs
+    laterMessageIds.forEach((id) => {
+      persistedMessageIdsRef.current.delete(id);
+    });
+
+    // 4. Update the user message in-place with the edited prompt and current timestamp
+    const updatedUserMessage = {
+      ...messages[userMsgIndex],
+      content: trimmed,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    };
+
+    // Remove user message ID from persistence cache to allow fresh write
+    persistedMessageIdsRef.current.delete(updatedUserMessage.id);
+
+    // 5. Create fresh assistant response placeholder
+    const now = Date.now();
+    const assistantMessageId = `${selectedProvider}-${now}-assistant`;
+    const initialAssistantMessage = {
+      id: assistantMessageId,
+      sender: 'assistant',
+      provider: selectedProvider,
+      modelUsed: null,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      content: '',
+      isStreaming: true
+    };
+
+    // 6. Truncate conversation state to: earlier + updatedUserMessage + initialAssistantMessage
+    const nextMessages = [
+      ...earlierMessages,
+      updatedUserMessage,
+      initialAssistantMessage
+    ];
+    setMessages(nextMessages);
+
+    // 7. Persist changes to Cloud Firestore or Guest Storage
+    if (isCloudEnabled && currentUser?.uid) {
+      if (laterMessageIds.length > 0) {
+        deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds).catch((err) => {
+          console.warn('Could not delete truncated messages from Cloud Firestore:', err);
+        });
+      }
+      void persistMessageSafe(currentChatId, updatedUserMessage);
+    } else {
+      setUserChats((previous) => {
+        const next = previous.map((chat) => {
+          if (chat.id !== currentChatId) return chat;
+          return {
+            ...chat,
+            rawUpdatedAt: Date.now(),
+            messages: nextMessages
+          };
+        });
+        saveGuestChats(next);
+        return next;
+      });
+    }
+
+    // 8. If editing the initial message of the conversation, update the conversation title
+    if (userMsgIndex === 0) {
+      const refreshedTitle = generateChatTitle(trimmed);
+      void handleRenameChat(currentChatId, refreshedTitle);
+    }
+
+    // 9. Execute AI stream with correct earlier history and edited prompt
+    await executePrompt(
+      trimmed,
+      validHistory,
+      currentChatId,
+      assistantMessageId
+    );
+  };
+
   return (
     <Layout
       onNewChat={handleNewChat}
@@ -1316,6 +1477,10 @@ export default function ChatPage() {
         onRestorePrompt={handleRestorePrompt}
         onRegenerate={handleRegenerate}
         onStopGenerating={handleStopGenerating}
+        onEditResend={handleEditResend}
+        editingMessageId={editingMessageId}
+        onStartEdit={handleStartEdit}
+        onCancelEdit={handleCancelEdit}
         selectedProvider={selectedProvider}
       />
     </Layout>

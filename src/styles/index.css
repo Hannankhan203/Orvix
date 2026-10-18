@@ -1637,6 +1637,108 @@ html, body {
   overflow-wrap: anywhere;
 }
 
+/* User Message Inline Editor */
+.message-wrapper.user-wrapper.is-editing .user-body {
+  max-width: 100%;
+  width: 100%;
+}
+
+.user-wrapper.is-editing .message-content {
+  width: 100%;
+  background-color: var(--bg-card);
+  border: 1px solid var(--accent-ring);
+  box-shadow: 0 0 0 1px var(--accent-ring), var(--shadow-md);
+  padding: 12px;
+}
+
+.user-inline-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.user-edit-textarea {
+  width: 100%;
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  resize: none;
+  min-height: 56px;
+  max-height: 260px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  box-sizing: border-box;
+}
+
+.user-edit-textarea:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.user-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.user-edit-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.user-edit-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.user-edit-cancel-btn {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.user-edit-cancel-btn:hover {
+  color: var(--text-primary);
+}
+
+.user-edit-resend-btn {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+/* User Message Action Bar */
+.user-action-bar {
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+}
+
+.user-wrapper:hover .user-action-bar,
+.user-action-bar:focus-within {
+  opacity: 1;
+}
+
+@media (max-width: 768px) {
+  .user-action-bar {
+    opacity: 0.9;
+  }
+
+  .user-edit-hint {
+    display: none;
+  }
+}
+
 /* Assistant Message */
 .message-wrapper.assistant-wrapper {
   justify-content: flex-start;

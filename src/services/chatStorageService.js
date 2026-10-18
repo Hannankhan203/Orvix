@@ -252,6 +252,38 @@ export async function deleteConversation(userId, chatId) {
 }
 
 /**
+ * Deletes specific messages from a chat's messages subcollection in Firestore.
+ * Used when truncating conversation branches during Edit and Resend.
+ *
+ * @param {string} userId - Authenticated user UID
+ * @param {string} chatId - Chat document ID
+ * @param {string[]} messageIds - Array of message document IDs to delete
+ */
+export async function deleteChatMessages(userId, chatId, messageIds = []) {
+  if (!db || !isFirebaseConfigured()) {
+    return;
+  }
+
+  if (!userId || !chatId || !Array.isArray(messageIds) || messageIds.length === 0) {
+    return;
+  }
+
+  const validIds = messageIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
+  if (validIds.length === 0) return;
+
+  const CHUNK_SIZE = 400;
+  for (let i = 0; i < validIds.length; i += CHUNK_SIZE) {
+    const chunk = validIds.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    chunk.forEach((msgId) => {
+      const msgRef = doc(db, 'users', userId, 'chats', chatId, 'messages', msgId);
+      batch.delete(msgRef);
+    });
+    await batch.commit();
+  }
+}
+
+/**
  * Subscribes in real-time to the authenticated user's conversations list
  * @param {string} userId
  * @param {(chats: Array) => void} onUpdate

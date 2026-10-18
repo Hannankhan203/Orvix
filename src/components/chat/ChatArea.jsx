@@ -49,6 +49,10 @@ export default function ChatArea({
   onRestorePrompt,
   onRegenerate,
   onStopGenerating,
+  onEditResend,
+  editingMessageId = null,
+  onStartEdit,
+  onCancelEdit,
   selectedProvider = 'gemini'
 }) {
   const textareaRef = useRef(null);
@@ -231,6 +235,10 @@ Transcript:
               onRestorePrompt={onRestorePrompt}
               onRegenerate={onRegenerate}
               onStopGenerating={onStopGenerating}
+              onEditResend={onEditResend}
+              editingMessageId={editingMessageId}
+              onStartEdit={onStartEdit}
+              onCancelEdit={onCancelEdit}
             />
           )}
         </div>

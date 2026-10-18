@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -184,7 +184,11 @@ export default function ChatMessage({
   onRestorePrompt,
   onRegenerate,
   onStopGenerating,
-  isLoading = false
+  isLoading = false,
+  isEditing = false,
+  onStartEdit,
+  onCancelEdit,
+  onEditResend
 }) {
   const isUser = message?.sender === 'user';
   const isError = Boolean(message?.isError);
@@ -194,6 +198,70 @@ export default function ChatMessage({
 
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
+  const [draftContent, setDraftContent] = useState(message?.content || '');
+  const editInputRef = useRef(null);
+
+  // Sync draftContent whenever isEditing is toggled or message content changes
+  useEffect(() => {
+    if (isEditing) {
+      setDraftContent(message?.content || '');
+    }
+  }, [isEditing, message?.content]);
+
+  // Focus and auto-size textarea when edit mode is entered
+  useEffect(() => {
+    if (isEditing && editInputRef.current) {
+      editInputRef.current.focus();
+      const length = editInputRef.current.value.length;
+      editInputRef.current.setSelectionRange(length, length);
+      editInputRef.current.style.height = 'auto';
+      editInputRef.current.style.height = `${Math.min(260, Math.max(54, editInputRef.current.scrollHeight))}px`;
+    }
+  }, [isEditing]);
+
+  const handleDraftChange = (e) => {
+    setDraftContent(e.target.value);
+    if (editInputRef.current) {
+      editInputRef.current.style.height = 'auto';
+      editInputRef.current.style.height = `${Math.min(260, Math.max(54, editInputRef.current.scrollHeight))}px`;
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setDraftContent(message?.content || '');
+    if (onCancelEdit) {
+      onCancelEdit();
+    }
+  };
+
+  const handleSaveAndResend = () => {
+    const trimmed = draftContent.trim();
+    if (!trimmed || isLoading) return;
+    if (onEditResend) {
+      onEditResend(message.id, trimmed);
+    }
+  };
+
+  const handleEditKeyDown = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancelEdit();
+      return;
+    }
+
+    // Ctrl+Enter or Cmd+Enter submits
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleSaveAndResend();
+      return;
+    }
+
+    // Enter without Shift submits; Shift+Enter creates a newline
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      handleSaveAndResend();
+    }
+  };
 
   const handleCopyMessage = async () => {
     if (!message?.content) return;
@@ -247,7 +315,7 @@ export default function ChatMessage({
 
   return (
     <article
-      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''} ${isStopped ? 'stopped-wrapper' : ''}`}
+      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''} ${isStopped ? 'stopped-wrapper' : ''} ${isEditing ? 'is-editing' : ''}`}
       aria-label={`${isUser ? 'User' : 'Orvix AI'} message`}
     >
       <div
@@ -314,8 +382,52 @@ export default function ChatMessage({
               </div>
             </div>
           ) : isUser ? (
-            /* Render user messages safely as plain text */
-            <p className="user-text-content">{message.content || ''}</p>
+            isEditing ? (
+              <div className="user-inline-editor">
+                <textarea
+                  ref={editInputRef}
+                  className="user-edit-textarea"
+                  value={draftContent}
+                  onChange={handleDraftChange}
+                  onKeyDown={handleEditKeyDown}
+                  placeholder="Edit your message..."
+                  disabled={isLoading}
+                  rows={Math.min(8, Math.max(2, (draftContent || '').split('\n').length))}
+                  aria-label="Edit message text"
+                />
+                <div className="user-edit-actions">
+                  <span className="user-edit-hint">
+                    Enter or ⌘/Ctrl+Enter to save • Shift+Enter for newline • Esc to cancel
+                  </span>
+                  <div className="user-edit-btn-group">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleCancelEdit}
+                      disabled={isLoading}
+                      className="user-edit-cancel-btn"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={handleSaveAndResend}
+                      disabled={isLoading || !draftContent.trim()}
+                      className="user-edit-resend-btn"
+                      icon={<RotateCcw size={13} />}
+                    >
+                      Save & Resend
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Render user messages safely as plain text */
+              <p className="user-text-content">{message.content || ''}</p>
+            )
           ) : isStreaming && !hasContent ? (
             /* Subtle thinking state before first streaming chunk arrives */
             <div className="streaming-thinking-state" role="status" aria-label="Thinking">
@@ -335,6 +447,40 @@ export default function ChatMessage({
             </div>
           )}
         </div>
+
+        {/* User Message Actions: Copy, Edit and Resend */}
+        {isUser && !isEditing && !isError && (
+          <div className="message-action-bar user-action-bar">
+            {hasContent && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleCopyMessage}
+                className={`message-action-btn ${copied ? 'copied' : ''}`}
+                title="Copy message"
+                ariaLabel="Copy message text"
+                icon={copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+              >
+                {copyFeedback}
+              </Button>
+            )}
+
+            {onStartEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onStartEdit}
+                disabled={isLoading}
+                className="message-action-btn edit-message-btn"
+                title={isLoading ? 'Generation in progress...' : 'Edit and resend this message'}
+                ariaLabel="Edit message"
+                icon={<Edit3 size={13} />}
+              >
+                Edit
+              </Button>
+            )}
+          </div>
+        )}
 
         {/* Assistant Message Actions: Copy, Regenerate, Stop Generating */}
         {!isUser && !isError && (
