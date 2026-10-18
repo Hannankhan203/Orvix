@@ -1,13 +1,14 @@
 import React, { useRef, useEffect } from 'react';
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, Mic, Square, AlertCircle, X } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
+import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 
 /**
  * ChatArea Component
  * Coordinates the scrollable message stream / empty welcome state,
- * error retries, and the fixed bottom message composer.
+ * error retries, and the fixed bottom message composer with voice dictation.
  *
  * @param {Object} props
  * @param {Array} props.messages
@@ -18,6 +19,7 @@ import Button from '../ui/Button.jsx';
  * @param {string|null} [props.activeTitle=null]
  * @param {(failedMessage: Object) => void} [props.onRetry]
  * @param {(promptText: string) => void} [props.onRestorePrompt]
+ * @param {string} [props.selectedProvider='gemini']
  */
 export default function ChatArea({
   messages = [],
@@ -31,6 +33,19 @@ export default function ChatArea({
   selectedProvider = 'gemini'
 }) {
   const textareaRef = useRef(null);
+
+  // Hook into browser speech recognition
+  const {
+    isListening,
+    dictationError,
+    isSupported,
+    stopListening,
+    toggleListening,
+    clearDictationError
+  } = useVoiceDictation({
+    inputValue,
+    onInputChange
+  });
 
   // Auto-resize textarea according to text length
   useEffect(() => {
@@ -53,6 +68,9 @@ export default function ChatArea({
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (isListening) {
+        stopListening();
+      }
       if (onSubmit && inputValue.trim() && !isLoading) {
         onSubmit();
       }
@@ -61,6 +79,9 @@ export default function ChatArea({
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (isListening) {
+      stopListening();
+    }
     if (onSubmit && inputValue.trim() && !isLoading) {
       onSubmit();
     }
@@ -90,11 +111,58 @@ export default function ChatArea({
       {/* Message Composer Dock */}
       <div className="chat-composer-dock">
         <div className="chat-composer-inner">
+          {/* Voice Dictation Error Notification */}
+          {dictationError && (
+            <div className="composer-dictation-error" role="alert">
+              <div className="dictation-error-content">
+                <AlertCircle size={14} className="dictation-error-icon" aria-hidden="true" />
+                <span>{dictationError}</span>
+              </div>
+              <button
+                type="button"
+                className="dictation-error-dismiss"
+                onClick={clearDictationError}
+                aria-label="Dismiss error notification"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
+          {/* Active Listening Indicator */}
+          {isListening && (
+            <div className="composer-listening-bar" role="status" aria-live="polite">
+              <div className="listening-indicator-content">
+                <span className="listening-pulse-dot" aria-hidden="true" />
+                <div className="listening-soundwave" aria-hidden="true">
+                  <span className="soundwave-bar" />
+                  <span className="soundwave-bar" />
+                  <span className="soundwave-bar" />
+                </div>
+                <span className="listening-text">Listening... Speak now</span>
+              </div>
+              <button
+                type="button"
+                className="listening-stop-btn"
+                onClick={stopListening}
+                aria-label="Stop dictation"
+              >
+                Done
+              </button>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
             <textarea
               ref={textareaRef}
               className="composer-textarea"
-              placeholder={isLoading ? 'Orvix is responding...' : 'Ask Orvix anything...'}
+              placeholder={
+                isListening
+                  ? 'Listening to speech...'
+                  : isLoading
+                  ? 'Orvix is responding...'
+                  : 'Ask Orvix anything...'
+              }
               value={inputValue}
               rows={1}
               onChange={(e) => onInputChange && onInputChange(e.target.value)}
@@ -103,6 +171,26 @@ export default function ChatArea({
             />
 
             <div className="composer-actions">
+              {/* Voice Dictation Microphone Button */}
+              <Button
+                type="button"
+                variant={isListening ? 'primary' : 'ghost'}
+                size="icon-round"
+                disabled={isLoading}
+                onClick={toggleListening}
+                title={
+                  !isSupported
+                    ? 'Voice dictation is not supported in this browser'
+                    : isListening
+                    ? 'Stop listening (Voice dictation active)'
+                    : 'Dictate message (Speech to text)'
+                }
+                ariaLabel={isListening ? 'Stop listening' : 'Start voice dictation'}
+                className={`composer-mic-btn ${isListening ? 'listening' : ''}`}
+                icon={isListening ? <Square size={13} fill="currentColor" /> : <Mic size={18} />}
+              />
+
+              {/* Message Submission Button */}
               <Button
                 type="submit"
                 variant={hasContent && !isLoading ? 'primary' : 'ghost'}
