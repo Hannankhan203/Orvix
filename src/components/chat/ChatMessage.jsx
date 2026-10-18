@@ -8,11 +8,14 @@ import {
   AlertCircle,
   RotateCcw,
   Edit3,
-  Square
+  Square,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
+import { useSpeech } from '../../context/SpeechContext.jsx';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -147,6 +150,40 @@ export default function ChatMessage({
   const isStopped = Boolean(message?.isStopped);
   const hasContent = Boolean(message?.content && message.content.length > 0);
 
+  const {
+    isSupported: isSpeechSupported,
+    speakingState,
+    currentMessageId,
+    playMessage,
+    stopSpeech
+  } = useSpeech();
+
+  const isCurrentSpeaking = Boolean(
+    message?.id &&
+    currentMessageId === message.id &&
+    speakingState !== 'idle'
+  );
+  const isPlayingThis = isCurrentSpeaking && speakingState === 'playing';
+  const isPausedThis = isCurrentSpeaking && speakingState === 'paused';
+
+  const handleToggleSpeech = () => {
+    if (!hasContent || !message?.content) return;
+    if (isCurrentSpeaking) {
+      stopSpeech();
+    } else {
+      playMessage(message.id, message.content);
+    }
+  };
+
+  // Safely stop speech if this message is unmounted while speaking
+  useEffect(() => {
+    return () => {
+      if (isCurrentSpeaking) {
+        stopSpeech();
+      }
+    };
+  }, [isCurrentSpeaking, stopSpeech]);
+
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
   const [draftContent, setDraftContent] = useState(message?.content || '');
@@ -271,7 +308,7 @@ export default function ChatMessage({
 
   return (
     <article
-      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''} ${isStopped ? 'stopped-wrapper' : ''} ${isEditing ? 'is-editing' : ''}`}
+      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''} ${isStopped ? 'stopped-wrapper' : ''} ${isEditing ? 'is-editing' : ''} ${isCurrentSpeaking ? 'is-speaking-message' : ''}`}
       aria-label={`${isUser ? 'User' : 'Orvix AI'} message`}
     >
       <div
@@ -292,6 +329,17 @@ export default function ChatMessage({
           {isStopped && (
             <span className="message-stopped-badge" title="Response generation stopped">
               Stopped
+            </span>
+          )}
+
+          {isCurrentSpeaking && (
+            <span
+              className={`message-speaking-badge ${isPausedThis ? 'paused' : 'playing'}`}
+              role="status"
+              aria-label={isPausedThis ? 'Speech playback paused' : 'Currently reading aloud'}
+            >
+              <Volume2 size={11} className={`speaking-badge-icon ${isPlayingThis ? 'pulse' : ''}`} />
+              <span>{isPausedThis ? 'Speech Paused' : 'Reading Aloud'}</span>
             </span>
           )}
 
@@ -475,12 +523,61 @@ export default function ChatMessage({
                   </Button>
                 )}
 
+                {/* Read Aloud Button */}
+                {hasContent && (
+                  <div className="inline-flex items-center gap-1.5">
+                    <Button
+                      variant={isCurrentSpeaking ? 'outline' : 'ghost'}
+                      size="sm"
+                      onClick={handleToggleSpeech}
+                      disabled={!isSpeechSupported}
+                      className={`message-action-btn read-aloud-btn ${isCurrentSpeaking ? 'speaking-active' : ''}`}
+                      title={
+                        !isSpeechSupported
+                          ? 'Read aloud is not supported in this browser'
+                          : isCurrentSpeaking
+                          ? 'Stop reading aloud'
+                          : 'Read aloud'
+                      }
+                      ariaLabel={
+                        !isSpeechSupported
+                          ? 'Read aloud not supported'
+                          : isCurrentSpeaking
+                          ? 'Stop reading message aloud'
+                          : 'Read message aloud'
+                      }
+                      icon={
+                        !isSpeechSupported ? (
+                          <VolumeX size={13} />
+                        ) : isCurrentSpeaking ? (
+                          <Square size={11} fill="currentColor" />
+                        ) : (
+                          <Volume2 size={13} />
+                        )
+                      }
+                    >
+                      {isCurrentSpeaking ? 'Stop reading' : 'Read aloud'}
+                    </Button>
+
+                    {isCurrentSpeaking && (
+                      <span className="speech-soundwave-mini" aria-hidden="true" title="Reading aloud">
+                        <span className="mini-wave-bar bar-1" />
+                        <span className="mini-wave-bar bar-2" />
+                        <span className="mini-wave-bar bar-3" />
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {/* Regenerate Response Button */}
                 {onRegenerate && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => onRegenerate(message)}
+                    onClick={() => {
+                      if (isCurrentSpeaking) stopSpeech();
+                      onRegenerate(message);
+                    }}
                     disabled={isLoading}
                     className="message-action-btn regenerate-btn"
                     title={isLoading ? 'Generation in progress...' : 'Regenerate response'}

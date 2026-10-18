@@ -303,6 +303,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       }
 
       if (isNewSession) {
+        // Stop any active speech synthesis so microphone does not pick up speaker audio
+        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+          try {
+            window.speechSynthesis.cancel();
+          } catch (_) {}
+        }
+
         // Snapshot existing composer content as base prefix
         baseTextRef.current = (inputValueRef.current || '').trim();
         finalResultsMapRef.current.clear();

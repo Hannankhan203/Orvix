@@ -18,11 +18,13 @@ import {
 import { isFirebaseConfigured } from '../config/firebaseConfig.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
+import { useSpeech } from '../context/SpeechContext.jsx';
 import { AlertCircle, X } from 'lucide-react';
 
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
   const { settings } = useSettings();
+  const { stopSpeech } = useSpeech();
   const isCloudEnabled =
     isFirebaseConfigured() && Boolean(currentUser?.uid);
 
@@ -79,9 +81,10 @@ export default function ChatPage() {
     }
   };
 
-  // Stop any running animation and network request when the page unmounts.
+  // Stop any running animation, speech synthesis, and network request when the page unmounts.
   useEffect(() => {
     return () => {
+      stopSpeech();
       if (activeAbortControllerRef.current) {
         try {
           activeAbortControllerRef.current.abort();
@@ -91,7 +94,7 @@ export default function ChatPage() {
         activeAnimationRef.current();
       }
     };
-  }, []);
+  }, [stopSpeech]);
 
   // Guest storage helpers.
   const getGuestPinnedIds = () => {
@@ -203,6 +206,7 @@ export default function ChatPage() {
 
   // 2. Restore conversation messages safely.
   useEffect(() => {
+    stopSpeech();
     const currentRequestId = ++fetchRequestIdRef.current;
 
     // A newly created chat already has messages in component state.
@@ -332,6 +336,8 @@ export default function ChatPage() {
 
   // Start a fresh conversation.
   const handleNewChat = () => {
+    stopSpeech();
+
     if (activeAbortControllerRef.current) {
       try {
         activeAbortControllerRef.current.abort();
@@ -363,6 +369,8 @@ export default function ChatPage() {
   // Switch conversations without allowing old history to overwrite new messages.
   const handleSelectChat = (chatId) => {
     if (chatId === activeChatIdRef.current) return;
+
+    stopSpeech();
 
     if (activeAbortControllerRef.current) {
       try {
@@ -999,6 +1007,8 @@ export default function ChatPage() {
 
   // Submit a new message.
   const handleSubmit = async () => {
+    stopSpeech();
+
     const trimmed = inputValue
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();
@@ -1135,6 +1145,8 @@ export default function ChatPage() {
 
   // Retry a failed AI response.
   const handleRetry = (failedMessage) => {
+    stopSpeech();
+
     if (
       isLoading ||
       isSubmittingRef.current ||
@@ -1198,6 +1210,8 @@ export default function ChatPage() {
 
   // Regenerate an assistant response in-place using current model & preserved conversation context
   const handleRegenerate = async (assistantMessage) => {
+    stopSpeech();
+
     if (isLoading || isSubmittingRef.current || !assistantMessage?.id) return;
 
     const currentChatId = activeChatIdRef.current;
@@ -1258,6 +1272,7 @@ export default function ChatPage() {
 
   // Stop active AI response generation
   const handleStopGenerating = () => {
+    stopSpeech();
     isUserStoppedRef.current = true;
 
     if (activeAbortControllerRef.current) {
@@ -1289,6 +1304,8 @@ export default function ChatPage() {
 
   // Edit and resend an eligible user message with contextual branch truncation
   const handleEditResend = async (userMessageId, newPromptText) => {
+    stopSpeech();
+
     const trimmed = (newPromptText || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();

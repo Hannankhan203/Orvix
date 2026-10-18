@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X,
   Sliders,
@@ -14,9 +14,15 @@ import {
   Cloud,
   HardDrive,
   Info,
-  AlertTriangle
+  AlertTriangle,
+  Volume2,
+  VolumeX,
+  Play,
+  Square,
+  Globe
 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext.jsx';
+import { useSpeech } from '../../context/SpeechContext.jsx';
 import { THEME_OPTIONS, RESPONSE_LENGTH_OPTIONS } from '../../services/userSettingsService.js';
 import Button from '../ui/Button.jsx';
 
@@ -33,9 +39,44 @@ export default function SettingsModal() {
     isRegisteredUser
   } = useSettings();
 
+  const {
+    isSupported: isSpeechSupported,
+    voices,
+    selectedVoiceURI,
+    setSelectedVoiceURI,
+    speechRate,
+    setSpeechRate,
+    playMessage,
+    stopSpeech,
+    speakingState,
+    currentMessageId
+  } = useSpeech();
+
   const [confirmReset, setConfirmReset] = useState(false);
   const modalRef = useRef(null);
   const closeBtnRef = useRef(null);
+
+  const isPreviewActive = currentMessageId === 'settings-preview' && speakingState !== 'idle';
+
+  // Synchronize settings if loaded from cloud or external source
+  useEffect(() => {
+    if (settings?.speechVoiceURI !== undefined && settings.speechVoiceURI !== selectedVoiceURI) {
+      setSelectedVoiceURI(settings.speechVoiceURI);
+    }
+  }, [settings?.speechVoiceURI, selectedVoiceURI, setSelectedVoiceURI]);
+
+  useEffect(() => {
+    if (settings?.speechRate !== undefined && Math.abs(settings.speechRate - speechRate) > 0.01) {
+      setSpeechRate(settings.speechRate);
+    }
+  }, [settings?.speechRate, speechRate, setSpeechRate]);
+
+  const handleModalClose = useCallback(() => {
+    if (currentMessageId === 'settings-preview') {
+      stopSpeech();
+    }
+    closeSettingsModal();
+  }, [currentMessageId, stopSpeech, closeSettingsModal]);
 
   // Close on Escape key
   useEffect(() => {
@@ -49,14 +90,14 @@ export default function SettingsModal() {
         if (confirmReset) {
           setConfirmReset(false);
         } else {
-          closeSettingsModal();
+          handleModalClose();
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isSettingsModalOpen, confirmReset, closeSettingsModal]);
+  }, [isSettingsModalOpen, confirmReset, handleModalClose]);
 
   // Focus modal on open
   useEffect(() => {
@@ -67,7 +108,27 @@ export default function SettingsModal() {
     }
   }, [isSettingsModalOpen]);
 
-  if (!isSettingsModalOpen) return null;
+  const handleVoiceChange = (e) => {
+    const uri = e.target.value;
+    setSelectedVoiceURI(uri);
+    updateSettings({ speechVoiceURI: uri });
+  };
+
+  const handleSpeechRateChange = (rate) => {
+    setSpeechRate(rate);
+    updateSettings({ speechRate: rate });
+  };
+
+  const handleTogglePreviewVoice = () => {
+    if (isPreviewActive) {
+      stopSpeech();
+    } else {
+      playMessage(
+        'settings-preview',
+        'Hello! I am Orvix. This is a preview of the selected voice and speech rate.'
+      );
+    }
+  };
 
   const handleThemeChange = (newTheme) => {
     updateSettings({ theme: newTheme });
@@ -90,9 +151,14 @@ export default function SettingsModal() {
   };
 
   const handleConfirmReset = async () => {
+    stopSpeech();
+    setSpeechRate(1);
+    setSelectedVoiceURI('');
     await resetToDefaults();
     setConfirmReset(false);
   };
+
+  if (!isSettingsModalOpen) return null;
 
   return (
     <div
@@ -100,7 +166,7 @@ export default function SettingsModal() {
       role="presentation"
       onClick={(e) => {
         if (e.target === e.currentTarget) {
-          closeSettingsModal();
+          handleModalClose();
         }
       }}
     >
@@ -145,7 +211,7 @@ export default function SettingsModal() {
               ref={closeBtnRef}
               type="button"
               className="settings-close-btn"
-              onClick={closeSettingsModal}
+              onClick={handleModalClose}
               title="Close settings (Esc)"
               aria-label="Close settings"
             >
@@ -384,6 +450,117 @@ export default function SettingsModal() {
               </button>
             </div>
           </section>
+
+          {/* SECTION 5: Speech & Audio (Read Aloud) */}
+          <section className="settings-section" aria-labelledby="section-speech-heading">
+            <div className="settings-section-header">
+              <div className="settings-section-title-wrap">
+                <span className="settings-section-icon" aria-hidden="true">
+                  <Volume2 size={15} />
+                </span>
+                <h3 id="section-speech-heading" className="settings-section-title">
+                  Speech & Audio (Read Aloud)
+                </h3>
+              </div>
+              <span className="settings-current-val">
+                {isSpeechSupported ? `${speechRate}x speed` : 'Unsupported'}
+              </span>
+            </div>
+
+            {!isSpeechSupported ? (
+              <div className="settings-control-block speech-unsupported-note">
+                <div className="flex items-center gap-2 text-amber-400 text-xs">
+                  <VolumeX size={15} className="shrink-0" aria-hidden="true" />
+                  <span>Text-to-speech is not supported by your current browser.</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Voice Selection */}
+                <div className="settings-control-block">
+                  <div className="settings-control-label-wrap">
+                    <label className="settings-control-label" htmlFor="speech-voice-select">
+                      Synthesizer voice
+                    </label>
+                    <p className="settings-control-subtext">
+                      Select from the voices detected on your system. Voices load dynamically from the browser.
+                    </p>
+                  </div>
+
+                  <div className="speech-voice-control-wrap">
+                    <select
+                      id="speech-voice-select"
+                      className="settings-voice-select"
+                      value={selectedVoiceURI}
+                      onChange={handleVoiceChange}
+                      aria-label="Synthesizer voice selection"
+                    >
+                      <option value="">System Default Voice</option>
+                      {voices.map((v) => (
+                        <option key={v.voiceURI} value={v.voiceURI}>
+                          {v.name} ({v.lang}){v.default ? ' — System Default' : ''}
+                        </option>
+                      ))}
+                    </select>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleTogglePreviewVoice}
+                      className="speech-preview-btn"
+                      title={isPreviewActive ? 'Stop preview' : 'Preview voice and rate'}
+                      ariaLabel={isPreviewActive ? 'Stop voice preview' : 'Preview voice and rate'}
+                      icon={isPreviewActive ? <Square size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" />}
+                    >
+                      {isPreviewActive ? 'Stop' : 'Preview'}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Speech Rate Control */}
+                <div className="settings-control-block">
+                  <div className="settings-control-label-wrap">
+                    <label className="settings-control-label" id="speech-rate-label">
+                      Speech playback speed
+                    </label>
+                    <p className="settings-control-subtext">
+                      Adjust how quickly messages are read aloud.
+                    </p>
+                  </div>
+
+                  <div
+                    className="settings-segmented-group"
+                    role="radiogroup"
+                    aria-labelledby="speech-rate-label"
+                  >
+                    {[
+                      { val: 0.75, label: '0.75x', title: 'Slower rate' },
+                      { val: 1.0, label: '1.0x', title: 'Normal rate' },
+                      { val: 1.25, label: '1.25x', title: 'Slightly faster' },
+                      { val: 1.5, label: '1.5x', title: 'Fast rate' },
+                      { val: 2.0, label: '2.0x', title: 'Double speed' }
+                    ].map((opt) => {
+                      const isSelected = Math.abs(speechRate - opt.val) < 0.05;
+                      return (
+                        <button
+                          key={opt.val}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          onClick={() => handleSpeechRateChange(opt.val)}
+                          className={`settings-segment-btn ${isSelected ? 'active' : ''}`}
+                          title={opt.title}
+                        >
+                          <span>{opt.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
         </div>
 
         {/* Modal Footer */}
@@ -431,7 +608,7 @@ export default function SettingsModal() {
               <Button
                 variant="primary"
                 size="sm"
-                onClick={closeSettingsModal}
+                onClick={handleModalClose}
                 className="settings-done-btn"
               >
                 Done

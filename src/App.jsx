@@ -6,6 +6,7 @@ import AuthScreen from './components/auth/AuthScreen.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import { Bot } from 'lucide-react';
 import { APP_CONFIG } from './config/appConfig.js';
+import { SpeechProvider } from './context/SpeechContext.jsx';
 
 /**
  * Splash screen displayed during initial Firebase authentication state check
@@ -52,8 +53,10 @@ export default function App() {
   return (
     <AuthProvider>
       <SettingsProvider>
-        <AppContent />
-        <SettingsModal />
+        <SpeechProvider>
+          <AppContent />
+          <SettingsModal />
+        </SpeechProvider>
       </SettingsProvider>
     </AuthProvider>
   );

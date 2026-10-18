@@ -15,7 +15,9 @@ export const DEFAULT_SETTINGS = {
   responseLength: 'balanced', // 'concise' | 'balanced' | 'detailed'
   beginnerFriendly: false, // boolean
   enterToSend: true, // boolean
-  showTimestamps: true // boolean
+  showTimestamps: true, // boolean
+  speechRate: 1, // 0.75 | 1 | 1.25 | 1.5 | 2
+  speechVoiceURI: '' // string (empty for browser default)
 };
 
 export const THEME_OPTIONS = [
@@ -65,12 +67,25 @@ export function sanitizeSettings(raw) {
       ? raw.showTimestamps
       : DEFAULT_SETTINGS.showTimestamps;
 
+  const rawRate = parseFloat(raw.speechRate);
+  const speechRate =
+    !isNaN(rawRate) && rawRate >= 0.5 && rawRate <= 2.5
+      ? rawRate
+      : DEFAULT_SETTINGS.speechRate;
+
+  const speechVoiceURI =
+    typeof raw.speechVoiceURI === 'string'
+      ? raw.speechVoiceURI
+      : DEFAULT_SETTINGS.speechVoiceURI;
+
   return {
     theme,
     responseLength,
     beginnerFriendly,
     enterToSend,
-    showTimestamps
+    showTimestamps,
+    speechRate,
+    speechVoiceURI
   };
 }
 

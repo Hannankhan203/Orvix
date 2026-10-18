@@ -4306,3 +4306,223 @@ html, body {
   color: #0f172a;
 }
 
+/* ==========================================================================
+   Read Aloud (Web Speech API) Styles
+   ========================================================================== */
+
+/* Active Speaking State on Message Wrapper */
+.message-wrapper.is-speaking-message {
+  position: relative;
+  border-left: 2px solid var(--accent-primary);
+  padding-left: 10px;
+  margin-left: -12px;
+  transition: all var(--transition-normal);
+}
+
+@media (max-width: 768px) {
+  .message-wrapper.is-speaking-message {
+    margin-left: -6px;
+    padding-left: 6px;
+  }
+}
+
+/* Sender Line Speaking Badge */
+.message-speaking-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  border-radius: var(--radius-xs);
+  margin-left: 4px;
+}
+
+.message-speaking-badge.playing {
+  background-color: rgba(37, 99, 235, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.message-speaking-badge.paused {
+  background-color: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.speaking-badge-icon.pulse {
+  animation: speechPulse 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes speechPulse {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.read-aloud-active-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.read-aloud-btn.speaking-active {
+  color: #f87171 !important;
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+  background-color: rgba(239, 68, 68, 0.1) !important;
+}
+
+.read-aloud-btn.speaking-active:hover {
+  background-color: rgba(239, 68, 68, 0.2) !important;
+  border-color: rgba(239, 68, 68, 0.5) !important;
+  color: #fca5a5 !important;
+}
+
+.speech-pause-btn.active {
+  background-color: rgba(37, 99, 235, 0.12);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #93c5fd;
+}
+
+.speech-resume-btn {
+  background-color: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+
+.speech-stop-btn:hover {
+  color: #f87171 !important;
+  background-color: rgba(239, 68, 68, 0.12) !important;
+}
+
+/* Mini Audio Waveform in Message Action Bar */
+.speech-soundwave-mini {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  padding: 0 4px;
+  user-select: none;
+}
+
+.mini-wave-bar {
+  width: 2.5px;
+  background-color: var(--accent-primary);
+  border-radius: 1px;
+  animation: miniWaveBounce 0.8s ease-in-out infinite alternate;
+}
+
+.mini-wave-bar.bar-1 {
+  height: 6px;
+  animation-delay: 0s;
+}
+
+.mini-wave-bar.bar-2 {
+  height: 12px;
+  animation-delay: 0.2s;
+}
+
+.mini-wave-bar.bar-3 {
+  height: 8px;
+  animation-delay: 0.4s;
+}
+
+@keyframes miniWaveBounce {
+  0% {
+    height: 4px;
+    opacity: 0.5;
+  }
+  100% {
+    height: 14px;
+    opacity: 1;
+  }
+}
+
+/* Settings Modal Speech Controls */
+.speech-voice-control-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-voice-select {
+  flex: 1;
+  min-width: 0;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.825rem;
+  padding: 7px 10px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.settings-voice-select:focus {
+  border-color: var(--accent-primary);
+}
+
+.settings-voice-select option {
+  background-color: var(--bg-sidebar);
+  color: var(--text-primary);
+  padding: 6px;
+}
+
+.speech-preview-btn {
+  flex-shrink: 0;
+  min-height: 34px;
+}
+
+.speech-unsupported-note {
+  background-color: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+/* Light Theme Overrides for Speech Components */
+[data-theme="light"] .message-speaking-badge.playing {
+  background-color: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.25);
+}
+
+[data-theme="light"] .message-speaking-badge.paused {
+  background-color: rgba(217, 119, 6, 0.1);
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.25);
+}
+
+[data-theme="light"] .speech-pause-btn.active {
+  background-color: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+  border-color: var(--accent-primary);
+}
+
+[data-theme="light"] .speech-resume-btn {
+  background-color: rgba(217, 119, 6, 0.08);
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.3);
+}
+
+[data-theme="light"] .settings-voice-select {
+  background-color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #0f172a;
+}
+
+[data-theme="light"] .settings-voice-select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+
