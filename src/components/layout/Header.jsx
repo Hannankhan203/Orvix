@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle, Download, Sliders } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import ModelSelector from '../chat/ModelSelector.jsx';
+import ExportChatMenu from '../chat/ExportChatMenu.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -12,9 +13,9 @@ import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 /**
  * Header Component
  * Provides responsive navigation for both desktop and mobile screens:
- * - Desktop: Clean single-row toolbar with active breadcrumb, model selector, New Chat, and user profile block.
+ * - Desktop: Clean single-row toolbar with active breadcrumb, model selector, export menu, New Chat, and user profile block.
  * - Mobile: Purpose-built 2-tier header preventing overflow:
- *     Tier 1: Hamburger toggle, brand mark, compact New Chat, and user avatar button.
+ *     Tier 1: Hamburger toggle, brand mark, export trigger, compact New Chat, and user avatar button.
  *     Tier 2: Compact AI model selector pill and active thread context.
  * - Accessible account popover menu revealing username above email address,
  *   inline username editing/adding, and Sign Out action.
@@ -26,6 +27,9 @@ import { usePWAInstall } from '../../hooks/usePWAInstall.js';
  * @param {string|null} [props.activeTitle=null]
  * @param {string} [props.selectedProvider='gemini']
  * @param {(provider: string) => void} [props.onSelectProvider]
+ * @param {() => void} [props.onExportMarkdown]
+ * @param {() => void} [props.onExportText]
+ * @param {boolean} [props.hasExportableMessages=false]
  */
 export default function Header({
   sidebarOpen,
@@ -33,7 +37,10 @@ export default function Header({
   onNewChat,
   activeTitle = null,
   selectedProvider = 'gemini',
-  onSelectProvider
+  onSelectProvider,
+  onExportMarkdown,
+  onExportText,
+  hasExportableMessages = false
 }) {
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
@@ -189,6 +196,15 @@ export default function Header({
             </Button>
           )}
 
+          {/* Export Conversation Menu */}
+          {onExportMarkdown && onExportText && (
+            <ExportChatMenu
+              onExportMarkdown={onExportMarkdown}
+              onExportText={onExportText}
+              hasMessages={hasExportableMessages}
+            />
+          )}
+
           {/* New Chat Primary Trigger */}
           <Button
             variant="secondary"
@@ -274,6 +290,16 @@ export default function Header({
           </div>
 
           <div className="mobile-top-right">
+            {/* Mobile Export Conversation Action */}
+            {onExportMarkdown && onExportText && (
+              <ExportChatMenu
+                compact
+                onExportMarkdown={onExportMarkdown}
+                onExportText={onExportText}
+                hasMessages={hasExportableMessages}
+              />
+            )}
+
             {/* Mobile New Chat Action */}
             <button
               type="button"

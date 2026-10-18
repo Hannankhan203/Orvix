@@ -33,7 +33,10 @@ export default function Layout({
   chatsLoading = false,
   isCloudSynced = false,
   selectedProvider = 'gemini',
-  onSelectProvider
+  onSelectProvider,
+  onExportMarkdown,
+  onExportText,
+  hasExportableMessages = false
 }) {
   // Desktop defaults to open, mobile defaults to closed
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -144,6 +147,9 @@ export default function Layout({
           activeTitle={activeTitle}
           selectedProvider={selectedProvider}
           onSelectProvider={onSelectProvider}
+          onExportMarkdown={onExportMarkdown}
+          onExportText={onExportText}
+          hasExportableMessages={hasExportableMessages}
         />
         {children}
       </div>

@@ -15,11 +15,12 @@ import {
   loadConversationMessages,
   generateChatTitle
 } from '../services/chatStorageService.js';
+import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
 import { isFirebaseConfigured } from '../config/firebaseConfig.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
-import { AlertCircle, X } from 'lucide-react';
+import { AlertCircle, X, Check } from 'lucide-react';
 
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
@@ -47,6 +48,7 @@ export default function ChatPage() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [persistenceError, setPersistenceError] = useState(null);
+  const [exportNotice, setExportNotice] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
 
   const [selectedProvider, setSelectedProvider] = useState(() => {
@@ -95,6 +97,15 @@ export default function ChatPage() {
       }
     };
   }, [stopSpeech]);
+
+  // Auto-dismiss export notification banner
+  useEffect(() => {
+    if (!exportNotice) return;
+    const timer = setTimeout(() => {
+      setExportNotice(null);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [exportNotice]);
 
   // Guest storage helpers.
   const getGuestPinnedIds = () => {
@@ -1450,6 +1461,67 @@ export default function ChatPage() {
     );
   };
 
+  // Export handlers for active conversation
+  const hasExportableMessages = messages.some(
+    (m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
+  );
+
+  const handleExportMarkdown = () => {
+    if (messagesLoading) {
+      setExportNotice({
+        type: 'warning',
+        message: 'Please wait until the conversation finishes loading before exporting.'
+      });
+      return;
+    }
+
+    const result = exportAsMarkdown({
+      title: activeTitle || 'Conversation',
+      messages,
+      username
+    });
+
+    if (result.success) {
+      setExportNotice({
+        type: 'success',
+        message: `Exported conversation as Markdown (${result.filename}).`
+      });
+    } else {
+      setExportNotice({
+        type: 'warning',
+        message: result.error || 'This conversation has no messages to export.'
+      });
+    }
+  };
+
+  const handleExportText = () => {
+    if (messagesLoading) {
+      setExportNotice({
+        type: 'warning',
+        message: 'Please wait until the conversation finishes loading before exporting.'
+      });
+      return;
+    }
+
+    const result = exportAsPlainText({
+      title: activeTitle || 'Conversation',
+      messages,
+      username
+    });
+
+    if (result.success) {
+      setExportNotice({
+        type: 'success',
+        message: `Exported conversation as Plain Text (${result.filename}).`
+      });
+    } else {
+      setExportNotice({
+        type: 'warning',
+        message: result.error || 'This conversation has no messages to export.'
+      });
+    }
+  };
+
   return (
     <Layout
       onNewChat={handleNewChat}
@@ -1464,7 +1536,42 @@ export default function ChatPage() {
       isCloudSynced={isCloudEnabled}
       selectedProvider={selectedProvider}
       onSelectProvider={handleSelectProvider}
+      onExportMarkdown={handleExportMarkdown}
+      onExportText={handleExportText}
+      hasExportableMessages={hasExportableMessages}
     >
+      {exportNotice && (
+        <div
+          className={`persistence-alert-banner export-status-banner ${exportNotice.type}`}
+          role="status"
+          aria-live="polite"
+        >
+          {exportNotice.type === 'success' ? (
+            <Check
+              size={15}
+              className="persistence-alert-icon text-emerald-400"
+            />
+          ) : (
+            <AlertCircle
+              size={15}
+              className="persistence-alert-icon text-amber-400"
+            />
+          )}
+
+          <span className="persistence-alert-text">
+            {exportNotice.message}
+          </span>
+
+          <button
+            type="button"
+            className="persistence-alert-close"
+            onClick={() => setExportNotice(null)}
+            aria-label="Dismiss export banner"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
       {persistenceError && (
         <div
           className="persistence-alert-banner"
