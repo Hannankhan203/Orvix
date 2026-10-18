@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { cleanTextForSpeech, splitTextIntoSpeechChunks } from '../utils/speechTextCleaner.js';
+import { cleanTextForSpeech, splitTextIntoSpeechChunks, getWordBoundaryOffset } from '../utils/speechTextCleaner.js';
 
 const SpeechContext = createContext(null);
 
@@ -24,6 +24,10 @@ export function SpeechProvider({ children }) {
   const [speakingState, setSpeakingState] = useState('idle'); // 'idle' | 'playing' | 'paused'
   const [currentMessageId, setCurrentMessageId] = useState(null);
   const [speechError, setSpeechError] = useState(null);
+
+  // Saved reading positions per AI response:
+  // { [messageId: string]: { chunkIndex: number, charOffset: number, cleanedText: string } }
+  const [readingPositions, setReadingPositions] = useState({});
 
   // Speech rate: 0.75, 1 (normal), 1.25, 1.5, 2
   const [speechRate, setSpeechRateState] = useState(() => {
@@ -56,6 +60,10 @@ export function SpeechProvider({ children }) {
   const currentSessionIdRef = useRef(0);
   const chunksRef = useRef([]);
   const currentChunkIndexRef = useRef(0);
+  const currentCharIndexRef = useRef(0);
+  const currentChunkStartOffsetRef = useRef(0);
+  const activeCleanedTextRef = useRef('');
+  const readingPositionsRef = useRef(readingPositions);
   const keepAliveIntervalRef = useRef(null);
   const pendingSpeakTimerRef = useRef(null);
 
@@ -69,6 +77,44 @@ export function SpeechProvider({ children }) {
     currentMessageIdRef.current = id;
     setCurrentMessageId(id);
   }, []);
+
+  // Update a reading position for a specific message
+  const updateReadingPosition = useCallback((messageId, pos) => {
+    if (!messageId || messageId === 'settings-preview') return;
+    setReadingPositions((prev) => {
+      const next = {
+        ...prev,
+        [messageId]: pos
+      };
+      // Limit to 50 active items to prevent unbounded memory growth
+      const keys = Object.keys(next);
+      if (keys.length > 50) {
+        delete next[keys[0]];
+      }
+      readingPositionsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  // Remove saved reading position for a specific message
+  const removeReadingPosition = useCallback((messageId) => {
+    if (!messageId) return;
+    setReadingPositions((prev) => {
+      if (!prev[messageId]) return prev;
+      const next = { ...prev };
+      delete next[messageId];
+      readingPositionsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  // Check if a message has a saved non-zero reading position
+  const hasSavedPosition = useCallback((messageId) => {
+    if (!messageId) return false;
+    const pos = readingPositionsRef.current[messageId] || readingPositions[messageId];
+    if (!pos) return false;
+    return pos.chunkIndex > 0 || pos.charOffset > 0;
+  }, [readingPositions]);
 
   const setSpeechRate = useCallback((rate) => {
     const num = parseFloat(rate) || 1;
@@ -175,9 +221,39 @@ export function SpeechProvider({ children }) {
   }, []);
 
   /**
-   * Stops any currently active speech synthesis and resets queue.
+   * Stops active speech synthesis.
+   * If `preservePosition` is true, accurately stores the active response's
+   * chunk and character offset in `readingPositions` so reading can be resumed.
+   *
+   * @param {boolean} [preservePosition=true] - Whether to capture the current reading position
    */
-  const stopSpeech = useCallback(() => {
+  const stopSpeech = useCallback((preservePosition = true) => {
+    const activeMsgId = currentMessageIdRef.current;
+
+    // Capture reading position if user stopped playback mid-response
+    if (preservePosition && activeMsgId && activeMsgId !== 'settings-preview') {
+      const chunkIdx = currentChunkIndexRef.current;
+      const charOff = currentCharIndexRef.current;
+      const cleaned = activeCleanedTextRef.current;
+      const totalChunks = chunksRef.current.length;
+      const currentChunkText = chunksRef.current[chunkIdx] || '';
+
+      // Only save if speech has not already reached the very end
+      const isNearEnd =
+        chunkIdx >= totalChunks - 1 &&
+        charOff >= Math.max(0, currentChunkText.length - 4);
+
+      if (totalChunks > 0 && !isNearEnd) {
+        updateReadingPosition(activeMsgId, {
+          chunkIndex: chunkIdx,
+          charOffset: charOff,
+          cleanedText: cleaned
+        });
+      } else {
+        removeReadingPosition(activeMsgId);
+      }
+    }
+
     // Invalidate any in-flight playback sessions
     currentSessionIdRef.current += 1;
 
@@ -189,6 +265,9 @@ export function SpeechProvider({ children }) {
     stopKeepAlive();
     chunksRef.current = [];
     currentChunkIndexRef.current = 0;
+    currentCharIndexRef.current = 0;
+    currentChunkStartOffsetRef.current = 0;
+    activeCleanedTextRef.current = '';
     retainedUtterances.clear();
 
     if (isSupported) {
@@ -203,13 +282,33 @@ export function SpeechProvider({ children }) {
     setSpeakingStateSync('idle');
     setCurrentMessageIdSync(null);
     setSpeechError(null);
-  }, [isSupported, stopKeepAlive, setSpeakingStateSync, setCurrentMessageIdSync]);
+  }, [isSupported, stopKeepAlive, setSpeakingStateSync, setCurrentMessageIdSync, updateReadingPosition, removeReadingPosition]);
+
+  /**
+   * Resets reading position for a specific message and stops playback if active.
+   *
+   * @param {string} messageId - Message to reset
+   */
+  const resetMessageSpeech = useCallback((messageId) => {
+    if (!messageId) return;
+
+    if (currentMessageIdRef.current === messageId) {
+      stopSpeech(false);
+    }
+
+    removeReadingPosition(messageId);
+  }, [stopSpeech, removeReadingPosition]);
 
   /**
    * Speaks a specific chunk by index for a given session.
+   * Supports starting from a specific character offset within the initial chunk on resume.
+   *
+   * @param {number} index - Chunk index to speak
+   * @param {number} sessionId - Unique session identifier
+   * @param {number} [initialOffset=0] - Character offset within this chunk to start speaking from
    */
   const speakChunk = useCallback(
-    (index, sessionId) => {
+    (index, sessionId, initialOffset = 0) => {
       if (!isSupported) return;
 
       // Invalidate if user switched speech session or stopped
@@ -223,13 +322,32 @@ export function SpeechProvider({ children }) {
 
       const chunks = chunksRef.current;
       if (index >= chunks.length) {
-        // Finished speaking all message chunks
-        stopSpeech();
+        // Finished speaking all message chunks naturally
+        const msgId = currentMessageIdRef.current;
+        if (msgId) {
+          removeReadingPosition(msgId);
+        }
+        stopSpeech(false);
         return;
       }
 
+      const fullChunk = chunks[index];
+      let alignedOffset = 0;
+      let textToSpeak = fullChunk;
+
+      if (initialOffset > 0) {
+        alignedOffset = getWordBoundaryOffset(fullChunk, initialOffset);
+        // If aligned offset is at the end or remaining text is empty, advance to next chunk
+        if (alignedOffset >= fullChunk.length - 2 || fullChunk.slice(alignedOffset).trim().length === 0) {
+          speakChunk(index + 1, sessionId, 0);
+          return;
+        }
+        textToSpeak = fullChunk.slice(alignedOffset).trim();
+      }
+
       currentChunkIndexRef.current = index;
-      const textToSpeak = chunks[index];
+      currentChunkStartOffsetRef.current = alignedOffset;
+      currentCharIndexRef.current = alignedOffset;
 
       try {
         const utterance = new SpeechSynthesisUtterance(textToSpeak);
@@ -259,11 +377,19 @@ export function SpeechProvider({ children }) {
         // Retain utterance reference in module set to avoid Chrome GC bug
         retainedUtterances.add(utterance);
 
+        utterance.onboundary = (e) => {
+          if (sessionId !== currentSessionIdRef.current) return;
+          if (typeof e.charIndex === 'number') {
+            currentCharIndexRef.current = alignedOffset + e.charIndex;
+          }
+        };
+
         utterance.onend = () => {
           retainedUtterances.delete(utterance);
           if (sessionId !== currentSessionIdRef.current) return;
           if (speakingStateRef.current === 'playing') {
-            speakChunk(index + 1, sessionId);
+            // Subsequent chunks start from offset 0
+            speakChunk(index + 1, sessionId, 0);
           }
         };
 
@@ -277,7 +403,7 @@ export function SpeechProvider({ children }) {
           }
           console.warn('SpeechSynthesisUtterance error:', e.error);
           setSpeechError(`Speech synthesis error: ${e.error}`);
-          stopSpeech();
+          stopSpeech(false);
         };
 
         window.speechSynthesis.speak(utterance);
@@ -289,10 +415,10 @@ export function SpeechProvider({ children }) {
       } catch (err) {
         console.warn('Speech synthesis execution failed:', err);
         setSpeechError('Unable to start speech synthesis in this browser.');
-        stopSpeech();
+        stopSpeech(false);
       }
     },
-    [isSupported, stopSpeech]
+    [isSupported, stopSpeech, removeReadingPosition]
   );
 
   /**
@@ -324,35 +450,50 @@ export function SpeechProvider({ children }) {
       if (window.speechSynthesis.paused) {
         window.speechSynthesis.resume();
       } else {
-        // Fallback: re-speak from current chunk index if browser unpaused but dropped audio
-        speakChunk(currentChunkIndexRef.current, currentSessionIdRef.current);
+        // Fallback: re-speak from current chunk index and offset
+        speakChunk(
+          currentChunkIndexRef.current,
+          currentSessionIdRef.current,
+          currentCharIndexRef.current
+        );
       }
     } catch (_) {
-      speakChunk(currentChunkIndexRef.current, currentSessionIdRef.current);
+      speakChunk(
+        currentChunkIndexRef.current,
+        currentSessionIdRef.current,
+        currentCharIndexRef.current
+      );
     }
   }, [isSupported, startKeepAlive, setSpeakingStateSync, speakChunk]);
 
   /**
    * Begins reading aloud an assistant message or settings voice preview.
-   * Cancels any previously active speech before starting.
+   * If the message has a saved reading position and `fromStart` is not requested,
+   * resumes from the saved position rather than restarting.
    *
    * @param {string} messageId - The unique identifier of the message (or 'settings-preview')
    * @param {string} rawMarkdown - The Markdown or plain text content to clean and read
+   * @param {boolean} [fromStart=false] - If true, clears any saved position and reads from the beginning
    */
   const playMessage = useCallback(
-    (messageId, rawMarkdown) => {
+    (messageId, rawMarkdown, fromStart = false) => {
       if (!isSupported) {
         setSpeechError('Text-to-speech is not supported by your browser.');
         return;
       }
 
-      // If already playing this exact message, toggle pause
+      // If already playing this exact message, stopping it preserves reading position
       if (currentMessageIdRef.current === messageId && speakingStateRef.current === 'playing') {
-        pauseSpeech();
+        stopSpeech(true);
         return;
       }
 
-      // Stop any prior playback
+      // If another response was playing, stop it and preserve its position
+      if (currentMessageIdRef.current && currentMessageIdRef.current !== messageId) {
+        stopSpeech(true);
+      }
+
+      // Stop any pending timer
       if (pendingSpeakTimerRef.current) {
         clearTimeout(pendingSpeakTimerRef.current);
         pendingSpeakTimerRef.current = null;
@@ -381,11 +522,29 @@ export function SpeechProvider({ children }) {
         return;
       }
 
+      // Determine starting chunk and offset based on saved position
+      let startChunk = 0;
+      let startOffset = 0;
+
+      const saved = readingPositionsRef.current[messageId];
+      if (!fromStart && saved && saved.cleanedText === cleaned) {
+        // Saved position is valid for this exact content
+        startChunk = Math.min(chunks.length - 1, Math.max(0, saved.chunkIndex || 0));
+        startOffset = Math.max(0, saved.charOffset || 0);
+      } else if (fromStart) {
+        // Explicit restart: clear saved position
+        removeReadingPosition(messageId);
+      }
+
       // Assign new session ID for this playback sequence
       const sessionId = ++currentSessionIdRef.current;
 
       chunksRef.current = chunks;
-      currentChunkIndexRef.current = 0;
+      activeCleanedTextRef.current = cleaned;
+      currentChunkIndexRef.current = startChunk;
+      currentChunkStartOffsetRef.current = startOffset;
+      currentCharIndexRef.current = startOffset;
+
       setCurrentMessageIdSync(messageId);
       setSpeakingStateSync('playing');
       setSpeechError(null);
@@ -396,30 +555,28 @@ export function SpeechProvider({ children }) {
       pendingSpeakTimerRef.current = setTimeout(() => {
         pendingSpeakTimerRef.current = null;
         if (sessionId !== currentSessionIdRef.current) return;
-        speakChunk(0, sessionId);
+        speakChunk(startChunk, sessionId, startOffset);
       }, 30);
     },
-    [isSupported, pauseSpeech, stopKeepAlive, setCurrentMessageIdSync, setSpeakingStateSync, startKeepAlive, speakChunk]
+    [isSupported, stopKeepAlive, setCurrentMessageIdSync, setSpeakingStateSync, startKeepAlive, speakChunk, stopSpeech, removeReadingPosition]
   );
 
   /**
-   * Toggle Play / Pause / Resume for a given message.
+   * Toggle Play / Stop / Resume for a given message.
    */
   const toggleSpeech = useCallback(
     (messageId, rawMarkdown) => {
       if (currentMessageIdRef.current === messageId) {
         if (speakingStateRef.current === 'playing') {
-          pauseSpeech();
-        } else if (speakingStateRef.current === 'paused') {
-          resumeSpeech();
+          stopSpeech(true);
         } else {
-          playMessage(messageId, rawMarkdown);
+          playMessage(messageId, rawMarkdown, false);
         }
       } else {
-        playMessage(messageId, rawMarkdown);
+        playMessage(messageId, rawMarkdown, false);
       }
     },
-    [playMessage, pauseSpeech, resumeSpeech]
+    [playMessage, stopSpeech]
   );
 
   // Clean up on component unmount or window beforeunload
@@ -476,7 +633,10 @@ export function SpeechProvider({ children }) {
     pauseSpeech,
     resumeSpeech,
     stopSpeech,
-    toggleSpeech
+    toggleSpeech,
+    resetMessageSpeech,
+    hasSavedPosition,
+    readingPositions
   };
 
   return <SpeechContext.Provider value={value}>{children}</SpeechContext.Provider>;

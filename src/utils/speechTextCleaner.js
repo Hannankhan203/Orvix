@@ -186,3 +186,36 @@ export function splitTextIntoSpeechChunks(text, maxChunkLen = 180) {
 
   return chunks;
 }
+
+/**
+ * Aligns a character offset to a clean word boundary within a text chunk,
+ * ensuring words and phrases are not sliced in the middle when resuming speech synthesis.
+ *
+ * @param {string} text - The speech chunk text
+ * @param {number} offset - The raw character offset where speech was stopped
+ * @returns {number} Clean starting offset aligned to a word boundary
+ */
+export function getWordBoundaryOffset(text, offset) {
+  if (!text || typeof text !== 'string') return 0;
+  const len = text.length;
+  if (offset <= 0) return 0;
+  if (offset >= len) return len;
+
+  let start = offset;
+
+  // If offset lands directly on whitespace, advance to the start of the next word
+  if (/\s/.test(text[start])) {
+    while (start < len && /\s/.test(text[start])) {
+      start++;
+    }
+    return start;
+  }
+
+  // If offset lands in the middle of a word, backtrack to the beginning of that word
+  while (start > 0 && !/\s/.test(text[start - 1])) {
+    start--;
+  }
+
+  return start;
+}
+

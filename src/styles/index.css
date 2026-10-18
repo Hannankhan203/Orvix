@@ -4401,6 +4401,17 @@ html, body {
   background-color: rgba(239, 68, 68, 0.12) !important;
 }
 
+.reset-speech-btn {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  transition: all var(--transition-fast);
+}
+
+.reset-speech-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background-color: var(--bg-card-hover);
+}
+
 /* Mini Audio Waveform in Message Action Bar */
 .speech-soundwave-mini {
   display: inline-flex;

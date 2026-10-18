@@ -155,7 +155,9 @@ export default function ChatMessage({
     speakingState,
     currentMessageId,
     playMessage,
-    stopSpeech
+    stopSpeech,
+    resetMessageSpeech,
+    hasSavedPosition
   } = useSpeech();
 
   const isCurrentSpeaking = Boolean(
@@ -165,21 +167,31 @@ export default function ChatMessage({
   );
   const isPlayingThis = isCurrentSpeaking && speakingState === 'playing';
   const isPausedThis = isCurrentSpeaking && speakingState === 'paused';
+  const isResumable = Boolean(
+    message?.id &&
+    !isCurrentSpeaking &&
+    hasSavedPosition(message.id)
+  );
 
   const handleToggleSpeech = () => {
-    if (!hasContent || !message?.content) return;
+    if (!hasContent || !message?.content || !message?.id) return;
     if (isCurrentSpeaking) {
-      stopSpeech();
+      stopSpeech(true);
     } else {
-      playMessage(message.id, message.content);
+      playMessage(message.id, message.content, false);
     }
+  };
+
+  const handleResetSpeech = () => {
+    if (!message?.id) return;
+    resetMessageSpeech(message.id);
   };
 
   // Safely stop speech if this message is unmounted while speaking
   useEffect(() => {
     return () => {
       if (isCurrentSpeaking) {
-        stopSpeech();
+        stopSpeech(true);
       }
     };
   }, [isCurrentSpeaking, stopSpeech]);
@@ -523,7 +535,7 @@ export default function ChatMessage({
                   </Button>
                 )}
 
-                {/* Read Aloud Button */}
+                {/* Read Aloud & Resume / Reset Controls */}
                 {hasContent && (
                   <div className="inline-flex items-center gap-1.5">
                     <Button
@@ -537,6 +549,8 @@ export default function ChatMessage({
                           ? 'Read aloud is not supported in this browser'
                           : isCurrentSpeaking
                           ? 'Stop reading aloud'
+                          : isResumable
+                          ? 'Resume reading from saved position'
                           : 'Read aloud'
                       }
                       ariaLabel={
@@ -544,6 +558,8 @@ export default function ChatMessage({
                           ? 'Read aloud not supported'
                           : isCurrentSpeaking
                           ? 'Stop reading message aloud'
+                          : isResumable
+                          ? 'Resume reading message aloud'
                           : 'Read message aloud'
                       }
                       icon={
@@ -556,8 +572,24 @@ export default function ChatMessage({
                         )
                       }
                     >
-                      {isCurrentSpeaking ? 'Stop reading' : 'Read aloud'}
+                      {isCurrentSpeaking ? 'Stop reading' : isResumable ? 'Resume' : 'Read aloud'}
                     </Button>
+
+                    {/* Reset Button (only shown when this response has saved progress or is currently speaking) */}
+                    {(isResumable || isCurrentSpeaking) && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleResetSpeech}
+                        disabled={!isSpeechSupported}
+                        className="message-action-btn reset-speech-btn"
+                        title="Reset reading to the beginning"
+                        ariaLabel="Reset reading to the beginning"
+                        icon={<RotateCcw size={12} />}
+                      >
+                        Reset
+                      </Button>
+                    )}
 
                     {isCurrentSpeaking && (
                       <span className="speech-soundwave-mini" aria-hidden="true" title="Reading aloud">
@@ -575,7 +607,8 @@ export default function ChatMessage({
                     variant="ghost"
                     size="sm"
                     onClick={() => {
-                      if (isCurrentSpeaking) stopSpeech();
+                      if (isCurrentSpeaking) stopSpeech(false);
+                      if (message?.id) resetMessageSpeech(message.id);
                       onRegenerate(message);
                     }}
                     disabled={isLoading}
