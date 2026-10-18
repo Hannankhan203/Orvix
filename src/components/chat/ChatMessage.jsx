@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
+import CodeBlock from './CodeBlock.jsx';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -26,144 +27,93 @@ function extractNodeText(node) {
 }
 
 /**
- * Copy button for code blocks
+ * Creates custom components configuration for ReactMarkdown
+ * Enforces sanitization, accessible tables, and developer-friendly code highlighting
  */
-function CodeCopyButton({ text }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    if (!text) return;
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-        return;
+function createMarkdownComponents(isStreaming = false) {
+  return {
+    // Pass-through wrapper for pre so inner code block receives isBlock flag
+    pre: ({ children, ...props }) => {
+      if (React.isValidElement(children)) {
+        return React.cloneElement(children, { isBlock: true });
       }
-      throw new Error('Clipboard API unavailable');
-    } catch (_) {
-      try {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.left = '-9999px';
-        textarea.style.top = '0';
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        const success = document.execCommand('copy');
-        document.body.removeChild(textarea);
-        if (success) {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        }
-      } catch (err) {
-        console.warn('Code snippet copy failed:', err);
+      return <pre {...props}>{children}</pre>;
+    },
+
+    // Fenced code block or inline code
+    code: ({ className, children, isBlock, ...props }) => {
+      const match = /language-([\w-]+)/.exec(className || '');
+      const codeString = extractNodeText(children);
+      const isFenced = Boolean(isBlock) || Boolean(match) || (typeof codeString === 'string' && codeString.includes('\n'));
+
+      if (isFenced) {
+        const language = match ? match[1] : '';
+        return (
+          <CodeBlock
+            code={codeString}
+            language={language}
+            isStreaming={isStreaming}
+          />
+        );
       }
-    }
-  };
 
-  return (
-    <button
-      type="button"
-      className="code-copy-btn"
-      onClick={handleCopy}
-      title="Copy snippet"
-      aria-label="Copy code snippet"
-    >
-      {copied ? <Check size={13} /> : <Copy size={13} />}
-      <span>{copied ? 'Copied' : 'Copy'}</span>
-    </button>
-  );
-}
-
-/**
- * Custom components configuration for ReactMarkdown
- * Enforces sanitization, accessible tables, and styled code containers
- */
-const markdownComponents = {
-  // Pass-through wrapper for pre so inner code block handles styling
-  pre: ({ children }) => <>{children}</>,
-
-  // Fenced code block or inline code
-  code: ({ className, children, ...props }) => {
-    const match = /language-(\w+)/.exec(className || '');
-    const codeString = extractNodeText(children).replace(/\n$/, '');
-    const isBlock = match || codeString.includes('\n');
-
-    if (isBlock) {
-      const language = match ? match[1] : 'code';
       return (
-        <div className="code-block-container">
-          <div className="code-block-header">
-            <span className="code-lang-label">{language}</span>
-            <CodeCopyButton text={codeString} />
-          </div>
-          <pre className="code-content">
-            <code className={className} {...props}>
-              {codeString}
-            </code>
-          </pre>
-        </div>
+        <code className="inline-code" {...props}>
+          {children}
+        </code>
       );
-    }
+    },
 
-    return (
-      <code className="inline-code" {...props}>
+    // Safe external links (prevents javascript: URLs and opens external links safely)
+    a: ({ href, children, ...props }) => {
+      const isSafeHref = href && /^(https?:\/\/|mailto:)/i.test(href);
+      return (
+        <a
+          href={isSafeHref ? href : '#'}
+          target={isSafeHref ? '_blank' : undefined}
+          rel={isSafeHref ? 'noopener noreferrer' : undefined}
+          onClick={!isSafeHref ? (e) => e.preventDefault() : undefined}
+          className="markdown-link"
+          {...props}
+        >
+          {children}
+        </a>
+      );
+    },
+
+    // Responsive scrollable tables
+    table: ({ children, ...props }) => (
+      <div className="table-responsive-wrapper">
+        <table className="markdown-table" {...props}>
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
+    tbody: ({ children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
+    tr: ({ children, ...props }) => <tr className="markdown-tr" {...props}>{children}</tr>,
+    th: ({ children, ...props }) => <th className="markdown-th" {...props}>{children}</th>,
+    td: ({ children, ...props }) => <td className="markdown-td" {...props}>{children}</td>,
+
+    // Semantic headings
+    h1: ({ children, ...props }) => <h1 className="markdown-h1" {...props}>{children}</h1>,
+    h2: ({ children, ...props }) => <h2 className="markdown-h2" {...props}>{children}</h2>,
+    h3: ({ children, ...props }) => <h3 className="markdown-h3" {...props}>{children}</h3>,
+    h4: ({ children, ...props }) => <h4 className="markdown-h4" {...props}>{children}</h4>,
+
+    // Text formatting
+    p: ({ children, ...props }) => <p className="markdown-p" {...props}>{children}</p>,
+    blockquote: ({ children, ...props }) => (
+      <blockquote className="markdown-blockquote" {...props}>
         {children}
-      </code>
-    );
-  },
-
-  // Safe external links (prevents javascript: URLs and opens external links safely)
-  a: ({ href, children, ...props }) => {
-    const isSafeHref = href && /^(https?:\/\/|mailto:)/i.test(href);
-    return (
-      <a
-        href={isSafeHref ? href : '#'}
-        target={isSafeHref ? '_blank' : undefined}
-        rel={isSafeHref ? 'noopener noreferrer' : undefined}
-        onClick={!isSafeHref ? (e) => e.preventDefault() : undefined}
-        className="markdown-link"
-        {...props}
-      >
-        {children}
-      </a>
-    );
-  },
-
-  // Responsive scrollable tables
-  table: ({ children, ...props }) => (
-    <div className="table-responsive-wrapper">
-      <table className="markdown-table" {...props}>
-        {children}
-      </table>
-    </div>
-  ),
-  thead: ({ children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
-  tbody: ({ children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
-  tr: ({ children, ...props }) => <tr className="markdown-tr" {...props}>{children}</tr>,
-  th: ({ children, ...props }) => <th className="markdown-th" {...props}>{children}</th>,
-  td: ({ children, ...props }) => <td className="markdown-td" {...props}>{children}</td>,
-
-  // Semantic headings
-  h1: ({ children, ...props }) => <h1 className="markdown-h1" {...props}>{children}</h1>,
-  h2: ({ children, ...props }) => <h2 className="markdown-h2" {...props}>{children}</h2>,
-  h3: ({ children, ...props }) => <h3 className="markdown-h3" {...props}>{children}</h3>,
-  h4: ({ children, ...props }) => <h4 className="markdown-h4" {...props}>{children}</h4>,
-
-  // Text formatting
-  p: ({ children, ...props }) => <p className="markdown-p" {...props}>{children}</p>,
-  blockquote: ({ children, ...props }) => (
-    <blockquote className="markdown-blockquote" {...props}>
-      {children}
-    </blockquote>
-  ),
-  ul: ({ children, ...props }) => <ul className="markdown-ul" {...props}>{children}</ul>,
-  ol: ({ children, ...props }) => <ol className="markdown-ol" {...props}>{children}</ol>,
-  li: ({ children, ...props }) => <li className="markdown-li" {...props}>{children}</li>,
-  hr: (props) => <hr className="markdown-divider" {...props} />
-};
+      </blockquote>
+    ),
+    ul: ({ children, ...props }) => <ul className="markdown-ul" {...props}>{children}</ul>,
+    ol: ({ children, ...props }) => <ol className="markdown-ol" {...props}>{children}</ol>,
+    li: ({ children, ...props }) => <li className="markdown-li" {...props}>{children}</li>,
+    hr: (props) => <hr className="markdown-divider" {...props} />
+  };
+}
 
 /**
  * ChatMessage Component
@@ -200,6 +150,11 @@ export default function ChatMessage({
   const [copyFeedback, setCopyFeedback] = useState('Copy');
   const [draftContent, setDraftContent] = useState(message?.content || '');
   const editInputRef = useRef(null);
+
+  const markdownComponents = useMemo(
+    () => createMarkdownComponents(isStreaming),
+    [isStreaming]
+  );
 
   // Sync draftContent whenever isEditing is toggled or message content changes
   useEffect(() => {
