@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle } from 'lucide-react';
+import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle, Download } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import ModelSelector from '../chat/ModelSelector.jsx';
+import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { validateUsername } from '../../services/userProfileService.js';
+import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 
 /**
  * Header Component
@@ -33,6 +35,7 @@ export default function Header({
   onSelectProvider
 }) {
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
+  const { isInstallable, install } = usePWAInstall();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef(null);
 
@@ -144,7 +147,7 @@ export default function Header({
           />
 
           <div className="header-brand-badge">
-            <Sparkles size={14} className="header-badge-icon" />
+            <OrvixLogo size={22} />
             <span className="header-brand-name">{APP_CONFIG.name}</span>
           </div>
 
@@ -167,6 +170,21 @@ export default function Header({
               className="header-model-selector"
               id="ai-model-select-desktop"
             />
+          )}
+
+          {/* Desktop PWA Install App Trigger (Chrome / Edge / Windows) */}
+          {isInstallable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={install}
+              icon={<Download size={14} />}
+              title="Install Orvix as desktop application"
+              ariaLabel="Install Orvix application"
+              className="header-pwa-install-btn text-blue-400 hover:text-white"
+            >
+              Install
+            </Button>
           )}
 
           {/* New Chat Primary Trigger */}
@@ -237,7 +255,7 @@ export default function Header({
             </button>
 
             <div className="mobile-brand-badge">
-              <Sparkles size={14} className="header-badge-icon" />
+              <OrvixLogo size={22} />
               <span className="mobile-brand-title">{APP_CONFIG.name}</span>
             </div>
           </div>

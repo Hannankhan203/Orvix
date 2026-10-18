@@ -90,3 +90,103 @@ export async function sendGeminiMessage({ prompt, history = [], username = null 
     modelUsed: data.modelUsed || 'gemini-3.1-flash-lite'
   };
 }
+
+/**
+ * Streams conversation responses from Gemini via the server-side SSE endpoint.
+ * @param {Object} params
+ * @param {string} params.prompt
+ * @param {Array} [params.history=[]]
+ * @param {string|null} [params.username=null]
+ * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
+ * @param {AbortSignal} [params.signal]
+ * @returns {Promise<{ text: string, modelUsed: string }>}
+ */
+export async function streamGeminiMessage({ prompt, history = [], username = null, onChunk, signal }) {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      provider: 'gemini',
+      prompt,
+      history,
+      username: username ? String(username).trim() : null,
+      stream: true
+    }),
+    signal
+  });
+
+  if (!response.ok) {
+    let errorDetail = '';
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson?.error || '';
+    } catch (_) {
+      errorDetail = await response.text();
+    }
+    throw new Error(errorDetail || `Gemini request failed (${response.status})`);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/event-stream') && response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let modelUsed = 'gemini-3.1-flash-lite';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const dataStr = trimmed.slice(6);
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+          if (parsed.type === 'chunk' && parsed.text) {
+            accumulated += parsed.text;
+            onChunk?.(parsed.text, accumulated);
+          } else if (parsed.type === 'done') {
+            if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+            return {
+              text: parsed.text || accumulated,
+              modelUsed
+            };
+          } else if (parsed.type === 'error') {
+            throw new Error(parsed.error || 'Gemini stream failed.');
+          }
+        } catch (jsonErr) {
+          if (jsonErr.message && !jsonErr.message.includes('JSON')) {
+            throw jsonErr;
+          }
+        }
+      }
+    }
+
+    return {
+      text: accumulated,
+      modelUsed
+    };
+  }
+
+  const data = await response.json();
+  if (!data?.text) {
+    throw new Error('Received an empty response from Gemini.');
+  }
+
+  onChunk?.(data.text, data.text);
+  return {
+    text: data.text,
+    modelUsed: data.modelUsed || 'gemini-3.1-flash-lite'
+  };
+}
+

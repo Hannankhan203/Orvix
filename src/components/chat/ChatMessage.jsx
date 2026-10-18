@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Bot, User, Copy, Check, AlertCircle, RotateCcw, Edit3 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
+import OrvixLogo from '../ui/OrvixLogo.jsx';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -140,6 +141,8 @@ const markdownComponents = {
 export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
   const isUser = message?.sender === 'user';
   const isError = Boolean(message?.isError);
+  const isStreaming = Boolean(message?.isStreaming);
+  const hasContent = Boolean(message?.content && message.content.length > 0);
   const [copied, setCopied] = useState(false);
 
   const handleCopyMessage = () => {
@@ -154,19 +157,22 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
 
   return (
     <article
-      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''}`}
+      className={`message-wrapper ${isUser ? 'user-wrapper' : 'assistant-wrapper'} ${isError ? 'error-wrapper' : ''} ${isStreaming ? 'streaming-wrapper' : ''}`}
       aria-label={`${isUser ? 'User' : 'Orvix AI'} message`}
     >
       <div
         className={`message-avatar ${isUser ? 'user-avatar' : 'assistant-avatar'} ${isError ? 'error-avatar' : ''}`}
         aria-hidden="true"
       >
-        {isUser ? <User size={16} /> : isError ? <AlertCircle size={16} /> : <Bot size={16} />}
+        {isUser ? <User size={16} /> : isError ? <AlertCircle size={16} /> : <OrvixLogo size={18} />}
       </div>
 
       <div className={`message-body ${isUser ? 'user-body' : 'assistant-body'} ${isError ? 'error-body' : ''}`}>
         <div className="message-sender-line">
           <span className="sender-name">{isUser ? 'You' : 'Orvix'}</span>
+          {isStreaming && !hasContent && (
+            <span className="sender-status">thinking...</span>
+          )}
           {message.modelUsed && (
             <span
               className="model-badge"
@@ -211,9 +217,16 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
           ) : isUser ? (
             /* Render user messages safely as plain text */
             <p className="user-text-content">{message.content || ''}</p>
+          ) : isStreaming && !hasContent ? (
+            /* Subtle thinking state before first streaming chunk arrives */
+            <div className="streaming-thinking-state" role="status" aria-label="Thinking">
+              <span className="typing-dot dot-1" />
+              <span className="typing-dot dot-2" />
+              <span className="typing-dot dot-3" />
+            </div>
           ) : (
-            /* Render AI messages as rich, safe Markdown with GFM support */
-            <div className="ai-markdown-container">
+            /* Render AI messages as rich, safe Markdown with progressive streaming cursor */
+            <div className={`ai-markdown-container ${isStreaming ? 'is-streaming' : ''}`}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={markdownComponents}
@@ -224,7 +237,7 @@ export default function ChatMessage({ message, onRetry, onRestorePrompt }) {
           )}
         </div>
 
-        {!isUser && !isError && (
+        {!isUser && !isError && !isStreaming && (
           <div className="message-action-bar">
             <Button
               variant="ghost"

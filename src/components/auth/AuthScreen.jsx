@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Button from '../ui/Button.jsx';
+import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { USERNAME_CONSTRAINTS } from '../../services/userProfileService.js';
 
@@ -95,8 +96,8 @@ export default function AuthScreen() {
       <div className="auth-card">
         {/* Brand Header */}
         <div className="auth-brand-header">
-          <div className="auth-brand-icon" aria-hidden="true">
-            <Bot size={26} />
+          <div className="flex justify-center mb-3" aria-hidden="true">
+            <OrvixLogo size={52} />
           </div>
           <h1 className="auth-brand-title">{APP_CONFIG.name}</h1>
           <p className="auth-brand-subtitle">

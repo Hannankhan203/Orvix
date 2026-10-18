@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Layout from '../components/layout/Layout.jsx';
 import ChatArea from '../components/chat/ChatArea.jsx';
 import { SAMPLE_CHATS } from '../config/sampleData.js';
-import { sendAIMessage, DEFAULT_PROVIDER } from '../services/aiRouter.js';
+import { sendAIMessage, streamAIMessage, DEFAULT_PROVIDER } from '../services/aiRouter.js';
 import {
   createChatDocument,
   saveChatMessage,
@@ -360,52 +360,111 @@ export default function ChatPage() {
   };
 
   /**
-   * Dispatches a prompt to Gemini with conversation context and persists results.
+   * Dispatches a prompt with streaming conversation context and persists results upon completion.
    * Protects against cross-chat state pollution during rapid chat switching.
    */
-  const executePrompt = async (promptText, historyContext, targetChatId) => {
+  const executePrompt = async (promptText, historyContext, targetChatId, assistantMessageId) => {
     setIsLoading(true);
+    let accumulated = '';
+    let activeModel = null;
 
     try {
-      // Call selected AI provider API (Gemini, Groq, OpenRouter) with conversation history context and personalized username
-      const result = await sendAIMessage({
+      // Call selected AI provider API with streaming chunks and personalized username
+      const result = await streamAIMessage({
         provider: selectedProvider,
         prompt: promptText,
         history: historyContext,
-        username: username || currentUser?.displayName || null
+        username: username || currentUser?.displayName || null,
+        onStart: ({ modelUsed }) => {
+          activeModel = modelUsed;
+          if (activeChatIdRef.current === targetChatId) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMessageId ? { ...m, modelUsed } : m
+              )
+            );
+          }
+        },
+        onChunk: (_chunkText, currentAccumulated) => {
+          accumulated = currentAccumulated;
+          // Cross-chat contamination guard: Only update UI if the user is STILL viewing this conversation!
+          if (activeChatIdRef.current === targetChatId) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMessageId
+                  ? {
+                      ...m,
+                      content: currentAccumulated,
+                      modelUsed: activeModel || m.modelUsed,
+                      isStreaming: true
+                    }
+                  : m
+              )
+            );
+          }
+        }
       });
 
-      const aiResponse = {
-        id: `${result.provider || selectedProvider}-${Date.now()}`,
+      const finalContent = result.text || accumulated;
+      const finalModel = result.modelUsed || activeModel;
+      const finalProvider = result.provider || selectedProvider;
+
+      const completedMessage = {
+        id: assistantMessageId,
         sender: 'assistant',
-        provider: result.provider || selectedProvider,
-        modelUsed: result.modelUsed,
+        provider: finalProvider,
+        modelUsed: finalModel,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: result.text
+        content: finalContent,
+        isStreaming: false
       };
 
-      // Cross-chat contamination guard: Only update UI if the user is STILL viewing this conversation!
+      // Cross-chat contamination guard: finalize UI state if user is still on this chat
       if (activeChatIdRef.current === targetChatId) {
-        setMessages((prev) => [...prev, aiResponse]);
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMessageId ? completedMessage : m))
+        );
       }
 
-      // Persist completed AI response to the intended conversation in Firestore
+      // Persist completed AI response once generation finishes
       if (targetChatId) {
-        await persistMessageSafe(targetChatId, aiResponse);
+        await persistMessageSafe(targetChatId, completedMessage);
       }
     } catch (err) {
-      // If still viewing this chat, show a graceful error bubble without clearing history
+      console.error('Streaming prompt execution error:', err);
+      // If still viewing this chat, handle partial recovery or error bubble gracefully
       if (activeChatIdRef.current === targetChatId) {
-        const errorMessage = {
-          id: `error-${Date.now()}`,
-          sender: 'assistant',
-          isError: true,
-          failedPrompt: promptText,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          content: err.message || `An unexpected error occurred while communicating with ${selectedProvider}.`
-        };
-
-        setMessages((prev) => [...prev, errorMessage]);
+        if (accumulated.trim().length > 0) {
+          // Preserve partial stream and append error explanation
+          const partialMessage = {
+            id: assistantMessageId,
+            sender: 'assistant',
+            provider: selectedProvider,
+            modelUsed: activeModel,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: `${accumulated}\n\n*[Response interrupted: ${err.message || 'Connection lost'}]*`,
+            isStreaming: false
+          };
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMessageId ? partialMessage : m))
+          );
+          if (targetChatId) {
+            await persistMessageSafe(targetChatId, partialMessage);
+          }
+        } else {
+          // Replace with friendly error message bubble
+          const errorMessage = {
+            id: `error-${Date.now()}`,
+            sender: 'assistant',
+            isError: true,
+            failedPrompt: promptText,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            content: err.message || `An unexpected error occurred while communicating with ${selectedProvider}.`
+          };
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMessageId ? errorMessage : m))
+          );
+        }
       }
     } finally {
       // Clean up loading state and submission lock
@@ -414,7 +473,7 @@ export default function ChatPage() {
     }
   };
 
-  // Message submission handler with comprehensive duplicate and empty guards
+  // Message submission handler with immediate assistant message & streaming dispatch
   const handleSubmit = async () => {
     // Strip standard whitespace and invisible zero-width spaces
     const trimmed = inputValue.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
@@ -469,10 +528,23 @@ export default function ChatPage() {
         content: trimmed
       };
 
+      // Create immediate assistant message placeholder
+      const assistantMessageId = `${selectedProvider}-${Date.now()}`;
+      const initialAssistantMessage = {
+        id: assistantMessageId,
+        sender: 'assistant',
+        provider: selectedProvider,
+        modelUsed: null,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: '',
+        isStreaming: true
+      };
+
       // Filter out temporary error bubbles from multi-turn context
       const validHistory = messages.filter((m) => !m.isError);
 
-      setMessages((prev) => [...prev, userMessage]);
+      // Immediately render both user message and streaming assistant placeholder
+      setMessages((prev) => [...prev, userMessage, initialAssistantMessage]);
       setInputValue('');
 
       // Persist user message to Firestore
@@ -480,8 +552,8 @@ export default function ChatPage() {
         persistMessageSafe(currentChatId, userMessage);
       }
 
-      // Execute Gemini call asynchronously
-      executePrompt(trimmed, validHistory, currentChatId);
+      // Execute AI streaming dispatch
+      executePrompt(trimmed, validHistory, currentChatId, assistantMessageId);
     } catch (unexpectedErr) {
       console.error('Submission error:', unexpectedErr);
       setIsLoading(false);
@@ -495,10 +567,21 @@ export default function ChatPage() {
 
     const currentChatId = activeChatIdRef.current;
     const updatedMessages = messages.filter((m) => m.id !== failedMessage.id);
-    setMessages(updatedMessages);
 
+    const assistantMessageId = `${selectedProvider}-${Date.now()}`;
+    const initialAssistantMessage = {
+      id: assistantMessageId,
+      sender: 'assistant',
+      provider: selectedProvider,
+      modelUsed: null,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      content: '',
+      isStreaming: true
+    };
+
+    setMessages([...updatedMessages, initialAssistantMessage]);
     const validHistory = updatedMessages.filter((m) => !m.isError);
-    executePrompt(failedMessage.failedPrompt, validHistory, currentChatId);
+    executePrompt(failedMessage.failedPrompt, validHistory, currentChatId, assistantMessageId);
   };
 
   // Restore prompt text to the composer for editing

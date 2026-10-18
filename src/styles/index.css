@@ -1911,6 +1911,46 @@ html, body {
   height: 1px;
 }
 
+/* Streaming Thinking State & Progressive Cursor */
+.streaming-thinking-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+  border-radius: var(--radius-full);
+}
+
+.streaming-wrapper .sender-status {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-left: 4px;
+}
+
+.ai-markdown-container.is-streaming > *:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background-color: var(--accent-primary, #3b82f6);
+  margin-left: 4px;
+  vertical-align: -2px;
+  border-radius: 1px;
+  animation: streamingCursorBlink 0.8s infinite;
+}
+
+@keyframes streamingCursorBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+
 /* ==========================================================================
    Message Composer Dock (Safe Area & Responsive)
    ========================================================================== */
@@ -2024,18 +2064,45 @@ html, body {
   }
 }
 
-/* Active Dictation Listening Bar */
+/* ==========================================================================
+   Voice Dictation Dock (ChatGPT-inspired audio wave & controls)
+   ========================================================================== */
 .composer-listening-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(20, 27, 36, 0.95));
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: var(--radius-lg);
+  margin-bottom: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), 0 0 16px rgba(37, 99, 235, 0.15);
+  animation: slideUpFade 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: visible;
+  backdrop-filter: blur(8px);
+}
+
+.composer-listening-bar.state-listening {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.15), rgba(14, 19, 27, 0.96));
+}
+
+.composer-listening-bar.state-paused {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(14, 19, 27, 0.96));
+}
+
+.composer-listening-bar.state-requesting {
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.listening-left-group {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  padding: 6px 12px;
-  background-color: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.22);
-  border-radius: var(--radius-md);
-  margin-bottom: 4px;
-  animation: fadeIn 0.2s ease-out;
+  flex-shrink: 0;
 }
 
 .listening-indicator-content {
@@ -2045,70 +2112,286 @@ html, body {
 }
 
 .listening-pulse-dot {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background-color: #ef4444;
-  animation: pulseDot 1s infinite alternate ease-in-out;
+  background-color: #3b82f6;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.8);
   flex-shrink: 0;
 }
 
-@keyframes pulseDot {
+.listening-pulse-dot.listening {
+  background-color: #3b82f6;
+  animation: pulseBlueDot 1.2s infinite ease-in-out;
+}
+
+.listening-pulse-dot.paused {
+  background-color: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+}
+
+@keyframes pulseBlueDot {
   0% {
-    transform: scale(0.85);
-    opacity: 0.7;
+    transform: scale(0.9);
+    box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
+  }
+  50% {
+    transform: scale(1.3);
+    box-shadow: 0 0 12px rgba(96, 165, 250, 0.9);
   }
   100% {
-    transform: scale(1.25);
-    opacity: 1;
+    transform: scale(0.9);
+    box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
   }
 }
 
+/* Soundwave Equalizer */
 .listening-soundwave {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  height: 12px;
+  gap: 3px;
+  height: 22px;
+  padding: 0 2px;
 }
 
 .soundwave-bar {
-  width: 2.5px;
-  background-color: #ef4444;
-  border-radius: 1px;
-  animation: soundwave 0.8s ease-in-out infinite;
+  width: 3px;
+  background: linear-gradient(180deg, #60a5fa, #2563eb);
+  border-radius: 2px;
+  transition: height 0.08s ease-out, opacity 0.08s ease-out;
+  min-height: 4px;
 }
 
-.soundwave-bar:nth-child(1) { height: 6px; animation-delay: 0s; }
-.soundwave-bar:nth-child(2) { height: 12px; animation-delay: 0.2s; }
-.soundwave-bar:nth-child(3) { height: 8px; animation-delay: 0.4s; }
-
-@keyframes soundwave {
-  0%, 100% { transform: scaleY(0.4); }
-  50% { transform: scaleY(1); }
+.soundwave-bar.dynamic {
+  /* Height and opacity driven dynamically via inline styles */
 }
 
 .listening-text {
-  font-size: 0.78rem;
-  font-weight: 500;
-  color: #fca5a5;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #93c5fd;
   letter-spacing: -0.01em;
 }
 
-.listening-stop-btn {
-  background-color: rgba(239, 68, 68, 0.18);
-  color: #fca5a5;
-  border: 1px solid rgba(239, 68, 68, 0.35);
+/* Language Selector Pill & Dropdown inside Dictation Bar */
+.dictation-lang-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.dictation-lang-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-primary);
   font-size: 0.72rem;
   font-weight: 600;
-  padding: 3px 9px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.dictation-lang-btn:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.lang-flag {
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.lang-code {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #e2e8f0;
+}
+
+.lang-chevron {
+  color: var(--text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.lang-chevron.open {
+  transform: rotate(180deg);
+}
+
+.dictation-lang-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 230px;
+  max-height: 280px;
+  overflow-y: auto;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 1px rgba(255, 255, 255, 0.1);
+  padding: 6px;
+  z-index: 60;
+  backdrop-filter: blur(16px);
+  animation: slideUpFade 0.15s ease-out;
+}
+
+.lang-dropdown-header {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 6px 8px 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 4px;
+}
+
+.dictation-lang-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
   border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  text-align: left;
   cursor: pointer;
   transition: all var(--transition-fast);
 }
 
-.listening-stop-btn:hover {
-  background-color: rgba(239, 68, 68, 0.32);
+.dictation-lang-option:hover {
+  background-color: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.dictation-lang-option.active {
+  background-color: rgba(37, 99, 235, 0.2);
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.lang-opt-flag {
+  font-size: 1rem;
+}
+
+.lang-opt-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.lang-opt-label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: inherit;
+}
+
+.lang-opt-native {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.lang-check {
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+/* Interim Live Transcript Preview Area */
+.listening-preview-area {
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-speech-bubble {
+  font-size: 0.82rem;
   color: #ffffff;
+  font-weight: 500;
+  font-style: italic;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.live-speech-placeholder {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.45);
+  font-style: italic;
+}
+
+/* Controls: Pause, Resume, Cancel, Done */
+.listening-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.listening-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.73rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+
+.listening-action-btn.pause-btn {
+  background-color: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fcd34d;
+}
+
+.listening-action-btn.pause-btn:hover {
+  background-color: rgba(245, 158, 11, 0.28);
+  color: #ffffff;
+}
+
+.listening-action-btn.resume-btn {
+  background-color: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #93c5fd;
+}
+
+.listening-action-btn.resume-btn:hover {
+  background-color: rgba(59, 130, 246, 0.35);
+  color: #ffffff;
+}
+
+.listening-action-btn.cancel-btn {
+  background-color: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+.listening-action-btn.cancel-btn:hover {
+  background-color: rgba(239, 68, 68, 0.25);
+  color: #ffffff;
+}
+
+.listening-action-btn.done-btn {
+  background-color: #2563eb;
+  border-color: #3b82f6;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+}
+
+.listening-action-btn.done-btn:hover {
+  background-color: #1d4ed8;
 }
 
 /* Voice Dictation Error Notification */
@@ -2117,26 +2400,27 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 12px;
-  background-color: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.25);
+  padding: 7px 12px;
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
   border-radius: var(--radius-md);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   font-size: 0.78rem;
   color: #fbbf24;
-  animation: fadeIn 0.2s ease-out;
+  animation: slideUpFade 0.2s ease-out;
 }
 
 .dictation-error-content {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: 1;
   min-width: 0;
 }
 
 .dictation-error-icon {
   flex-shrink: 0;
+  color: #f59e0b;
 }
 
 .dictation-error-dismiss {
@@ -2156,6 +2440,207 @@ html, body {
 
 .dictation-error-dismiss:hover {
   opacity: 1;
+}
+
+/* AI Transcript Cleanup Banner (Phase 4) */
+.transcript-cleanup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 12px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(20, 27, 36, 0.7));
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: var(--radius-md);
+  margin-bottom: 6px;
+  animation: slideUpFade 0.18s ease-out;
+}
+
+.cleanup-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cleanup-icon {
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+.cleanup-hint {
+  color: var(--text-muted);
+}
+
+.cleanup-snippet {
+  color: var(--text-primary);
+  font-style: italic;
+}
+
+.cleanup-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cleanup-action-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: rgba(37, 99, 235, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.cleanup-action-trigger:hover:not(:disabled) {
+  background-color: rgba(37, 99, 235, 0.35);
+  color: #ffffff;
+}
+
+.cleanup-dismiss-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  transition: color var(--transition-fast);
+}
+
+.cleanup-dismiss-btn:hover {
+  color: var(--text-primary);
+}
+
+/* AI Transcript Review Comparison Card */
+.transcript-review-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: slideUpFade 0.2s ease-out;
+}
+
+.review-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.review-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-icon {
+  color: #60a5fa;
+}
+
+.review-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.review-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.review-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 0.78rem;
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.field-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.field-content {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-app);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.field-content.original-text {
+  color: var(--text-secondary);
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.field-content.suggested-text {
+  color: #93c5fd;
+  border-left: 2px solid #3b82f6;
+  background-color: rgba(37, 99, 235, 0.08);
+}
+
+.review-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Composer Microphone Active Ring States */
+.composer-mic-btn.listening {
+  background-color: #ef4444 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.35), 0 0 12px rgba(239, 68, 68, 0.5) !important;
+  animation: micPulse 1.4s infinite alternate ease-in-out;
+}
+
+.composer-mic-btn.paused {
+  background-color: #f59e0b !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.35) !important;
+}
+
+@keyframes micPulse {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.06); }
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .composer-footnote {

@@ -1,14 +1,28 @@
-import React, { useRef, useEffect } from 'react';
-import { ArrowUp, Mic, Square, AlertCircle, X } from 'lucide-react';
+import React, { useRef, useEffect, useState } from 'react';
+import {
+  ArrowUp,
+  Mic,
+  Square,
+  AlertCircle,
+  X,
+  Check,
+  Pause,
+  Play,
+  ChevronDown,
+  Sparkles,
+  Loader2,
+  Globe
+} from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
+import { sendAIMessage } from '../../services/aiRouter.js';
 
 /**
  * ChatArea Component
- * Coordinates the scrollable message stream / empty welcome state,
- * error retries, and the fixed bottom message composer with voice dictation.
+ * Coordinates the scrollable message stream / welcome state,
+ * error retries, and the fixed bottom message composer with professional voice dictation.
  *
  * @param {Object} props
  * @param {Array} props.messages
@@ -33,19 +47,57 @@ export default function ChatArea({
   selectedProvider = 'gemini'
 }) {
   const textareaRef = useRef(null);
+  const langMenuRef = useRef(null);
 
-  // Hook into browser speech recognition
+  // Language dropdown toggle state
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
+
+  // AI Transcript Refinement (Phase 4) state
+  const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
+  const [suggestedRefinement, setSuggestedRefinement] = useState(null);
+
+  // Hook into upgraded speech recognition engine
   const {
+    recordingState,
     isListening,
-    dictationError,
+    isPaused,
+    isRequesting,
     isSupported,
+    dictationError,
+    interimTranscript,
+    lastSessionTranscript,
+    selectedLanguage,
+    setSelectedLanguage,
+    supportedLanguages,
+    audioLevel,
+    audioFrequencies,
+    startListening,
+    pauseListening,
+    resumeListening,
     stopListening,
+    cancelListening,
     toggleListening,
-    clearDictationError
+    clearDictationError,
+    clearLastSessionTranscript
   } = useVoiceDictation({
     inputValue,
     onInputChange
   });
+
+  const activeLang =
+    supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
+
+  // Close language menu when clicking outside
+  useEffect(() => {
+    if (!langMenuOpen) return;
+    const handleClickOutside = (e) => {
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target)) {
+        setLangMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [langMenuOpen]);
 
   // Auto-resize textarea according to text length
   useEffect(() => {
@@ -68,9 +120,11 @@ export default function ChatArea({
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (isListening) {
+      if (recordingState !== 'idle') {
         stopListening();
       }
+      clearLastSessionTranscript();
+      setSuggestedRefinement(null);
       if (onSubmit && inputValue.trim() && !isLoading) {
         onSubmit();
       }
@@ -79,16 +133,68 @@ export default function ChatArea({
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (isListening) {
+    if (recordingState !== 'idle') {
       stopListening();
     }
+    clearLastSessionTranscript();
+    setSuggestedRefinement(null);
     if (onSubmit && inputValue.trim() && !isLoading) {
       onSubmit();
     }
   };
 
+  // Optional AI Transcript Refinement Handler (Phase 4)
+  const handleImproveTranscript = async () => {
+    if (!lastSessionTranscript || isCleaningTranscript) return;
+    setIsCleaningTranscript(true);
+
+    try {
+      const cleanPrompt = `You are a specialized speech-to-text transcript polisher.
+Improve punctuation, capitalization, and obvious speech recognition phonetic glitches in the provided spoken transcript.
+
+STRICT CONSTRAINTS:
+1. Preserve the speaker's exact meaning, words, names, and technical terms.
+2. DO NOT summarize, rewrite, or add any commentary.
+3. DO NOT translate (if Urdu, keep Urdu; if English, keep English).
+4. Return ONLY the refined transcript text and nothing else.
+
+Transcript:
+"${lastSessionTranscript}"`;
+
+      const res = await sendAIMessage({
+        provider: selectedProvider || 'gemini',
+        prompt: cleanPrompt,
+        history: [],
+        username: null
+      });
+
+      if (res && res.text) {
+        const polished = res.text.replace(/^["']|["']$/g, '').trim();
+        setSuggestedRefinement(polished);
+      }
+    } catch (err) {
+      console.warn('Transcript refinement failed:', err);
+    } finally {
+      setIsCleaningTranscript(false);
+    }
+  };
+
+  const handleApplyRefinement = () => {
+    if (!suggestedRefinement) return;
+
+    if (inputValue.includes(lastSessionTranscript)) {
+      onInputChange(inputValue.replace(lastSessionTranscript, suggestedRefinement));
+    } else {
+      onInputChange(suggestedRefinement);
+    }
+
+    setSuggestedRefinement(null);
+    clearLastSessionTranscript();
+  };
+
   const hasContent = inputValue.trim().length > 0;
   const hasMessages = messages.length > 0;
+  const isRecordingActive = recordingState !== 'idle';
 
   return (
     <main className="chat-area-container" role="main">
@@ -129,26 +235,234 @@ export default function ChatArea({
             </div>
           )}
 
-          {/* Active Listening Indicator */}
-          {isListening && (
-            <div className="composer-listening-bar" role="status" aria-live="polite">
-              <div className="listening-indicator-content">
-                <span className="listening-pulse-dot" aria-hidden="true" />
-                <div className="listening-soundwave" aria-hidden="true">
-                  <span className="soundwave-bar" />
-                  <span className="soundwave-bar" />
-                  <span className="soundwave-bar" />
+          {/* Professional ChatGPT-Style Active Dictation Dock */}
+          {isRecordingActive && (
+            <div
+              className={`composer-listening-bar state-${recordingState}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="listening-left-group">
+                <div className="listening-indicator-content">
+                  <span className={`listening-pulse-dot ${recordingState}`} aria-hidden="true" />
+                  <div
+                    className="listening-soundwave"
+                    aria-hidden="true"
+                    title={`Microphone audio level: ${audioLevel}%`}
+                  >
+                    {audioFrequencies.map((freq, idx) => (
+                      <span
+                        key={idx}
+                        className="soundwave-bar dynamic"
+                        style={{
+                          height: `${Math.max(5, Math.round(freq * 20))}px`,
+                          opacity: Math.max(0.4, Math.min(1, freq * 1.2))
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <span className="listening-text">
+                    {recordingState === 'requesting'
+                      ? 'Connecting mic...'
+                      : recordingState === 'paused'
+                      ? 'Paused'
+                      : recordingState === 'finalizing'
+                      ? 'Finalizing...'
+                      : 'Listening...'}
+                  </span>
                 </div>
-                <span className="listening-text">Listening... Speak now</span>
+
+                {/* Recognition Language Selector Pill */}
+                <div className="dictation-lang-wrapper" ref={langMenuRef}>
+                  <button
+                    type="button"
+                    className="dictation-lang-btn"
+                    onClick={() => setLangMenuOpen((prev) => !prev)}
+                    title={`Dictation language: ${activeLang.label}. Click to switch.`}
+                    aria-label="Select dictation language"
+                    aria-expanded={langMenuOpen}
+                  >
+                    <span className="lang-flag">{activeLang.flag}</span>
+                    <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
+                    <ChevronDown size={12} className={`lang-chevron ${langMenuOpen ? 'open' : ''}`} />
+                  </button>
+
+                  {langMenuOpen && (
+                    <div className="dictation-lang-dropdown" role="menu">
+                      <div className="lang-dropdown-header">Recognition Language</div>
+                      {supportedLanguages.map((lang) => (
+                        <button
+                          key={lang.code}
+                          type="button"
+                          role="menuitem"
+                          className={`dictation-lang-option ${lang.code === selectedLanguage ? 'active' : ''}`}
+                          onClick={() => {
+                            setSelectedLanguage(lang.code);
+                            setLangMenuOpen(false);
+                          }}
+                        >
+                          <span className="lang-opt-flag">{lang.flag}</span>
+                          <div className="lang-opt-info">
+                            <span className="lang-opt-label">{lang.label}</span>
+                            <span className="lang-opt-native">{lang.native}</span>
+                          </div>
+                          {lang.code === selectedLanguage && <Check size={14} className="lang-check" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-              <button
-                type="button"
-                className="listening-stop-btn"
-                onClick={stopListening}
-                aria-label="Stop dictation"
-              >
-                Done
-              </button>
+
+              {/* Interim Transcript Live Preview */}
+              <div className="listening-preview-area" title={interimTranscript || 'Live speech preview'}>
+                {interimTranscript ? (
+                  <span className="live-speech-bubble">"{interimTranscript}"</span>
+                ) : (
+                  <span className="live-speech-placeholder">
+                    {recordingState === 'paused' ? 'Speech paused' : 'Speak clearly...'}
+                  </span>
+                )}
+              </div>
+
+              {/* Controls: Pause/Resume, Cancel, Done */}
+              <div className="listening-actions-group">
+                {recordingState === 'listening' ? (
+                  <button
+                    type="button"
+                    className="listening-action-btn pause-btn"
+                    onClick={pauseListening}
+                    title="Pause dictation"
+                    aria-label="Pause dictation"
+                  >
+                    <Pause size={13} />
+                    <span>Pause</span>
+                  </button>
+                ) : recordingState === 'paused' ? (
+                  <button
+                    type="button"
+                    className="listening-action-btn resume-btn"
+                    onClick={resumeListening}
+                    title="Resume dictation"
+                    aria-label="Resume dictation"
+                  >
+                    <Play size={13} fill="currentColor" />
+                    <span>Resume</span>
+                  </button>
+                ) : null}
+
+                <button
+                  type="button"
+                  className="listening-action-btn cancel-btn"
+                  onClick={cancelListening}
+                  title="Cancel voice input (discards speech from this session)"
+                  aria-label="Cancel dictation"
+                >
+                  <X size={13} />
+                  <span>Cancel</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="listening-action-btn done-btn"
+                  onClick={stopListening}
+                  title="Done — keep text in composer"
+                  aria-label="Finish dictation"
+                >
+                  <Check size={13} />
+                  <span>Done</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Optional AI Transcript Refinement Notification (Phase 4) */}
+          {lastSessionTranscript && !isRecordingActive && !suggestedRefinement && (
+            <div className="transcript-cleanup-banner" role="region" aria-label="Transcript helper">
+              <div className="cleanup-banner-left">
+                <Sparkles size={13} className="cleanup-icon" />
+                <span className="cleanup-hint">Dictated speech recorded:</span>
+                <span className="cleanup-snippet">
+                  "{lastSessionTranscript.length > 46 ? lastSessionTranscript.slice(0, 46) + '...' : lastSessionTranscript}"
+                </span>
+              </div>
+              <div className="cleanup-banner-actions">
+                <button
+                  type="button"
+                  className="cleanup-action-trigger"
+                  onClick={handleImproveTranscript}
+                  disabled={isCleaningTranscript}
+                  title="Use AI to polish punctuation and capitalization without changing words or translating"
+                >
+                  {isCleaningTranscript ? (
+                    <Loader2 size={12} className="spin-icon" />
+                  ) : (
+                    <Sparkles size={12} />
+                  )}
+                  <span>{isCleaningTranscript ? 'Polishing...' : 'Improve transcript'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="cleanup-dismiss-btn"
+                  onClick={clearLastSessionTranscript}
+                  title="Dismiss helper"
+                  aria-label="Dismiss transcript helper"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* AI Refinement Comparison Card (Phase 4) */}
+          {suggestedRefinement && (
+            <div className="transcript-review-card" role="dialog" aria-labelledby="review-card-title">
+              <div className="review-card-header">
+                <div className="review-header-left">
+                  <Sparkles size={14} className="review-icon" />
+                  <span id="review-card-title" className="review-title">Review Transcript Polish</span>
+                </div>
+                <button
+                  type="button"
+                  className="review-close-btn"
+                  onClick={() => setSuggestedRefinement(null)}
+                  aria-label="Close review"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="review-card-body">
+                <div className="review-field">
+                  <span className="field-label">Original:</span>
+                  <p className="field-content original-text">{lastSessionTranscript}</p>
+                </div>
+                <div className="review-field">
+                  <span className="field-label">Suggested Polish:</span>
+                  <p className="field-content suggested-text">{suggestedRefinement}</p>
+                </div>
+              </div>
+
+              <div className="review-card-actions">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSuggestedRefinement(null);
+                    clearLastSessionTranscript();
+                  }}
+                >
+                  Keep original
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleApplyRefinement}
+                  icon={<Check size={13} />}
+                >
+                  Apply Polish
+                </Button>
+              </div>
             </div>
           )}
 
@@ -159,6 +473,8 @@ export default function ChatArea({
               placeholder={
                 isListening
                   ? 'Listening to speech...'
+                  : isPaused
+                  ? 'Dictation paused — speak or type...'
                   : isLoading
                   ? 'Orvix is responding...'
                   : 'Ask Orvix anything...'
@@ -183,11 +499,27 @@ export default function ChatArea({
                     ? 'Voice dictation is not supported in this browser'
                     : isListening
                     ? 'Stop listening (Voice dictation active)'
-                    : 'Dictate message (Speech to text)'
+                    : isPaused
+                    ? 'Resume listening (Voice dictation paused)'
+                    : `Dictate message (${activeLang.label})`
                 }
-                ariaLabel={isListening ? 'Stop listening' : 'Start voice dictation'}
-                className={`composer-mic-btn ${isListening ? 'listening' : ''}`}
-                icon={isListening ? <Square size={13} fill="currentColor" /> : <Mic size={18} />}
+                ariaLabel={
+                  isListening
+                    ? 'Stop listening'
+                    : isPaused
+                    ? 'Resume dictation'
+                    : 'Start voice dictation'
+                }
+                className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : ''}`}
+                icon={
+                  isListening ? (
+                    <Square size={13} fill="currentColor" />
+                  ) : isPaused ? (
+                    <Play size={13} fill="currentColor" />
+                  ) : (
+                    <Mic size={18} />
+                  )
+                }
               />
 
               {/* Message Submission Button */}

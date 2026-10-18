@@ -131,3 +131,97 @@ export async function sendGroqMessage({ prompt, history = [] }) {
     modelUsed: data.model || DEFAULT_MODEL
   };
 }
+
+/**
+ * Streams conversation responses from Groq's API incrementally.
+ * @param {Object} params
+ * @param {string} params.prompt
+ * @param {Array} [params.history=[]]
+ * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
+ * @param {AbortSignal} [params.signal]
+ * @returns {Promise<{ text: string, modelUsed: string }>}
+ */
+export async function streamGroqMessage({ prompt, history = [], onChunk, signal }) {
+  const apiKey = getGroqApiKey();
+
+  if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
+    throw new Error(
+      'Groq is not configured yet. Please add VITE_GROQ_API_KEY to your environment configuration.'
+    );
+  }
+
+  const messages = formatGroqMessages(history, prompt);
+
+  let response;
+  try {
+    response = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        messages,
+        temperature: 0.7,
+        stream: true
+      }),
+      signal
+    });
+  } catch (netErr) {
+    if (signal?.aborted) throw netErr;
+    throw new Error('Network connection error while contacting Groq. Please check your internet connection.');
+  }
+
+  if (!response.ok) {
+    let errorDetail = '';
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson?.error?.message || '';
+    } catch (_) {
+      errorDetail = await response.text();
+    }
+    throw new Error(`Groq request failed (${response.status}): ${errorDetail || response.statusText}`);
+  }
+
+  if (!response.body) {
+    throw new Error('No readable response body received from Groq.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let accumulated = '';
+  let modelUsed = DEFAULT_MODEL;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data: ')) continue;
+      const dataStr = trimmed.slice(6);
+      if (dataStr === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(dataStr);
+        if (parsed.model) modelUsed = parsed.model;
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (delta) {
+          accumulated += delta;
+          onChunk?.(delta, accumulated);
+        }
+      } catch (_) {}
+    }
+  }
+
+  return {
+    text: accumulated,
+    modelUsed
+  };
+}
+

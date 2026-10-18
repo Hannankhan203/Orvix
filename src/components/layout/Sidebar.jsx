@@ -2,6 +2,7 @@ import React from 'react';
 import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, Pin } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import SidebarChatItem from './SidebarChatItem.jsx';
+import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -57,9 +58,7 @@ export default function Sidebar({
       {/* Branding & Close Toggle */}
       <div className="sidebar-header">
         <div className="sidebar-brand">
-          <div className="brand-icon-wrapper" aria-hidden="true">
-            <Bot size={18} />
-          </div>
+          <OrvixLogo size={28} />
           <span className="brand-title">{APP_CONFIG.name}</span>
         </div>
 

@@ -2,6 +2,7 @@ import React from 'react';
 import { Bot, Sparkles } from 'lucide-react';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import PromptSuggestions from './PromptSuggestions.jsx';
+import OrvixLogo from '../ui/OrvixLogo.jsx';
 
 /**
  * WelcomeScreen Component
@@ -15,7 +16,7 @@ export default function WelcomeScreen({ onSelectPrompt }) {
     <div className="welcome-screen">
       <div className="welcome-hero">
         <div className="welcome-badge">
-          <Sparkles size={13} className="welcome-badge-icon" />
+          <OrvixLogo size={18} />
           <span>{APP_CONFIG.name}</span>
         </div>
 
