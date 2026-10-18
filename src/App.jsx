@@ -1,5 +1,7 @@
 import React from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import { SettingsProvider } from './context/SettingsContext.jsx';
+import SettingsModal from './components/settings/SettingsModal.jsx';
 import AuthScreen from './components/auth/AuthScreen.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import { Bot } from 'lucide-react';
@@ -49,7 +51,10 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <SettingsProvider>
+        <AppContent />
+        <SettingsModal />
+      </SettingsProvider>
     </AuthProvider>
   );
 }

@@ -71,6 +71,7 @@ export function isProviderConfigured(provider) {
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
  * @param {string|null} [params.username=null] - Preferred username for personalization
+ * @param {Object|null} [params.preferences=null] - User response preferences (responseLength, beginnerFriendly)
  * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
  * @param {({ modelUsed: string, provider: string }) => void} [params.onStart]
  * @param {AbortSignal} [params.signal]
@@ -81,6 +82,7 @@ export async function streamAIMessage({
   prompt,
   history = [],
   username = null,
+  preferences = null,
   onChunk,
   onStart,
   signal
@@ -100,6 +102,7 @@ export async function streamAIMessage({
         prompt,
         history,
         username: username ? String(username).trim() : null,
+        preferences: preferences || null,
         stream: true
       }),
       signal

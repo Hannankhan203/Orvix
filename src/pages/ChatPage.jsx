@@ -17,10 +17,12 @@ import {
 } from '../services/chatStorageService.js';
 import { isFirebaseConfigured } from '../config/firebaseConfig.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useSettings } from '../context/SettingsContext.jsx';
 import { AlertCircle, X } from 'lucide-react';
 
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
+  const { settings } = useSettings();
   const isCloudEnabled =
     isFirebaseConfigured() && Boolean(currentUser?.uid);
 
@@ -748,6 +750,10 @@ export default function ChatPage() {
         history: historyContext,
         username:
           username || currentUser?.displayName || null,
+        preferences: {
+          responseLength: settings?.responseLength || 'balanced',
+          beginnerFriendly: Boolean(settings?.beginnerFriendly)
+        },
         signal: abortController.signal,
 
         onStart: ({ modelUsed, provider } = {}) => {
@@ -1486,6 +1492,8 @@ export default function ChatPage() {
         onStartEdit={handleStartEdit}
         onCancelEdit={handleCancelEdit}
         selectedProvider={selectedProvider}
+        enterToSend={settings?.enterToSend ?? true}
+        showTimestamps={settings?.showTimestamps ?? true}
       />
     </Layout>
   );

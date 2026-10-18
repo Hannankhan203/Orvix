@@ -23,6 +23,33 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="msapplication-TileColor" content="#2563eb" />
     <meta name="msapplication-TileImage" content="/icon-192.png" />
+
+    <!-- Immediate theme initialization to prevent flash on reload -->
+    <script>
+      (function() {
+        try {
+          var theme = localStorage.getItem('orvix_active_theme');
+          if (!theme) {
+            var guestSettings = localStorage.getItem('orvix_guest_settings');
+            if (guestSettings) {
+              var parsed = JSON.parse(guestSettings);
+              if (parsed && parsed.theme === 'light') theme = 'light';
+              else if (parsed && parsed.theme === 'dark') theme = 'dark';
+            }
+          }
+          if (!theme && window.matchMedia) {
+            theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          }
+          if (theme === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+            document.documentElement.classList.add('theme-light');
+          } else {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            document.documentElement.classList.add('theme-dark');
+          }
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -55,7 +55,7 @@ export function formatConversationHistory(messages = [], currentPrompt, maxConte
  * @param {string|null} [params.username=null] - Preferred username for personalization
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGeminiMessage({ prompt, history = [], username = null }) {
+export async function sendGeminiMessage({ prompt, history = [], username = null, preferences = null }) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -65,7 +65,8 @@ export async function sendGeminiMessage({ prompt, history = [], username = null 
       provider: 'gemini',
       prompt,
       history,
-      username: username ? String(username).trim() : null
+      username: username ? String(username).trim() : null,
+      preferences: preferences || null
     })
   });
 
@@ -97,11 +98,12 @@ export async function sendGeminiMessage({ prompt, history = [], username = null 
  * @param {string} params.prompt
  * @param {Array} [params.history=[]]
  * @param {string|null} [params.username=null]
+ * @param {Object|null} [params.preferences=null]
  * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGeminiMessage({ prompt, history = [], username = null, onChunk, signal }) {
+export async function streamGeminiMessage({ prompt, history = [], username = null, preferences = null, onChunk, signal }) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -113,6 +115,7 @@ export async function streamGeminiMessage({ prompt, history = [], username = nul
       prompt,
       history,
       username: username ? String(username).trim() : null,
+      preferences: preferences || null,
       stream: true
     }),
     signal

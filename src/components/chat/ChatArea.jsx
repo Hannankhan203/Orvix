@@ -53,7 +53,9 @@ export default function ChatArea({
   editingMessageId = null,
   onStartEdit,
   onCancelEdit,
-  selectedProvider = 'gemini'
+  selectedProvider = 'gemini',
+  enterToSend = true,
+  showTimestamps = true
 }) {
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
@@ -137,7 +139,19 @@ export default function ChatArea({
       return;
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Ignore Enter if user is actively composing with an IME (Chinese, Japanese, etc.)
+    if (e.nativeEvent?.isComposing) {
+      return;
+    }
+
+    const isModifierEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter';
+    const isPlainEnter = e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey;
+
+    const shouldSend = enterToSend
+      ? isPlainEnter || isModifierEnter
+      : isModifierEnter;
+
+    if (shouldSend) {
       e.preventDefault();
       if (recordingState !== 'idle') {
         stopListening();
@@ -239,6 +253,7 @@ Transcript:
               editingMessageId={editingMessageId}
               onStartEdit={onStartEdit}
               onCancelEdit={onCancelEdit}
+              showTimestamps={showTimestamps}
             />
           )}
         </div>
@@ -570,7 +585,7 @@ Transcript:
                   variant={hasContent ? 'primary' : 'ghost'}
                   size="icon-round"
                   disabled={!hasContent}
-                  title="Send message (Enter)"
+                  title={enterToSend ? 'Send message (Enter)' : 'Send message (⌘/Ctrl+Enter)'}
                   ariaLabel="Send message"
                   className="composer-send-btn"
                   icon={<ArrowUp size={18} />}

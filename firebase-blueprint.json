@@ -104,6 +104,40 @@
         }
       },
       "required": ["id", "sender", "content"]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User personalization preferences including theme, response style, composer settings, and display flags.",
+      "type": "object",
+      "properties": {
+        "theme": {
+          "type": "string",
+          "enum": ["light", "dark", "system"],
+          "description": "Interface color theme preference."
+        },
+        "responseLength": {
+          "type": "string",
+          "enum": ["concise", "balanced", "detailed"],
+          "description": "AI response length preference."
+        },
+        "beginnerFriendly": {
+          "type": "boolean",
+          "description": "Preference for simpler, beginner-friendly explanations."
+        },
+        "enterToSend": {
+          "type": "boolean",
+          "description": "Whether pressing Enter in composer submits the message."
+        },
+        "showTimestamps": {
+          "type": "boolean",
+          "description": "Whether to display timestamps on chat messages."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when settings were last modified."
+        }
+      }
     }
   },
   "firestore": {
@@ -112,6 +146,12 @@
         "$ref": "UserProfile"
       },
       "description": "Stores user profile and preferred username for the authenticated user."
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": {
+        "$ref": "UserSettings"
+      },
+      "description": "Stores personalization preferences and settings for the authenticated user."
     },
     "/users/{userId}/chats/{chatId}": {
       "schema": {

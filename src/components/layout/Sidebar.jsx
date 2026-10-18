@@ -1,10 +1,11 @@
 import React from 'react';
-import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, Pin } from 'lucide-react';
+import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, Pin, Sliders } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import SidebarChatItem from './SidebarChatItem.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useSettings } from '../../context/SettingsContext.jsx';
 
 /**
  * Sidebar Component
@@ -38,6 +39,7 @@ export default function Sidebar({
   isCloudSynced = false
 }) {
   const { currentUser, username, logout, actionLoading } = useAuth();
+  const { openSettingsModal } = useSettings();
 
   const handleLogout = async () => {
     try {
@@ -184,24 +186,46 @@ export default function Sidebar({
                 </span>
               </div>
             </div>
-            <button
-              type="button"
-              className="sidebar-logout-btn"
-              onClick={handleLogout}
-              disabled={actionLoading}
-              title="Sign out"
-              aria-label="Sign out"
-            >
-              <LogOut size={14} />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="sidebar-logout-btn sidebar-settings-trigger"
+                onClick={openSettingsModal}
+                title="Personalization Settings"
+                aria-label="Personalization Settings"
+              >
+                <Sliders size={14} />
+              </button>
+              <button
+                type="button"
+                className="sidebar-logout-btn"
+                onClick={handleLogout}
+                disabled={actionLoading}
+                title="Sign out"
+                aria-label="Sign out"
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="user-status">
-            <span className="status-dot" aria-hidden="true" />
-            <div className="status-text-block">
-              <span className="status-label">Orvix v{APP_CONFIG.version}</span>
-              <span className="status-sublabel">Authentication active</span>
+          <div className="sidebar-user-card">
+            <div className="user-status">
+              <span className="status-dot" aria-hidden="true" />
+              <div className="status-text-block">
+                <span className="status-label">Orvix v{APP_CONFIG.version}</span>
+                <span className="status-sublabel">Authentication active</span>
+              </div>
             </div>
+            <button
+              type="button"
+              className="sidebar-logout-btn sidebar-settings-trigger"
+              onClick={openSettingsModal}
+              title="Personalization Settings"
+              aria-label="Personalization Settings"
+            >
+              <Sliders size={14} />
+            </button>
           </div>
         )}
       </div>

@@ -31,6 +31,19 @@ service cloud.firestore {
                     && request.resource.data.username.size() >= 2
                     && request.resource.data.username.size() <= 30;
 
+      // User personalization settings subcollection: owner-restricted
+      match /settings/{settingId} {
+        allow read, delete: if isOwner(userId);
+
+        allow create, update: if isOwner(userId)
+                              && request.resource.data.keys().hasOnly(['theme', 'responseLength', 'beginnerFriendly', 'enterToSend', 'showTimestamps', 'updatedAt'])
+                              && (!('theme' in request.resource.data) || request.resource.data.theme in ['light', 'dark', 'system'])
+                              && (!('responseLength' in request.resource.data) || request.resource.data.responseLength in ['concise', 'balanced', 'detailed'])
+                              && (!('beginnerFriendly' in request.resource.data) || request.resource.data.beginnerFriendly is bool)
+                              && (!('enterToSend' in request.resource.data) || request.resource.data.enterToSend is bool)
+                              && (!('showTimestamps' in request.resource.data) || request.resource.data.showTimestamps is bool);
+      }
+
       // User chats collection
       match /chats/{chatId} {
         allow read, delete: if isOwner(userId);

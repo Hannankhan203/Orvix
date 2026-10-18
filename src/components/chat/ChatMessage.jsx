@@ -138,7 +138,8 @@ export default function ChatMessage({
   isEditing = false,
   onStartEdit,
   onCancelEdit,
-  onEditResend
+  onEditResend,
+  showTimestamps = true
 }) {
   const isUser = message?.sender === 'user';
   const isError = Boolean(message?.isError);
@@ -304,7 +305,9 @@ export default function ChatMessage({
             </span>
           )}
 
-          {message.timestamp && <span className="message-timestamp">{message.timestamp}</span>}
+          {showTimestamps && message.timestamp && (
+            <span className="message-timestamp">{message.timestamp}</span>
+          )}
         </div>
 
         <div className="message-content">

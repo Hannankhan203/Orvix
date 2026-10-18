@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle, Download } from 'lucide-react';
+import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle, Download, Sliders } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import ModelSelector from '../chat/ModelSelector.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useSettings } from '../../context/SettingsContext.jsx';
 import { validateUsername } from '../../services/userProfileService.js';
 import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 
@@ -35,6 +36,7 @@ export default function Header({
   onSelectProvider
 }) {
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
+  const { openSettingsModal } = useSettings();
   const { isInstallable, install } = usePWAInstall();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef(null);
@@ -217,6 +219,17 @@ export default function Header({
                 </span>
                 <ChevronDown size={12} className="desktop-user-chevron" />
               </button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={openSettingsModal}
+                icon={<Sliders size={14} />}
+                title="Personalization Settings"
+                ariaLabel="Personalization Settings"
+              >
+                Settings
+              </Button>
 
               <Button
                 variant="ghost"
@@ -434,6 +447,18 @@ export default function Header({
           <div className="account-popover-divider" />
 
           <div className="account-popover-actions">
+            <button
+              type="button"
+              className="account-popover-item-btn"
+              onClick={() => {
+                setAccountMenuOpen(false);
+                openSettingsModal();
+              }}
+            >
+              <Sliders size={15} />
+              <span>Personalization Settings</span>
+            </button>
+
             <button
               type="button"
               className="account-signout-btn"

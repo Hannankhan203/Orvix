@@ -57,29 +57,114 @@ function formatGeminiHistory(
   return contents;
 }
 
-// Helper to format system instruction with dynamic username personalization
-function buildSystemInstruction(username?: string | null) {
+interface UserPreferences {
+  responseLength?: 'concise' | 'balanced' | 'detailed';
+  beginnerFriendly?: boolean;
+}
+
+// Helper to format system instruction with dynamic username and response preferences personalization
+function buildSystemInstruction(
+  username?: string | null,
+  preferences?: UserPreferences | null
+) {
   const baseInstruction =
     'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.';
 
-  if (!username || !username.trim()) {
-    return baseInstruction;
+  const instructions = [baseInstruction];
+
+  if (username && username.trim()) {
+    const cleanName = username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ');
+    instructions.push(
+      `The user's preferred name is ${cleanName}. You may address the user by this name naturally when appropriate. Do not overuse the name, do not invent additional personal information, and do not claim to remember information that has not been provided.`
+    );
   }
 
-  const cleanName = username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ');
-  return `${baseInstruction} The user's preferred name is ${cleanName}. You may address the user by this name naturally when appropriate. Do not overuse the name, do not invent additional personal information, and do not claim to remember information that has not been provided.`;
+  // Consistent, non-intrusive response preferences layer
+  if (preferences?.responseLength === 'concise') {
+    instructions.push(
+      'Preferred response length: Concise. Keep explanations brief, compact, focused, and directly to the point without filler or redundant commentary.'
+    );
+  } else if (preferences?.responseLength === 'detailed') {
+    instructions.push(
+      'Preferred response length: Detailed. Provide thorough, in-depth explanations with helpful background context, step-by-step reasoning, and practical code or concepts where appropriate.'
+    );
+  } else if (preferences?.responseLength === 'balanced') {
+    instructions.push(
+      'Preferred response length: Balanced. Provide an optimal balance between conciseness and thoroughness.'
+    );
+  }
+
+  if (preferences?.beginnerFriendly) {
+    instructions.push(
+      'Explanation style: Clear and beginner-friendly. Explain technical and complex topics using plain language, accessible analogies, and approachable steps, avoiding unnecessary jargon without talking down to the user.'
+    );
+  }
+
+  return instructions.join(' ');
 }
 
-// Simulated fallback response for demo / guest mode
-function generateSimulatedResponse(promptText = '', username: string | null = null) {
+// Simulated fallback response for demo / guest mode with response preferences support
+function generateSimulatedResponse(
+  promptText = '',
+  username: string | null = null,
+  preferences?: UserPreferences | null
+) {
   const promptLower = promptText.toLowerCase();
   const greetingName = username ? ` ${username}` : '';
   const personalSignoff = username ? `, ${username}` : '';
+  const isConcise = preferences?.responseLength === 'concise';
+  const isDetailed = preferences?.responseLength === 'detailed';
+  const isBeginner = Boolean(preferences?.beginnerFriendly);
 
   let body = '';
-  if (promptLower.includes('code') || promptLower.includes('react') || promptLower.includes('javascript') || promptLower.includes('bug')) {
-    body = `Here is a clean code example addressing your request:
+  if (
+    promptLower.includes('code') ||
+    promptLower.includes('react') ||
+    promptLower.includes('javascript') ||
+    promptLower.includes('bug')
+  ) {
+    if (isConcise) {
+      body = `Here is the concise implementation:
 
+\`\`\`javascript
+async function handleUserMessage(prompt) {
+  const sanitized = prompt.trim();
+  return sanitized ? { id: \`msg-\${Date.now()}\`, content: sanitized } : null;
+}
+\`\`\`
+
+• Trim input and return structured message payload.`;
+    } else if (isDetailed) {
+      body = `Here is a comprehensive breakdown and code implementation:
+
+${isBeginner ? '> **Beginner Analogy:** Think of this function like an envelope sealer: it checks if the letter has text inside, stamps the current time on it, and sends it on its way.\n\n' : ''}### Implementation
+\`\`\`javascript
+/**
+ * Processes incoming user prompts and formats standard message objects.
+ * Handles validation, whitespace sanitization, and timestamp creation.
+ */
+async function handleUserMessage(prompt, context = []) {
+  const sanitized = typeof prompt === 'string' ? prompt.trim() : '';
+  if (!sanitized) {
+    throw new Error('Message cannot be empty.');
+  }
+
+  return {
+    id: \`msg-\${Date.now()}-\${Math.random().toString(36).substr(2, 5)}\`,
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    content: sanitized,
+    contextLength: context.length
+  };
+}
+\`\`\`
+
+### Architectural Notes
+1. **Input validation:** Rejects empty whitespace before state mutations.
+2. **Immutable history:** Returned message objects integrate directly into component state arrays.
+3. **Data persistence:** Synchronized to Cloud Firestore or cached in local storage.`;
+    } else {
+      body = `Here is a clean code example addressing your request:
+${isBeginner ? '\n*Friendly tip: This function takes user text, cleans extra spaces, and packages it with an ID and timestamp.*\n' : ''}
 \`\`\`javascript
 // Streamlined conversational handler
 async function handleUserMessage(prompt, context = []) {
@@ -96,28 +181,49 @@ async function handleUserMessage(prompt, context = []) {
 
 • **State updates:** Messages are updated immutably in memory or synced to Firestore.
 • **Responsive design:** Markdown blocks format with syntax highlights.`;
-  } else if (promptLower.includes('brainstorm') || promptLower.includes('idea') || promptLower.includes('startup') || promptLower.includes('name')) {
-    body = `Here are 4 creative concepts for your consideration:
-
+    }
+  } else if (
+    promptLower.includes('brainstorm') ||
+    promptLower.includes('idea') ||
+    promptLower.includes('startup') ||
+    promptLower.includes('name')
+  ) {
+    if (isConcise) {
+      body = `1. **NexusPulse** — Ambient async workspace.
+2. **KiteFlow** — Low-friction drafting engine.
+3. **OmniCanvas** — Unified notes & canvas.
+4. **SpectraAI** — High-speed research layer.`;
+    } else {
+      body = `Here are 4 creative concepts for your consideration:
+${isBeginner ? '\n*Each idea is framed around solving a practical everyday workflow obstacle:*\n' : ''}
 1. **NexusPulse** — Ambient conversational workspace for asynchronous team synthesis.
 2. **KiteFlow** — Low-friction, lightweight drafting engine for technical creators.
 3. **OmniCanvas** — Multimodal canvas bringing notes, documents, and chat threads into one view.
 4. **SpectraAI** — Precision intelligence layer tailored for high-speed research.
 
 *Tip: You can select any conversation from the sidebar or click "+ New Chat" to start fresh.*`;
-  } else if (promptLower.startsWith('hi') || promptLower.startsWith('hello') || promptLower.startsWith('hey')) {
-    body = `Hello${greetingName}! I am **Orvix**, your intelligent AI conversation companion.
+    }
+  } else if (
+    promptLower.startsWith('hi') ||
+    promptLower.startsWith('hello') ||
+    promptLower.startsWith('hey')
+  ) {
+    if (isConcise) {
+      body = `Hello${greetingName}! I'm **Orvix**. How can I help with writing, code, or ideas today?`;
+    } else {
+      body = `Hello${greetingName}! I am **Orvix**, your intelligent AI conversation companion.
 
-I can help you with:
+${isBeginner ? "If you're new here, feel free to ask questions in plain English—no technical jargon required!\n\n" : ''}I can help you with:
 • **Writing & Editing:** Craft essays, draft professional emails, and summarize reports.
 • **Coding & Tech:** Debug React/Node code, explain architectures, and review syntax.
 • **Brainstorming:** Generate fresh ideas, project names, and creative outlines.
 • **Learning:** Break down complex topics simply and concisely.`;
+    }
   } else {
     body = `Thank you for your prompt${personalSignoff}:
 > "${promptText}"
 
-I am ready to assist with your questions, code samples, or writing projects. Feel free to ask more details or explore specific topics!`;
+${isBeginner ? 'I will explain everything simply and step-by-step. ' : ''}I am ready to assist with your questions, code samples, or writing projects. Feel free to ask more details or explore specific topics!`;
   }
 
   return body;
@@ -170,12 +276,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       prompt,
       history = [],
       username = null,
+      preferences = null,
       stream = true
     } = req.body as {
       provider?: string;
       prompt?: string;
       history?: Array<{ sender?: string; content?: string }>;
       username?: string | null;
+      preferences?: UserPreferences | null;
       stream?: boolean;
     };
 
@@ -196,7 +304,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         ? username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ')
         : null;
 
-    const systemInstruction = buildSystemInstruction(cleanUsername);
+    const systemInstruction = buildSystemInstruction(cleanUsername, preferences);
     const normalizedProvider = String(provider).toLowerCase();
     const shouldStream = stream !== false;
 
@@ -206,7 +314,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       // If no API key is configured, return simulated response (with progressive reveal if streaming)
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences);
         if (!shouldStream) {
           return res.json({
             text,
@@ -322,7 +430,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'groq') {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
       if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences);
         if (!shouldStream) {
           return res.json({
             text,
@@ -457,7 +565,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'openrouter') {
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
       if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences);
         if (!shouldStream) {
           return res.json({
             text,

@@ -25,7 +25,8 @@ export default function MessageList({
   onEditResend,
   editingMessageId = null,
   onStartEdit,
-  onCancelEdit
+  onCancelEdit,
+  showTimestamps = true
 }) {
   const bottomAnchorRef = useRef(null);
   const prevMessagesLengthRef = useRef(messages.length);
@@ -71,6 +72,7 @@ export default function MessageList({
           onStartEdit={onStartEdit ? () => onStartEdit(msg.id) : undefined}
           onCancelEdit={onCancelEdit}
           onEditResend={onEditResend}
+          showTimestamps={showTimestamps}
         />
       ))}
 
