@@ -1411,13 +1411,29 @@ html, body {
 /* Starter Prompts Grid */
 .starter-prompts-container {
   width: 100%;
-  margin-top: 6px;
+  margin-top: 14px;
+}
+
+.starter-prompts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+.starter-prompts-caption {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
 }
 
 .starter-prompts-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  gap: 12px;
   width: 100%;
 }
 
@@ -1425,20 +1441,29 @@ html, body {
   background-color: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
+  padding: 13px 15px;
   text-align: left;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-height: 44px;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 84px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 
 .prompt-card:hover {
   background-color: var(--bg-card-hover);
-  border-color: var(--border-medium);
-  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.35);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.prompt-card:active {
+  transform: translateY(0);
 }
 
 .prompt-card:focus-visible {
@@ -1446,26 +1471,97 @@ html, body {
   outline-offset: 1px;
 }
 
+.prompt-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
 .prompt-card-header {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--text-primary);
-  font-weight: 500;
+  font-weight: 600;
   font-size: 0.88rem;
+  line-height: 1.35;
 }
 
 .prompt-card-icon {
   color: var(--accent-primary);
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(37, 99, 235, 0.12);
   flex-shrink: 0;
+}
+
+.prompt-card-title {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.88rem;
+  letter-spacing: -0.01em;
+}
+
+.prompt-card-arrow {
+  color: var(--text-muted);
+  opacity: 0.4;
+  display: flex;
+  align-items: center;
+  transition: opacity var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.prompt-card:hover .prompt-card-arrow {
+  opacity: 1;
+  color: var(--accent-primary);
+  transform: translate(2px, -2px);
 }
 
 .prompt-card-desc {
   font-size: 0.78rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.prompt-card-footer {
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.prompt-card-badge {
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: var(--radius-xs);
+  background-color: rgba(255, 255, 255, 0.05);
   color: var(--text-muted);
-  line-height: 1.4;
+  border: 1px solid var(--border-subtle);
+}
+
+.prompt-card:hover .prompt-card-badge {
+  color: var(--text-secondary);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.messages-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 80px 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
 }
 
 /* ==========================================================================

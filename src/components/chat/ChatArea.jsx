@@ -38,6 +38,9 @@ import { sendAIMessage } from '../../services/aiRouter.js';
 export default function ChatArea({
   messages = [],
   isLoading = false,
+  messagesLoading = false,
+  isNewChat = true,
+  username = null,
   inputValue = '',
   onInputChange,
   onSubmit,
@@ -114,6 +117,10 @@ export default function ChatArea({
     }
     if (textareaRef.current) {
       textareaRef.current.focus();
+      try {
+        const len = (promptText || '').length;
+        textareaRef.current.setSelectionRange(len, len);
+      } catch (_) {}
     }
   };
 
@@ -201,8 +208,13 @@ Transcript:
       {/* Scrollable Viewport */}
       <div className="chat-scroll-viewport">
         <div className="chat-content-constrained">
-          {!hasMessages ? (
-            <WelcomeScreen onSelectPrompt={handlePromptSelect} />
+          {isNewChat && !hasMessages ? (
+            <WelcomeScreen onSelectPrompt={handlePromptSelect} username={username} />
+          ) : messagesLoading && !hasMessages ? (
+            <div className="messages-loading-state" role="status" aria-label="Loading conversation">
+              <Loader2 size={24} className="spin-icon" />
+              <span>Loading conversation...</span>
+            </div>
           ) : (
             <MessageList
               messages={messages}

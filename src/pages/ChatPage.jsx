@@ -1126,7 +1126,10 @@ export default function ChatPage() {
 
       <ChatArea
         messages={messages}
-        isLoading={isLoading || messagesLoading}
+        isLoading={isLoading}
+        messagesLoading={messagesLoading}
+        isNewChat={!activeChatId}
+        username={username}
         inputValue={inputValue}
         onInputChange={setInputValue}
         onSubmit={handleSubmit}
