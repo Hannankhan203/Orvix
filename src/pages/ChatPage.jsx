@@ -77,6 +77,16 @@ export default function ChatPage() {
   activeChatIdRef.current = activeChatId;
   // Request sequence counter for rapid chat switching
   const fetchRequestIdRef = useRef(0);
+  // Active animation cancellation ref to clean up timers across unmounts or chat transitions
+  const activeAnimationRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (activeAnimationRef.current) {
+        activeAnimationRef.current();
+      }
+    };
+  }, []);
 
   // Helper for guest mode pin and conversation persistence
   const getGuestPinnedIds = () => {
@@ -217,6 +227,9 @@ export default function ChatPage() {
 
   // New Chat: Resets active view cleanly without creating an empty document
   const handleNewChat = () => {
+    if (activeAnimationRef.current) {
+      activeAnimationRef.current();
+    }
     setActiveChatId(null);
     setMessages([]);
     setInputValue('');
@@ -360,13 +373,140 @@ export default function ChatPage() {
   };
 
   /**
-   * Dispatches a prompt with streaming conversation context and persists results upon completion.
+   * Dispatches a prompt with progressive streaming animation and persists results upon completion.
    * Protects against cross-chat state pollution during rapid chat switching.
    */
   const executePrompt = async (promptText, historyContext, targetChatId, assistantMessageId) => {
     setIsLoading(true);
-    let accumulated = '';
+
+    let targetText = '';
+    let displayedText = '';
     let activeModel = null;
+    let finalProvider = selectedProvider;
+    let isStreamDone = false;
+    let timerId = null;
+    let isCancelled = false;
+
+    // Check accessibility settings for reduced motion
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+
+    // Clean up any previously running animation
+    if (activeAnimationRef.current) {
+      activeAnimationRef.current();
+    }
+
+    const cancelCurrentAnimation = () => {
+      isCancelled = true;
+      if (timerId) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    };
+    activeAnimationRef.current = cancelCurrentAnimation;
+
+    // Finalizes the assistant message once the animation has caught up to the complete response
+    const finalizeAssistantMessage = async (contentToSave, modelToUse, providerToUse) => {
+      if (isCancelled) return;
+
+      const completedMessage = {
+        id: assistantMessageId,
+        sender: 'assistant',
+        provider: providerToUse || selectedProvider,
+        modelUsed: modelToUse || activeModel,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: contentToSave,
+        isStreaming: false
+      };
+
+      // Only update active UI if user is STILL viewing targetChatId
+      if (activeChatIdRef.current === targetChatId) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantMessageId ? completedMessage : m))
+        );
+      }
+
+      // Safely persist completed message to Firestore or guest storage
+      if (targetChatId) {
+        await persistMessageSafe(targetChatId, completedMessage);
+      }
+
+      setIsLoading(false);
+      isSubmittingRef.current = false;
+    };
+
+    // Progressive animation pump loop
+    const pumpAnimation = () => {
+      if (isCancelled) return;
+
+      // If user navigated away from target chat, stop UI pump
+      if (activeChatIdRef.current !== targetChatId) {
+        return;
+      }
+
+      const backlog = targetText.length - displayedText.length;
+
+      if (backlog > 0) {
+        if (prefersReducedMotion) {
+          displayedText = targetText;
+        } else {
+          // Adaptive pacing:
+          // Smooth 1-2 chars at a time when backlog is small (~50 chars/sec).
+          // Automatically scales up for larger chunks so responses finish promptly.
+          let stepSize = 1;
+          if (backlog > 500) {
+            stepSize = Math.min(backlog, Math.ceil(backlog / 16));
+          } else if (backlog > 200) {
+            stepSize = Math.min(backlog, Math.ceil(backlog / 12));
+          } else if (backlog > 80) {
+            stepSize = Math.min(backlog, Math.ceil(backlog / 8));
+          } else if (backlog > 30) {
+            stepSize = Math.min(backlog, Math.ceil(backlog / 5));
+          } else if (backlog > 8) {
+            stepSize = Math.min(backlog, 2);
+          } else {
+            stepSize = 1;
+          }
+
+          displayedText = targetText.slice(0, displayedText.length + stepSize);
+        }
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMessageId
+              ? {
+                  ...m,
+                  content: displayedText,
+                  modelUsed: activeModel || m.modelUsed,
+                  provider: finalProvider || m.provider,
+                  isStreaming: true
+                }
+              : m
+          )
+        );
+
+        // Schedule next character tick (18ms provides smooth ~55fps typing cadence)
+        timerId = setTimeout(pumpAnimation, 18);
+      } else {
+        // Backlog is 0 (displayedText has caught up to targetText)
+        if (isStreamDone) {
+          // Provider stream has finished, and animation has revealed all characters!
+          finalizeAssistantMessage(targetText, activeModel, finalProvider);
+        } else {
+          // Waiting for more chunks from the provider; pump pauses until onChunk triggers it
+          timerId = null;
+        }
+      }
+    };
+
+    // Ensure the animation loop is running if there is text in the buffer
+    const triggerPump = () => {
+      if (isCancelled) return;
+      if (!timerId) {
+        timerId = setTimeout(pumpAnimation, 10);
+      }
+    };
 
     try {
       // Call selected AI provider API with streaming chunks and personalized username
@@ -375,74 +515,75 @@ export default function ChatPage() {
         prompt: promptText,
         history: historyContext,
         username: username || currentUser?.displayName || null,
-        onStart: ({ modelUsed }) => {
-          activeModel = modelUsed;
+        onStart: ({ modelUsed, provider }) => {
+          if (modelUsed) activeModel = modelUsed;
+          if (provider) finalProvider = provider;
           if (activeChatIdRef.current === targetChatId) {
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === assistantMessageId ? { ...m, modelUsed } : m
+                m.id === assistantMessageId
+                  ? { ...m, modelUsed: activeModel, provider: finalProvider }
+                  : m
               )
             );
           }
         },
         onChunk: (_chunkText, currentAccumulated) => {
-          accumulated = currentAccumulated;
-          // Cross-chat contamination guard: Only update UI if the user is STILL viewing this conversation!
-          if (activeChatIdRef.current === targetChatId) {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMessageId
-                  ? {
-                      ...m,
-                      content: currentAccumulated,
-                      modelUsed: activeModel || m.modelUsed,
-                      isStreaming: true
-                    }
-                  : m
-              )
-            );
-          }
+          targetText = currentAccumulated;
+          triggerPump();
         }
       });
 
-      const finalContent = result.text || accumulated;
-      const finalModel = result.modelUsed || activeModel;
-      const finalProvider = result.provider || selectedProvider;
+      // Stream reception finished
+      const resolvedText = result.text || targetText;
+      targetText = resolvedText;
+      if (result.modelUsed) activeModel = result.modelUsed;
+      if (result.provider) finalProvider = result.provider;
+      isStreamDone = true;
 
-      const completedMessage = {
-        id: assistantMessageId,
-        sender: 'assistant',
-        provider: finalProvider,
-        modelUsed: finalModel,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        content: finalContent,
-        isStreaming: false
-      };
-
-      // Cross-chat contamination guard: finalize UI state if user is still on this chat
-      if (activeChatIdRef.current === targetChatId) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === assistantMessageId ? completedMessage : m))
-        );
+      // If user switched away, finish up and persist directly to target conversation
+      if (activeChatIdRef.current !== targetChatId) {
+        cancelCurrentAnimation();
+        const completedMessage = {
+          id: assistantMessageId,
+          sender: 'assistant',
+          provider: finalProvider,
+          modelUsed: activeModel,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: resolvedText,
+          isStreaming: false
+        };
+        if (targetChatId) {
+          await persistMessageSafe(targetChatId, completedMessage);
+        }
+        setIsLoading(false);
+        isSubmittingRef.current = false;
+        return;
       }
 
-      // Persist completed AI response once generation finishes
-      if (targetChatId) {
-        await persistMessageSafe(targetChatId, completedMessage);
+      // If there is still backlog to animate, let the pump finish typing the remaining text;
+      // otherwise, finalize immediately.
+      if (displayedText.length < targetText.length && !prefersReducedMotion) {
+        triggerPump();
+      } else {
+        cancelCurrentAnimation();
+        await finalizeAssistantMessage(targetText, activeModel, finalProvider);
       }
     } catch (err) {
       console.error('Streaming prompt execution error:', err);
-      // If still viewing this chat, handle partial recovery or error bubble gracefully
+      isStreamDone = true;
+      cancelCurrentAnimation();
+
       if (activeChatIdRef.current === targetChatId) {
-        if (accumulated.trim().length > 0) {
-          // Preserve partial stream and append error explanation
+        if (targetText.trim().length > 0) {
+          // Display whatever was received plus interrupted notice
           const partialMessage = {
             id: assistantMessageId,
             sender: 'assistant',
             provider: selectedProvider,
             modelUsed: activeModel,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            content: `${accumulated}\n\n*[Response interrupted: ${err.message || 'Connection lost'}]*`,
+            content: `${targetText}\n\n*[Response interrupted: ${err.message || 'Connection lost'}]*`,
             isStreaming: false
           };
           setMessages((prev) =>
@@ -452,7 +593,7 @@ export default function ChatPage() {
             await persistMessageSafe(targetChatId, partialMessage);
           }
         } else {
-          // Replace with friendly error message bubble
+          // Replace with clean error bubble
           const errorMessage = {
             id: `error-${Date.now()}`,
             sender: 'assistant',
@@ -465,9 +606,20 @@ export default function ChatPage() {
             prev.map((m) => (m.id === assistantMessageId ? errorMessage : m))
           );
         }
+      } else if (targetChatId && targetText.trim().length > 0) {
+        // Save partial response to background chat
+        const partialMessage = {
+          id: assistantMessageId,
+          sender: 'assistant',
+          provider: selectedProvider,
+          modelUsed: activeModel,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: `${targetText}\n\n*[Response interrupted]*`,
+          isStreaming: false
+        };
+        await persistMessageSafe(targetChatId, partialMessage);
       }
-    } finally {
-      // Clean up loading state and submission lock
+
       setIsLoading(false);
       isSubmittingRef.current = false;
     }

@@ -163,6 +163,31 @@ export async function streamAIMessage({
         }
       }
 
+      if (buffer && buffer.trim().startsWith('data: ')) {
+        const dataStr = buffer.trim().slice(6);
+        try {
+          const data = JSON.parse(dataStr);
+          if (data.type === 'start') {
+            modelUsed = data.modelUsed;
+            finalProvider = data.provider || normalizedProvider;
+            onStart?.({ modelUsed, provider: finalProvider });
+          } else if (data.type === 'chunk' && data.text) {
+            accumulatedText += data.text;
+            onChunk?.(data.text, accumulatedText);
+          } else if (data.type === 'done') {
+            if (data.modelUsed) modelUsed = data.modelUsed;
+            if (data.provider) finalProvider = data.provider;
+            return {
+              text: data.text || accumulatedText,
+              modelUsed: modelUsed || 'AI Model',
+              provider: finalProvider
+            };
+          } else if (data.type === 'error') {
+            throw new Error(data.error || 'Stream error occurred.');
+          }
+        } catch (_) {}
+      }
+
       return {
         text: accumulatedText,
         modelUsed: modelUsed || 'AI Model',

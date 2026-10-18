@@ -139,11 +139,15 @@ function initSSE(res: express.Response) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 }
 
 function sendSSE(res: express.Response, data: object) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+  if (typeof (res as any).flush === 'function') {
+    (res as any).flush();
+  }
 }
 
 // Central AI Chat Dispatch Endpoint (Supports genuine SSE streaming and non-streaming fallback)

@@ -1950,6 +1950,17 @@ html, body {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .ai-markdown-container.is-streaming > *:last-child::after {
+    animation: none;
+    opacity: 0.9;
+  }
+  .typing-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 
 /* ==========================================================================
    Message Composer Dock (Safe Area & Responsive)
