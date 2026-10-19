@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import {
   ArrowUp,
+  ArrowDown,
   Mic,
   Square,
   AlertCircle,
@@ -25,6 +26,7 @@ import { sendAIMessage } from '../../services/aiRouter.js';
  * error retries, and the fixed bottom message composer with professional voice dictation.
  *
  * @param {Object} props
+ * @param {string|null} [props.activeChatId=null]
  * @param {Array} props.messages
  * @param {boolean} [props.isLoading=false]
  * @param {string} props.inputValue
@@ -40,6 +42,7 @@ import { sendAIMessage } from '../../services/aiRouter.js';
  * @param {() => void} [props.onDismissModeNotice]
  */
 export default function ChatArea({
+  activeChatId = null,
   messages = [],
   isLoading = false,
   messagesLoading = false,
@@ -68,6 +71,16 @@ export default function ChatArea({
 }) {
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
+  const scrollViewportRef = useRef(null);
+
+  // Floating scroll-to-bottom button visibility
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+
+  // References to track scroll position and conversation switching lifecycle
+  const pendingTopScrollChatIdRef = useRef(activeChatId || null);
+  const prevActiveChatIdRef = useRef(activeChatId || null);
+  const prevMessagesCountRef = useRef(messages.length);
+  const isUserFollowingBottomRef = useRef(false);
 
   // Language dropdown toggle state
   const [langMenuOpen, setLangMenuOpen] = useState(false);
@@ -75,6 +88,141 @@ export default function ChatArea({
   // AI Transcript Refinement (Phase 4) state
   const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
   const [suggestedRefinement, setSuggestedRefinement] = useState(null);
+
+  // Computes distance from bottom and updates floating button visibility
+  const updateScrollButtonVisibility = () => {
+    const scrollContainer = scrollViewportRef.current;
+    if (!scrollContainer) return;
+
+    const distanceFromBottom =
+      scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+
+    // Within 120px threshold is considered "at or near the bottom"
+    if (distanceFromBottom <= 120) {
+      isUserFollowingBottomRef.current = true;
+    } else {
+      isUserFollowingBottomRef.current = false;
+    }
+
+    // Show button only if there are messages and user is sufficiently far (> 120px) from bottom
+    const shouldShow = messages.length > 0 && distanceFromBottom > 120;
+    setShowScrollBottom(shouldShow);
+  };
+
+  // Smoothly scrolls viewport to bottom
+  const handleScrollToBottom = () => {
+    const scrollContainer = scrollViewportRef.current;
+    if (!scrollContainer) return;
+
+    isUserFollowingBottomRef.current = true;
+    scrollContainer.scrollTo({
+      top: scrollContainer.scrollHeight,
+      behavior: 'smooth'
+    });
+  };
+
+  // Passive scroll event handler
+  const handleScroll = () => {
+    updateScrollButtonVisibility();
+  };
+
+  // Window resize listener to keep button visibility updated
+  useEffect(() => {
+    const handleResize = () => {
+      updateScrollButtonVisibility();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [messages.length]);
+
+  // Handle conversation switching / opening:
+  // Starts each opened conversation at the top (scrollTop = 0)
+  useEffect(() => {
+    if (activeChatId !== prevActiveChatIdRef.current) {
+      const prevChatId = prevActiveChatIdRef.current;
+      prevActiveChatIdRef.current = activeChatId;
+      isUserFollowingBottomRef.current = false;
+
+      if (activeChatId) {
+        // An existing conversation was opened or switched to
+        pendingTopScrollChatIdRef.current = activeChatId;
+        if (scrollViewportRef.current) {
+          scrollViewportRef.current.scrollTop = 0;
+        }
+      } else {
+        // Switched to empty New Chat
+        pendingTopScrollChatIdRef.current = null;
+        if (scrollViewportRef.current) {
+          scrollViewportRef.current.scrollTop = 0;
+        }
+        setShowScrollBottom(false);
+      }
+    }
+  }, [activeChatId]);
+
+  // Handle scroll positioning on message rendering and response streaming
+  useEffect(() => {
+    const scrollContainer = scrollViewportRef.current;
+    if (!scrollContainer) return;
+
+    // 1. Initial positioning for opened conversation:
+    // When messages finish loading and are rendered, ensure scroll starts at the top
+    if (pendingTopScrollChatIdRef.current && activeChatId === pendingTopScrollChatIdRef.current) {
+      if (!messagesLoading && messages.length > 0) {
+        requestAnimationFrame(() => {
+          if (scrollContainer && pendingTopScrollChatIdRef.current === activeChatId) {
+            scrollContainer.scrollTop = 0;
+          }
+          requestAnimationFrame(() => {
+            if (scrollContainer && pendingTopScrollChatIdRef.current === activeChatId) {
+              scrollContainer.scrollTop = 0;
+              pendingTopScrollChatIdRef.current = null;
+              updateScrollButtonVisibility();
+            }
+          });
+        });
+        prevMessagesCountRef.current = messages.length;
+        return;
+      }
+    }
+
+    // 2. Newly submitted user message or started assistant response
+    const isNewMessage = messages.length > prevMessagesCountRef.current;
+    const lastMessage = messages[messages.length - 1];
+    prevMessagesCountRef.current = messages.length;
+
+    if (isNewMessage) {
+      if (lastMessage?.sender === 'user' || lastMessage?.isStreaming) {
+        isUserFollowingBottomRef.current = true;
+        requestAnimationFrame(() => {
+          if (scrollContainer) {
+            scrollContainer.scrollTo({
+              top: scrollContainer.scrollHeight,
+              behavior: 'smooth'
+            });
+            updateScrollButtonVisibility();
+          }
+        });
+        return;
+      }
+    }
+
+    // 3. AI response streaming: follow bottom ONLY if user is already at bottom or following
+    if (lastMessage?.isStreaming) {
+      const distanceFromBottom =
+        scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+      const isNearBottom = distanceFromBottom < 140;
+
+      if (isUserFollowingBottomRef.current || isNearBottom) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+      updateScrollButtonVisibility();
+      return;
+    }
+
+    // Normal re-renders: update button state without changing scroll position
+    updateScrollButtonVisibility();
+  }, [messages, messagesLoading, activeChatId]);
 
   // Hook into upgraded speech recognition engine
   const {
@@ -241,7 +389,11 @@ Transcript:
   return (
     <main className="chat-area-container" role="main">
       {/* Scrollable Viewport */}
-      <div className="chat-scroll-viewport">
+      <div
+        ref={scrollViewportRef}
+        className="chat-scroll-viewport"
+        onScroll={handleScroll}
+      >
         <div className="chat-content-constrained">
           {isNewChat && !hasMessages ? (
             <WelcomeScreen
@@ -278,6 +430,20 @@ Transcript:
       {/* Message Composer Dock */}
       <div className="chat-composer-dock">
         <div className="chat-composer-inner">
+          {/* ChatGPT-style Floating Scroll-to-Bottom Button */}
+          {showScrollBottom && (
+            <div className="scroll-to-bottom-dock">
+              <button
+                type="button"
+                className="scroll-to-bottom-btn"
+                onClick={handleScrollToBottom}
+                aria-label="Scroll to bottom"
+                title="Scroll to bottom"
+              >
+                <ArrowDown size={18} aria-hidden="true" />
+              </button>
+            </div>
+          )}
           {/* Voice Dictation Error Notification */}
           {dictationError && (
             <div className="composer-dictation-error" role="alert">

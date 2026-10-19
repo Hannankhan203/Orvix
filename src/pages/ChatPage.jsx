@@ -1788,6 +1788,7 @@ export default function ChatPage() {
       )}
 
       <ChatArea
+        activeChatId={activeChatId}
         messages={messages}
         isLoading={isLoading}
         messagesLoading={messagesLoading}

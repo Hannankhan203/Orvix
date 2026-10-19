@@ -2967,11 +2967,85 @@ html, body {
 }
 
 .chat-composer-inner {
+  position: relative;
   width: 100%;
   max-width: var(--composer-max-width);
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* ==========================================================================
+   ChatGPT-Style Floating Scroll-to-Bottom Button
+   ========================================================================== */
+.scroll-to-bottom-dock {
+  position: absolute;
+  top: -46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: scrollBtnFadeIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes scrollBtnFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.scroll-to-bottom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-md), 0 2px 8px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  outline: none;
+  pointer-events: auto;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.scroll-to-bottom-btn:hover {
+  background-color: var(--bg-card-hover);
+  color: var(--text-primary);
+  border-color: var(--border-active);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg), 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.scroll-to-bottom-btn:active {
+  transform: translateY(0);
+}
+
+.scroll-to-bottom-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .scroll-to-bottom-dock {
+    top: -44px;
+  }
+  .scroll-to-bottom-btn {
+    width: 34px;
+    height: 34px;
+  }
 }
 
 .composer-form {
