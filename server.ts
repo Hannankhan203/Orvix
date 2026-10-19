@@ -62,10 +62,11 @@ interface UserPreferences {
   beginnerFriendly?: boolean;
 }
 
-// Helper to format system instruction with dynamic username and response preferences personalization
+// Helper to format system instruction with dynamic username, response preferences, and chat mode
 function buildSystemInstruction(
   username?: string | null,
-  preferences?: UserPreferences | null
+  preferences?: UserPreferences | null,
+  mode?: string | null
 ) {
   const baseInstruction =
     'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.';
@@ -100,14 +101,31 @@ function buildSystemInstruction(
     );
   }
 
+  // Active Chat Mode instruction layer
+  const normalizedMode = (mode || 'general').toLowerCase().trim();
+  if (normalizedMode === 'coding') {
+    instructions.push(
+      'Active Mode: Coding. Prioritize high-quality programming guidance, software architecture, syntax review, and debugging. Provide clean, correct, and well-structured code blocks with accurate language identifiers. Explain how the code operates, highlight edge cases or potential pitfalls, and guide the user through step-by-step technical problem solving without making ungrounded assumptions.'
+    );
+  } else if (normalizedMode === 'writing') {
+    instructions.push(
+      'Active Mode: Writing. Prioritize drafting, editing, rewriting, tone adjustment, and prose enhancement. Focus on clarity, flow, rhythm, grammatical precision, and compelling structure. Offer constructive suggestions, varied phrasing alternatives, and polished text tailored to the user\'s intended audience and purpose.'
+    );
+  } else if (normalizedMode === 'learning') {
+    instructions.push(
+      'Active Mode: Learning. Prioritize clear educational explanations and concept mastery. Break complex topics down into logical, easily digestible steps. Use relatable real-world analogies, illustrative examples, and intuitive comparisons. Encourage deep understanding by highlighting key takeaways and offering helpful conceptual summaries.'
+    );
+  }
+
   return instructions.join(' ');
 }
 
-// Simulated fallback response for demo / guest mode with response preferences support
+// Simulated fallback response for demo / guest mode with response preferences and chat modes support
 function generateSimulatedResponse(
   promptText = '',
   username: string | null = null,
-  preferences?: UserPreferences | null
+  preferences?: UserPreferences | null,
+  mode?: string | null
 ) {
   const promptLower = promptText.toLowerCase();
   const greetingName = username ? ` ${username}` : '';
@@ -115,6 +133,118 @@ function generateSimulatedResponse(
   const isConcise = preferences?.responseLength === 'concise';
   const isDetailed = preferences?.responseLength === 'detailed';
   const isBeginner = Boolean(preferences?.beginnerFriendly);
+  const normalizedMode = (mode || 'general').toLowerCase().trim();
+
+  // Mode-specific simulated responses
+  if (normalizedMode === 'coding') {
+    if (isConcise) {
+      return `\`\`\`javascript
+// Clean implementation
+export function solveProblem(input) {
+  if (!input) return null;
+  return Array.isArray(input) ? input.filter(Boolean) : [input];
+}
+\`\`\`
+• Time complexity: O(N) | Space complexity: O(N)`;
+    }
+    return `### [Coding Mode] Technical Solution & Code Implementation
+
+\`\`\`javascript
+/**
+ * Optimized solution addressing your query: "${promptText.slice(0, 40)}"
+ * Handles edge cases, input validation, and asynchronous flow safely.
+ */
+export async function executeTask(payload = {}) {
+  const sanitized = typeof payload === 'object' && payload !== null ? payload : {};
+
+  try {
+    if (sanitized.data === undefined) {
+      return { success: true, count: 0, results: [] };
+    }
+
+    const items = Array.isArray(sanitized.data) ? sanitized.data : [sanitized.data];
+    const processed = items.map((item, index) => ({
+      index,
+      timestamp: Date.now(),
+      value: item
+    }));
+
+    return {
+      success: true,
+      count: processed.length,
+      results: processed
+    };
+  } catch (error) {
+    console.error('Execution error:', error);
+    throw new Error(\`Failed to process task: \${error.message}\`);
+  }
+}
+\`\`\`
+
+#### Key Architectural Notes
+1. **Defensive Validation:** Guards against undefined and non-object inputs before processing.
+2. **Error Boundary:** Catches runtime exceptions and normalizes error responses.
+3. **Complexity:** Executes in linear $O(N)$ time with minimal allocation overhead.`;
+  }
+
+  if (normalizedMode === 'writing') {
+    if (isConcise) {
+      return `Here is a refined, polished draft:
+
+> **Draft:** Thank you for reaching out${greetingName}. We have reviewed the recent progress and are pleased to share that all primary milestones are currently on schedule. Please let us know if you would like to arrange a brief sync this week.
+
+• Crisp tone, clear call-to-action, zero redundant filler.`;
+    }
+    return `### [Writing Mode] Content Draft & Style Breakdown
+
+Here is a structured, compelling draft tailored to your request:
+
+---
+
+> **Subject:** Update regarding project milestones and upcoming sync
+>
+> Dear team${greetingName ? ` and ${greetingName}` : ''},
+>
+> I am writing to provide a concise update on our recent milestones and outline the next steps for our upcoming release. Over the past sprint, our team successfully finalized the core architecture and resolved all high-priority items.
+>
+> **Key Highlights:**
+> • **Milestone Progress:** Phase 1 deliverables are complete and undergoing review.
+> • **Quality Standards:** All automated test suites and validation checks have passed.
+> • **Next Steps:** We will begin final integration testing on Thursday morning.
+>
+> Please feel free to reply with any initial thoughts or adjustments before our scheduled check-in.
+>
+> Best regards,  
+> **Orvix**
+
+---
+
+#### Editorial Notes
+• **Tone & Register:** Professional, measured, and approachable.  
+• **Structural Flow:** Opening state → itemized highlights → clear closing call-to-action.  
+• **Clarity:** Bulleted points improve reading scanability for busy readers.`;
+  }
+
+  if (normalizedMode === 'learning') {
+    return `### [Learning Mode] Conceptual Breakdown
+
+${isBeginner ? '> **Everyday Analogy:** Think of this concept like an orchestra conductor. Rather than playing every instrument, the conductor signals each section when to begin so the entire performance remains in harmony.\n\n' : ''}Let's break down **"${promptText.slice(0, 45)}"** step-by-step:
+
+#### 1. Core Principle
+At its foundation, this concept revolves around breaking a large, intimidating problem into smaller, self-contained pieces that can be reasoned about independently.
+
+#### 2. How It Works (Step-by-Step)
+1. **The Input / Trigger:** A request or data packet enters the system.
+2. **The Transformation:** Internal rules or algorithms validate and organize the data.
+3. **The Output:** The final result is returned to the requester in a standardized format.
+
+#### 3. Real-World Applications
+• **Scalability:** Enables high-volume systems to handle thousands of requests without crashing.  
+• **Maintainability:** Makes isolating and fixing bugs straightforward without breaking neighboring features.
+
+---
+💡 **Quick Comprehension Check:** How would you describe the relationship between the input and the transformation in your own words?`;
+  }
 
   let body = '';
   if (
@@ -273,6 +403,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   try {
     const {
       provider = 'gemini',
+      mode = 'general',
       prompt,
       history = [],
       username = null,
@@ -280,6 +411,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       stream = true
     } = req.body as {
       provider?: string;
+      mode?: string;
       prompt?: string;
       history?: Array<{ sender?: string; content?: string }>;
       username?: string | null;
@@ -304,7 +436,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         ? username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ')
         : null;
 
-    const systemInstruction = buildSystemInstruction(cleanUsername, preferences);
+    const systemInstruction = buildSystemInstruction(cleanUsername, preferences, mode);
     const normalizedProvider = String(provider).toLowerCase();
     const shouldStream = stream !== false;
 
@@ -314,7 +446,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       // If no API key is configured, return simulated response (with progressive reveal if streaming)
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         if (!shouldStream) {
           return res.json({
             text,
@@ -430,7 +562,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'groq') {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
       if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         if (!shouldStream) {
           return res.json({
             text,
@@ -565,7 +697,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'openrouter') {
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
       if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         if (!shouldStream) {
           return res.json({
             text,

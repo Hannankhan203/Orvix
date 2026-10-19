@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext.jsx';
 import { useSpeech } from '../../context/SpeechContext.jsx';
-import { THEME_OPTIONS, RESPONSE_LENGTH_OPTIONS } from '../../services/userSettingsService.js';
+import { THEME_OPTIONS, RESPONSE_LENGTH_OPTIONS, CHAT_MODE_PREFERENCE_OPTIONS } from '../../services/userSettingsService.js';
 import Button from '../ui/Button.jsx';
 
 export default function SettingsModal() {
@@ -136,6 +136,10 @@ export default function SettingsModal() {
 
   const handleResponseLengthChange = (length) => {
     updateSettings({ responseLength: length });
+  };
+
+  const handleDefaultModeChange = (mode) => {
+    updateSettings({ defaultMode: mode });
   };
 
   const handleToggleBeginnerFriendly = () => {
@@ -331,6 +335,41 @@ export default function SettingsModal() {
                       role="radio"
                       aria-checked={isSelected}
                       onClick={() => handleResponseLengthChange(opt.id)}
+                      className={`settings-segment-btn ${isSelected ? 'active' : ''}`}
+                      title={opt.description}
+                    >
+                      <span>{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Default Chat Mode */}
+            <div className="settings-control-block">
+              <div className="settings-control-label-wrap">
+                <label className="settings-control-label" id="default-mode-label">
+                  Default Chat Mode for New Chats
+                </label>
+                <p className="settings-control-subtext">
+                  Choose the starting mode for new conversations. You can always change it in any active chat.
+                </p>
+              </div>
+
+              <div
+                className="settings-segmented-group settings-segmented-modes"
+                role="radiogroup"
+                aria-labelledby="default-mode-label"
+              >
+                {CHAT_MODE_PREFERENCE_OPTIONS.map((opt) => {
+                  const isSelected = (settings.defaultMode || 'general') === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      onClick={() => handleDefaultModeChange(opt.id)}
                       className={`settings-segment-btn ${isSelected ? 'active' : ''}`}
                       title={opt.description}
                     >

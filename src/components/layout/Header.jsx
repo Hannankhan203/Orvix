@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Menu, Plus, Sparkles, LogOut, User, X, ChevronDown, Check, Edit2, AlertCircle, Download, Sliders } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import ModelSelector from '../chat/ModelSelector.jsx';
+import ModeSelector from '../chat/ModeSelector.jsx';
 import ExportChatMenu from '../chat/ExportChatMenu.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
@@ -13,10 +14,10 @@ import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 /**
  * Header Component
  * Provides responsive navigation for both desktop and mobile screens:
- * - Desktop: Clean single-row toolbar with active breadcrumb, model selector, export menu, New Chat, and user profile block.
+ * - Desktop: Clean single-row toolbar with active breadcrumb, mode selector, model selector, export menu, New Chat, and user profile block.
  * - Mobile: Purpose-built 2-tier header preventing overflow:
  *     Tier 1: Hamburger toggle, brand mark, export trigger, compact New Chat, and user avatar button.
- *     Tier 2: Compact AI model selector pill and active thread context.
+ *     Tier 2: Compact AI model selector pill, mode selector, and active thread context.
  * - Accessible account popover menu revealing username above email address,
  *   inline username editing/adding, and Sign Out action.
  *
@@ -27,6 +28,8 @@ import { usePWAInstall } from '../../hooks/usePWAInstall.js';
  * @param {string|null} [props.activeTitle=null]
  * @param {string} [props.selectedProvider='gemini']
  * @param {(provider: string) => void} [props.onSelectProvider]
+ * @param {string} [props.activeMode='general']
+ * @param {(mode: string) => void} [props.onSelectMode]
  * @param {() => void} [props.onExportMarkdown]
  * @param {() => void} [props.onExportText]
  * @param {boolean} [props.hasExportableMessages=false]
@@ -38,6 +41,8 @@ export default function Header({
   activeTitle = null,
   selectedProvider = 'gemini',
   onSelectProvider,
+  activeMode = 'general',
+  onSelectMode,
   onExportMarkdown,
   onExportText,
   hasExportableMessages = false
@@ -171,6 +176,15 @@ export default function Header({
         </div>
 
         <div className="header-right">
+          {/* Chat Mode Selector */}
+          {onSelectMode && (
+            <ModeSelector
+              activeMode={activeMode}
+              onSelectMode={onSelectMode}
+              className="header-mode-selector"
+            />
+          )}
+
           {/* AI Provider Selector */}
           {onSelectProvider && (
             <ModelSelector
@@ -334,6 +348,13 @@ export default function Header({
         {/* Tier 2: Context Bar (AI Model Selector + Chat Title / Status) */}
         <div className="header-mobile-sub">
           <div className="mobile-sub-left">
+            {onSelectMode && (
+              <ModeSelector
+                activeMode={activeMode}
+                onSelectMode={onSelectMode}
+                className="mobile-mode-selector"
+              />
+            )}
             {onSelectProvider && (
               <ModelSelector
                 selectedProvider={selectedProvider}

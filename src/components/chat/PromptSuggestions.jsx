@@ -6,9 +6,11 @@ import {
   Compass,
   FileText,
   Lightbulb,
+  BookOpen,
   ArrowUpRight
 } from 'lucide-react';
 import { APP_CONFIG } from '../../config/appConfig.js';
+import { MODE_STARTER_PROMPTS, getChatMode } from '../../config/chatModes.js';
 
 // Map icon string names to Lucide icons
 const ICON_MAP = {
@@ -17,24 +19,30 @@ const ICON_MAP = {
   PenTool,
   Compass,
   FileText,
-  Lightbulb
+  Lightbulb,
+  BookOpen
 };
 
 /**
  * PromptSuggestions Component
- * Renders polished smart starter prompt cards on the empty New Chat screen.
- * Clicking any suggestion populates the prompt into the active chat composer.
+ * Renders polished smart starter prompt cards on the empty New Chat screen,
+ * dynamically reflecting the active Chat Mode.
  *
  * @param {Object} props
  * @param {(promptText: string) => void} props.onSelectPrompt
+ * @param {string} [props.activeMode='general']
  */
-export default function PromptSuggestions({ onSelectPrompt }) {
-  const prompts = APP_CONFIG.starterPrompts || [];
+export default function PromptSuggestions({ onSelectPrompt, activeMode = 'general' }) {
+  const modeObj = getChatMode(activeMode);
+  const tailoredPrompts = MODE_STARTER_PROMPTS[activeMode];
+  const prompts = tailoredPrompts && tailoredPrompts.length > 0 ? tailoredPrompts : (APP_CONFIG.starterPrompts || []);
 
   return (
     <div className="starter-prompts-container" aria-label="Smart prompt suggestions">
       <div className="starter-prompts-header">
-        <span className="starter-prompts-caption">Smart Suggestions</span>
+        <span className="starter-prompts-caption">
+          {modeObj.name} Suggestions
+        </span>
       </div>
 
       <div className="starter-prompts-grid" role="list" aria-label="Suggested starter prompts">

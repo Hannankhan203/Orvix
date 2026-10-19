@@ -7,6 +7,8 @@
  * For production deployment, API requests should be proxied through a secure backend.
  */
 
+import { getChatMode } from '../config/chatModes.js';
+
 export function getOpenRouterApiKey() {
   try {
     if (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OPENROUTER_API_KEY) {
@@ -32,14 +34,20 @@ const DEFAULT_MODEL = 'openrouter/free';
  * @param {Array} history
  * @param {string} prompt
  * @param {number} [maxContextMessages=12]
+ * @param {string} [mode='general']
  * @returns {Array<{ role: string, content: string }>}
  */
-export function formatOpenRouterMessages(history = [], prompt, maxContextMessages = 12) {
+export function formatOpenRouterMessages(history = [], prompt, maxContextMessages = 12, mode = 'general') {
+  const modeObj = getChatMode(mode);
+  const systemContent = [
+    'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.',
+    modeObj.instruction
+  ].filter(Boolean).join(' ');
+
   const messages = [
     {
       role: 'system',
-      content:
-        'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.'
+      content: systemContent
     }
   ];
 
@@ -69,7 +77,7 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
  * @param {Array} [params.history=[]] - Previous conversation messages
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendOpenRouterMessage({ prompt, history = [] }) {
+export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general' }) {
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
@@ -78,7 +86,7 @@ export async function sendOpenRouterMessage({ prompt, history = [] }) {
     );
   }
 
-  const messages = formatOpenRouterMessages(history, prompt);
+  const messages = formatOpenRouterMessages(history, prompt, 12, mode);
 
   let response;
   try {
@@ -144,7 +152,7 @@ export async function sendOpenRouterMessage({ prompt, history = [] }) {
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamOpenRouterMessage({ prompt, history = [], onChunk, signal }) {
+export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal }) {
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
@@ -153,7 +161,7 @@ export async function streamOpenRouterMessage({ prompt, history = [], onChunk, s
     );
   }
 
-  const messages = formatOpenRouterMessages(history, prompt);
+  const messages = formatOpenRouterMessages(history, prompt, 12, mode);
 
   let response;
   try {

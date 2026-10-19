@@ -79,6 +79,7 @@ export function isProviderConfigured(provider) {
  */
 export async function streamAIMessage({
   provider = DEFAULT_PROVIDER,
+  mode = 'general',
   prompt,
   history = [],
   username = null,
@@ -88,6 +89,7 @@ export async function streamAIMessage({
   signal
 }) {
   const normalizedProvider = provider.toLowerCase();
+  const normalizedMode = (mode || 'general').toLowerCase();
 
   // Primary path: Use secure server-side proxy route /api/chat with SSE
   try {
@@ -99,6 +101,7 @@ export async function streamAIMessage({
       },
       body: JSON.stringify({
         provider: normalizedProvider,
+        mode: normalizedMode,
         prompt,
         history,
         username: username ? String(username).trim() : null,
@@ -220,7 +223,7 @@ export async function streamAIMessage({
   // Client-side direct service fallback
   switch (normalizedProvider) {
     case AI_PROVIDERS.GROQ: {
-      const result = await streamGroqMessage({ prompt, history, onChunk, signal });
+      const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.GROQ
@@ -228,7 +231,7 @@ export async function streamAIMessage({
     }
 
     case AI_PROVIDERS.OPENROUTER: {
-      const result = await streamOpenRouterMessage({ prompt, history, onChunk, signal });
+      const result = await streamOpenRouterMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
@@ -237,7 +240,7 @@ export async function streamAIMessage({
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await streamGeminiMessage({ prompt, history, username, onChunk, signal });
+      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI

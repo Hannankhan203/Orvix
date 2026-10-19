@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, Pencil, Trash2, Check, X, Pin } from 'lucide-react';
+import { MessageSquare, Pencil, Trash2, Check, X, Pin, Code, PenTool, BookOpen, Sparkles } from 'lucide-react';
 
 /**
  * SidebarChatItem Component
@@ -188,9 +188,19 @@ export default function SidebarChatItem({
   }
 
   // State C: Standard Conversation Item
+  const chatMode = chat.mode || 'general';
+  const ModeIcon =
+    chatMode === 'coding'
+      ? Code
+      : chatMode === 'writing'
+      ? PenTool
+      : chatMode === 'learning'
+      ? BookOpen
+      : MessageSquare;
+
   return (
     <div
-      className={`recent-chat-item-container ${isActive ? 'active' : ''}`}
+      className={`recent-chat-item-container ${isActive ? 'active' : ''} mode-${chatMode}`}
       onClick={onSelect}
       role="button"
       tabIndex={0}
@@ -200,10 +210,10 @@ export default function SidebarChatItem({
           onSelect();
         }
       }}
-      title={chat.title}
+      title={`${chat.title} (${chatMode === 'general' ? 'General' : chatMode.charAt(0).toUpperCase() + chatMode.slice(1)} Mode)`}
     >
       <div className="chat-item-content">
-        <MessageSquare size={15} className="chat-item-icon" aria-hidden="true" />
+        <ModeIcon size={15} className={`chat-item-icon mode-icon-${chatMode}`} aria-hidden="true" />
         <div className="chat-item-info">
           <div className="flex items-center gap-1.5 min-w-0">
             {chat.isPinned && (
@@ -211,7 +221,14 @@ export default function SidebarChatItem({
             )}
             <span className="chat-item-title">{chat.title}</span>
           </div>
-          <span className="chat-item-meta">{chat.timestamp}</span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="chat-item-meta">{chat.timestamp}</span>
+            {chatMode !== 'general' && (
+              <span className={`chat-item-mode-tag mode-${chatMode}`}>
+                {chatMode}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

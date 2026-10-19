@@ -34,6 +34,8 @@ export default function Layout({
   isCloudSynced = false,
   selectedProvider = 'gemini',
   onSelectProvider,
+  activeMode = 'general',
+  onSelectMode,
   onExportMarkdown,
   onExportText,
   hasExportableMessages = false
@@ -147,6 +149,8 @@ export default function Layout({
           activeTitle={activeTitle}
           selectedProvider={selectedProvider}
           onSelectProvider={onSelectProvider}
+          activeMode={activeMode}
+          onSelectMode={onSelectMode}
           onExportMarkdown={onExportMarkdown}
           onExportText={onExportText}
           hasExportableMessages={hasExportableMessages}

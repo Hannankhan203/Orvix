@@ -13,6 +13,7 @@ import { db, isFirebaseConfigured } from '../config/firebaseConfig.js';
 export const DEFAULT_SETTINGS = {
   theme: 'system', // 'light' | 'dark' | 'system'
   responseLength: 'balanced', // 'concise' | 'balanced' | 'detailed'
+  defaultMode: 'general', // 'general' | 'coding' | 'writing' | 'learning'
   beginnerFriendly: false, // boolean
   enterToSend: true, // boolean
   showTimestamps: true, // boolean
@@ -32,8 +33,16 @@ export const RESPONSE_LENGTH_OPTIONS = [
   { id: 'detailed', label: 'Detailed', description: 'Thorough, in-depth explanations with context' }
 ];
 
+export const CHAT_MODE_PREFERENCE_OPTIONS = [
+  { id: 'general', label: 'General Assistant', description: 'Versatile companion for everyday questions' },
+  { id: 'coding', label: 'Coding', description: 'Programming, debugging & technical guidance' },
+  { id: 'writing', label: 'Writing', description: 'Drafting, editing & tone polishing' },
+  { id: 'learning', label: 'Learning', description: 'Concept breakdown with step-by-step analogies' }
+];
+
 const VALID_THEMES = new Set(['system', 'dark', 'light']);
 const VALID_RESPONSE_LENGTHS = new Set(['concise', 'balanced', 'detailed']);
+const VALID_MODES = new Set(['general', 'coding', 'writing', 'learning']);
 
 /**
  * Sanitizes and validates settings against allowed options.
@@ -51,6 +60,10 @@ export function sanitizeSettings(raw) {
   const responseLength = VALID_RESPONSE_LENGTHS.has(raw.responseLength)
     ? raw.responseLength
     : DEFAULT_SETTINGS.responseLength;
+
+  const defaultMode = VALID_MODES.has(raw.defaultMode)
+    ? raw.defaultMode
+    : DEFAULT_SETTINGS.defaultMode;
 
   const beginnerFriendly =
     typeof raw.beginnerFriendly === 'boolean'
@@ -81,6 +94,7 @@ export function sanitizeSettings(raw) {
   return {
     theme,
     responseLength,
+    defaultMode,
     beginnerFriendly,
     enterToSend,
     showTimestamps,

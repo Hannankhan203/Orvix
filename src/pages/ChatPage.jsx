@@ -13,10 +13,12 @@ import {
   toggleChatPinned,
   subscribeToUserChats,
   loadConversationMessages,
-  generateChatTitle
+  generateChatTitle,
+  updateChatMode
 } from '../services/chatStorageService.js';
 import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
 import { isFirebaseConfigured } from '../config/firebaseConfig.js';
+import { getChatMode } from '../config/chatModes.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
@@ -42,6 +44,11 @@ export default function ChatPage() {
     }
     return null;
   });
+
+  const [activeMode, setActiveMode] = useState(() => {
+    return settings?.defaultMode || 'general';
+  });
+  const [modeChangeNotice, setModeChangeNotice] = useState(null);
 
   const [messages, setMessages] = useState([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -106,6 +113,22 @@ export default function ChatPage() {
     }, 4500);
     return () => clearTimeout(timer);
   }, [exportNotice]);
+
+  // Auto-dismiss mode change notification banner
+  useEffect(() => {
+    if (!modeChangeNotice) return;
+    const timer = setTimeout(() => {
+      setModeChangeNotice(null);
+    }, 4500);
+    return () => clearTimeout(timer);
+  }, [modeChangeNotice]);
+
+  // Synchronize starting mode with user's configured default mode on empty new chat
+  useEffect(() => {
+    if (!activeChatId && settings?.defaultMode) {
+      setActiveMode(settings.defaultMode);
+    }
+  }, [settings?.defaultMode, activeChatId]);
 
   // Guest storage helpers.
   const getGuestPinnedIds = () => {
@@ -238,6 +261,7 @@ export default function ChatPage() {
     if (!activeChatId) {
       setMessages([]);
       setMessagesLoading(false);
+      setActiveMode(settings?.defaultMode || 'general');
       sessionStorage.removeItem('orvix_active_chat');
       sessionStorage.removeItem('chatora_active_chat');
       return undefined;
@@ -246,6 +270,14 @@ export default function ChatPage() {
     sessionStorage.setItem('orvix_active_chat', activeChatId);
     sessionStorage.setItem('chatora_active_chat', activeChatId);
 
+    // Sync active mode from chat metadata (default to 'general' for legacy chats)
+    const matchingChat =
+      userChats.find((chat) => chat.id === activeChatId) ||
+      SAMPLE_CHATS.find((chat) => chat.id === activeChatId);
+    if (matchingChat) {
+      setActiveMode(matchingChat.mode || 'general');
+    }
+
     // Demo conversations.
     const sample = SAMPLE_CHATS.find(
       (chat) => chat.id === activeChatId
@@ -253,6 +285,7 @@ export default function ChatPage() {
 
     if (sample) {
       setMessages([...sample.messages]);
+      setActiveMode(sample.mode || 'general');
       setMessagesLoading(false);
       return undefined;
     }
@@ -372,6 +405,8 @@ export default function ChatPage() {
     setIsLoading(false);
     setMessagesLoading(false);
     isSubmittingRef.current = false;
+    setModeChangeNotice(null);
+    setActiveMode(settings?.defaultMode || 'general');
 
     sessionStorage.removeItem('orvix_active_chat');
     sessionStorage.removeItem('chatora_active_chat');
@@ -531,6 +566,41 @@ export default function ChatPage() {
 
       return next;
     });
+  };
+
+  // Handle mode selection (both on New Chat and in active conversations)
+  const handleSelectMode = async (newMode) => {
+    const modeObj = getChatMode(newMode);
+    setActiveMode(newMode);
+
+    // If there is an active conversation, persist the mode change to that conversation
+    if (activeChatIdRef.current) {
+      const currentChatId = activeChatIdRef.current;
+      setModeChangeNotice(
+        `Switched to ${modeObj.name} mode. Subsequent responses will follow ${modeObj.shortName} guidelines, preserving existing message history.`
+      );
+
+      // Persist to Cloud Firestore or Guest Storage
+      if (isCloudEnabled && currentUser?.uid) {
+        updateChatMode(currentUser.uid, currentChatId, newMode).catch((err) => {
+          console.warn('Could not update conversation mode in Cloud Firestore:', err);
+        });
+      } else {
+        setUserChats((previous) => {
+          const next = previous.map((chat) =>
+            chat.id === currentChatId
+              ? {
+                  ...chat,
+                  mode: newMode,
+                  rawUpdatedAt: Date.now()
+                }
+              : chat
+          );
+          saveGuestChats(next);
+          return next;
+        });
+      }
+    }
   };
 
   // Persist messages without duplicate writes.
@@ -765,6 +835,7 @@ export default function ChatPage() {
     try {
       const result = await streamAIMessage({
         provider: selectedProvider,
+        mode: activeMode,
         prompt: promptText,
         history: historyContext,
         username:
@@ -1041,7 +1112,8 @@ export default function ChatPage() {
           try {
             currentChatId = await createChatDocument(
               currentUser.uid,
-              titleSnippet
+              titleSnippet,
+              activeMode
             );
 
             // Prevent the history effect from replacing the new chat's
@@ -1068,6 +1140,7 @@ export default function ChatPage() {
           const newGuestChat = {
             id: currentChatId,
             title: titleSnippet,
+            mode: activeMode || 'general',
             timestamp: 'Just now',
             rawUpdatedAt: Date.now(),
             isPinned: false,
@@ -1536,6 +1609,8 @@ export default function ChatPage() {
       isCloudSynced={isCloudEnabled}
       selectedProvider={selectedProvider}
       onSelectProvider={handleSelectProvider}
+      activeMode={activeMode}
+      onSelectMode={handleSelectMode}
       onExportMarkdown={handleExportMarkdown}
       onExportText={handleExportText}
       hasExportableMessages={hasExportableMessages}
@@ -1618,6 +1693,10 @@ export default function ChatPage() {
         selectedProvider={selectedProvider}
         enterToSend={settings?.enterToSend ?? true}
         showTimestamps={settings?.showTimestamps ?? true}
+        activeMode={activeMode}
+        onSelectMode={handleSelectMode}
+        modeChangeNotice={modeChangeNotice}
+        onDismissModeNotice={() => setModeChangeNotice(null)}
       />
     </Layout>
   );

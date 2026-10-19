@@ -15,9 +15,11 @@ import {
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
+import ModeSelector from './ModeSelector.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
+import { getChatMode } from '../../config/chatModes.js';
 
 /**
  * ChatArea Component
@@ -34,6 +36,10 @@ import { sendAIMessage } from '../../services/aiRouter.js';
  * @param {(failedMessage: Object) => void} [props.onRetry]
  * @param {(promptText: string) => void} [props.onRestorePrompt]
  * @param {string} [props.selectedProvider='gemini']
+ * @param {string} [props.activeMode='general']
+ * @param {(mode: string) => void} [props.onSelectMode]
+ * @param {string|null} [props.modeChangeNotice=null]
+ * @param {() => void} [props.onDismissModeNotice]
  */
 export default function ChatArea({
   messages = [],
@@ -55,7 +61,11 @@ export default function ChatArea({
   onCancelEdit,
   selectedProvider = 'gemini',
   enterToSend = true,
-  showTimestamps = true
+  showTimestamps = true,
+  activeMode = 'general',
+  onSelectMode,
+  modeChangeNotice = null,
+  onDismissModeNotice
 }) {
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
@@ -97,6 +107,8 @@ export default function ChatArea({
 
   const activeLang =
     supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
+
+  const currentMode = getChatMode(activeMode);
 
   // Close language menu when clicking outside
   useEffect(() => {
@@ -235,7 +247,12 @@ Transcript:
       <div className="chat-scroll-viewport">
         <div className="chat-content-constrained">
           {isNewChat && !hasMessages ? (
-            <WelcomeScreen onSelectPrompt={handlePromptSelect} username={username} />
+            <WelcomeScreen
+              onSelectPrompt={handlePromptSelect}
+              username={username}
+              activeMode={activeMode}
+              onSelectMode={onSelectMode}
+            />
           ) : messagesLoading && !hasMessages ? (
             <div className="messages-loading-state" role="status" aria-label="Loading conversation">
               <Loader2 size={24} className="spin-icon" />
@@ -511,6 +528,41 @@ Transcript:
             </div>
           )}
 
+          {/* Mode Change Feedback Notification Banner */}
+          {modeChangeNotice && (
+            <div className="mode-change-notification-banner" role="status">
+              <Sparkles size={13} className="mode-notice-icon" aria-hidden="true" />
+              <span className="mode-notice-text">{modeChangeNotice}</span>
+              {onDismissModeNotice && (
+                <button
+                  type="button"
+                  className="mode-notice-dismiss"
+                  onClick={onDismissModeNotice}
+                  title="Dismiss notification"
+                  aria-label="Dismiss mode notice"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Compact Mode Control Strip */}
+          <div className="composer-mode-strip">
+            <div className="composer-mode-left">
+              <span className="composer-mode-strip-label">Mode:</span>
+              <ModeSelector
+                activeMode={activeMode}
+                onSelectMode={onSelectMode}
+                variant="compact"
+                disabled={isLoading}
+              />
+            </div>
+            <span className="composer-mode-strip-desc" title={currentMode.description}>
+              {currentMode.description}
+            </span>
+          </div>
+
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
             <textarea
               ref={textareaRef}
@@ -522,6 +574,12 @@ Transcript:
                   ? 'Dictation paused — speak or type...'
                   : isLoading
                   ? 'Orvix is responding...'
+                  : activeMode === 'coding'
+                  ? 'Ask a coding question, debug an error, or request code...'
+                  : activeMode === 'writing'
+                  ? 'Draft an email, polish prose, or rewrite content...'
+                  : activeMode === 'learning'
+                  ? 'Ask to explain a concept, break down a topic, or quiz you...'
                   : 'Ask Orvix anything...'
               }
               value={inputValue}

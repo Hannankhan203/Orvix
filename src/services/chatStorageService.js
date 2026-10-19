@@ -75,9 +75,10 @@ export function generateChatTitle(promptText, maxLength = 36) {
  * Creates a new chat conversation document in Firestore
  * @param {string} userId - Authenticated user UID
  * @param {string} [initialTitle='New Conversation']
+ * @param {string} [mode='general'] - Active chat mode (general | coding | writing | learning)
  * @returns {Promise<string>} The generated chatId
  */
-export async function createChatDocument(userId, initialTitle = 'New Conversation') {
+export async function createChatDocument(userId, initialTitle = 'New Conversation', mode = 'general') {
   if (!db || !isFirebaseConfigured()) {
     throw new Error('Firestore is not configured. Please supply valid Firebase credentials.');
   }
@@ -89,6 +90,7 @@ export async function createChatDocument(userId, initialTitle = 'New Conversatio
   const chatData = {
     id: chatId,
     title: initialTitle,
+    mode: mode || 'general',
     userId,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -98,6 +100,27 @@ export async function createChatDocument(userId, initialTitle = 'New Conversatio
 
   await setDoc(newChatDoc, chatData);
   return chatId;
+}
+
+/**
+ * Updates the active mode of an existing conversation in Firestore
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {string} mode
+ */
+export async function updateChatMode(userId, chatId, mode) {
+  if (!db || !isFirebaseConfigured()) {
+    return;
+  }
+  const chatDocRef = doc(db, 'users', userId, 'chats', chatId);
+  try {
+    await updateDoc(chatDocRef, {
+      mode: mode || 'general',
+      updatedAt: serverTimestamp()
+    });
+  } catch (err) {
+    console.warn('Could not update conversation mode:', err);
+  }
 }
 
 /**
@@ -315,6 +338,7 @@ export function subscribeToUserChats(userId, onUpdate, onError) {
         chats.push({
           id: docSnap.id,
           title: data.title || 'Untitled Chat',
+          mode: data.mode || 'general',
           timestamp: formattedDate,
           rawUpdatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : Date.now(),
           isPinned: Boolean(data.isPinned),

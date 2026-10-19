@@ -7,6 +7,8 @@
  * For production deployment, API requests should be proxied through a secure backend.
  */
 
+import { getChatMode } from '../config/chatModes.js';
+
 export function getGroqApiKey() {
   try {
     if (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GROQ_API_KEY) {
@@ -31,14 +33,20 @@ const DEFAULT_MODEL = 'openai/gpt-oss-120b';
  * @param {Array} history
  * @param {string} prompt
  * @param {number} [maxContextMessages=12]
+ * @param {string} [mode='general']
  * @returns {Array<{ role: string, content: string }>}
  */
-export function formatGroqMessages(history = [], prompt, maxContextMessages = 12) {
+export function formatGroqMessages(history = [], prompt, maxContextMessages = 12, mode = 'general') {
+  const modeObj = getChatMode(mode);
+  const systemContent = [
+    'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.',
+    modeObj.instruction
+  ].filter(Boolean).join(' ');
+
   const messages = [
     {
       role: 'system',
-      content:
-        'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.'
+      content: systemContent
     }
   ];
 
@@ -68,7 +76,7 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
  * @param {Array} [params.history=[]] - Previous conversation messages
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGroqMessage({ prompt, history = [] }) {
+export async function sendGroqMessage({ prompt, history = [], mode = 'general' }) {
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -77,7 +85,7 @@ export async function sendGroqMessage({ prompt, history = [] }) {
     );
   }
 
-  const messages = formatGroqMessages(history, prompt);
+  const messages = formatGroqMessages(history, prompt, 12, mode);
 
   let response;
   try {
@@ -141,7 +149,7 @@ export async function sendGroqMessage({ prompt, history = [] }) {
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGroqMessage({ prompt, history = [], onChunk, signal }) {
+export async function streamGroqMessage({ prompt, history = [], mode = 'general', onChunk, signal }) {
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -150,7 +158,7 @@ export async function streamGroqMessage({ prompt, history = [], onChunk, signal 
     );
   }
 
-  const messages = formatGroqMessages(history, prompt);
+  const messages = formatGroqMessages(history, prompt, 12, mode);
 
   let response;
   try {
