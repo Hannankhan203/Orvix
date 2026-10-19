@@ -665,8 +665,10 @@ export default function ChatPage() {
     promptText,
     historyContext,
     targetChatId,
-    assistantMessageId
+    assistantMessageId,
+    overrideProvider = null
   ) => {
+    const providerToUse = overrideProvider || selectedProvider;
     setIsLoading(true);
     isUserStoppedRef.current = false;
 
@@ -689,7 +691,7 @@ export default function ChatPage() {
     let targetText = '';
     let displayedText = '';
     let activeModel = null;
-    let finalProvider = selectedProvider;
+    let finalProvider = providerToUse;
     let isStreamDone = false;
     let timerId = null;
     let isCancelled = false;
@@ -716,7 +718,7 @@ export default function ChatPage() {
     const finalizeAssistantMessage = async (
       contentToSave,
       modelToUse,
-      providerToUse,
+      providerToFinalize,
       isStopped = false
     ) => {
       if (isCancelled || isFinalized) return;
@@ -726,7 +728,7 @@ export default function ChatPage() {
       const completedMessage = {
         id: assistantMessageId,
         sender: 'assistant',
-        provider: providerToUse || finalProvider || selectedProvider,
+        provider: providerToFinalize || finalProvider || providerToUse,
         modelUsed: modelToUse || activeModel,
         timestamp: new Date().toLocaleTimeString([], {
           hour: '2-digit',
@@ -834,7 +836,7 @@ export default function ChatPage() {
 
     try {
       const result = await streamAIMessage({
-        provider: selectedProvider,
+        provider: providerToUse,
         mode: activeMode,
         prompt: promptText,
         history: historyContext,
@@ -846,9 +848,9 @@ export default function ChatPage() {
         },
         signal: abortController.signal,
 
-        onStart: ({ modelUsed, provider } = {}) => {
+        onStart: ({ modelUsed, provider: reportedProvider } = {}) => {
           if (modelUsed) activeModel = modelUsed;
-          if (provider) finalProvider = provider;
+          if (reportedProvider) finalProvider = reportedProvider;
 
           if (activeChatIdRef.current === targetChatId) {
             setMessages((previous) =>
@@ -895,7 +897,7 @@ export default function ChatPage() {
         const completedMessage = {
           id: assistantMessageId,
           sender: 'assistant',
-          provider: finalProvider || selectedProvider,
+          provider: finalProvider || providerToUse,
           modelUsed: activeModel,
           timestamp: new Date().toLocaleTimeString([], {
             hour: '2-digit',
@@ -914,8 +916,6 @@ export default function ChatPage() {
         return;
       }
 
-      // FIX: Do not cancel the animation before finalizing. Cancellation
-      // sets isCancelled, which would cause finalization to return early.
       if (
         !prefersReducedMotion &&
         displayedText.length < targetText.length
@@ -975,7 +975,7 @@ export default function ChatPage() {
         const stoppedMessage = {
           id: assistantMessageId,
           sender: 'assistant',
-          provider: finalProvider || selectedProvider,
+          provider: finalProvider || providerToUse,
           modelUsed: activeModel,
           timestamp: new Date().toLocaleTimeString([], {
             hour: '2-digit',
@@ -1029,23 +1029,47 @@ export default function ChatPage() {
       }
 
       const is503 =
-        error?.code === 503 ||
-        error?.status === 503 ||
-        rawMsg.includes('503') ||
-        rawMsg.toLowerCase().includes('high demand') ||
-        rawMsg.toLowerCase().includes('spikes in demand') ||
-        rawMsg.toLowerCase().includes('unavailable');
+        (error?.code === 503 ||
+          error?.status === 'UNAVAILABLE' ||
+          rawMsg.toLowerCase().includes('high demand') ||
+          rawMsg.toLowerCase().includes('spikes in demand') ||
+          rawMsg.toLowerCase().includes('overloaded')) &&
+        error?.code !== 500;
 
-      const friendlyMsg = is503
-        ? 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.'
-        : rawMsg || `An unexpected error occurred while communicating with ${selectedProvider}.`;
+      const is500 = error?.code === 500 || error?.status === 'INTERNAL';
+      const isAuthError =
+        error?.code === 401 ||
+        error?.code === 403 ||
+        error?.status === 'UNAUTHENTICATED' ||
+        error?.status === 'PERMISSION_DENIED';
+      const isRateLimit =
+        error?.code === 429 || error?.status === 'RESOURCE_EXHAUSTED';
+
+      let friendlyMsg = rawMsg;
+      if (is503) {
+        friendlyMsg =
+          'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.';
+      } else if (is500) {
+        friendlyMsg =
+          rawMsg && !rawMsg.includes('Server request failed') && !rawMsg.includes('Internal Server Error')
+            ? `The AI service encountered an internal error: ${rawMsg}. You can retry or switch to another provider below.`
+            : `The AI service encountered an internal error (HTTP 500). Please try again in a moment, or switch to Groq or OpenRouter below.`;
+      } else if (isAuthError) {
+        friendlyMsg =
+          `Authentication or permission error with ${providerToUse}. Please check your API key configuration or switch providers below.`;
+      } else if (isRateLimit) {
+        friendlyMsg =
+          'AI rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.';
+      } else if (!friendlyMsg) {
+        friendlyMsg = `An unexpected error occurred while communicating with ${providerToUse}.`;
+      }
 
       if (activeChatIdRef.current === targetChatId) {
         if (targetText.trim().length > 0) {
           const partialMessage = {
             id: assistantMessageId,
             sender: 'assistant',
-            provider: finalProvider || selectedProvider,
+            provider: finalProvider || providerToUse,
             modelUsed: activeModel,
             timestamp: new Date().toLocaleTimeString([], {
               hour: '2-digit',
@@ -1054,7 +1078,9 @@ export default function ChatPage() {
             content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
             isStreaming: false,
             isInterrupted: true,
-            failedPrompt: promptText
+            failedPrompt: promptText,
+            failedProvider: finalProvider || providerToUse,
+            canSwitchProvider: true
           };
 
           setMessages((previous) =>
@@ -1074,6 +1100,8 @@ export default function ChatPage() {
             sender: 'assistant',
             isError: true,
             failedPrompt: promptText,
+            failedProvider: finalProvider || providerToUse,
+            canSwitchProvider: true,
             timestamp: new Date().toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit'
@@ -1093,7 +1121,7 @@ export default function ChatPage() {
         const partialMessage = {
           id: assistantMessageId,
           sender: 'assistant',
-          provider: finalProvider || selectedProvider,
+          provider: finalProvider || providerToUse,
           modelUsed: activeModel,
           timestamp: new Date().toLocaleTimeString([], {
             hour: '2-digit',
@@ -1102,7 +1130,9 @@ export default function ChatPage() {
           content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
           isStreaming: false,
           isInterrupted: true,
-          failedPrompt: promptText
+          failedPrompt: promptText,
+          failedProvider: finalProvider || providerToUse,
+          canSwitchProvider: true
         };
 
         await persistMessageSafe(targetChatId, partialMessage);
@@ -1253,7 +1283,7 @@ export default function ChatPage() {
     }
   };
 
-  // Retry a failed AI response.
+  // Retry a failed AI response with the same provider.
   const handleRetry = (failedMessage) => {
     stopSpeech();
 
@@ -1269,18 +1299,19 @@ export default function ChatPage() {
     setIsLoading(true);
 
     const currentChatId = activeChatIdRef.current;
+    const providerToUse = failedMessage.failedProvider || selectedProvider;
 
     const updatedMessages = messages.filter(
       (message) => message.id !== failedMessage.id
     );
 
     const assistantMessageId =
-      `${selectedProvider}-${Date.now()}-retry`;
+      `${providerToUse}-${Date.now()}-retry`;
 
     const initialAssistantMessage = {
       id: assistantMessageId,
       sender: 'assistant',
-      provider: selectedProvider,
+      provider: providerToUse,
       modelUsed: null,
       timestamp: new Date().toLocaleTimeString([], {
         hour: '2-digit',
@@ -1303,7 +1334,65 @@ export default function ChatPage() {
       failedMessage.failedPrompt,
       validHistory,
       currentChatId,
-      assistantMessageId
+      assistantMessageId,
+      providerToUse
+    );
+  };
+
+  // User-controlled provider switch & retry without duplicating conversation messages
+  const handleSwitchProviderAndRetry = (failedMessage, newProviderId) => {
+    stopSpeech();
+
+    if (
+      isLoading ||
+      isSubmittingRef.current ||
+      !failedMessage?.failedPrompt
+    ) {
+      return;
+    }
+
+    handleSelectProvider(newProviderId);
+
+    isSubmittingRef.current = true;
+    setIsLoading(true);
+
+    const currentChatId = activeChatIdRef.current;
+
+    const updatedMessages = messages.filter(
+      (message) => message.id !== failedMessage.id
+    );
+
+    const assistantMessageId =
+      `${newProviderId}-${Date.now()}-fallback`;
+
+    const initialAssistantMessage = {
+      id: assistantMessageId,
+      sender: 'assistant',
+      provider: newProviderId,
+      modelUsed: null,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      content: '',
+      isStreaming: true
+    };
+
+    setMessages([
+      ...updatedMessages,
+      initialAssistantMessage
+    ]);
+
+    const validHistory = updatedMessages.filter(
+      (message) => !message.isError && !message.isInterrupted
+    );
+
+    void executePrompt(
+      failedMessage.failedPrompt,
+      validHistory,
+      currentChatId,
+      assistantMessageId,
+      newProviderId
     );
   };
 
@@ -1709,6 +1798,7 @@ export default function ChatPage() {
         onSubmit={handleSubmit}
         activeTitle={activeTitle}
         onRetry={handleRetry}
+        onSwitchProvider={handleSwitchProviderAndRetry}
         onRestorePrompt={handleRestorePrompt}
         onRegenerate={handleRegenerate}
         onStopGenerating={handleStopGenerating}

@@ -19,6 +19,7 @@ export default function MessageList({
   messages = [],
   isLoading = false,
   onRetry,
+  onSwitchProvider,
   onRestorePrompt,
   onRegenerate,
   onStopGenerating,
@@ -26,7 +27,8 @@ export default function MessageList({
   editingMessageId = null,
   onStartEdit,
   onCancelEdit,
-  showTimestamps = true
+  showTimestamps = true,
+  selectedProvider = 'gemini'
 }) {
   const bottomAnchorRef = useRef(null);
   const prevMessagesLengthRef = useRef(messages.length);
@@ -64,6 +66,7 @@ export default function MessageList({
           key={msg.id}
           message={msg}
           onRetry={onRetry}
+          onSwitchProvider={onSwitchProvider}
           onRestorePrompt={onRestorePrompt}
           onRegenerate={onRegenerate}
           onStopGenerating={onStopGenerating}
@@ -73,6 +76,7 @@ export default function MessageList({
           onCancelEdit={onCancelEdit}
           onEditResend={onEditResend}
           showTimestamps={showTimestamps}
+          selectedProvider={selectedProvider}
         />
       ))}
 

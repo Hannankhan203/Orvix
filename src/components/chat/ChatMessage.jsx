@@ -10,12 +10,14 @@ import {
   Edit3,
   Square,
   Volume2,
-  VolumeX
+  VolumeX,
+  Cpu
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import { useSpeech } from '../../context/SpeechContext.jsx';
+import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -126,6 +128,7 @@ function createMarkdownComponents(isStreaming = false) {
  * @param {Object} props
  * @param {Object} props.message
  * @param {(failedMessage: Object) => void} [props.onRetry]
+ * @param {(failedMessage: Object, newProviderId: string) => void} [props.onSwitchProvider]
  * @param {(promptText: string) => void} [props.onRestorePrompt]
  * @param {(assistantMessage: Object) => void} [props.onRegenerate]
  * @param {() => void} [props.onStopGenerating]
@@ -134,6 +137,7 @@ function createMarkdownComponents(isStreaming = false) {
 export default function ChatMessage({
   message,
   onRetry,
+  onSwitchProvider,
   onRestorePrompt,
   onRegenerate,
   onStopGenerating,
@@ -142,7 +146,8 @@ export default function ChatMessage({
   onStartEdit,
   onCancelEdit,
   onEditResend,
-  showTimestamps = true
+  showTimestamps = true,
+  selectedProvider = 'gemini'
 }) {
   const isUser = message?.sender === 'user';
   const isError = Boolean(message?.isError);
@@ -195,6 +200,14 @@ export default function ChatMessage({
       }
     };
   }, [isCurrentSpeaking, stopSpeech]);
+
+  const currentProviderId = message.failedProvider || message.provider || selectedProvider;
+  const currentProviderObj =
+    PROVIDER_OPTIONS.find((p) => p.id === currentProviderId) || {
+      id: currentProviderId,
+      name: currentProviderId.charAt(0).toUpperCase() + currentProviderId.slice(1)
+    };
+  const fallbackProviders = PROVIDER_OPTIONS.filter((p) => p.id !== currentProviderId);
 
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
@@ -381,11 +394,25 @@ export default function ChatMessage({
                     size="sm"
                     onClick={() => onRetry(message)}
                     icon={<RotateCcw size={13} />}
-                    title="Retry this request"
+                    title={`Retry this request with ${currentProviderObj.name}`}
                   >
-                    Retry
+                    Retry with {currentProviderObj.name}
                   </Button>
                 )}
+                {onSwitchProvider &&
+                  fallbackProviders.map((p) => (
+                    <Button
+                      key={p.id}
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => onSwitchProvider(message, p.id)}
+                      icon={<Cpu size={13} />}
+                      title={`Switch to ${p.name} and send prompt`}
+                      className="fallback-provider-btn"
+                    >
+                      Try with {p.name}
+                    </Button>
+                  ))}
                 {onRestorePrompt && message.failedPrompt && (
                   <Button
                     variant="ghost"
@@ -463,17 +490,33 @@ export default function ChatMessage({
                 {message.content || ''}
               </ReactMarkdown>
 
-              {message.isInterrupted && message.failedPrompt && onRetry && (
-                <div className="interrupted-retry-actions mt-3 flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onRetry(message)}
-                    icon={<RotateCcw size={13} />}
-                    title="Retry this request"
-                  >
-                    Retry
-                  </Button>
+              {message.isInterrupted && message.failedPrompt && (
+                <div className="interrupted-retry-actions mt-3 flex flex-wrap items-center gap-2">
+                  {onRetry && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onRetry(message)}
+                      icon={<RotateCcw size={13} />}
+                      title={`Retry this request with ${currentProviderObj.name}`}
+                    >
+                      Retry with {currentProviderObj.name}
+                    </Button>
+                  )}
+                  {onSwitchProvider &&
+                    fallbackProviders.map((p) => (
+                      <Button
+                        key={p.id}
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => onSwitchProvider(message, p.id)}
+                        icon={<Cpu size={13} />}
+                        title={`Switch to ${p.name} and send prompt`}
+                        className="fallback-provider-btn"
+                      >
+                        Try with {p.name}
+                      </Button>
+                    ))}
                   {onRestorePrompt && (
                     <Button
                       variant="ghost"

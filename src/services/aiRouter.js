@@ -82,34 +82,40 @@ export function isProviderConfigured(provider) {
  */
 function parseRouterError(rawError, statusCode = 500) {
   let cleanMsg = typeof rawError === 'string' ? rawError : rawError?.message || '';
-  let code = rawError?.code || statusCode;
-  let status = rawError?.status || '';
+  let code = Number(rawError?.code || statusCode || 500);
+  let status = String(rawError?.status || '');
   let retryable = rawError?.retryable;
 
-  if (typeof cleanMsg === 'string' && cleanMsg.includes('{') && cleanMsg.includes('}')) {
+  // Unpack nested JSON representations if present
+  for (let i = 0; i < 3; i++) {
+    if (typeof cleanMsg !== 'string') break;
+    const match = cleanMsg.match(/\{[\s\S]*\}/);
+    if (!match) break;
     try {
-      const match = cleanMsg.match(/\{[\s\S]*\}/);
-      if (match) {
-        const parsed = JSON.parse(match[0]);
-        if (parsed.error) {
-          if (parsed.error.code) code = Number(parsed.error.code);
-          if (parsed.error.status) status = String(parsed.error.status);
-          if (parsed.error.message) cleanMsg = String(parsed.error.message);
-        }
+      const parsed = JSON.parse(match[0]);
+      if (parsed.error) {
+        if (parsed.error.code) code = Number(parsed.error.code);
+        if (parsed.error.status) status = String(parsed.error.status);
+        if (parsed.error.message) cleanMsg = String(parsed.error.message);
+        else break;
+      } else {
+        break;
       }
-    } catch (_) {}
+    } catch (_) {
+      break;
+    }
   }
 
   const lowerMsg = String(cleanMsg).toLowerCase();
+  const upperStatus = String(status).toUpperCase();
 
+  // Distinct error classification
   if (
     code === 503 ||
-    status === 'UNAVAILABLE' ||
-    lowerMsg.includes('503') ||
-    lowerMsg.includes('high demand') ||
-    lowerMsg.includes('spikes in demand') ||
-    lowerMsg.includes('service unavailable') ||
-    lowerMsg.includes('temporarily unavailable')
+    upperStatus === 'UNAVAILABLE' ||
+    (lowerMsg.includes('high demand') && !lowerMsg.includes('500')) ||
+    (lowerMsg.includes('spikes in demand') && !lowerMsg.includes('500')) ||
+    lowerMsg.includes('overloaded')
   ) {
     code = 503;
     status = 'UNAVAILABLE';
@@ -117,7 +123,7 @@ function parseRouterError(rawError, statusCode = 500) {
     cleanMsg = 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
   } else if (
     code === 429 ||
-    status === 'RESOURCE_EXHAUSTED' ||
+    upperStatus === 'RESOURCE_EXHAUSTED' ||
     lowerMsg.includes('rate limit') ||
     lowerMsg.includes('quota')
   ) {
@@ -128,11 +134,37 @@ function parseRouterError(rawError, statusCode = 500) {
   } else if (
     code === 401 ||
     code === 403 ||
-    lowerMsg.includes('api key') ||
-    lowerMsg.includes('permission')
+    upperStatus === 'UNAUTHENTICATED' ||
+    upperStatus === 'PERMISSION_DENIED' ||
+    lowerMsg.includes('api_key_invalid') ||
+    lowerMsg.includes('api key not valid') ||
+    lowerMsg.includes('unauthorized') ||
+    lowerMsg.includes('permission denied')
   ) {
     code = code === 401 ? 401 : 403;
+    status = code === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
     retryable = false;
+    cleanMsg = 'Invalid or unauthorized API key. Please check your configuration.';
+  } else if (code === 404 || upperStatus === 'NOT_FOUND') {
+    code = 404;
+    status = 'NOT_FOUND';
+    retryable = false;
+  } else if (code === 400 || upperStatus === 'INVALID_ARGUMENT') {
+    code = 400;
+    status = 'INVALID_ARGUMENT';
+    retryable = false;
+  } else if (code === 504 || upperStatus === 'DEADLINE_EXCEEDED') {
+    code = 504;
+    status = 'DEADLINE_EXCEEDED';
+    retryable = true;
+    cleanMsg = 'The AI service timed out while waiting for a response. Please try again.';
+  } else if (code === 500 || upperStatus === 'INTERNAL') {
+    code = 500;
+    status = 'INTERNAL';
+    retryable = false;
+    if (!cleanMsg || cleanMsg === 'Internal Server Error' || cleanMsg.includes('Server request failed (500)')) {
+      cleanMsg = 'The AI service encountered an internal error. Please try again or switch providers.';
+    }
   }
 
   const err = new Error(cleanMsg || 'An unexpected error occurred while communicating with the AI service.');
@@ -156,8 +188,9 @@ export async function streamAIMessage({
   const normalizedProvider = provider.toLowerCase();
   const normalizedMode = (mode || 'general').toLowerCase();
 
-  // Primary path: Use secure server-side proxy route /api/chat with SSE and bounded retry
-  const maxClientAttempts = 2;
+  // Primary path: Use secure server-side proxy route /api/chat with SSE
+  // Server executes bounded retries with jitter; avoid multiplying client-side delays
+  const maxClientAttempts = 1;
   let clientAttempt = 0;
 
   while (clientAttempt < maxClientAttempts) {
@@ -187,12 +220,9 @@ export async function streamAIMessage({
         if (errJson?.code) parsedErr.code = errJson.code;
         if (errJson?.status) parsedErr.status = errJson.status;
         if (typeof errJson?.retryable === 'boolean') parsedErr.retryable = errJson.retryable;
-
-        if (parsedErr.retryable && clientAttempt < maxClientAttempts && !signal?.aborted) {
-          const delay = 1000 + Math.random() * 500;
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          continue;
-        }
+        if (errJson?.provider) parsedErr.provider = errJson.provider;
+        if (typeof errJson?.canFallback === 'boolean') parsedErr.canFallback = errJson.canFallback;
+        if (Array.isArray(errJson?.suggestedProviders)) parsedErr.suggestedProviders = errJson.suggestedProviders;
 
         throw parsedErr;
       }

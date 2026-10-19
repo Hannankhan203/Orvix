@@ -28,6 +28,19 @@ app.use(express.json({ limit: '10mb' }));
 // Helper to pause execution with backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Helper to pause execution while honoring client disconnect cancellation
+async function sleepWithAbort(ms: number, isAborted: () => boolean): Promise<boolean> {
+  const interval = 100;
+  let elapsed = 0;
+  while (elapsed < ms) {
+    if (isAborted()) return false;
+    const step = Math.min(interval, ms - elapsed);
+    await sleep(step);
+    elapsed += step;
+  }
+  return !isAborted();
+}
+
 function getBackoffWithJitter(attempt: number, retryAfterSec?: number): number {
   if (retryAfterSec && retryAfterSec > 0 && retryAfterSec <= 10) {
     return retryAfterSec * 1000 + Math.random() * 300;
@@ -35,6 +48,44 @@ function getBackoffWithJitter(attempt: number, retryAfterSec?: number): number {
   const base = Math.min(1000 * Math.pow(2, attempt - 1), 3000);
   const jitter = Math.random() * 400;
   return base + jitter;
+}
+
+// Sanitizes error messages to ensure no API keys, tokens, or headers are ever logged
+function sanitizeErrorLog(msg: string): string {
+  if (!msg) return '';
+  return String(msg)
+    .replace(/AIza[0-9A-Za-z-_]{35}/g, '[REDACTED_API_KEY]')
+    .replace(/Bearer\s+[A-Za-z0-9-_.]+/gi, 'Bearer [REDACTED]')
+    .replace(/key=[^&\s]+/gi, 'key=[REDACTED]');
+}
+
+interface DiagnosticLogData {
+  provider: string;
+  model: string;
+  phase: 'pre-stream' | 'mid-stream' | 'non-streaming';
+  attempt: number;
+  maxAttempts: number;
+  upstreamStatus?: number;
+  upstreamErrorCode?: string;
+  sanitizedMessage: string;
+  retryAfterSeconds?: number;
+  willRetry: boolean;
+}
+
+/**
+ * Server-side diagnostic logger recording provider, model, HTTP status, sanitized error,
+ * retry attempt number, and streaming phase without exposing credentials or user data.
+ */
+function logAIDiagnostic(data: DiagnosticLogData) {
+  const statusStr = data.upstreamStatus ? `HTTP ${data.upstreamStatus}` : 'HTTP N/A';
+  const codeStr = data.upstreamErrorCode ? `[${data.upstreamErrorCode}]` : '';
+  const actionDesc = data.willRetry
+    ? `Will retry (attempt ${data.attempt + 1}/${data.maxAttempts}${data.retryAfterSeconds ? ` after ${data.retryAfterSeconds}s` : ''})`
+    : 'No further retries';
+
+  console.warn(
+    `[AI Diagnostic] Provider: ${data.provider} | Model: ${data.model} | Phase: ${data.phase} | Status: ${statusStr} ${codeStr} | Attempt: ${data.attempt}/${data.maxAttempts} | Action: ${actionDesc} | Sanitized: ${sanitizeErrorLog(data.sanitizedMessage)}`
+  );
 }
 
 // Parses and normalizes Gemini API errors into clean user-facing representations
@@ -53,18 +104,26 @@ export function parseGeminiError(err: any): {
   let isUnavailable = false;
   let retryAfterSeconds: number | undefined = undefined;
 
-  // 1. Attempt to parse stringified JSON embedded in the error message
-  if (typeof message === 'string') {
+  // Unpack nested JSON from @google/genai errors (can be 2 levels deep)
+  for (let i = 0; i < 3; i++) {
+    if (typeof message !== 'string') break;
     const jsonMatch = message.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.error) {
-          if (parsed.error.code) statusCode = Number(parsed.error.code);
-          if (parsed.error.status) statusText = String(parsed.error.status);
-          if (parsed.error.message) message = String(parsed.error.message);
+    if (!jsonMatch) break;
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.error) {
+        if (parsed.error.code) statusCode = Number(parsed.error.code);
+        if (parsed.error.status) statusText = String(parsed.error.status);
+        if (parsed.error.message) {
+          message = String(parsed.error.message);
+        } else {
+          break;
         }
-      } catch (_) {}
+      } else {
+        break;
+      }
+    } catch (_) {
+      break;
     }
   }
 
@@ -78,49 +137,76 @@ export function parseGeminiError(err: any): {
   }
 
   const lowerMsg = message.toLowerCase();
+  const upperStatus = statusText.toUpperCase();
 
-  // 2. Classify error types
+  // Classify error types accurately without masking non-503 errors
   if (
     statusCode === 503 ||
-    statusText.toUpperCase() === 'UNAVAILABLE' ||
-    lowerMsg.includes('503') ||
+    statusCode === 504 ||
+    upperStatus === 'UNAVAILABLE' ||
+    upperStatus === 'DEADLINE_EXCEEDED' ||
+    lowerMsg.includes('overloaded') ||
     lowerMsg.includes('high demand') ||
     lowerMsg.includes('spikes in demand') ||
     lowerMsg.includes('service unavailable') ||
     lowerMsg.includes('temporarily unavailable') ||
-    lowerMsg.includes('overloaded')
+    lowerMsg.includes('deadline expired')
   ) {
-    statusCode = 503;
-    statusText = 'UNAVAILABLE';
+    statusCode = statusCode === 504 || upperStatus === 'DEADLINE_EXCEEDED' ? 504 : 503;
+    statusText = statusCode === 504 ? 'DEADLINE_EXCEEDED' : 'UNAVAILABLE';
     isUnavailable = true;
     isRetryable = true;
     message = 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
   } else if (
     statusCode === 429 ||
-    statusText.toUpperCase() === 'RESOURCE_EXHAUSTED' ||
+    upperStatus === 'RESOURCE_EXHAUSTED' ||
     lowerMsg.includes('rate limit') ||
     lowerMsg.includes('quota') ||
     lowerMsg.includes('resource_exhausted')
   ) {
     statusCode = 429;
     statusText = 'RESOURCE_EXHAUSTED';
+    isUnavailable = true;
     isRetryable = true;
     message = 'Gemini rate limit or quota exceeded. Please wait a moment before trying again.';
   } else if (
     statusCode === 401 ||
     statusCode === 403 ||
-    lowerMsg.includes('api key') ||
-    lowerMsg.includes('permission') ||
-    lowerMsg.includes('unauthorized')
+    upperStatus === 'UNAUTHENTICATED' ||
+    upperStatus === 'PERMISSION_DENIED' ||
+    lowerMsg.includes('api_key_invalid') ||
+    lowerMsg.includes('api key not valid') ||
+    lowerMsg.includes('unauthorized') ||
+    lowerMsg.includes('permission denied')
   ) {
     statusCode = statusCode === 401 ? 401 : 403;
     statusText = statusCode === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
     isRetryable = false;
     message = 'Invalid or unauthorized Gemini API key. Please check your API configuration.';
-  } else if (statusCode === 400 || lowerMsg.includes('invalid argument')) {
+  } else if (
+    statusCode === 404 ||
+    upperStatus === 'NOT_FOUND' ||
+    lowerMsg.includes('not found') ||
+    lowerMsg.includes('is no longer available')
+  ) {
+    statusCode = 404;
+    statusText = 'NOT_FOUND';
+    isRetryable = false;
+    message = sanitizeErrorLog(message) || 'Requested Gemini model not found.';
+  } else if (
+    statusCode === 400 ||
+    upperStatus === 'INVALID_ARGUMENT' ||
+    lowerMsg.includes('invalid argument')
+  ) {
     statusCode = 400;
     statusText = 'INVALID_ARGUMENT';
     isRetryable = false;
+    message = sanitizeErrorLog(message) || 'Invalid argument provided to the Gemini model.';
+  } else if (statusCode === 500 || upperStatus === 'INTERNAL') {
+    statusCode = 500;
+    statusText = 'INTERNAL';
+    isRetryable = false;
+    message = sanitizeErrorLog(message) || 'Internal error encountered by Google Gemini service.';
   }
 
   return {
@@ -128,7 +214,7 @@ export function parseGeminiError(err: any): {
     status: statusText || (isUnavailable ? 'UNAVAILABLE' : 'ERROR'),
     isUnavailable,
     isRetryable,
-    message,
+    message: sanitizeErrorLog(message),
     retryAfterSeconds
   };
 }
@@ -606,53 +692,78 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       });
 
       const contents = formatGeminiHistory(history, prompt);
-      const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
-      let lastErr = null;
+      // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
+      // Attempt 1 & 2 try gemini-3.8-flash (primary recommended model)
+      // Attempt 3 tries gemini-3.1-flash-lite (alternative fallback model)
+      const attemptPlan = [
+        { model: 'gemini-3.8-flash', attemptNum: 1 },
+        { model: 'gemini-3.8-flash', attemptNum: 2 },
+        { model: 'gemini-3.1-flash-lite', attemptNum: 3 }
+      ];
+      const maxAttempts = attemptPlan.length;
 
       if (!shouldStream) {
         let lastParsedErr = null;
-        for (const model of modelsToTry) {
-          let attempt = 0;
-          const maxRetriesPerModel = 1;
-          while (attempt <= maxRetriesPerModel) {
-            attempt++;
-            try {
-              const response = await ai.models.generateContent({
-                model,
-                contents,
-                config: {
-                  systemInstruction
-                }
+
+        for (let i = 0; i < attemptPlan.length; i++) {
+          if (isClientClosed) break;
+          const { model, attemptNum } = attemptPlan[i];
+
+          try {
+            const response = await ai.models.generateContent({
+              model,
+              contents,
+              config: {
+                systemInstruction
+              }
+            });
+
+            if (response && response.text) {
+              return res.json({
+                text: response.text,
+                modelUsed: model,
+                provider: 'gemini'
               });
-
-              if (response && response.text) {
-                return res.json({
-                  text: response.text,
-                  modelUsed: model,
-                  provider: 'gemini'
-                });
-              }
-            } catch (err: any) {
-              const parsed = parseGeminiError(err);
-              lastParsedErr = parsed;
-              console.warn(`[Gemini API] generateContent error for ${model} (attempt ${attempt}):`, parsed.statusCode, parsed.message);
-
-              if (!parsed.isRetryable) {
-                return res.status(parsed.statusCode).json({
-                  error: parsed.message,
-                  code: parsed.statusCode,
-                  status: parsed.status,
-                  retryable: false
-                });
-              }
-
-              if (attempt <= maxRetriesPerModel) {
-                const delay = getBackoffWithJitter(attempt, parsed.retryAfterSeconds);
-                await sleep(delay);
-                continue;
-              }
-              // If attempts on this model are exhausted, loop to next model (gemini-3.8-flash)
             }
+          } catch (err: any) {
+            const parsed = parseGeminiError(err);
+            lastParsedErr = parsed;
+            const hasMoreAttempts = i < attemptPlan.length - 1;
+            const willRetry = parsed.isRetryable && hasMoreAttempts && !isClientClosed;
+
+            logAIDiagnostic({
+              provider: 'gemini',
+              model,
+              phase: 'non-streaming',
+              attempt: attemptNum,
+              maxAttempts,
+              upstreamStatus: parsed.statusCode,
+              upstreamErrorCode: parsed.status,
+              sanitizedMessage: parsed.message,
+              retryAfterSeconds: parsed.retryAfterSeconds,
+              willRetry
+            });
+
+            if (!parsed.isRetryable) {
+              return res.status(parsed.statusCode).json({
+                error: parsed.message,
+                code: parsed.statusCode,
+                status: parsed.status,
+                provider: 'gemini',
+                model,
+                retryable: false,
+                canFallback: true,
+                suggestedProviders: ['groq', 'openrouter']
+              });
+            }
+
+            if (willRetry) {
+              const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);
+              const continueExecution = await sleepWithAbort(delay, () => isClientClosed);
+              if (!continueExecution) break;
+              continue;
+            }
+            break;
           }
         }
 
@@ -666,100 +777,134 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           error: fallbackErr.message,
           code: fallbackErr.statusCode,
           status: fallbackErr.status,
-          retryable: fallbackErr.isRetryable
+          provider: 'gemini',
+          model: 'gemini-3.8-flash',
+          retryable: fallbackErr.isRetryable,
+          canFallback: true,
+          suggestedProviders: ['groq', 'openrouter']
         });
       } else {
         // Genuine streaming via ai.models.generateContentStream with delayed header initiation
         let lastParsedErr = null;
-        for (const model of modelsToTry) {
-          let attempt = 0;
-          const maxRetriesPerModel = 1;
 
-          while (attempt <= maxRetriesPerModel) {
-            attempt++;
+        for (let i = 0; i < attemptPlan.length; i++) {
+          if (isClientClosed) break;
+          const { model, attemptNum } = attemptPlan[i];
+
+          try {
+            const responseStream = await ai.models.generateContentStream({
+              model,
+              contents,
+              config: {
+                systemInstruction
+              }
+            });
+
+            // CRITICAL: Await the first chunk BEFORE initializing SSE headers on res!
+            // This verifies the stream actually started and prevents sending 200 SSE headers if model returns 503 UNAVAILABLE.
+            const iterator = responseStream[Symbol.asyncIterator]();
+            const firstChunkResult = await iterator.next();
+
+            // Connection established successfully! Send headers and start event now.
+            initSSE(res);
+            sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
+
+            let fullText = '';
+            if (!firstChunkResult.done && firstChunkResult.value) {
+              const chunkText = firstChunkResult.value.text;
+              if (chunkText) {
+                fullText += chunkText;
+                sendSSE(res, { type: 'chunk', text: chunkText });
+              }
+            }
+
+            // Process subsequent stream chunks
             try {
-              const responseStream = await ai.models.generateContentStream({
-                model,
-                contents,
-                config: {
-                  systemInstruction
-                }
-              });
-
-              // CRITICAL: Await the first chunk BEFORE initializing SSE headers on res!
-              // This verifies the stream actually started and prevents sending 200 SSE headers if model returns 503 UNAVAILABLE.
-              const iterator = responseStream[Symbol.asyncIterator]();
-              const firstChunkResult = await iterator.next();
-
-              // Connection established successfully! Send headers and start event now.
-              initSSE(res);
-              sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
-
-              let fullText = '';
-              if (!firstChunkResult.done && firstChunkResult.value) {
-                const chunkText = firstChunkResult.value.text;
+              while (true) {
+                if (isClientClosed || res.writableEnded) break;
+                const { done, value } = await iterator.next();
+                if (done) break;
+                const chunkText = value?.text;
                 if (chunkText) {
                   fullText += chunkText;
                   sendSSE(res, { type: 'chunk', text: chunkText });
                 }
               }
 
-              // Process subsequent stream chunks
-              try {
-                while (true) {
-                  if (isClientClosed || res.writableEnded) break;
-                  const { done, value } = await iterator.next();
-                  if (done) break;
-                  const chunkText = value?.text;
-                  if (chunkText) {
-                    fullText += chunkText;
-                    sendSSE(res, { type: 'chunk', text: chunkText });
-                  }
-                }
-
-                if (!res.writableEnded) {
-                  sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
-                  res.end();
-                }
-                return;
-              } catch (midStreamErr: any) {
-                const parsedMid = parseGeminiError(midStreamErr);
-                console.error('[Gemini API] Mid-stream failure:', parsedMid.statusCode, parsedMid.message);
-                if (!res.writableEnded) {
-                  sendSSE(res, {
-                    type: 'error',
-                    error: parsedMid.message,
-                    code: parsedMid.statusCode,
-                    status: parsedMid.status,
-                    retryable: parsedMid.isRetryable,
-                    partial: fullText.length > 0
-                  });
-                  res.end();
-                }
-                return;
+              if (!res.writableEnded) {
+                sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
+                res.end();
               }
-            } catch (initialErr: any) {
-              // Initial connection failed BEFORE headers were sent!
-              const parsed = parseGeminiError(initialErr);
-              lastParsedErr = parsed;
-              console.warn(`[Gemini API] Streaming start failed for ${model} (attempt ${attempt}):`, parsed.statusCode, parsed.message);
+              return;
+            } catch (midStreamErr: any) {
+              const parsedMid = parseGeminiError(midStreamErr);
+              logAIDiagnostic({
+                provider: 'gemini',
+                model,
+                phase: 'mid-stream',
+                attempt: 1,
+                maxAttempts: 1,
+                upstreamStatus: parsedMid.statusCode,
+                upstreamErrorCode: parsedMid.status,
+                sanitizedMessage: parsedMid.message,
+                willRetry: false
+              });
 
-              if (!parsed.isRetryable) {
-                return res.status(parsed.statusCode).json({
-                  error: parsed.message,
-                  code: parsed.statusCode,
-                  status: parsed.status,
-                  retryable: false
+              if (!res.writableEnded) {
+                sendSSE(res, {
+                  type: 'error',
+                  error: parsedMid.message,
+                  code: parsedMid.statusCode,
+                  status: parsedMid.status,
+                  provider: 'gemini',
+                  model,
+                  retryable: false, // Cannot retry mid-stream safely without duplicating output
+                  partial: fullText.length > 0
                 });
+                res.end();
               }
-
-              if (attempt <= maxRetriesPerModel) {
-                const delay = getBackoffWithJitter(attempt, parsed.retryAfterSeconds);
-                await sleep(delay);
-                continue;
-              }
-              // Move to next model in modelsToTry (e.g. gemini-3.8-flash)
+              return;
             }
+          } catch (initialErr: any) {
+            // Initial connection failed BEFORE headers were sent!
+            const parsed = parseGeminiError(initialErr);
+            lastParsedErr = parsed;
+            const hasMoreAttempts = i < attemptPlan.length - 1;
+            const willRetry = parsed.isRetryable && hasMoreAttempts && !isClientClosed;
+
+            logAIDiagnostic({
+              provider: 'gemini',
+              model,
+              phase: 'pre-stream',
+              attempt: attemptNum,
+              maxAttempts,
+              upstreamStatus: parsed.statusCode,
+              upstreamErrorCode: parsed.status,
+              sanitizedMessage: parsed.message,
+              retryAfterSeconds: parsed.retryAfterSeconds,
+              willRetry
+            });
+
+            if (!parsed.isRetryable) {
+              return res.status(parsed.statusCode).json({
+                error: parsed.message,
+                code: parsed.statusCode,
+                status: parsed.status,
+                provider: 'gemini',
+                model,
+                retryable: false,
+                canFallback: true,
+                suggestedProviders: ['groq', 'openrouter']
+              });
+            }
+
+            if (willRetry) {
+              const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);
+              const continueExecution = await sleepWithAbort(delay, () => isClientClosed);
+              if (!continueExecution) break;
+              continue;
+            }
+            break;
           }
         }
 
@@ -773,7 +918,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           error: finalErr.message,
           code: finalErr.statusCode,
           status: finalErr.status,
-          retryable: finalErr.isRetryable
+          provider: 'gemini',
+          model: 'gemini-3.8-flash',
+          retryable: finalErr.isRetryable,
+          canFallback: true,
+          suggestedProviders: ['groq', 'openrouter']
         });
       }
     }
@@ -1060,7 +1209,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         error: parsed.message,
         code: parsed.statusCode,
         status: parsed.status,
-        retryable: parsed.isRetryable
+        retryable: parsed.isRetryable,
+        canFallback: true,
+        suggestedProviders: ['groq', 'openrouter']
       });
       if (!res.writableEnded) res.end();
     } else {
@@ -1068,7 +1219,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         error: parsed.message,
         code: parsed.statusCode,
         status: parsed.status,
-        retryable: parsed.isRetryable
+        retryable: parsed.isRetryable,
+        canFallback: true,
+        suggestedProviders: ['groq', 'openrouter']
       });
     }
   }

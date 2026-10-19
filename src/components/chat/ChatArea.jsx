@@ -50,6 +50,7 @@ export default function ChatArea({
   onSubmit,
   activeTitle = null,
   onRetry,
+  onSwitchProvider,
   onRestorePrompt,
   onRegenerate,
   onStopGenerating,
@@ -259,6 +260,7 @@ Transcript:
               messages={messages}
               isLoading={isLoading}
               onRetry={onRetry}
+              onSwitchProvider={onSwitchProvider}
               onRestorePrompt={onRestorePrompt}
               onRegenerate={onRegenerate}
               onStopGenerating={onStopGenerating}
@@ -267,6 +269,7 @@ Transcript:
               onStartEdit={onStartEdit}
               onCancelEdit={onCancelEdit}
               showTimestamps={showTimestamps}
+              selectedProvider={selectedProvider}
             />
           )}
         </div>
