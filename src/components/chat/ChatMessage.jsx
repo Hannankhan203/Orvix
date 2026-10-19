@@ -462,6 +462,31 @@ export default function ChatMessage({
               >
                 {message.content || ''}
               </ReactMarkdown>
+
+              {message.isInterrupted && message.failedPrompt && onRetry && (
+                <div className="interrupted-retry-actions mt-3 flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onRetry(message)}
+                    icon={<RotateCcw size={13} />}
+                    title="Retry this request"
+                  >
+                    Retry
+                  </Button>
+                  {onRestorePrompt && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onRestorePrompt(message.failedPrompt)}
+                      icon={<Edit3 size={13} />}
+                      title="Restore prompt into composer"
+                    >
+                      Edit prompt
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

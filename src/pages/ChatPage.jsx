@@ -1014,6 +1014,32 @@ export default function ChatPage() {
         activeAnimationRef.current = null;
       }
 
+      // Parse error message and extract JSON if stringified
+      let rawMsg = String(error?.message || '');
+      if (rawMsg.includes('{') && rawMsg.includes('}')) {
+        try {
+          const match = rawMsg.match(/\{[\s\S]*\}/);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            if (parsed.error?.message) {
+              rawMsg = parsed.error.message;
+            }
+          }
+        } catch (_) {}
+      }
+
+      const is503 =
+        error?.code === 503 ||
+        error?.status === 503 ||
+        rawMsg.includes('503') ||
+        rawMsg.toLowerCase().includes('high demand') ||
+        rawMsg.toLowerCase().includes('spikes in demand') ||
+        rawMsg.toLowerCase().includes('unavailable');
+
+      const friendlyMsg = is503
+        ? 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.'
+        : rawMsg || `An unexpected error occurred while communicating with ${selectedProvider}.`;
+
       if (activeChatIdRef.current === targetChatId) {
         if (targetText.trim().length > 0) {
           const partialMessage = {
@@ -1025,10 +1051,10 @@ export default function ChatPage() {
               hour: '2-digit',
               minute: '2-digit'
             }),
-            content: `${targetText}\n\n*[Response interrupted: ${
-              error?.message || 'Connection lost'
-            }]*`,
-            isStreaming: false
+            content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
+            isStreaming: false,
+            isInterrupted: true,
+            failedPrompt: promptText
           };
 
           setMessages((previous) =>
@@ -1052,9 +1078,7 @@ export default function ChatPage() {
               hour: '2-digit',
               minute: '2-digit'
             }),
-            content:
-              error?.message ||
-              `An unexpected error occurred while communicating with ${selectedProvider}.`
+            content: friendlyMsg
           };
 
           setMessages((previous) =>
@@ -1075,8 +1099,10 @@ export default function ChatPage() {
             hour: '2-digit',
             minute: '2-digit'
           }),
-          content: `${targetText}\n\n*[Response interrupted]*`,
-          isStreaming: false
+          content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
+          isStreaming: false,
+          isInterrupted: true,
+          failedPrompt: promptText
         };
 
         await persistMessageSafe(targetChatId, partialMessage);
@@ -1270,7 +1296,7 @@ export default function ChatPage() {
     ]);
 
     const validHistory = updatedMessages.filter(
-      (message) => !message.isError
+      (message) => !message.isError && !message.isInterrupted
     );
 
     void executePrompt(

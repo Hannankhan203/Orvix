@@ -25,36 +25,163 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '10mb' }));
 
-// Helper to format conversation history for Gemini
+// Helper to pause execution with backoff
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function getBackoffWithJitter(attempt: number, retryAfterSec?: number): number {
+  if (retryAfterSec && retryAfterSec > 0 && retryAfterSec <= 10) {
+    return retryAfterSec * 1000 + Math.random() * 300;
+  }
+  const base = Math.min(1000 * Math.pow(2, attempt - 1), 3000);
+  const jitter = Math.random() * 400;
+  return base + jitter;
+}
+
+// Parses and normalizes Gemini API errors into clean user-facing representations
+export function parseGeminiError(err: any): {
+  statusCode: number;
+  status: string;
+  isUnavailable: boolean;
+  isRetryable: boolean;
+  message: string;
+  retryAfterSeconds?: number;
+} {
+  let statusCode = Number(err?.status || err?.code || err?.statusCode || 500);
+  let statusText = String(err?.statusText || err?.status || '');
+  let message = String(err?.message || err || '');
+  let isRetryable = false;
+  let isUnavailable = false;
+  let retryAfterSeconds: number | undefined = undefined;
+
+  // 1. Attempt to parse stringified JSON embedded in the error message
+  if (typeof message === 'string') {
+    const jsonMatch = message.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.error) {
+          if (parsed.error.code) statusCode = Number(parsed.error.code);
+          if (parsed.error.status) statusText = String(parsed.error.status);
+          if (parsed.error.message) message = String(parsed.error.message);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Check for Retry-After header if available
+  if (err?.headers && typeof err.headers.get === 'function') {
+    const retryHeader = err.headers.get('retry-after');
+    if (retryHeader) {
+      const parsedSec = parseInt(retryHeader, 10);
+      if (!isNaN(parsedSec)) retryAfterSeconds = parsedSec;
+    }
+  }
+
+  const lowerMsg = message.toLowerCase();
+
+  // 2. Classify error types
+  if (
+    statusCode === 503 ||
+    statusText.toUpperCase() === 'UNAVAILABLE' ||
+    lowerMsg.includes('503') ||
+    lowerMsg.includes('high demand') ||
+    lowerMsg.includes('spikes in demand') ||
+    lowerMsg.includes('service unavailable') ||
+    lowerMsg.includes('temporarily unavailable') ||
+    lowerMsg.includes('overloaded')
+  ) {
+    statusCode = 503;
+    statusText = 'UNAVAILABLE';
+    isUnavailable = true;
+    isRetryable = true;
+    message = 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
+  } else if (
+    statusCode === 429 ||
+    statusText.toUpperCase() === 'RESOURCE_EXHAUSTED' ||
+    lowerMsg.includes('rate limit') ||
+    lowerMsg.includes('quota') ||
+    lowerMsg.includes('resource_exhausted')
+  ) {
+    statusCode = 429;
+    statusText = 'RESOURCE_EXHAUSTED';
+    isRetryable = true;
+    message = 'Gemini rate limit or quota exceeded. Please wait a moment before trying again.';
+  } else if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    lowerMsg.includes('api key') ||
+    lowerMsg.includes('permission') ||
+    lowerMsg.includes('unauthorized')
+  ) {
+    statusCode = statusCode === 401 ? 401 : 403;
+    statusText = statusCode === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
+    isRetryable = false;
+    message = 'Invalid or unauthorized Gemini API key. Please check your API configuration.';
+  } else if (statusCode === 400 || lowerMsg.includes('invalid argument')) {
+    statusCode = 400;
+    statusText = 'INVALID_ARGUMENT';
+    isRetryable = false;
+  }
+
+  return {
+    statusCode: Number.isFinite(statusCode) ? statusCode : 500,
+    status: statusText || (isUnavailable ? 'UNAVAILABLE' : 'ERROR'),
+    isUnavailable,
+    isRetryable,
+    message,
+    retryAfterSeconds
+  };
+}
+
+// Helper to format conversation history for Gemini with alternating roles
 function formatGeminiHistory(
   messages: Array<{ sender?: string; content?: string }> = [],
   currentPrompt = '',
   maxContext = 12
 ) {
-  const contents = [];
+  const rawContents: Array<{ role: 'user' | 'model'; text: string }> = [];
   const recent = messages.slice(-maxContext);
 
   for (const msg of recent) {
     if (!msg.content || !msg.content.trim()) continue;
     const role = msg.sender === 'user' ? 'user' : 'model';
-    contents.push({
+    rawContents.push({
       role,
-      parts: [{ text: msg.content.trim() }]
+      text: msg.content.trim()
     });
   }
 
   if (currentPrompt && currentPrompt.trim()) {
-    contents.push({
+    rawContents.push({
       role: 'user',
-      parts: [{ text: currentPrompt.trim() }]
+      text: currentPrompt.trim()
     });
   }
 
-  while (contents.length > 0 && contents[0].role !== 'user') {
-    contents.shift();
+  // Gemini contents must begin with a 'user' turn
+  while (rawContents.length > 0 && rawContents[0].role !== 'user') {
+    rawContents.shift();
   }
 
-  return contents;
+  if (rawContents.length === 0 && currentPrompt.trim()) {
+    rawContents.push({ role: 'user', text: currentPrompt.trim() });
+  }
+
+  // Merge consecutive turns of identical role so roles strictly alternate user -> model -> user
+  const mergedContents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  for (const item of rawContents) {
+    const last = mergedContents[mergedContents.length - 1];
+    if (last && last.role === item.role) {
+      last.parts.push({ text: item.text });
+    } else {
+      mergedContents.push({
+        role: item.role,
+        parts: [{ text: item.text }]
+      });
+    }
+  }
+
+  return mergedContents;
 }
 
 interface UserPreferences {
@@ -483,78 +610,171 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       let lastErr = null;
 
       if (!shouldStream) {
+        let lastParsedErr = null;
         for (const model of modelsToTry) {
-          try {
-            const response = await ai.models.generateContent({
-              model,
-              contents,
-              config: {
-                systemInstruction
-              }
-            });
-
-            if (response && response.text) {
-              return res.json({
-                text: response.text,
-                modelUsed: model,
-                provider: 'gemini'
+          let attempt = 0;
+          const maxRetriesPerModel = 1;
+          while (attempt <= maxRetriesPerModel) {
+            attempt++;
+            try {
+              const response = await ai.models.generateContent({
+                model,
+                contents,
+                config: {
+                  systemInstruction
+                }
               });
+
+              if (response && response.text) {
+                return res.json({
+                  text: response.text,
+                  modelUsed: model,
+                  provider: 'gemini'
+                });
+              }
+            } catch (err: any) {
+              const parsed = parseGeminiError(err);
+              lastParsedErr = parsed;
+              console.warn(`[Gemini API] generateContent error for ${model} (attempt ${attempt}):`, parsed.statusCode, parsed.message);
+
+              if (!parsed.isRetryable) {
+                return res.status(parsed.statusCode).json({
+                  error: parsed.message,
+                  code: parsed.statusCode,
+                  status: parsed.status,
+                  retryable: false
+                });
+              }
+
+              if (attempt <= maxRetriesPerModel) {
+                const delay = getBackoffWithJitter(attempt, parsed.retryAfterSeconds);
+                await sleep(delay);
+                continue;
+              }
+              // If attempts on this model are exhausted, loop to next model (gemini-3.8-flash)
             }
-          } catch (err: any) {
-            lastErr = err;
-            const msg = String(err?.message || err);
-            if ((msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('404')) && model !== 'gemini-3.8-flash') {
-              continue;
-            }
-            break;
           }
         }
-        throw lastErr || new Error('Received an empty response from Gemini.');
+
+        const fallbackErr = lastParsedErr || {
+          statusCode: 503,
+          status: 'UNAVAILABLE',
+          message: 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.',
+          isRetryable: true
+        };
+        return res.status(fallbackErr.statusCode).json({
+          error: fallbackErr.message,
+          code: fallbackErr.statusCode,
+          status: fallbackErr.status,
+          retryable: fallbackErr.isRetryable
+        });
       } else {
-        // Genuine streaming via ai.models.generateContentStream
+        // Genuine streaming via ai.models.generateContentStream with delayed header initiation
+        let lastParsedErr = null;
         for (const model of modelsToTry) {
-          try {
-            const responseStream = await ai.models.generateContentStream({
-              model,
-              contents,
-              config: {
-                systemInstruction
+          let attempt = 0;
+          const maxRetriesPerModel = 1;
+
+          while (attempt <= maxRetriesPerModel) {
+            attempt++;
+            try {
+              const responseStream = await ai.models.generateContentStream({
+                model,
+                contents,
+                config: {
+                  systemInstruction
+                }
+              });
+
+              // CRITICAL: Await the first chunk BEFORE initializing SSE headers on res!
+              // This verifies the stream actually started and prevents sending 200 SSE headers if model returns 503 UNAVAILABLE.
+              const iterator = responseStream[Symbol.asyncIterator]();
+              const firstChunkResult = await iterator.next();
+
+              // Connection established successfully! Send headers and start event now.
+              initSSE(res);
+              sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
+
+              let fullText = '';
+              if (!firstChunkResult.done && firstChunkResult.value) {
+                const chunkText = firstChunkResult.value.text;
+                if (chunkText) {
+                  fullText += chunkText;
+                  sendSSE(res, { type: 'chunk', text: chunkText });
+                }
               }
-            });
 
-            initSSE(res);
-            sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
+              // Process subsequent stream chunks
+              try {
+                while (true) {
+                  if (isClientClosed || res.writableEnded) break;
+                  const { done, value } = await iterator.next();
+                  if (done) break;
+                  const chunkText = value?.text;
+                  if (chunkText) {
+                    fullText += chunkText;
+                    sendSSE(res, { type: 'chunk', text: chunkText });
+                  }
+                }
 
-            let fullText = '';
-            for await (const chunk of responseStream) {
-              if (isClientClosed || res.writableEnded) break;
-              const chunkText = chunk.text;
-              if (chunkText) {
-                fullText += chunkText;
-                sendSSE(res, { type: 'chunk', text: chunkText });
+                if (!res.writableEnded) {
+                  sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
+                  res.end();
+                }
+                return;
+              } catch (midStreamErr: any) {
+                const parsedMid = parseGeminiError(midStreamErr);
+                console.error('[Gemini API] Mid-stream failure:', parsedMid.statusCode, parsedMid.message);
+                if (!res.writableEnded) {
+                  sendSSE(res, {
+                    type: 'error',
+                    error: parsedMid.message,
+                    code: parsedMid.statusCode,
+                    status: parsedMid.status,
+                    retryable: parsedMid.isRetryable,
+                    partial: fullText.length > 0
+                  });
+                  res.end();
+                }
+                return;
               }
-            }
+            } catch (initialErr: any) {
+              // Initial connection failed BEFORE headers were sent!
+              const parsed = parseGeminiError(initialErr);
+              lastParsedErr = parsed;
+              console.warn(`[Gemini API] Streaming start failed for ${model} (attempt ${attempt}):`, parsed.statusCode, parsed.message);
 
-            if (!res.writableEnded) {
-              sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
-              res.end();
+              if (!parsed.isRetryable) {
+                return res.status(parsed.statusCode).json({
+                  error: parsed.message,
+                  code: parsed.statusCode,
+                  status: parsed.status,
+                  retryable: false
+                });
+              }
+
+              if (attempt <= maxRetriesPerModel) {
+                const delay = getBackoffWithJitter(attempt, parsed.retryAfterSeconds);
+                await sleep(delay);
+                continue;
+              }
+              // Move to next model in modelsToTry (e.g. gemini-3.8-flash)
             }
-            return;
-          } catch (err: any) {
-            lastErr = err;
-            const msg = String(err?.message || err);
-            if (res.headersSent) {
-              sendSSE(res, { type: 'error', error: msg });
-              if (!res.writableEnded) res.end();
-              return;
-            }
-            if ((msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('404')) && model !== 'gemini-3.8-flash') {
-              continue;
-            }
-            break;
           }
         }
-        throw lastErr || new Error('Received an empty response from Gemini.');
+
+        const finalErr = lastParsedErr || {
+          statusCode: 503,
+          status: 'UNAVAILABLE',
+          message: 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.',
+          isRetryable: true
+        };
+        return res.status(finalErr.statusCode).json({
+          error: finalErr.message,
+          code: finalErr.statusCode,
+          status: finalErr.status,
+          retryable: finalErr.isRetryable
+        });
       }
     }
 
@@ -833,12 +1053,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     return res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (error: any) {
     console.error('API Error in /api/chat:', error);
+    const parsed = parseGeminiError(error);
     if (res.headersSent) {
-      sendSSE(res, { type: 'error', error: error?.message || 'Internal server error while streaming response.' });
+      sendSSE(res, {
+        type: 'error',
+        error: parsed.message,
+        code: parsed.statusCode,
+        status: parsed.status,
+        retryable: parsed.isRetryable
+      });
       if (!res.writableEnded) res.end();
     } else {
-      res.status(500).json({
-        error: error?.message || 'Internal server error while processing AI chat request.'
+      res.status(parsed.statusCode).json({
+        error: parsed.message,
+        code: parsed.statusCode,
+        status: parsed.status,
+        retryable: parsed.isRetryable
       });
     }
   }

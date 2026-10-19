@@ -77,6 +77,71 @@ export function isProviderConfigured(provider) {
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string, provider: string }>}
  */
+/**
+ * Parses raw error representations into clean, friendly error objects
+ */
+function parseRouterError(rawError, statusCode = 500) {
+  let cleanMsg = typeof rawError === 'string' ? rawError : rawError?.message || '';
+  let code = rawError?.code || statusCode;
+  let status = rawError?.status || '';
+  let retryable = rawError?.retryable;
+
+  if (typeof cleanMsg === 'string' && cleanMsg.includes('{') && cleanMsg.includes('}')) {
+    try {
+      const match = cleanMsg.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        if (parsed.error) {
+          if (parsed.error.code) code = Number(parsed.error.code);
+          if (parsed.error.status) status = String(parsed.error.status);
+          if (parsed.error.message) cleanMsg = String(parsed.error.message);
+        }
+      }
+    } catch (_) {}
+  }
+
+  const lowerMsg = String(cleanMsg).toLowerCase();
+
+  if (
+    code === 503 ||
+    status === 'UNAVAILABLE' ||
+    lowerMsg.includes('503') ||
+    lowerMsg.includes('high demand') ||
+    lowerMsg.includes('spikes in demand') ||
+    lowerMsg.includes('service unavailable') ||
+    lowerMsg.includes('temporarily unavailable')
+  ) {
+    code = 503;
+    status = 'UNAVAILABLE';
+    retryable = true;
+    cleanMsg = 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
+  } else if (
+    code === 429 ||
+    status === 'RESOURCE_EXHAUSTED' ||
+    lowerMsg.includes('rate limit') ||
+    lowerMsg.includes('quota')
+  ) {
+    code = 429;
+    status = 'RESOURCE_EXHAUSTED';
+    retryable = true;
+    cleanMsg = 'AI rate limit or quota exceeded. Please wait a moment before trying again.';
+  } else if (
+    code === 401 ||
+    code === 403 ||
+    lowerMsg.includes('api key') ||
+    lowerMsg.includes('permission')
+  ) {
+    code = code === 401 ? 401 : 403;
+    retryable = false;
+  }
+
+  const err = new Error(cleanMsg || 'An unexpected error occurred while communicating with the AI service.');
+  err.code = code;
+  err.status = status;
+  err.retryable = retryable ?? (code === 503 || code === 429);
+  return err;
+}
+
 export async function streamAIMessage({
   provider = DEFAULT_PROVIDER,
   mode = 'general',
@@ -91,131 +156,160 @@ export async function streamAIMessage({
   const normalizedProvider = provider.toLowerCase();
   const normalizedMode = (mode || 'general').toLowerCase();
 
-  // Primary path: Use secure server-side proxy route /api/chat with SSE
-  try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream'
-      },
-      body: JSON.stringify({
-        provider: normalizedProvider,
-        mode: normalizedMode,
-        prompt,
-        history,
-        username: username ? String(username).trim() : null,
-        preferences: preferences || null,
-        stream: true
-      }),
-      signal
-    });
+  // Primary path: Use secure server-side proxy route /api/chat with SSE and bounded retry
+  const maxClientAttempts = 2;
+  let clientAttempt = 0;
 
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => null);
-      if (errJson && errJson.error) {
-        throw new Error(errJson.error);
-      }
-      throw new Error(`Server request failed (${res.status})`);
-    }
+  while (clientAttempt < maxClientAttempts) {
+    clientAttempt++;
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream'
+        },
+        body: JSON.stringify({
+          provider: normalizedProvider,
+          mode: normalizedMode,
+          prompt,
+          history,
+          username: username ? String(username).trim() : null,
+          preferences: preferences || null,
+          stream: true
+        }),
+        signal
+      });
 
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('text/event-stream') && res.body) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let accumulatedText = '';
-      let modelUsed = null;
-      let finalProvider = normalizedProvider;
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        const parsedErr = parseRouterError(errJson?.error || `Server request failed (${res.status})`, res.status);
+        if (errJson?.code) parsedErr.code = errJson.code;
+        if (errJson?.status) parsedErr.status = errJson.status;
+        if (typeof errJson?.retryable === 'boolean') parsedErr.retryable = errJson.retryable;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
-          const dataStr = trimmed.slice(6);
-          try {
-            const data = JSON.parse(dataStr);
-            if (data.type === 'start') {
-              modelUsed = data.modelUsed;
-              finalProvider = data.provider || normalizedProvider;
-              onStart?.({ modelUsed, provider: finalProvider });
-            } else if (data.type === 'chunk' && data.text) {
-              accumulatedText += data.text;
-              onChunk?.(data.text, accumulatedText);
-            } else if (data.type === 'done') {
-              if (data.modelUsed) modelUsed = data.modelUsed;
-              if (data.provider) finalProvider = data.provider;
-              const finalText = data.text || accumulatedText;
-              return {
-                text: finalText,
-                modelUsed: modelUsed || 'AI Model',
-                provider: finalProvider
-              };
-            } else if (data.type === 'error') {
-              throw new Error(data.error || 'Stream error occurred.');
-            }
-          } catch (jsonErr) {
-            if (jsonErr.message && !jsonErr.message.includes('JSON')) {
-              throw jsonErr;
-            }
-          }
+        if (parsedErr.retryable && clientAttempt < maxClientAttempts && !signal?.aborted) {
+          const delay = 1000 + Math.random() * 500;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
         }
+
+        throw parsedErr;
       }
 
-      if (buffer && buffer.trim().startsWith('data: ')) {
-        const dataStr = buffer.trim().slice(6);
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('text/event-stream') && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let accumulatedText = '';
+        let modelUsed = null;
+        let finalProvider = normalizedProvider;
+
         try {
-          const data = JSON.parse(dataStr);
-          if (data.type === 'start') {
-            modelUsed = data.modelUsed;
-            finalProvider = data.provider || normalizedProvider;
-            onStart?.({ modelUsed, provider: finalProvider });
-          } else if (data.type === 'chunk' && data.text) {
-            accumulatedText += data.text;
-            onChunk?.(data.text, accumulatedText);
-          } else if (data.type === 'done') {
-            if (data.modelUsed) modelUsed = data.modelUsed;
-            if (data.provider) finalProvider = data.provider;
-            return {
-              text: data.text || accumulatedText,
-              modelUsed: modelUsed || 'AI Model',
-              provider: finalProvider
-            };
-          } else if (data.type === 'error') {
-            throw new Error(data.error || 'Stream error occurred.');
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+              const dataStr = trimmed.slice(6);
+              try {
+                const data = JSON.parse(dataStr);
+                if (data.type === 'start') {
+                  modelUsed = data.modelUsed;
+                  finalProvider = data.provider || normalizedProvider;
+                  onStart?.({ modelUsed, provider: finalProvider });
+                } else if (data.type === 'chunk' && data.text) {
+                  accumulatedText += data.text;
+                  onChunk?.(data.text, accumulatedText);
+                } else if (data.type === 'done') {
+                  if (data.modelUsed) modelUsed = data.modelUsed;
+                  if (data.provider) finalProvider = data.provider;
+                  const finalText = data.text || accumulatedText;
+                  return {
+                    text: finalText,
+                    modelUsed: modelUsed || 'AI Model',
+                    provider: finalProvider
+                  };
+                } else if (data.type === 'error') {
+                  const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
+                  if (data.code) streamErr.code = data.code;
+                  if (data.status) streamErr.status = data.status;
+                  if (typeof data.retryable === 'boolean') streamErr.retryable = data.retryable;
+                  throw streamErr;
+                }
+              } catch (jsonErr) {
+                if (jsonErr.message && !jsonErr.message.includes('JSON')) {
+                  throw jsonErr;
+                }
+              }
+            }
           }
-        } catch (_) {}
+
+          if (buffer && buffer.trim().startsWith('data: ')) {
+            const dataStr = buffer.trim().slice(6);
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === 'start') {
+                modelUsed = data.modelUsed;
+                finalProvider = data.provider || normalizedProvider;
+                onStart?.({ modelUsed, provider: finalProvider });
+              } else if (data.type === 'chunk' && data.text) {
+                accumulatedText += data.text;
+                onChunk?.(data.text, accumulatedText);
+              } else if (data.type === 'done') {
+                if (data.modelUsed) modelUsed = data.modelUsed;
+                if (data.provider) finalProvider = data.provider;
+                return {
+                  text: data.text || accumulatedText,
+                  modelUsed: modelUsed || 'AI Model',
+                  provider: finalProvider
+                };
+              } else if (data.type === 'error') {
+                const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
+                throw streamErr;
+              }
+            } catch (_) {}
+          }
+
+          return {
+            text: accumulatedText,
+            modelUsed: modelUsed || 'AI Model',
+            provider: finalProvider
+          };
+        } finally {
+          reader.releaseLock();
+        }
+      } else {
+        // Non-streaming response fallback
+        const data = await res.json();
+        onChunk?.(data.text, data.text);
+        return {
+          text: data.text,
+          modelUsed: data.modelUsed,
+          provider: data.provider || normalizedProvider
+        };
+      }
+    } catch (apiErr) {
+      if (signal?.aborted) throw apiErr;
+
+      if (apiErr?.retryable && clientAttempt < maxClientAttempts) {
+        const delay = 1000 + Math.random() * 500;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
       }
 
-      return {
-        text: accumulatedText,
-        modelUsed: modelUsed || 'AI Model',
-        provider: finalProvider
-      };
-    } else {
-      // Non-streaming response fallback
-      const data = await res.json();
-      onChunk?.(data.text, data.text);
-      return {
-        text: data.text,
-        modelUsed: data.modelUsed,
-        provider: data.provider || normalizedProvider
-      };
-    }
-  } catch (apiErr) {
-    if (signal?.aborted) throw apiErr;
+      if (apiErr.name === 'TypeError' && isProviderConfigured(normalizedProvider)) {
+        console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
+        break;
+      }
 
-    // Only attempt client direct fallback if provider has a direct client API key configured
-    if (isProviderConfigured(normalizedProvider)) {
-      console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
-    } else {
       throw apiErr;
     }
   }
