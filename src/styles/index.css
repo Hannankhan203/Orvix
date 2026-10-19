@@ -946,6 +946,7 @@ html, body {
 .mobile-sub-left {
   display: flex;
   align-items: center;
+  gap: 8px;
   min-width: 0;
   flex: 1;
 }
@@ -1325,7 +1326,10 @@ html, body {
   padding: 2px 18px 2px 2px;
   cursor: pointer;
   border-radius: var(--radius-xs);
-  max-width: 170px;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-selector-select option {
@@ -1739,6 +1743,12 @@ html, body {
 .header-mode-selector .mode-dropdown-menu {
   top: calc(100% + 6px);
   left: 0;
+}
+
+.mobile-mode-selector .mode-compact-trigger {
+  padding: 3px 8px;
+  font-size: 0.76rem;
+  gap: 4px;
 }
 
 .mobile-mode-selector .mode-dropdown-menu {

@@ -15,11 +15,9 @@ import {
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
-import ModeSelector from './ModeSelector.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
-import { getChatMode } from '../../config/chatModes.js';
 
 /**
  * ChatArea Component
@@ -107,8 +105,6 @@ export default function ChatArea({
 
   const activeLang =
     supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
-
-  const currentMode = getChatMode(activeMode);
 
   // Close language menu when clicking outside
   useEffect(() => {
@@ -547,21 +543,6 @@ Transcript:
             </div>
           )}
 
-          {/* Compact Mode Control Strip */}
-          <div className="composer-mode-strip">
-            <div className="composer-mode-left">
-              <span className="composer-mode-strip-label">Mode:</span>
-              <ModeSelector
-                activeMode={activeMode}
-                onSelectMode={onSelectMode}
-                variant="compact"
-                disabled={isLoading}
-              />
-            </div>
-            <span className="composer-mode-strip-desc" title={currentMode.description}>
-              {currentMode.description}
-            </span>
-          </div>
 
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
             <textarea

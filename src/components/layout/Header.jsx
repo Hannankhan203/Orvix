@@ -176,22 +176,22 @@ export default function Header({
         </div>
 
         <div className="header-right">
-          {/* Chat Mode Selector */}
-          {onSelectMode && (
-            <ModeSelector
-              activeMode={activeMode}
-              onSelectMode={onSelectMode}
-              className="header-mode-selector"
-            />
-          )}
-
-          {/* AI Provider Selector */}
+          {/* AI Provider / Model Selector */}
           {onSelectProvider && (
             <ModelSelector
               selectedProvider={selectedProvider}
               onSelectProvider={onSelectProvider}
               className="header-model-selector"
               id="ai-model-select-desktop"
+            />
+          )}
+
+          {/* Chat Mode Selector */}
+          {onSelectMode && (
+            <ModeSelector
+              activeMode={activeMode}
+              onSelectMode={onSelectMode}
+              className="header-mode-selector"
             />
           )}
 
@@ -348,13 +348,6 @@ export default function Header({
         {/* Tier 2: Context Bar (AI Model Selector + Chat Title / Status) */}
         <div className="header-mobile-sub">
           <div className="mobile-sub-left">
-            {onSelectMode && (
-              <ModeSelector
-                activeMode={activeMode}
-                onSelectMode={onSelectMode}
-                className="mobile-mode-selector"
-              />
-            )}
             {onSelectProvider && (
               <ModelSelector
                 selectedProvider={selectedProvider}
@@ -362,6 +355,13 @@ export default function Header({
                 compact
                 className="mobile-model-selector"
                 id="ai-model-select-mobile"
+              />
+            )}
+            {onSelectMode && (
+              <ModeSelector
+                activeMode={activeMode}
+                onSelectMode={onSelectMode}
+                className="mobile-mode-selector"
               />
             )}
           </div>
