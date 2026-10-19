@@ -4917,7 +4917,8 @@ html, body {
   margin-left: 4px;
 }
 
-.message-speaking-badge.playing {
+.message-speaking-badge.playing,
+.message-speaking-badge.speaking {
   background-color: rgba(37, 99, 235, 0.15);
   color: #60a5fa;
   border: 1px solid rgba(59, 130, 246, 0.35);
@@ -4927,6 +4928,12 @@ html, body {
   background-color: rgba(245, 158, 11, 0.14);
   color: #fbbf24;
   border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.message-speaking-badge.error {
+  background-color: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
 }
 
 .speaking-badge-icon.pulse {
@@ -5079,7 +5086,8 @@ html, body {
 }
 
 /* Light Theme Overrides for Speech Components */
-[data-theme="light"] .message-speaking-badge.playing {
+[data-theme="light"] .message-speaking-badge.playing,
+[data-theme="light"] .message-speaking-badge.speaking {
   background-color: rgba(37, 99, 235, 0.1);
   color: #1d4ed8;
   border-color: rgba(37, 99, 235, 0.25);
@@ -5089,6 +5097,12 @@ html, body {
   background-color: rgba(217, 119, 6, 0.1);
   color: #b45309;
   border-color: rgba(217, 119, 6, 0.25);
+}
+
+[data-theme="light"] .message-speaking-badge.error {
+  background-color: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.25);
 }
 
 [data-theme="light"] .speech-pause-btn.active {

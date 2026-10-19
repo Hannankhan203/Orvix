@@ -11,7 +11,9 @@ import {
   Square,
   Volume2,
   VolumeX,
-  Cpu
+  Cpu,
+  Pause,
+  Play
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -159,31 +161,48 @@ export default function ChatMessage({
     isSupported: isSpeechSupported,
     speakingState,
     currentMessageId,
+    speechError,
     playMessage,
+    pauseSpeech,
+    resumeSpeech,
     stopSpeech,
     resetMessageSpeech,
     hasSavedPosition
   } = useSpeech();
 
-  const isCurrentSpeaking = Boolean(
-    message?.id &&
-    currentMessageId === message.id &&
-    speakingState !== 'idle'
-  );
-  const isPlayingThis = isCurrentSpeaking && speakingState === 'playing';
-  const isPausedThis = isCurrentSpeaking && speakingState === 'paused';
-  const isResumable = Boolean(
-    message?.id &&
-    !isCurrentSpeaking &&
-    hasSavedPosition(message.id)
-  );
+  const isCurrentActive = Boolean(message?.id && currentMessageId === message.id);
+  const isSpeakingThis = isCurrentActive && (speakingState === 'speaking' || speakingState === 'playing');
+  const isCurrentSpeaking = isSpeakingThis;
+  const isPausedThis = isCurrentActive && speakingState === 'paused';
+  const isCompletedThis = isCurrentActive && speakingState === 'completed';
+  const isErrorThis = isCurrentActive && speakingState === 'error';
+  const hasSavedThis = Boolean(message?.id && hasSavedPosition(message.id));
+  const isResumableThis = isPausedThis || (!isCurrentActive && hasSavedThis);
 
-  const handleToggleSpeech = () => {
+  const handleStartSpeech = () => {
     if (!hasContent || !message?.content || !message?.id) return;
-    if (isCurrentSpeaking) {
-      stopSpeech(true);
+    playMessage(message.id, message.content, false);
+  };
+
+  const handlePauseSpeech = () => {
+    pauseSpeech();
+  };
+
+  const handleResumeSpeech = () => {
+    if (!hasContent || !message?.content || !message?.id) return;
+    if (isPausedThis) {
+      resumeSpeech();
     } else {
       playMessage(message.id, message.content, false);
+    }
+  };
+
+  const handleStopSpeech = () => {
+    if (!message?.id) return;
+    if (isCurrentActive) {
+      stopSpeech(false);
+    } else {
+      resetMessageSpeech(message.id);
     }
   };
 
@@ -192,14 +211,14 @@ export default function ChatMessage({
     resetMessageSpeech(message.id);
   };
 
-  // Safely stop speech if this message is unmounted while speaking
+  // Safely pause speech if this message is unmounted while speaking
   useEffect(() => {
     return () => {
-      if (isCurrentSpeaking) {
-        stopSpeech(true);
+      if (isSpeakingThis) {
+        pauseSpeech();
       }
     };
-  }, [isCurrentSpeaking, stopSpeech]);
+  }, [isSpeakingThis, pauseSpeech]);
 
   const currentProviderId = message.failedProvider || message.provider || selectedProvider;
   const currentProviderObj =
@@ -357,14 +376,32 @@ export default function ChatMessage({
             </span>
           )}
 
-          {isCurrentSpeaking && (
+          {isCurrentActive && (isSpeakingThis || isPausedThis || isErrorThis) && (
             <span
-              className={`message-speaking-badge ${isPausedThis ? 'paused' : 'playing'}`}
+              className={`message-speaking-badge ${isSpeakingThis ? 'playing' : isPausedThis ? 'paused' : 'error'}`}
               role="status"
-              aria-label={isPausedThis ? 'Speech playback paused' : 'Currently reading aloud'}
+              aria-label={
+                isSpeakingThis
+                  ? 'Currently reading aloud'
+                  : isPausedThis
+                  ? 'Speech playback paused'
+                  : 'Speech playback error'
+              }
             >
-              <Volume2 size={11} className={`speaking-badge-icon ${isPlayingThis ? 'pulse' : ''}`} />
-              <span>{isPausedThis ? 'Speech Paused' : 'Reading Aloud'}</span>
+              {isSpeakingThis ? (
+                <Volume2 size={11} className="speaking-badge-icon pulse" />
+              ) : isPausedThis ? (
+                <Pause size={11} />
+              ) : (
+                <AlertCircle size={11} />
+              )}
+              <span>
+                {isSpeakingThis
+                  ? 'Reading Aloud'
+                  : isPausedThis
+                  ? 'Speech Paused'
+                  : 'Speech Error'}
+              </span>
             </span>
           )}
 
@@ -603,68 +640,125 @@ export default function ChatMessage({
                   </Button>
                 )}
 
-                {/* Read Aloud & Resume / Reset Controls */}
+                {/* Read Aloud & Resume / Pause / Stop Controls */}
                 {hasContent && (
-                  <div className="inline-flex items-center gap-1.5">
-                    <Button
-                      variant={isCurrentSpeaking ? 'outline' : 'ghost'}
-                      size="sm"
-                      onClick={handleToggleSpeech}
-                      disabled={!isSpeechSupported}
-                      className={`message-action-btn read-aloud-btn ${isCurrentSpeaking ? 'speaking-active' : ''}`}
-                      title={
-                        !isSpeechSupported
-                          ? 'Read aloud is not supported in this browser'
-                          : isCurrentSpeaking
-                          ? 'Stop reading aloud'
-                          : isResumable
-                          ? 'Resume reading from saved position'
-                          : 'Read aloud'
-                      }
-                      ariaLabel={
-                        !isSpeechSupported
-                          ? 'Read aloud not supported'
-                          : isCurrentSpeaking
-                          ? 'Stop reading message aloud'
-                          : isResumable
-                          ? 'Resume reading message aloud'
-                          : 'Read message aloud'
-                      }
-                      icon={
-                        !isSpeechSupported ? (
-                          <VolumeX size={13} />
-                        ) : isCurrentSpeaking ? (
-                          <Square size={11} fill="currentColor" />
-                        ) : (
-                          <Volume2 size={13} />
-                        )
-                      }
-                    >
-                      {isCurrentSpeaking ? 'Stop reading' : isResumable ? 'Resume' : 'Read aloud'}
-                    </Button>
+                  <div className="read-aloud-active-controls inline-flex items-center gap-1.5">
+                    {isSpeakingThis ? (
+                      /* Active Speaking State: Show Pause & Stop buttons */
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handlePauseSpeech}
+                          className="message-action-btn speech-pause-btn active"
+                          title="Pause reading aloud"
+                          ariaLabel="Pause reading message aloud"
+                          icon={<Pause size={12} />}
+                        >
+                          Pause
+                        </Button>
 
-                    {/* Reset Button (only shown when this response has saved progress or is currently speaking) */}
-                    {(isResumable || isCurrentSpeaking) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleStopSpeech}
+                          className="message-action-btn speech-stop-btn"
+                          title="Stop reading and reset to beginning"
+                          ariaLabel="Stop reading and reset to beginning"
+                          icon={<Square size={11} fill="currentColor" />}
+                        >
+                          Stop
+                        </Button>
+
+                        <span className="speech-soundwave-mini" aria-hidden="true" title="Reading aloud">
+                          <span className="mini-wave-bar bar-1" />
+                          <span className="mini-wave-bar bar-2" />
+                          <span className="mini-wave-bar bar-3" />
+                        </span>
+                      </>
+                    ) : isResumableThis ? (
+                      /* Paused / Resumable State: Show Resume & Stop buttons */
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleResumeSpeech}
+                          disabled={!isSpeechSupported}
+                          className="message-action-btn speech-resume-btn"
+                          title="Resume reading from paused position"
+                          ariaLabel="Resume reading message aloud"
+                          icon={<Play size={12} fill="currentColor" />}
+                        >
+                          Resume
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleStopSpeech}
+                          disabled={!isSpeechSupported}
+                          className="message-action-btn speech-stop-btn"
+                          title="Stop reading and reset to beginning"
+                          ariaLabel="Stop reading and reset to beginning"
+                          icon={<Square size={11} fill="currentColor" />}
+                        >
+                          Stop
+                        </Button>
+                      </>
+                    ) : isErrorThis ? (
+                      /* Error State: Retry button */
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleStartSpeech}
+                          className="message-action-btn"
+                          title="Retry reading aloud"
+                          ariaLabel="Retry reading aloud"
+                          icon={<RotateCcw size={12} />}
+                        >
+                          Retry
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleResetSpeech}
+                          className="message-action-btn speech-stop-btn"
+                          title="Dismiss speech error"
+                          ariaLabel="Dismiss speech error"
+                          icon={<Square size={11} fill="currentColor" />}
+                        >
+                          Dismiss
+                        </Button>
+                      </>
+                    ) : (
+                      /* Idle / Completed State: Read Aloud button */
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={handleResetSpeech}
+                        onClick={handleStartSpeech}
                         disabled={!isSpeechSupported}
-                        className="message-action-btn reset-speech-btn"
-                        title="Reset reading to the beginning"
-                        ariaLabel="Reset reading to the beginning"
-                        icon={<RotateCcw size={12} />}
+                        className="message-action-btn read-aloud-btn"
+                        title={
+                          !isSpeechSupported
+                            ? 'Read aloud is not supported in this browser'
+                            : 'Read aloud'
+                        }
+                        ariaLabel={
+                          !isSpeechSupported
+                            ? 'Read aloud not supported'
+                            : 'Read message aloud'
+                        }
+                        icon={
+                          !isSpeechSupported ? (
+                            <VolumeX size={13} />
+                          ) : (
+                            <Volume2 size={13} />
+                          )
+                        }
                       >
-                        Reset
+                        Read aloud
                       </Button>
-                    )}
-
-                    {isCurrentSpeaking && (
-                      <span className="speech-soundwave-mini" aria-hidden="true" title="Reading aloud">
-                        <span className="mini-wave-bar bar-1" />
-                        <span className="mini-wave-bar bar-2" />
-                        <span className="mini-wave-bar bar-3" />
-                      </span>
                     )}
                   </div>
                 )}

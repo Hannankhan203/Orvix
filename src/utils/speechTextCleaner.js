@@ -140,13 +140,21 @@ export function cleanTextForSpeech(markdown) {
  * @param {number} [maxChunkLen=180]
  * @returns {string[]}
  */
-export function splitTextIntoSpeechChunks(text, maxChunkLen = 180) {
+/**
+ * Splits text into sentence and clause chunks (~140 chars) to prevent mobile
+ * speech synthesis timeouts and ensure natural, human-like cadence.
+ *
+ * @param {string} text
+ * @param {number} [maxChunkLen=140]
+ * @returns {string[]}
+ */
+export function splitTextIntoSpeechChunks(text, maxChunkLen = 140) {
   if (!text || typeof text !== 'string') return [];
 
   const clean = text.trim();
   if (!clean) return [];
 
-  // Match sentence fragments or fallback words
+  // Match sentence fragments ending with sentence punctuation or newline
   const segments = clean.match(/[^.!?\n۔؟]+[.!?\n۔؟]+|[^.!?\n۔؟]+$/g) || [clean];
   const chunks = [];
   let current = '';
@@ -161,16 +169,37 @@ export function splitTextIntoSpeechChunks(text, maxChunkLen = 180) {
       if (current) {
         chunks.push(current);
       }
+
       if (trimmed.length > maxChunkLen) {
-        // Break long segment by comma or words
-        const words = trimmed.split(/\s+/);
+        // Break long segment at natural clause punctuation (commas, colons, semicolons, dashes)
+        const subClauses = trimmed.match(/[^,;:—\n]+[,;:—\n]+|[^,;:—\n]+$/g) || [trimmed];
         let sub = '';
-        for (const w of words) {
-          if (sub.length + w.length + 1 <= maxChunkLen) {
-            sub += (sub ? ' ' : '') + w;
+
+        for (const clause of subClauses) {
+          const clauseTrimmed = clause.trim();
+          if (!clauseTrimmed) continue;
+
+          if (sub.length + clauseTrimmed.length + 1 <= maxChunkLen) {
+            sub += (sub ? ' ' : '') + clauseTrimmed;
           } else {
             if (sub) chunks.push(sub);
-            sub = w;
+
+            if (clauseTrimmed.length > maxChunkLen) {
+              // Fallback to word boundaries if an individual clause is extraordinarily long
+              const words = clauseTrimmed.split(/\s+/);
+              let wordSub = '';
+              for (const w of words) {
+                if (wordSub.length + w.length + 1 <= maxChunkLen) {
+                  wordSub += (wordSub ? ' ' : '') + w;
+                } else {
+                  if (wordSub) chunks.push(wordSub);
+                  wordSub = w;
+                }
+              }
+              sub = wordSub;
+            } else {
+              sub = clauseTrimmed;
+            }
           }
         }
         current = sub;
