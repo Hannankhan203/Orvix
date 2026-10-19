@@ -93,7 +93,6 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
 
   // Sentence capitalization for Latin scripts
   if (!isUrdu) {
-    // Capitalize beginning if preceding text ended with sentence terminator or was empty
     const shouldCapitalizeStart =
       !precedingText ||
       /[.!?\n]\s*$/.test(precedingText);
@@ -102,7 +101,6 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
       text = text.charAt(0).toUpperCase() + text.slice(1);
     }
 
-    // Capitalize letters following sentence terminators within the segment
     text = text.replace(/([.!?\n]\s+)([a-z])/g, (_, sep, letter) => `${sep}${letter.toUpperCase()}`);
   }
 
@@ -118,7 +116,8 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
  * - Verbal punctuation ("comma", "period", "question mark", "new line").
  * - Dynamic 5-bar soundwave animation reacting to real microphone volume.
  * - Graceful silence recovery avoiding sudden cutoffs while thinking.
- * - Pause, Resume, Cancel (restore prior text), and Done (commit text) flows.
+ * - Synchronous state tracking preventing duplicate recognition sessions or race conditions.
+ * - Clean UI states (idle, requesting, listening, paused, finalizing, error).
  *
  * @param {Object} options
  * @param {string} options.inputValue - Current text in the composer
@@ -126,9 +125,16 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
  * @returns {Object} Dictation states, real-time audio metrics, and controls
  */
 export function useVoiceDictation({ inputValue = '', onInputChange }) {
+  // Synchronous initial detection of browser SpeechRecognition support
+  const [isSupported, setIsSupported] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+    }
+    return false;
+  });
+
   const [recordingState, setRecordingState] = useState('idle'); // 'idle' | 'requesting' | 'listening' | 'paused' | 'finalizing' | 'error'
   const [dictationError, setDictationError] = useState(null);
-  const [isSupported, setIsSupported] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState('');
   const [lastSessionTranscript, setLastSessionTranscript] = useState('');
 
@@ -160,13 +166,14 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
   const recognitionRef = useRef(null);
   const baseTextRef = useRef('');
-  const finalResultsMapRef = useRef(new Map()); // Maps resultIndex -> formatted finalized text
+  const finalResultsMapRef = useRef(new Map());
+  const interimTranscriptRef = useRef('');
   const inputValueRef = useRef(inputValue);
   inputValueRef.current = inputValue;
 
   const isExplicitStopRef = useRef(false);
+  const hasFatalErrorRef = useRef(false);
   const recordingStateRef = useRef(recordingState);
-  recordingStateRef.current = recordingState;
 
   const selectedLanguageRef = useRef(selectedLanguage);
   selectedLanguageRef.current = selectedLanguage;
@@ -180,7 +187,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   const mediaStreamRef = useRef(null);
   const animFrameRef = useRef(null);
 
-  // Check Web Speech API browser support on mount
+  // Synchronous state updater to eliminate React re-render lag in asynchronous event callbacks
+  const updateRecordingState = useCallback((newState) => {
+    recordingStateRef.current = newState;
+    setRecordingState(newState);
+  }, []);
+
+  // Check Web Speech API browser support on mount as safety check
   useEffect(() => {
     const SpeechRecognition =
       typeof window !== 'undefined'
@@ -196,7 +209,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       animFrameRef.current = null;
     }
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      try {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      } catch (_) {}
       mediaStreamRef.current = null;
     }
     if (audioContextRef.current) {
@@ -210,7 +225,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     setAudioFrequencies([0.15, 0.25, 0.35, 0.25, 0.15]);
   }, []);
 
-  // Start real-time audio visualization using Web Audio API
+  // Start real-time audio visualization using Web Audio API safely
   const startAudioAnalyser = useCallback(async () => {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       return;
@@ -247,7 +262,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
 
-        // Calculate average RMS/volume
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) {
           sum += dataArray[i];
@@ -256,7 +270,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         const normalizedVol = Math.min(100, Math.round((avg / 128) * 100));
         setAudioLevel(normalizedVol);
 
-        // Extract 5 frequency bins across the spectrum for responsive soundwave bars
         const step = Math.floor(dataArray.length / 5);
         const bars = [
           Math.max(0.15, (dataArray[step * 0] || 0) / 255),
@@ -278,7 +291,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
   const clearDictationError = useCallback(() => {
     setDictationError(null);
-  }, []);
+    if (recordingStateRef.current === 'error') {
+      updateRecordingState('idle');
+    }
+  }, [updateRecordingState]);
 
   const clearLastSessionTranscript = useCallback(() => {
     setLastSessionTranscript('');
@@ -292,13 +308,14 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       const SpeechRecognition =
         typeof window !== 'undefined'
           ? window.SpeechRecognition || window.webkitSpeechRecognition
-        : null;
+          : null;
 
       if (!SpeechRecognition) {
         setDictationError(
           'Voice dictation is not supported in this browser. Please use Google Chrome, Microsoft Edge, or Safari.'
         );
-        setRecordingState('error');
+        hasFatalErrorRef.current = true;
+        updateRecordingState('error');
         return;
       }
 
@@ -313,9 +330,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         // Snapshot existing composer content as base prefix
         baseTextRef.current = (inputValueRef.current || '').trim();
         finalResultsMapRef.current.clear();
+        interimTranscriptRef.current = '';
         setInterimTranscript('');
         setLastSessionTranscript('');
         isExplicitStopRef.current = false;
+        hasFatalErrorRef.current = false;
         consecutiveErrorsRef.current = 0;
       } else {
         // If continuing an active session after browser silence restart,
@@ -332,9 +351,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         }
       }
 
-      // Clean up previous recognition instance
+      // Clean up previous recognition instance completely
       if (recognitionRef.current) {
         try {
+          recognitionRef.current.onstart = null;
           recognitionRef.current.onresult = null;
           recognitionRef.current.onerror = null;
           recognitionRef.current.onend = null;
@@ -350,10 +370,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         recognition.maxAlternatives = 1;
         recognition.lang = selectedLanguageRef.current;
 
-        setRecordingState('requesting');
+        updateRecordingState('requesting');
+        hasFatalErrorRef.current = false;
 
         recognition.onstart = () => {
-          setRecordingState('listening');
+          updateRecordingState('listening');
           setDictationError(null);
           consecutiveErrorsRef.current = 0;
           startAudioAnalyser();
@@ -362,13 +383,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         recognition.onresult = (event) => {
           let currentInterim = '';
 
-          // Iterate through results using event.resultIndex
           for (let i = event.resultIndex; i < event.results.length; ++i) {
             const res = event.results[i];
             const rawTranscript = res[0]?.transcript || '';
 
             if (res.isFinal) {
-              // Format finalized chunk with verbal punctuation & capitalization
               const preceding = [
                 baseTextRef.current,
                 ...Array.from(finalResultsMapRef.current.values())
@@ -383,7 +402,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
               );
 
               if (formatted) {
-                // Keyed by index: guarantees zero duplication even if event repeats
                 finalResultsMapRef.current.set(i, formatted);
               }
             } else {
@@ -391,9 +409,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             }
           }
 
+          interimTranscriptRef.current = currentInterim;
           setInterimTranscript(currentInterim);
 
-          // Assemble the complete text: base + sorted finalized segments + formatted interim
           const sortedFinals = Array.from(finalResultsMapRef.current.entries())
             .sort((a, b) => a[0] - b[0])
             .map((e) => e[1]);
@@ -401,7 +419,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           const allFinalSpeech = sortedFinals.join(' ').trim();
           const base = baseTextRef.current;
 
-          // Assemble composite text cleanly without duplicating
           const parts = [base, allFinalSpeech, currentInterim].filter(Boolean);
           const combined = parts.join(' ');
 
@@ -421,44 +438,56 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           consecutiveErrorsRef.current += 1;
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
+            hasFatalErrorRef.current = true;
             stopAudioAnalyser();
             setDictationError(
               'Microphone access was denied. Please allow microphone permissions in your browser address bar.'
             );
-            setRecordingState('error');
+            updateRecordingState('error');
           } else if (errorType === 'audio-capture') {
+            hasFatalErrorRef.current = true;
             stopAudioAnalyser();
             setDictationError(
               'No microphone detected or microphone is currently busy in another application.'
             );
-            setRecordingState('error');
+            updateRecordingState('error');
           } else if (errorType === 'no-speech') {
             // Natural pause in speech: do NOT abort or show error banner; stay listening
             if (recordingStateRef.current === 'listening' && consecutiveErrorsRef.current <= 3) {
               return;
             }
-            setRecordingState('idle');
             stopAudioAnalyser();
+            updateRecordingState('idle');
           } else if (errorType === 'network') {
+            hasFatalErrorRef.current = true;
             stopAudioAnalyser();
             setDictationError('Speech recognition network error. Please verify your internet connection.');
-            setRecordingState('error');
+            updateRecordingState('error');
           } else if (errorType === 'language-not-supported') {
+            hasFatalErrorRef.current = true;
             stopAudioAnalyser();
             setDictationError(
               `The selected language (${selectedLanguageRef.current}) is not supported in this browser. Falling back to English (US).`
             );
             setSelectedLanguage(DEFAULT_LANGUAGE);
-            setRecordingState('error');
+            updateRecordingState('error');
           } else {
+            hasFatalErrorRef.current = true;
             stopAudioAnalyser();
             setDictationError(`Dictation issue: ${errorType}.`);
-            setRecordingState('error');
+            updateRecordingState('error');
           }
         };
 
         recognition.onend = () => {
           recognitionRef.current = null;
+
+          if (hasFatalErrorRef.current) {
+            hasFatalErrorRef.current = false;
+            stopAudioAnalyser();
+            updateRecordingState('error');
+            return;
+          }
 
           // If speech recognizer ended naturally during active listening without explicit user stop
           // (such as standard browser 60s silence timeout), auto-restart gracefully
@@ -479,7 +508,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           stopAudioAnalyser();
 
           if (recordingStateRef.current !== 'paused') {
-            setRecordingState('idle');
+            updateRecordingState('idle');
           }
         };
 
@@ -487,17 +516,20 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         recognition.start();
       } catch (initErr) {
         console.warn('SpeechRecognition initialization error:', initErr);
+        hasFatalErrorRef.current = true;
         stopAudioAnalyser();
         setDictationError('Unable to activate microphone. Please verify device permissions.');
-        setRecordingState('error');
+        updateRecordingState('error');
       }
     },
-    [onInputChange, setSelectedLanguage, startAudioAnalyser, stopAudioAnalyser]
+    [onInputChange, setSelectedLanguage, startAudioAnalyser, stopAudioAnalyser, updateRecordingState]
   );
 
   // Start a fresh dictation session
   const startListening = useCallback(() => {
     isExplicitStopRef.current = false;
+    hasFatalErrorRef.current = false;
+    setDictationError(null);
     startRecognitionSession(true);
   }, [startRecognitionSession]);
 
@@ -513,13 +545,16 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       } catch (_) {}
     }
 
+    interimTranscriptRef.current = '';
     setInterimTranscript('');
-    setRecordingState('paused');
-  }, [stopAudioAnalyser]);
+    updateRecordingState('paused');
+  }, [stopAudioAnalyser, updateRecordingState]);
 
   // Resume paused dictation session
   const resumeListening = useCallback(() => {
     isExplicitStopRef.current = false;
+    hasFatalErrorRef.current = false;
+    setDictationError(null);
     startRecognitionSession(false);
   }, [startRecognitionSession]);
 
@@ -527,7 +562,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   const stopListening = useCallback(() => {
     isExplicitStopRef.current = true;
     clearTimeout(restartTimeoutRef.current);
-    setRecordingState('finalizing');
+    updateRecordingState('finalizing');
     stopAudioAnalyser();
 
     if (recognitionRef.current) {
@@ -536,12 +571,23 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       } catch (_) {}
     }
 
-    // Assemble final committed speech
+    // Assemble final committed speech including any pending interim transcript
     const sortedFinals = Array.from(finalResultsMapRef.current.entries())
       .sort((a, b) => a[0] - b[0])
       .map((e) => e[1]);
 
-    const allFinalSpeech = sortedFinals.join(' ').trim();
+    let allFinalSpeech = sortedFinals.join(' ').trim();
+    if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
+      const formattedInterim = formatSpeechTranscript(
+        interimTranscriptRef.current.trim(),
+        selectedLanguageRef.current,
+        [baseTextRef.current, allFinalSpeech].filter(Boolean).join(' ')
+      );
+      if (formattedInterim) {
+        allFinalSpeech = [allFinalSpeech, formattedInterim].filter(Boolean).join(' ');
+      }
+    }
+
     const base = baseTextRef.current;
     const parts = [base, allFinalSpeech].filter(Boolean);
     const finalCombined = parts.join(' ');
@@ -550,14 +596,15 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       onInputChange(finalCombined);
     }
 
+    interimTranscriptRef.current = '';
     setInterimTranscript('');
     if (allFinalSpeech) {
       setLastSessionTranscript(allFinalSpeech);
     }
 
     finalResultsMapRef.current.clear();
-    setRecordingState('idle');
-  }, [onInputChange, stopAudioAnalyser]);
+    updateRecordingState('idle');
+  }, [onInputChange, stopAudioAnalyser, updateRecordingState]);
 
   // Cancel dictation: Discards speech from this session and restores original composer text
   const cancelListening = useCallback(() => {
@@ -578,20 +625,26 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     }
 
     finalResultsMapRef.current.clear();
+    interimTranscriptRef.current = '';
     setInterimTranscript('');
-    setRecordingState('idle');
-  }, [onInputChange, stopAudioAnalyser]);
+    updateRecordingState('idle');
+  }, [onInputChange, stopAudioAnalyser, updateRecordingState]);
 
-  // Master toggle button
+  // Master toggle button with clean state routing
   const toggleListening = useCallback(() => {
-    if (recordingState === 'listening') {
+    if (recordingStateRef.current === 'listening') {
       stopListening();
-    } else if (recordingState === 'paused') {
+    } else if (recordingStateRef.current === 'paused') {
       resumeListening();
+    } else if (recordingStateRef.current === 'requesting') {
+      cancelListening();
+    } else if (recordingStateRef.current === 'finalizing') {
+      // Finalizing already in progress, ignore repeated clicks
+      return;
     } else {
       startListening();
     }
-  }, [recordingState, startListening, stopListening, resumeListening]);
+  }, [startListening, stopListening, resumeListening, cancelListening]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -600,6 +653,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       stopAudioAnalyser();
       if (recognitionRef.current) {
         try {
+          recognitionRef.current.onstart = null;
+          recognitionRef.current.onresult = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.onend = null;
           recognitionRef.current.abort();
         } catch (_) {}
         recognitionRef.current = null;
@@ -612,6 +669,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     isListening: recordingState === 'listening',
     isPaused: recordingState === 'paused',
     isRequesting: recordingState === 'requesting',
+    isFinalizing: recordingState === 'finalizing',
     isSupported,
     dictationError,
     interimTranscript,

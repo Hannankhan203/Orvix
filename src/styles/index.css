@@ -3127,6 +3127,18 @@ html, body {
   animation: micGlowPulse 1.8s infinite ease-in-out;
 }
 
+.composer-mic-btn.paused {
+  background-color: rgba(245, 158, 11, 0.18);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.composer-mic-btn.requesting {
+  background-color: rgba(59, 130, 246, 0.16);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+}
+
 @keyframes micGlowPulse {
   0% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
@@ -3140,83 +3152,131 @@ html, body {
 }
 
 /* ==========================================================================
-   Voice Dictation Dock (ChatGPT-inspired audio wave & controls)
+   Voice Dictation Strip (Clean, aligned composer status & controls)
    ========================================================================== */
 .composer-listening-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 14px;
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(20, 27, 36, 0.95));
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  min-height: 44px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), var(--bg-card));
   border: 1px solid rgba(59, 130, 246, 0.35);
-  border-radius: var(--radius-lg);
-  margin-bottom: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), 0 0 16px rgba(37, 99, 235, 0.15);
-  animation: slideUpFade 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: var(--radius-xl);
+  margin: 0;
+  box-shadow: var(--shadow-sm), 0 2px 10px rgba(0, 0, 0, 0.2);
+  animation: dictationStripSlide 180ms var(--ease-spring);
   position: relative;
   overflow: visible;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(12px);
+  user-select: none;
+}
+
+@keyframes dictationStripSlide {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .composer-listening-bar.state-listening {
   border-color: rgba(59, 130, 246, 0.5);
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.15), rgba(14, 19, 27, 0.96));
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.16), var(--bg-card));
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2), var(--shadow-sm);
 }
 
 .composer-listening-bar.state-paused {
-  border-color: rgba(245, 158, 11, 0.4);
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), rgba(14, 19, 27, 0.96));
+  border-color: rgba(245, 158, 11, 0.45);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), var(--bg-card));
 }
 
 .composer-listening-bar.state-requesting {
   border-color: rgba(99, 102, 241, 0.4);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), var(--bg-card));
+}
+
+/* Light Mode Overrides for Dictation Strip */
+:root[data-theme="light"] .composer-listening-bar,
+html[data-theme="light"] .composer-listening-bar,
+body.theme-light .composer-listening-bar,
+[data-theme="light"] .composer-listening-bar {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), #ffffff);
+  border-color: rgba(37, 99, 235, 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme="light"] .composer-listening-bar.state-listening,
+html[data-theme="light"] .composer-listening-bar.state-listening,
+body.theme-light .composer-listening-bar.state-listening,
+[data-theme="light"] .composer-listening-bar.state-listening {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.09), #ffffff);
+  border-color: rgba(37, 99, 235, 0.4);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15), 0 2px 10px rgba(37, 99, 235, 0.08);
 }
 
 .listening-left-group {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
 .listening-indicator-content {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
 }
 
-.listening-pulse-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background-color: #3b82f6;
-  box-shadow: 0 0 8px rgba(59, 130, 246, 0.8);
+/* Active Dictation Microphone Badge */
+.listening-mic-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background-color: rgba(37, 99, 235, 0.15);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.3);
   flex-shrink: 0;
+  transition: all var(--transition-fast);
 }
 
-.listening-pulse-dot.listening {
-  background-color: #3b82f6;
-  animation: pulseBlueDot 1.2s infinite ease-in-out;
+.listening-mic-badge.listening {
+  background-color: rgba(239, 68, 68, 0.16);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.4);
+  animation: micBadgePulse 1.6s infinite ease-in-out;
 }
 
-.listening-pulse-dot.paused {
-  background-color: #f59e0b;
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+.listening-mic-badge.paused {
+  background-color: rgba(245, 158, 11, 0.16);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.4);
 }
 
-@keyframes pulseBlueDot {
+.listening-mic-badge.requesting {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+@keyframes micBadgePulse {
   0% {
-    transform: scale(0.9);
-    box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
   }
-  50% {
-    transform: scale(1.3);
-    box-shadow: 0 0 12px rgba(96, 165, 250, 0.9);
+  70% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
   }
   100% {
-    transform: scale(0.9);
-    box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
   }
 }
 
@@ -3224,13 +3284,13 @@ html, body {
 .listening-soundwave {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  height: 22px;
-  padding: 0 2px;
+  gap: 2.5px;
+  height: 20px;
+  padding: 0 1px;
 }
 
 .soundwave-bar {
-  width: 3px;
+  width: 2.5px;
   background: linear-gradient(180deg, #60a5fa, #2563eb);
   border-radius: 2px;
   transition: height 0.08s ease-out, opacity 0.08s ease-out;
@@ -3241,11 +3301,39 @@ html, body {
   /* Height and opacity driven dynamically via inline styles */
 }
 
+.composer-listening-bar.state-listening .soundwave-bar.active {
+  animation: wavePulse 1.2s infinite ease-in-out;
+}
+.composer-listening-bar.state-listening .soundwave-bar.active:nth-child(1) { animation-delay: 0s; }
+.composer-listening-bar.state-listening .soundwave-bar.active:nth-child(2) { animation-delay: 0.15s; }
+.composer-listening-bar.state-listening .soundwave-bar.active:nth-child(3) { animation-delay: 0.3s; }
+.composer-listening-bar.state-listening .soundwave-bar.active:nth-child(4) { animation-delay: 0.45s; }
+.composer-listening-bar.state-listening .soundwave-bar.active:nth-child(5) { animation-delay: 0.6s; }
+
+@keyframes wavePulse {
+  0%, 100% {
+    height: 4px;
+    opacity: 0.4;
+  }
+  50% {
+    height: 14px;
+    opacity: 1;
+  }
+}
+
 .listening-text {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   color: #93c5fd;
   letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+:root[data-theme="light"] .listening-text,
+html[data-theme="light"] .listening-text,
+body.theme-light .listening-text,
+[data-theme="light"] .listening-text {
+  color: #2563eb;
 }
 
 /* Language Selector Pill & Dropdown inside Dictation Bar */
@@ -3257,33 +3345,34 @@ html, body {
 .dictation-lang-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  background-color: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  gap: 4px;
+  background-color: var(--bg-card-hover);
+  border: 1px solid var(--border-medium);
   color: var(--text-primary);
-  font-size: 0.72rem;
+  font-size: 0.70rem;
   font-weight: 600;
-  padding: 3px 8px;
+  padding: 2px 7px;
   border-radius: var(--radius-full);
   cursor: pointer;
   transition: all var(--transition-fast);
   user-select: none;
+  line-height: 1.2;
 }
 
 .dictation-lang-btn:hover {
-  background-color: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.25);
+  background-color: var(--accent-subtle);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
 }
 
 .lang-flag {
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   line-height: 1;
 }
 
 .lang-code {
   font-weight: 700;
-  letter-spacing: 0.03em;
-  color: #e2e8f0;
+  letter-spacing: 0.02em;
 }
 
 .lang-chevron {
@@ -3381,29 +3470,38 @@ html, body {
 .listening-preview-area {
   flex: 1;
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
 }
 
 .live-speech-bubble {
-  font-size: 0.82rem;
-  color: #ffffff;
+  font-size: 0.80rem;
+  color: var(--text-primary);
   font-weight: 500;
   font-style: italic;
   letter-spacing: -0.01em;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
   animation: fadeIn 0.15s ease-out;
 }
 
 .live-speech-placeholder {
-  font-size: 0.78rem;
-  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.76rem;
+  color: var(--text-muted);
   font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
-/* Controls: Pause, Resume, Cancel, Done */
+/* Actions Group & Button Styling */
 .listening-actions-group {
   display: flex;
   align-items: center;
@@ -3411,62 +3509,112 @@ html, body {
   flex-shrink: 0;
 }
 
-.listening-action-btn {
+.dictation-strip-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.73rem;
+  justify-content: center;
+  gap: 5px;
+  font-size: 0.74rem;
   font-weight: 600;
   padding: 4px 10px;
+  height: 28px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   cursor: pointer;
   transition: all var(--transition-fast);
   user-select: none;
+  line-height: 1;
+  box-sizing: border-box;
 }
 
-.listening-action-btn.pause-btn {
-  background-color: rgba(245, 158, 11, 0.15);
-  border-color: rgba(245, 158, 11, 0.35);
-  color: #fcd34d;
-}
-
-.listening-action-btn.pause-btn:hover {
-  background-color: rgba(245, 158, 11, 0.28);
-  color: #ffffff;
-}
-
-.listening-action-btn.resume-btn {
-  background-color: rgba(59, 130, 246, 0.2);
-  border-color: rgba(59, 130, 246, 0.4);
-  color: #93c5fd;
-}
-
-.listening-action-btn.resume-btn:hover {
-  background-color: rgba(59, 130, 246, 0.35);
-  color: #ffffff;
-}
-
-.listening-action-btn.cancel-btn {
-  background-color: rgba(239, 68, 68, 0.14);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: #fca5a5;
-}
-
-.listening-action-btn.cancel-btn:hover {
-  background-color: rgba(239, 68, 68, 0.25);
-  color: #ffffff;
-}
-
-.listening-action-btn.done-btn {
+.dictation-strip-btn.stop-btn {
   background-color: #2563eb;
   border-color: #3b82f6;
   color: #ffffff;
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.4);
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
 }
 
-.listening-action-btn.done-btn:hover {
+.dictation-strip-btn.stop-btn:hover {
   background-color: #1d4ed8;
+  border-color: #2563eb;
+}
+
+.dictation-strip-btn.pause-btn {
+  background-color: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #f59e0b;
+}
+
+.dictation-strip-btn.pause-btn:hover {
+  background-color: rgba(245, 158, 11, 0.25);
+  color: #fbbf24;
+}
+
+.dictation-strip-btn.resume-btn {
+  background-color: rgba(59, 130, 246, 0.15);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #3b82f6;
+}
+
+.dictation-strip-btn.resume-btn:hover {
+  background-color: rgba(59, 130, 246, 0.25);
+  color: #60a5fa;
+}
+
+.dictation-strip-btn.cancel-btn {
+  background-color: transparent;
+  border-color: var(--border-medium);
+  color: var(--text-secondary);
+  padding: 4px 6px;
+  width: 28px;
+  min-width: 28px;
+}
+
+.dictation-strip-btn.cancel-btn:hover {
+  background-color: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #ef4444;
+}
+
+.btn-label-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Responsive Behavior for Dictation Strip */
+@media (max-width: 640px) {
+  .composer-listening-bar {
+    padding: 5px 10px;
+    gap: 8px;
+  }
+  .listening-soundwave {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .composer-listening-bar {
+    padding: 5px 8px;
+    gap: 6px;
+  }
+  .live-speech-placeholder {
+    display: none;
+  }
+  .dictation-strip-btn .btn-label {
+    display: none;
+  }
+  .dictation-strip-btn {
+    width: 28px;
+    min-width: 28px;
+    padding: 0;
+  }
 }
 
 /* Voice Dictation Error Notification */

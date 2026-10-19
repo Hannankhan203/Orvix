@@ -230,6 +230,7 @@ export default function ChatArea({
     isListening,
     isPaused,
     isRequesting,
+    isFinalizing,
     isSupported,
     dictationError,
     interimTranscript,
@@ -310,7 +311,7 @@ export default function ChatArea({
 
     if (shouldSend) {
       e.preventDefault();
-      if (recordingState !== 'idle') {
+      if (isListening || isPaused || isRequesting) {
         stopListening();
       }
       clearLastSessionTranscript();
@@ -323,7 +324,7 @@ export default function ChatArea({
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (recordingState !== 'idle') {
+    if (isListening || isPaused || isRequesting) {
       stopListening();
     }
     clearLastSessionTranscript();
@@ -384,7 +385,12 @@ Transcript:
 
   const hasContent = inputValue.trim().length > 0;
   const hasMessages = messages.length > 0;
-  const isRecordingActive = recordingState !== 'idle';
+  // Dictation dock is only active when actively requesting, listening, paused, or finalizing
+  const isRecordingActive =
+    recordingState === 'listening' ||
+    recordingState === 'paused' ||
+    recordingState === 'requesting' ||
+    recordingState === 'finalizing';
 
   return (
     <main className="chat-area-container" role="main">
@@ -444,6 +450,7 @@ Transcript:
               </button>
             </div>
           )}
+
           {/* Voice Dictation Error Notification */}
           {dictationError && (
             <div className="composer-dictation-error" role="alert">
@@ -462,7 +469,7 @@ Transcript:
             </div>
           )}
 
-          {/* Professional ChatGPT-Style Active Dictation Dock */}
+          {/* Professional Active Dictation Strip */}
           {isRecordingActive && (
             <div
               className={`composer-listening-bar state-${recordingState}`}
@@ -471,31 +478,37 @@ Transcript:
             >
               <div className="listening-left-group">
                 <div className="listening-indicator-content">
-                  <span className={`listening-pulse-dot ${recordingState}`} aria-hidden="true" />
+                  <div className={`listening-mic-badge ${recordingState}`} aria-hidden="true">
+                    {recordingState === 'requesting' ? (
+                      <Loader2 size={13} className="spin-icon" />
+                    ) : (
+                      <Mic size={13} />
+                    )}
+                  </div>
                   <div
                     className="listening-soundwave"
                     aria-hidden="true"
-                    title={`Microphone audio level: ${audioLevel}%`}
+                    title={isListening ? `Microphone audio level: ${audioLevel}%` : 'Connecting microphone'}
                   >
                     {audioFrequencies.map((freq, idx) => (
                       <span
                         key={idx}
-                        className="soundwave-bar dynamic"
+                        className={`soundwave-bar dynamic ${isListening ? 'active' : ''}`}
                         style={{
-                          height: `${Math.max(5, Math.round(freq * 20))}px`,
-                          opacity: Math.max(0.4, Math.min(1, freq * 1.2))
+                          height: isListening ? `${Math.max(5, Math.round(freq * 18))}px` : '4px',
+                          opacity: isListening ? Math.max(0.4, Math.min(1, freq * 1.2)) : 0.35
                         }}
                       />
                     ))}
                   </div>
                   <span className="listening-text">
                     {recordingState === 'requesting'
-                      ? 'Connecting mic...'
+                      ? 'Connecting...'
                       : recordingState === 'paused'
                       ? 'Paused'
                       : recordingState === 'finalizing'
-                      ? 'Finalizing...'
-                      : 'Listening...'}
+                      ? 'Finishing...'
+                      : 'Dictating...'}
                   </span>
                 </div>
 
@@ -511,7 +524,7 @@ Transcript:
                   >
                     <span className="lang-flag">{activeLang.flag}</span>
                     <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
-                    <ChevronDown size={12} className={`lang-chevron ${langMenuOpen ? 'open' : ''}`} />
+                    <ChevronDown size={11} className={`lang-chevron ${langMenuOpen ? 'open' : ''}`} />
                   </button>
 
                   {langMenuOpen && (
@@ -547,57 +560,63 @@ Transcript:
                   <span className="live-speech-bubble">"{interimTranscript}"</span>
                 ) : (
                   <span className="live-speech-placeholder">
-                    {recordingState === 'paused' ? 'Speech paused' : 'Speak clearly...'}
+                    {recordingState === 'requesting'
+                      ? 'Connecting to microphone...'
+                      : recordingState === 'paused'
+                      ? 'Speech paused'
+                      : recordingState === 'finalizing'
+                      ? 'Finishing...'
+                      : 'Speak to dictate...'}
                   </span>
                 )}
               </div>
 
-              {/* Controls: Pause/Resume, Cancel, Done */}
+              {/* Action Buttons: Pause/Resume, Stop, Cancel (✕) */}
               <div className="listening-actions-group">
                 {recordingState === 'listening' ? (
                   <button
                     type="button"
-                    className="listening-action-btn pause-btn"
+                    className="dictation-strip-btn pause-btn"
                     onClick={pauseListening}
                     title="Pause dictation"
                     aria-label="Pause dictation"
                   >
-                    <Pause size={13} />
-                    <span>Pause</span>
+                    <Pause size={12} />
+                    <span className="btn-label">Pause</span>
                   </button>
                 ) : recordingState === 'paused' ? (
                   <button
                     type="button"
-                    className="listening-action-btn resume-btn"
+                    className="dictation-strip-btn resume-btn"
                     onClick={resumeListening}
                     title="Resume dictation"
                     aria-label="Resume dictation"
                   >
-                    <Play size={13} fill="currentColor" />
-                    <span>Resume</span>
+                    <Play size={12} fill="currentColor" />
+                    <span className="btn-label">Resume</span>
                   </button>
                 ) : null}
 
                 <button
                   type="button"
-                  className="listening-action-btn cancel-btn"
-                  onClick={cancelListening}
-                  title="Cancel voice input (discards speech from this session)"
-                  aria-label="Cancel dictation"
+                  className="dictation-strip-btn stop-btn"
+                  onClick={stopListening}
+                  title="Stop dictation and keep message"
+                  aria-label="Stop dictation"
                 >
-                  <X size={13} />
-                  <span>Cancel</span>
+                  <Square size={10} fill="currentColor" />
+                  <span className="btn-label">Stop</span>
                 </button>
 
                 <button
                   type="button"
-                  className="listening-action-btn done-btn"
-                  onClick={stopListening}
-                  title="Done — keep text in composer"
-                  aria-label="Finish dictation"
+                  className="dictation-strip-btn cancel-btn"
+                  onClick={cancelListening}
+                  title="Cancel dictation (discard session)"
+                  aria-label="Cancel dictation"
                 >
-                  <Check size={13} />
-                  <span>Done</span>
+                  <X size={14} />
+                  <span className="btn-label-sr">Cancel</span>
                 </button>
               </div>
             </div>
@@ -712,7 +731,6 @@ Transcript:
             </div>
           )}
 
-
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
             <textarea
               ref={textareaRef}
@@ -722,6 +740,8 @@ Transcript:
                   ? 'Listening to speech...'
                   : isPaused
                   ? 'Dictation paused — speak or type...'
+                  : isRequesting
+                  ? 'Connecting microphone...'
                   : isLoading
                   ? 'Orvix is responding...'
                   : activeMode === 'coding'
@@ -743,30 +763,38 @@ Transcript:
               {/* Voice Dictation Microphone Button */}
               <Button
                 type="button"
-                variant={isListening ? 'primary' : 'ghost'}
+                variant={isListening ? 'primary' : isRequesting ? 'outline' : 'ghost'}
                 size="icon-round"
                 disabled={isLoading}
                 onClick={toggleListening}
                 title={
                   !isSupported
-                    ? 'Voice dictation is not supported in this browser'
+                    ? 'Voice dictation is not supported in this browser. Please use Chrome, Edge, or Safari.'
                     : isListening
                     ? 'Stop listening (Voice dictation active)'
+                    : isRequesting
+                    ? 'Connecting microphone... Click to cancel'
                     : isPaused
                     ? 'Resume listening (Voice dictation paused)'
                     : `Dictate message (${activeLang.label})`
                 }
                 ariaLabel={
-                  isListening
+                  !isSupported
+                    ? 'Voice dictation not supported'
+                    : isListening
                     ? 'Stop listening'
+                    : isRequesting
+                    ? 'Connecting microphone'
                     : isPaused
                     ? 'Resume dictation'
                     : 'Start voice dictation'
                 }
-                className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : ''}`}
+                className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : ''}`}
                 icon={
                   isListening ? (
                     <Square size={13} fill="currentColor" />
+                  ) : isRequesting ? (
+                    <Loader2 size={16} className="spin-icon" />
                   ) : isPaused ? (
                     <Play size={13} fill="currentColor" />
                   ) : (
