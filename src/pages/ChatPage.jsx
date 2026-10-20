@@ -30,6 +30,13 @@ import {
   validateAttachmentFile,
   formatFileSize,
 } from "../utils/documentExtractor.js";
+import {
+  decodeAndProcessImage,
+  validateImageFile,
+  revokeImageUrl,
+  MAX_TOTAL_IMAGE_BYTES,
+  MAX_IMAGE_COUNT,
+} from "../utils/imageValidator.js";
 
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
@@ -67,10 +74,12 @@ export default function ChatPage() {
   const [exportNotice, setExportNotice] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
 
-  // Document attachment states
+  // Document and Image attachment states
   const [attachments, setAttachments] = useState([]);
   const [attachmentError, setAttachmentError] = useState(null);
   const [isExtractingAttachments, setIsExtractingAttachments] = useState(false);
+  const [isProcessingImages, setIsProcessingImages] = useState(false);
+  const createdObjectUrlsRef = useRef(new Set());
 
   // Read and extract uploaded documents.
   const handleAttachFiles = async (files = []) => {
@@ -113,10 +122,72 @@ export default function ChatPage() {
     }
   };
 
+  // Read, decode, and validate uploaded images.
+  const handleAttachImages = async (files = []) => {
+    if (!files.length) return;
+
+    setAttachmentError(null);
+    setIsProcessingImages(true);
+
+    try {
+      const currentImages = attachments.filter(
+        (a) => a.category === "image" || Boolean(a.previewUrl),
+      );
+      const currentImageCount = currentImages.length;
+      let runningTotalBytes = currentImages.reduce(
+        (sum, a) => sum + (Number(a.size) || 0),
+        0,
+      );
+
+      const newImageAttachments = [];
+
+      for (const file of files) {
+        const existingCount = currentImageCount + newImageAttachments.length;
+        const validationError = validateImageFile(file, existingCount);
+
+        if (validationError) {
+          setAttachmentError(validationError);
+          continue;
+        }
+
+        if (runningTotalBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
+          setAttachmentError(
+            `File "${file.name}" (${formatFileSize(file.size)}) would exceed the total image batch limit of ${formatFileSize(MAX_TOTAL_IMAGE_BYTES)}.`,
+          );
+          continue;
+        }
+
+        try {
+          const imageObj = await decodeAndProcessImage(file);
+          if (imageObj?.previewUrl) {
+            createdObjectUrlsRef.current.add(imageObj.previewUrl);
+          }
+          newImageAttachments.push(imageObj);
+          runningTotalBytes += file.size;
+        } catch (error) {
+          setAttachmentError(
+            `${file.name}: ${error?.message || "Failed to process image."}`,
+          );
+        }
+      }
+
+      if (newImageAttachments.length > 0) {
+        setAttachments((previous) => [...previous, ...newImageAttachments]);
+      }
+    } finally {
+      setIsProcessingImages(false);
+    }
+  };
+
   const handleRemoveAttachment = (attachmentId) => {
-    setAttachments((previous) =>
-      previous.filter((attachment) => attachment.id !== attachmentId),
-    );
+    setAttachments((previous) => {
+      const target = previous.find((a) => a.id === attachmentId);
+      if (target?.previewUrl) {
+        revokeImageUrl(target.previewUrl);
+        createdObjectUrlsRef.current.delete(target.previewUrl);
+      }
+      return previous.filter((attachment) => attachment.id !== attachmentId);
+    });
 
     setAttachmentError(null);
   };
@@ -158,7 +229,7 @@ export default function ChatPage() {
     }
   };
 
-  // Clean up speech, animation and network requests on unmount.
+  // Clean up speech, animation, network requests, and object URLs on unmount.
   useEffect(() => {
     return () => {
       stopSpeech();
@@ -172,6 +243,12 @@ export default function ChatPage() {
       if (activeAnimationRef.current) {
         activeAnimationRef.current();
       }
+
+      // Revoke any created preview object URLs on unmount
+      createdObjectUrlsRef.current.forEach((url) => {
+        revokeImageUrl(url);
+      });
+      createdObjectUrlsRef.current.clear();
     };
   }, [stopSpeech]);
 
@@ -255,9 +332,37 @@ export default function ChatPage() {
   const saveGuestChats = (chats) => {
     try {
       if (typeof window !== "undefined") {
-        localStorage.setItem("orvix_guest_chats", JSON.stringify(chats));
+        // Strip large dataUrls or transient blob URLs before saving to localStorage
+        const sanitized = (chats || []).map((chat) => ({
+          ...chat,
+          messages: (chat.messages || []).map((msg) => {
+            if (!Array.isArray(msg.attachments) || msg.attachments.length === 0) {
+              return msg;
+            }
+            return {
+              ...msg,
+              attachments: msg.attachments.map((att) => ({
+                id: att.id,
+                category:
+                  att.category ||
+                  (att.width || att.type?.startsWith("image/")
+                    ? "image"
+                    : "document"),
+                name: att.name,
+                size: att.size,
+                type: att.type,
+                ...(att.pageCount ? { pageCount: att.pageCount } : {}),
+                ...(att.slideCount ? { slideCount: att.slideCount } : {}),
+                ...(att.rowCount ? { rowCount: att.rowCount } : {}),
+                ...(att.width ? { width: att.width } : {}),
+                ...(att.height ? { height: att.height } : {}),
+              })),
+            };
+          }),
+        }));
 
-        localStorage.setItem("chatora_guest_chats", JSON.stringify(chats));
+        localStorage.setItem("orvix_guest_chats", JSON.stringify(sanitized));
+        localStorage.setItem("chatora_guest_chats", JSON.stringify(sanitized));
       }
     } catch (error) {
       console.warn("Could not save guest chats:", error);
@@ -453,9 +558,16 @@ export default function ChatPage() {
     setEditingMessageId(null);
     setIsLoading(false);
     setMessagesLoading(false);
+
+    // Revoke any pending preview object URLs
+    createdObjectUrlsRef.current.forEach((url) => {
+      revokeImageUrl(url);
+    });
+    createdObjectUrlsRef.current.clear();
     setAttachments([]);
     setAttachmentError(null);
     setIsExtractingAttachments(false);
+    setIsProcessingImages(false);
 
     isSubmittingRef.current = false;
 
@@ -488,8 +600,15 @@ export default function ChatPage() {
     setIsLoading(false);
     isSubmittingRef.current = false;
     setEditingMessageId(null);
+
+    // Revoke pending composer preview URLs
+    createdObjectUrlsRef.current.forEach((url) => {
+      revokeImageUrl(url);
+    });
+    createdObjectUrlsRef.current.clear();
     setAttachments([]);
     setAttachmentError(null);
+    setIsProcessingImages(false);
 
     fetchRequestIdRef.current += 1;
     activeChatIdRef.current = chatId;
@@ -719,6 +838,7 @@ export default function ChatPage() {
     assistantMessageId,
     overrideProvider = null,
     documents = [],
+    images = [],
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
 
@@ -885,6 +1005,7 @@ export default function ChatPage() {
         prompt: promptText,
         history: historyContext,
         documents,
+        images,
         username: username || currentUser?.displayName || null,
         preferences: {
           responseLength: settings?.responseLength || "balanced",
@@ -1122,6 +1243,8 @@ export default function ChatPage() {
             isInterrupted: true,
             failedPrompt: promptText,
             failedProvider: finalProvider || providerToUse,
+            failedDocuments: documents,
+            failedImages: images,
             canSwitchProvider: true,
           };
 
@@ -1141,6 +1264,8 @@ export default function ChatPage() {
             isError: true,
             failedPrompt: promptText,
             failedProvider: finalProvider || providerToUse,
+            failedDocuments: documents,
+            failedImages: images,
             canSwitchProvider: true,
             timestamp: new Date().toLocaleTimeString([], {
               hour: "2-digit",
@@ -1170,6 +1295,8 @@ export default function ChatPage() {
           isInterrupted: true,
           failedPrompt: promptText,
           failedProvider: finalProvider || providerToUse,
+          failedDocuments: documents,
+          failedImages: images,
           canSwitchProvider: true,
         };
 
@@ -1181,28 +1308,41 @@ export default function ChatPage() {
     }
   };
 
-  // Submit a new message, including attached documents.
-  // Submit a new message, with optional extracted document attachments.
+  // Submit a new message, with optional extracted document attachments and image uploads.
   const handleSubmit = async () => {
     stopSpeech();
 
     const trimmed = inputValue.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
 
-    // Only use successfully extracted documents.
-    const readyAttachments = attachments.filter(
+    // Separate ready documents and ready images
+    const readyDocAttachments = attachments.filter(
       (attachment) =>
-        attachment?.status === "ready" ||
-        (!attachment?.status &&
-          typeof attachment?.text === "string" &&
-          attachment.text.trim().length > 0),
+        attachment?.category !== "image" &&
+        !attachment?.previewUrl &&
+        (attachment?.status === "ready" ||
+          (!attachment?.status &&
+            typeof attachment?.text === "string" &&
+            attachment.text.trim().length > 0)),
     );
 
-    // Allow document-only messages, but prevent empty submissions.
+    const readyImageAttachments = attachments.filter(
+      (attachment) =>
+        (attachment?.category === "image" || Boolean(attachment?.previewUrl)) &&
+        (attachment?.status === "ready" || !attachment?.status),
+    );
+
+    const totalReadyAttachments = [
+      ...readyDocAttachments,
+      ...readyImageAttachments,
+    ];
+
+    // Allow document-only, image-only, or text+attachment messages, but prevent empty submissions.
     if (
-      (!trimmed && readyAttachments.length === 0) ||
+      (!trimmed && totalReadyAttachments.length === 0) ||
       isLoading ||
       isSubmittingRef.current ||
-      isExtractingAttachments
+      isExtractingAttachments ||
+      isProcessingImages
     ) {
       return;
     }
@@ -1211,9 +1351,20 @@ export default function ChatPage() {
     setIsLoading(true);
     setPersistenceError(null);
 
-    const promptForAI =
-      trimmed ||
-      "Please analyze the attached document and help me understand it.";
+    let defaultPrompt = "";
+    if (readyImageAttachments.length > 0 && readyDocAttachments.length > 0) {
+      defaultPrompt = "Please analyze the attached image and document.";
+    } else if (readyImageAttachments.length > 0) {
+      defaultPrompt =
+        readyImageAttachments.length === 1
+          ? "Please analyze this image and describe what you see."
+          : "Please analyze these attached images.";
+    } else if (readyDocAttachments.length > 0) {
+      defaultPrompt =
+        "Please analyze the attached document and help me understand it.";
+    }
+
+    const promptForAI = trimmed || defaultPrompt;
 
     let currentChatId = activeChatIdRef.current;
 
@@ -1278,34 +1429,60 @@ export default function ChatPage() {
 
       /*
        * Store display-only attachment metadata in the user message.
-       *
-       * Do not put extracted document text here. The actual extracted
-       * documents are passed separately to executePrompt below.
+       * Do not put extracted document text or large base64 strings here.
+       * For images in the active session, keep previewUrl in memory for rendering.
        */
-      const messageAttachments = readyAttachments.map((attachment, index) => {
-        const name =
-          attachment.name ||
-          attachment.filename ||
-          attachment.fileName ||
-          attachment.originalName ||
-          `Attached document ${index + 1}`;
+      const messageDocAttachments = readyDocAttachments.map(
+        (attachment, index) => {
+          const name =
+            attachment.name ||
+            attachment.filename ||
+            attachment.fileName ||
+            attachment.originalName ||
+            `Attached document ${index + 1}`;
 
-        const rawSize = attachment.size ?? attachment.fileSize ?? 0;
+          const rawSize = attachment.size ?? attachment.fileSize ?? 0;
+          const parsedSize = Number(rawSize);
+          const size = Number.isFinite(parsedSize) ? parsedSize : 0;
 
-        const parsedSize = Number(rawSize);
+          return {
+            id: attachment.id || `${name}-${index}`,
+            category: "document",
+            name,
+            size,
+            type: attachment.type || attachment.mimeType || "",
+            pageCount: attachment.pageCount,
+            slideCount: attachment.slideCount,
+            rowCount: attachment.rowCount,
+          };
+        },
+      );
 
-        const size = Number.isFinite(parsedSize) ? parsedSize : 0;
+      const messageImageAttachments = readyImageAttachments.map(
+        (img, index) => {
+          const name = img.name || `image-${index + 1}.png`;
+          const rawSize = img.size ?? 0;
+          const size = Number.isFinite(Number(rawSize)) ? Number(rawSize) : 0;
 
-        return {
-          id: attachment.id || `${name}-${index}`,
-          name,
-          size,
-          type: attachment.type || attachment.mimeType || "",
-          pageCount: attachment.pageCount,
-          slideCount: attachment.slideCount,
-          rowCount: attachment.rowCount,
-        };
-      });
+          return {
+            id: img.id || `img-${index}`,
+            category: "image",
+            name,
+            size,
+            type: img.type || img.mimeType || "image/png",
+            mimeType: img.mimeType || img.type || "image/png",
+            width: img.width,
+            height: img.height,
+            previewUrl: img.previewUrl,
+            base64: img.base64 || "",
+          };
+        },
+      );
+
+      const messageAttachments = [
+        ...messageImageAttachments,
+        ...messageDocAttachments,
+      ];
 
       // Create the user message with its attachment metadata.
       const userMessage = {
@@ -1357,10 +1534,7 @@ export default function ChatPage() {
       }
 
       /*
-       * Pass the extracted documents separately to the AI.
-       *
-       * This assumes your executePrompt function accepts documents
-       * as its sixth argument, as in your current document-aware code.
+       * Pass the extracted documents and images to the AI router.
        */
       await executePrompt(
         promptForAI,
@@ -1368,7 +1542,8 @@ export default function ChatPage() {
         currentChatId,
         assistantMessageId,
         null,
-        readyAttachments,
+        readyDocAttachments,
+        readyImageAttachments,
       );
     } catch (error) {
       console.error("Submission error:", error);
@@ -1424,6 +1599,8 @@ export default function ChatPage() {
       currentChatId,
       assistantMessageId,
       providerToUse,
+      failedMessage.failedDocuments || [],
+      failedMessage.failedImages || [],
     );
   };
 
@@ -1474,6 +1651,8 @@ export default function ChatPage() {
       currentChatId,
       assistantMessageId,
       newProviderId,
+      failedMessage.failedDocuments || [],
+      failedMessage.failedImages || [],
     );
   };
 
@@ -1549,11 +1728,22 @@ export default function ChatPage() {
       ),
     );
 
+    const userDocs = (precedingUserMessage.attachments || []).filter(
+      (a) => a.category !== "image" && a.text,
+    );
+    const userImgs = (precedingUserMessage.attachments || []).filter(
+      (a) =>
+        (a.category === "image" || a.previewUrl) && (a.base64 || a.dataUrl),
+    );
+
     await executePrompt(
       userPromptText,
       validHistory,
       currentChatId,
       targetAssistantId,
+      null,
+      userDocs,
+      userImgs,
     );
   };
 
@@ -1760,11 +1950,22 @@ export default function ChatPage() {
       void handleRenameChat(currentChatId, refreshedTitle);
     }
 
+    const editedDocs = (messages[userMsgIndex]?.attachments || []).filter(
+      (a) => a.category !== "image" && a.text,
+    );
+    const editedImgs = (messages[userMsgIndex]?.attachments || []).filter(
+      (a) =>
+        (a.category === "image" || a.previewUrl) && (a.base64 || a.dataUrl),
+    );
+
     await executePrompt(
       trimmed,
       validHistory,
       currentChatId,
       assistantMessageId,
+      null,
+      editedDocs,
+      editedImgs,
     );
   };
 
@@ -1933,10 +2134,12 @@ export default function ChatPage() {
         onDismissModeNotice={() => setModeChangeNotice(null)}
         attachments={attachments}
         onAttachFiles={handleAttachFiles}
+        onAttachImages={handleAttachImages}
         onRemoveAttachment={handleRemoveAttachment}
         attachmentError={attachmentError}
         onClearAttachmentError={handleClearAttachmentError}
         isExtractingAttachments={isExtractingAttachments}
+        isProcessingImages={isProcessingImages}
       />
     </Layout>
   );

@@ -7,6 +7,7 @@
 import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './geminiService.js';
 import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
 import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
+import { formatImagePayload } from '../utils/imageValidator.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
@@ -182,6 +183,7 @@ export async function streamAIMessage({
   username = null,
   preferences = null,
   documents = [],
+  images = [],
   onChunk,
   onStart,
   signal
@@ -211,6 +213,7 @@ export async function streamAIMessage({
           username: username ? String(username).trim() : null,
           preferences: preferences || null,
           documents,
+          images: formatImagePayload(images),
           stream: true
         }),
         signal
@@ -347,6 +350,18 @@ export async function streamAIMessage({
   }
 
   // Client-side direct service fallback
+  if (images && images.length > 0 && normalizedProvider !== 'gemini') {
+    const visionErr = new Error(
+      'Image vision analysis is currently supported by Google Gemini. Please switch to Gemini to analyze attached images.'
+    );
+    visionErr.code = 400;
+    visionErr.status = 'INVALID_ARGUMENT';
+    visionErr.provider = normalizedProvider;
+    visionErr.canFallback = true;
+    visionErr.suggestedProviders = ['gemini'];
+    throw visionErr;
+  }
+
   switch (normalizedProvider) {
     case AI_PROVIDERS.GROQ: {
       const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, documents, onChunk, signal });
@@ -366,7 +381,7 @@ export async function streamAIMessage({
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, documents, onChunk, signal });
+      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, documents, images, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI

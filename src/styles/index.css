@@ -5929,3 +5929,420 @@ body.theme-light .listening-text,
   color: #0f172a;
 }
 
+/* ==========================================================================
+   Image Attachments & Vision UI Styles (Phase 1)
+   ========================================================================== */
+
+/* Composer Image Button */
+.composer-image-btn {
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+.composer-image-btn:hover:not(:disabled) {
+  color: #60a5fa;
+  background-color: rgba(96, 165, 250, 0.12);
+}
+
+/* Staged Image Attachment Chip in Dock */
+.attachment-chip.attachment-chip-image,
+.attachment-chip.is-image-chip {
+  border-color: rgba(59, 130, 246, 0.35);
+  background-color: rgba(30, 41, 59, 0.7);
+  padding: 4px 8px 4px 5px;
+  gap: 8px;
+}
+
+.attachment-chip.attachment-chip-image:hover,
+.attachment-chip.is-image-chip:hover {
+  border-color: rgba(96, 165, 250, 0.7);
+  background-color: rgba(59, 130, 246, 0.12);
+}
+
+/* Thumbnail wrapper in staged dock */
+.attachment-image-thumb-wrapper,
+.attachment-thumb-wrapper {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background-color: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.attachment-image-thumb,
+.attachment-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Format badge indicator */
+.attachment-image-type-badge,
+.attachment-badge {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  display: inline-block;
+  font-size: 0.55rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 2px 3px;
+  border-top-left-radius: 3px;
+  text-transform: uppercase;
+  color: #ffffff;
+  background-color: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.attachment-image-type-badge.png,
+.attachment-badge.png {
+  color: #38bdf8;
+}
+
+.attachment-image-type-badge.webp,
+.attachment-badge.webp {
+  color: #a78bfa;
+}
+
+.attachment-image-type-badge.jpeg,
+.attachment-image-type-badge.jpg,
+.attachment-badge.jpeg {
+  color: #fb923c;
+}
+
+/* Rendered Message Image Bubble & Card in Chat Feed */
+.message-image-wrapper {
+  display: inline-block;
+  max-width: 100%;
+  margin: 4px 0 6px 0;
+}
+
+.message-image-card {
+  display: flex;
+  flex-direction: column;
+  background-color: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+  max-width: 280px;
+  width: 100%;
+}
+
+.message-image-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, 0.5);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+.message-image-thumb-container {
+  position: relative;
+  width: 100%;
+  max-height: 200px;
+  background-color: #0b1120;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-image-thumb,
+.message-image-preview {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+  transition: transform var(--transition-normal);
+}
+
+.message-image-thumb-container:hover .message-image-thumb {
+  transform: scale(1.03);
+}
+
+.message-image-overlay-action {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background-color: rgba(0, 0, 0, 0.65);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--transition-fast), background-color var(--transition-fast);
+  pointer-events: none;
+}
+
+.message-image-thumb-container:hover .message-image-overlay-action,
+.message-image-thumb-container:focus-visible .message-image-overlay-action {
+  opacity: 1;
+}
+
+.message-image-fallback-icon {
+  width: 100%;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(30, 41, 59, 0.5);
+}
+
+.message-image-info,
+.message-image-caption {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background-color: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 2px;
+}
+
+.message-image-name {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-image-details {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+/* Fallback chip for images when previewUrl is expired or broken */
+.message-attachment-chip.is-image {
+  border-color: rgba(59, 130, 246, 0.35);
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+/* Lightbox Image Preview Modal */
+.image-lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background-color: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: lightboxFadeIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes lightboxFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.image-lightbox-content {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-lg);
+  max-width: 92vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  animation: lightboxContentPop 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes lightboxContentPop {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.image-lightbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-sidebar);
+  gap: 12px;
+}
+
+.image-lightbox-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.image-lightbox-filename {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+
+.image-lightbox-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.image-lightbox-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.image-lightbox-close:hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.image-lightbox-body {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  max-height: calc(92vh - 60px);
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.image-lightbox-img {
+  max-width: 100%;
+  max-height: calc(85vh - 70px);
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+/* Light Mode Overrides for Image Attachments */
+[data-theme="light"] .composer-image-btn:hover:not(:disabled) {
+  color: #2563eb;
+  background-color: rgba(37, 99, 235, 0.08);
+}
+
+[data-theme="light"] .attachment-chip.attachment-chip-image,
+[data-theme="light"] .attachment-chip.is-image-chip {
+  background-color: #ffffff;
+  border-color: #93c5fd;
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .attachment-chip.attachment-chip-image:hover,
+[data-theme="light"] .attachment-chip.is-image-chip:hover {
+  background-color: #eff6ff;
+  border-color: #2563eb;
+}
+
+[data-theme="light"] .attachment-image-thumb-wrapper,
+[data-theme="light"] .attachment-thumb-wrapper {
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .attachment-image-type-badge,
+[data-theme="light"] .attachment-badge {
+  background-color: rgba(15, 23, 42, 0.75);
+}
+
+[data-theme="light"] .message-image-card {
+  background-color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .message-image-card:hover {
+  border-color: #3b82f6;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.15);
+}
+
+[data-theme="light"] .message-image-thumb-container {
+  background-color: #f8fafc;
+}
+
+[data-theme="light"] .message-image-info,
+[data-theme="light"] .message-image-caption {
+  background-color: #f8fafc;
+  border-top-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .message-image-name {
+  color: #0f172a;
+}
+
+[data-theme="light"] .message-image-details {
+  color: #64748b;
+}
+
+[data-theme="light"] .message-attachment-chip.is-image {
+  background-color: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e3a8a;
+}
+
+[data-theme="light"] .image-lightbox-overlay {
+  background-color: rgba(15, 23, 42, 0.7);
+}
+
+[data-theme="light"] .image-lightbox-content {
+  background-color: #ffffff;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .image-lightbox-header {
+  background-color: #f8fafc;
+  border-bottom-color: #e2e8f0;
+}
+
+[data-theme="light"] .image-lightbox-filename {
+  color: #0f172a;
+}
+
+[data-theme="light"] .image-lightbox-close:hover {
+  background-color: rgba(0, 0, 0, 0.06);
+  color: #0f172a;
+}
+
+[data-theme="light"] .image-lightbox-body {
+  background-color: #f1f5f9;
+}
+
+@media (max-width: 640px) {
+  .message-image-card {
+    max-width: 220px;
+  }
+  .message-image-thumb,
+  .message-image-preview {
+    max-height: 160px;
+  }
+  .image-lightbox-filename {
+    max-width: 200px;
+  }
+}
+
+
+

@@ -156,6 +156,22 @@ export async function saveChatMessage(userId, chatId, message) {
     clientTimestamp: message.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
 
+  // Persist display-only attachment metadata without raw binary or base64 strings
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+    payload.attachments = message.attachments.map((att) => ({
+      id: att.id,
+      name: att.name,
+      size: Number(att.size) || 0,
+      type: att.type || '',
+      category: att.category || (att.type?.startsWith('image/') ? 'image' : 'document'),
+      ...(att.width ? { width: att.width } : {}),
+      ...(att.height ? { height: att.height } : {}),
+      ...(att.pageCount ? { pageCount: att.pageCount } : {}),
+      ...(att.slideCount ? { slideCount: att.slideCount } : {}),
+      ...(att.rowCount ? { rowCount: att.rowCount } : {})
+    }));
+  }
+
   // Write message document idempotently
   await setDoc(messageDocRef, payload);
 
@@ -378,7 +394,8 @@ export async function loadConversationMessages(userId, chatId) {
       sender: data.sender,
       content: data.content,
       modelUsed: data.modelUsed,
-      timestamp: data.clientTimestamp || (data.createdAt?.toDate ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+      timestamp: data.clientTimestamp || (data.createdAt?.toDate ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''),
+      ...(Array.isArray(data.attachments) ? { attachments: data.attachments } : {})
     });
   });
 

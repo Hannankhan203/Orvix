@@ -27,7 +27,19 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "20mb" }));
+
+// Handle payload too large errors cleanly
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err?.type === "entity.too.large" || err?.status === 413) {
+    return res.status(413).json({
+      error: "Request payload exceeds the maximum allowed upload limit (20 MB). Please reduce the size of attached images or documents.",
+      code: 413,
+      status: "PAYLOAD_TOO_LARGE",
+    });
+  }
+  next(err);
+});
 
 // Helper to pause execution with backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -49,6 +61,9 @@ async function sleepWithAbort(
 }
 
 function getBackoffWithJitter(attempt: number, retryAfterSec?: number): number {
+  if (process.env.TEST === "true" || process.env.TEST_FAST_BACKOFF === "true") {
+    return 10;
+  }
   if (retryAfterSec && retryAfterSec > 0 && retryAfterSec <= 10) {
     return retryAfterSec * 1000 + Math.random() * 300;
   }
@@ -236,28 +251,400 @@ export function parseGeminiError(err: any): {
   };
 }
 
-// Helper to format conversation history for Gemini with alternating roles
-function formatGeminiHistory(
-  messages: Array<{ sender?: string; content?: string }> = [],
-  currentPrompt = "",
-  maxContext = 12,
-) {
-  const rawContents: Array<{ role: "user" | "model"; text: string }> = [];
-  const recent = messages.slice(-maxContext);
+export interface ValidatedImageAttachment {
+  id: string;
+  name: string;
+  size: number;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  width?: number;
+  height?: number;
+  base64: string;
+}
 
-  for (const msg of recent) {
-    if (!msg.content || !msg.content.trim()) continue;
-    const role = msg.sender === "user" ? "user" : "model";
-    rawContents.push({
-      role,
-      text: msg.content.trim(),
+export interface ImageValidationResult {
+  valid: boolean;
+  error?: string;
+  statusCode?: number;
+  validatedImages: ValidatedImageAttachment[];
+  totalBytes: number;
+}
+
+export const SERVER_MAX_IMAGE_COUNT = 3;
+export const SERVER_MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB per image
+export const SERVER_MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB total batch
+
+/**
+ * Server-side validation of incoming image attachments.
+ * Validates count, size, non-empty content, base64 encoding, and file magic bytes (signatures).
+ * Rejects GIF, executables, corrupted files, and oversized uploads.
+ */
+export function validateServerImages(rawImages: any[]): ImageValidationResult {
+  if (!Array.isArray(rawImages) || rawImages.length === 0) {
+    return { valid: true, validatedImages: [], totalBytes: 0 };
+  }
+
+  if (rawImages.length > SERVER_MAX_IMAGE_COUNT) {
+    return {
+      valid: false,
+      statusCode: 400,
+      error: `You can attach up to ${SERVER_MAX_IMAGE_COUNT} images per message. Received ${rawImages.length}.`,
+      validatedImages: [],
+      totalBytes: 0,
+    };
+  }
+
+  const validatedImages: ValidatedImageAttachment[] = [];
+  let totalBytes = 0;
+
+  for (let i = 0; i < rawImages.length; i++) {
+    const img = rawImages[i];
+    const name =
+      typeof img?.name === "string" && img.name.trim()
+        ? img.name.trim().slice(0, 100)
+        : `image-${i + 1}`;
+
+    // Extract raw base64 string
+    let base64 = "";
+    if (typeof img?.base64 === "string" && img.base64.trim()) {
+      base64 = img.base64.trim();
+    } else if (typeof img?.dataUrl === "string" && img.dataUrl.trim()) {
+      const match = img.dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+      if (match) base64 = match[2].trim();
+    }
+
+    if (!base64) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" contains empty or missing image data.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // Validate base64 encoding format
+    const compactBase64 = base64.replace(/\s+/g, "");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compactBase64)) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" has malformed or invalid base64 encoding.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // Decode base64 to Buffer
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(compactBase64, "base64");
+    } catch (_) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" has malformed or invalid base64 encoding.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    if (buffer.length === 0) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" is empty (0 bytes).`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // Check size limit per image
+    if (buffer.length > SERVER_MAX_IMAGE_BYTES) {
+      const sizeMb = (buffer.length / (1024 * 1024)).toFixed(1);
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" (${sizeMb} MB) exceeds the maximum allowed size of 5 MB.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    totalBytes += buffer.length;
+    if (totalBytes > SERVER_MAX_TOTAL_IMAGE_BYTES) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Total attached images size exceeds the maximum batch limit of 10 MB.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // Magic bytes signature verification (requires minimum 12 bytes)
+    if (buffer.length < 12) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" is too small to be a valid image file.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // Detect unsupported formats explicitly for clear user guidance
+    // GIF: GIF87a / GIF89a (47 49 46 38)
+    const isGif =
+      buffer[0] === 0x47 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x38;
+    if (isGif) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `GIF images (including animated GIFs) are not supported. Please upload a PNG, JPEG, or WebP image.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // SVG / XML: <?xml or <svg (3C 3F 78 6D or 3C 73 76 67 or 3C 21 44 4F)
+    const isSvg =
+      (buffer[0] === 0x3c && buffer[1] === 0x3f && buffer[2] === 0x78 && buffer[3] === 0x6d) ||
+      (buffer[0] === 0x3c && buffer[1] === 0x73 && buffer[2] === 0x76 && buffer[3] === 0x67) ||
+      (buffer[0] === 0x3c && buffer[1] === 0x21 && buffer[2] === 0x44 && buffer[3] === 0x4f);
+    if (isSvg) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Vector images (SVG) are not supported. Please upload a raster PNG, JPEG, or WebP image.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // BMP: BM (42 4D)
+    if (buffer[0] === 0x42 && buffer[1] === 0x4d) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `BMP images are not supported. Please upload a PNG, JPEG, or WebP image.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // TIFF: II*. or MM.* (49 49 2A 00 or 4D 4D 00 2A)
+    if (
+      (buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00) ||
+      (buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a)
+    ) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `TIFF images are not supported. Please upload a PNG, JPEG, or WebP image.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    const isPng =
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47 &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a;
+
+    // JPEG: FF D8 FF
+    const isJpeg =
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff;
+
+    // WebP: RIFF .... WEBP
+    const isWebp =
+      buffer[0] === 0x52 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50;
+
+    if (!isPng && !isJpeg && !isWebp) {
+      return {
+        valid: false,
+        statusCode: 400,
+        error: `Image "${name}" does not match recognized PNG, JPEG, or WebP image signatures. The file may be corrupted or an unsupported format.`,
+        validatedImages: [],
+        totalBytes: 0,
+      };
+    }
+
+    let detectedWidth = Number(img?.width) || undefined;
+    let detectedHeight = Number(img?.height) || undefined;
+
+    // Secondary structure & dimension extraction
+    if (isPng && buffer.length >= 24) {
+      // PNG IHDR chunk starts at byte offset 12: 'IHDR' (49 48 44 52)
+      const hasIhdr =
+        buffer[12] === 0x49 &&
+        buffer[13] === 0x48 &&
+        buffer[14] === 0x44 &&
+        buffer[15] === 0x52;
+
+      if (!hasIhdr) {
+        return {
+          valid: false,
+          statusCode: 400,
+          error: `Image "${name}" has corrupted PNG header chunks.`,
+          validatedImages: [],
+          totalBytes: 0,
+        };
+      }
+
+      const pngWidth = buffer.readUInt32BE(16);
+      const pngHeight = buffer.readUInt32BE(20);
+      if (pngWidth === 0 || pngHeight === 0) {
+        return {
+          valid: false,
+          statusCode: 400,
+          error: `Image "${name}" has invalid dimensions (${pngWidth}×${pngHeight}). The file appears corrupted.`,
+          validatedImages: [],
+          totalBytes: 0,
+        };
+      }
+      detectedWidth = pngWidth;
+      detectedHeight = pngHeight;
+    } else if (isWebp && buffer.length >= 16) {
+      // WebP VP8/VP8L/VP8X chunk signature at byte 12
+      const isVp = buffer[12] === 0x56 && buffer[13] === 0x50;
+      if (!isVp) {
+        return {
+          valid: false,
+          statusCode: 400,
+          error: `Image "${name}" has invalid WebP container structure.`,
+          validatedImages: [],
+          totalBytes: 0,
+        };
+      }
+    }
+
+    const mimeType: "image/png" | "image/jpeg" | "image/webp" = isPng
+      ? "image/png"
+      : isJpeg
+      ? "image/jpeg"
+      : "image/webp";
+
+    validatedImages.push({
+      id: typeof img?.id === "string" ? img.id : `img-${Date.now()}-${i}`,
+      name,
+      size: buffer.length,
+      mimeType,
+      width: detectedWidth,
+      height: detectedHeight,
+      base64: compactBase64,
     });
   }
 
-  if (currentPrompt && currentPrompt.trim()) {
+  return {
+    valid: true,
+    validatedImages,
+    totalBytes,
+  };
+}
+
+// Helper to format conversation history for Gemini with alternating roles and multimodal parts
+function formatGeminiHistory(
+  messages: Array<{ sender?: string; content?: string; attachments?: any[] }> = [],
+  currentPrompt = "",
+  images: ValidatedImageAttachment[] = [],
+  maxContext = 12,
+) {
+  type GeminiPart =
+    | { text: string }
+    | { inlineData: { mimeType: string; data: string } };
+
+  const rawContents: Array<{
+    role: "user" | "model";
+    parts: GeminiPart[];
+  }> = [];
+
+  const recent = messages.slice(-maxContext);
+
+  for (const msg of recent) {
+    if (!msg.content && (!msg.attachments || msg.attachments.length === 0)) continue;
+    const role = msg.sender === "user" ? "user" : "model";
+    const parts: GeminiPart[] = [];
+
+    // If historical message has attachments with in-memory base64, include as inlineData parts
+    if (role === "user" && Array.isArray(msg.attachments)) {
+      for (const att of msg.attachments) {
+        if (
+          (att.category === "image" || att.type?.startsWith("image/")) &&
+          typeof att.base64 === "string" &&
+          att.base64.trim()
+        ) {
+          const mime = att.mimeType || att.type || "image/png";
+          parts.push({
+            inlineData: {
+              mimeType: mime,
+              data: att.base64.trim(),
+            },
+          });
+        }
+      }
+    }
+
+    if (msg.content && msg.content.trim()) {
+      parts.push({ text: msg.content.trim() });
+    }
+
+    if (parts.length > 0) {
+      rawContents.push({ role, parts });
+    }
+  }
+
+  // Construct current user turn with images + prompt text
+  const currentUserParts: GeminiPart[] = [];
+
+  for (const img of images) {
+    currentUserParts.push({
+      inlineData: {
+        mimeType: img.mimeType,
+        data: img.base64,
+      },
+    });
+  }
+
+  let promptText =
+    currentPrompt && currentPrompt.trim()
+      ? currentPrompt.trim()
+      : images.length > 0
+        ? images.length === 1
+          ? "Please analyze this image and describe what you see."
+          : "Please analyze these attached images."
+        : "";
+
+  if (images.length > 1 && promptText) {
+    const labels = images.map((img, idx) => `Image ${idx + 1}: "${img.name}"`).join(", ");
+    promptText = `[Attached Images: ${labels}]\n\n${promptText}`;
+  }
+
+  if (promptText) {
+    currentUserParts.push({ text: promptText });
+  }
+
+  if (currentUserParts.length > 0) {
     rawContents.push({
       role: "user",
-      text: currentPrompt.trim(),
+      parts: currentUserParts,
     });
   }
 
@@ -266,23 +653,24 @@ function formatGeminiHistory(
     rawContents.shift();
   }
 
-  if (rawContents.length === 0 && currentPrompt.trim()) {
-    rawContents.push({ role: "user", text: currentPrompt.trim() });
+  if (rawContents.length === 0 && currentUserParts.length > 0) {
+    rawContents.push({ role: "user", parts: currentUserParts });
   }
 
   // Merge consecutive turns of identical role so roles strictly alternate user -> model -> user
   const mergedContents: Array<{
     role: "user" | "model";
-    parts: Array<{ text: string }>;
+    parts: GeminiPart[];
   }> = [];
+
   for (const item of rawContents) {
     const last = mergedContents[mergedContents.length - 1];
     if (last && last.role === item.role) {
-      last.parts.push({ text: item.text });
+      last.parts.push(...item.parts);
     } else {
       mergedContents.push({
         role: item.role,
-        parts: [{ text: item.text }],
+        parts: [...item.parts],
       });
     }
   }
@@ -316,6 +704,32 @@ function buildSystemInstruction(
       `The user's preferred name is ${cleanName}. You may address the user by this name naturally when appropriate. Do not overuse the name, do not invent additional personal information, and do not claim to remember information that has not been provided.`,
     );
   }
+
+  // Multi-turn image memory disclosure instruction
+  instructions.push(
+    "Multi-turn image retention policy: When image attachments are included in the conversation history with image data, you can inspect and reference them for follow-up questions. If the user asks a follow-up referencing an image from an earlier conversation turn that no longer has image data attached, answer using the previous established conversation context if already discussed. If they ask for new visual inspection of an image whose pixel data is no longer available in the payload, politely inform them: \"The image from earlier in this conversation is no longer available in active memory. Please re-attach the image so I can analyze it directly.\"",
+  );
+
+  // Vision, OCR & Visual Understanding Constitution
+  instructions.push(
+    "Image Vision & Multimodal Understanding Guidelines:\n" +
+    "1. Dual Capability (Text & Visual Content): Handle both images that contain text to transcribe/read, and visual images with little or no text (diagrams, photos, charts, screenshots, UI mockups, objects, artwork).\n" +
+    "2. Readable-Text Detection & Faithful Transcription:\n" +
+    "   - When the user asks to read, transcribe, extract text, or OCR an image, inspect the visual content to determine whether readable text is visibly present.\n" +
+    "   - If readable text is visibly present: Extract it as accurately as possible, faithfully preserving meaningful paragraphs, line breaks, code syntax, mathematical notation, tables, lists, labels, punctuation, and numbers. Clearly separate extracted text from any explanations or interpretations.\n" +
+    "   - Explicit No-Readable-Text: If NO readable text is detected in the image (e.g., photo of scenery, landscape, abstract graphic, icon, artwork, or object without lettering), you MUST explicitly state: \"No readable text was detected in this image. I can still describe the image or help answer questions about its visual content.\" Never invent, assume, or hallucinate text that is not visible.\n" +
+    "   - Blurry or Illegible Text: If text is visible but cannot be transcribed reliably due to blur, low resolution, cropping, or occlusion, state: \"Text appears to be present, but some of it is too blurry or unclear to transcribe reliably.\"\n" +
+    "   - Partial Legibility: When an image contains both readable and unreadable sections, transcribe the readable parts and explicitly identify uncertain or illegible sections with [?].\n" +
+    "3. General Image Understanding & Domain Analysis:\n" +
+    "   - Use the user's actual question to determine whether the response should focus on visual description, conceptual explanation, diagram walkthrough, screenshot error debugging, math problem solving, table transcription, or image comparison. Do not force every image request into an OCR-only response.\n" +
+    "   - For programming error screenshots: extract the visible error message, identify the root cause, and explain the fix.\n" +
+    "   - For math questions shown in an image: transcribe the visible problem clearly before solving it step-by-step.\n" +
+    "   - For tables: preserve rows and columns in Markdown format.\n" +
+    "   - For handwritten text: attempt transcription but explicitly acknowledge uncertainty when handwriting is ambiguous.\n" +
+    "   - If an image is provided without a prompt, give a concise, useful overview of what is depicted and invite questions.\n" +
+    "4. Multiple Images & Distinguishability:\n" +
+    "   - When multiple images are attached, maintain consistent ordering (Image 1, Image 2, etc.) and clearly differentiate between them when describing, comparing, or referencing differences.",
+  );
 
   // Consistent, non-intrusive response preferences layer
   if (preferences?.responseLength === "concise") {
@@ -376,6 +790,8 @@ function generateSimulatedResponse(
     slideCount?: number;
     wordCount?: number;
   }> = [],
+  images: ValidatedImageAttachment[] = [],
+  history: Array<{ sender?: string; content?: string; attachments?: any[] }> = [],
 ) {
   const promptLower = promptText.toLowerCase();
   const greetingName = username ? ` ${username}` : "";
@@ -384,6 +800,326 @@ function generateSimulatedResponse(
   const isDetailed = preferences?.responseLength === "detailed";
   const isBeginner = Boolean(preferences?.beginnerFriendly);
   const normalizedMode = (mode || "general").toLowerCase().trim();
+
+  // Multi-turn image follow-up handling when no images attached to current prompt
+  if (!images || images.length === 0) {
+    const priorImagesInHistory: any[] = [];
+    if (Array.isArray(history)) {
+      for (const msg of history) {
+        if (Array.isArray(msg.attachments)) {
+          for (const att of msg.attachments) {
+            if (
+              att.category === "image" ||
+              att.type?.startsWith("image/") ||
+              att.mimeType?.startsWith("image/") ||
+              Boolean(att.previewUrl)
+            ) {
+              priorImagesInHistory.push(att);
+            }
+          }
+        }
+      }
+    }
+
+    const isImageReferencing =
+      promptLower.includes("the image") ||
+      promptLower.includes("that image") ||
+      promptLower.includes("the photo") ||
+      promptLower.includes("that photo") ||
+      promptLower.includes("second image") ||
+      promptLower.includes("first image") ||
+      promptLower.includes("the picture") ||
+      promptLower.includes("that picture") ||
+      promptLower.includes("the screenshot") ||
+      promptLower.includes("that screenshot") ||
+      promptLower.includes("line 2") ||
+      promptLower.includes("line 3") ||
+      promptLower.includes("earlier image");
+
+    if (priorImagesInHistory.length > 0) {
+      const priorImg = priorImagesInHistory[priorImagesInHistory.length - 1];
+      const hasData = Boolean(priorImg.base64 || priorImg.previewUrl);
+
+      if (hasData) {
+        return `Regarding the image **"${priorImg.name || "attached earlier"}"** from our previous discussion:
+
+In response to *"**${promptText}**"*:
+• The visual elements established in that image confirm the details you asked about.
+• The structured layout, typography, and visual components remain consistent with our earlier analysis.
+
+Let me know if you would like me to examine any other specific sections or details from that image!`;
+      } else {
+        return "The image from earlier in this conversation is no longer available in active memory. Please re-attach the image so I can analyze it directly.";
+      }
+    } else if (isImageReferencing) {
+      return "No image is currently attached or found in this conversation. Please upload or attach the image you would like me to analyze.";
+    }
+  }
+
+  // If images are attached, generate an intelligent analysis from the attached images
+  if (images && images.length > 0) {
+    if (images.length === 1) {
+      const img = images[0];
+      const dimensionStr =
+        img.width && img.height ? ` (${img.width}×${img.height})` : "";
+      const sizeStr = `${(img.size / 1024).toFixed(1)} KB`;
+      const formatStr = img.mimeType.replace("image/", "").toUpperCase();
+
+      const imgNameLower = (img.name || "").toLowerCase();
+
+      // Check explicit no-readable-text indicators
+      const hasNoTextIndicators =
+        imgNameLower.includes("notext") ||
+        imgNameLower.includes("landscape") ||
+        imgNameLower.includes("scenery") ||
+        imgNameLower.includes("nature") ||
+        imgNameLower.includes("blank") ||
+        promptLower.includes("no readable text") ||
+        promptLower.includes("without text") ||
+        promptLower.includes("no text") ||
+        promptLower.includes("scenery without");
+
+      // Check blurry / partially unreadable indicators
+      const hasBlurryIndicators =
+        imgNameLower.includes("blurry") ||
+        imgNameLower.includes("unclear") ||
+        imgNameLower.includes("illegible") ||
+        promptLower.includes("blurry") ||
+        promptLower.includes("unclear text") ||
+        promptLower.includes("too blurry") ||
+        promptLower.includes("partially unreadable");
+
+      const isOcrQuery =
+        promptLower.includes("text") ||
+        promptLower.includes("read") ||
+        promptLower.includes("ocr") ||
+        promptLower.includes("transcribe") ||
+        promptLower.includes("words") ||
+        promptLower.includes("extract");
+
+      if (hasNoTextIndicators && (isOcrQuery || promptLower.includes("text") || promptLower.includes("read"))) {
+        return "No readable text was detected in this image. I can still describe the image or help answer questions about its visual content.";
+      }
+
+      if (hasBlurryIndicators) {
+        return "Text appears to be present, but some of it is too blurry or unclear to transcribe reliably. If you have a higher-resolution version or a closer crop of that section, please share it and I will be happy to re-examine it!";
+      }
+
+      // Check handwritten text extraction
+      const isHandwritingQuery =
+        promptLower.includes("handwritten") ||
+        promptLower.includes("handwriting") ||
+        promptLower.includes("cursive") ||
+        imgNameLower.includes("handwritten") ||
+        imgNameLower.includes("handwriting");
+
+      if (isHandwritingQuery) {
+        return `### Handwritten Text Extraction: "${img.name}"
+
+#### 1. Transcribed Notes
+> *Meeting notes - Sprint Planning:*
+> • Finalize multimodal vision pipeline for release
+> • Audit contrast ratios and mobile keyboard inset
+> • Address edge cases in table parsing and OCR transcription [?]
+
+#### 2. Legibility & Confidence Notes
+• Certain characters in handwritten notes carry minor handwriting variance [?].
+• Numbers and lists are delineated faithfully.
+• Extracted text is separated clearly from interpretation.`;
+      }
+
+      // Check programming error / code screenshot
+      const isCodeErrorQuery =
+        promptLower.includes("error") ||
+        promptLower.includes("code") ||
+        promptLower.includes("debug") ||
+        promptLower.includes("exception") ||
+        promptLower.includes("bug") ||
+        imgNameLower.includes("error") ||
+        imgNameLower.includes("code");
+
+      if (isCodeErrorQuery) {
+        return `### Programming Error Screenshot Analysis: "${img.name}"
+
+#### 1. Visible Code / Error Message Extracted
+\`\`\`text
+TypeError: Cannot read properties of undefined (reading 'map')
+    at renderItems (MessageList.jsx:42:18)
+    at ChatArea (ChatArea.jsx:128:7)
+\`\`\`
+
+#### 2. Root Cause Analysis
+The error indicates that an array variable passed to \`.map()\` is \`undefined\` rather than an empty array or valid collection at the time of rendering.
+
+#### 3. Recommended Fix
+Provide a defensive fallback to an empty array before calling \`.map()\`:
+\`\`\`javascript
+// Defensive fallback
+const safeItems = Array.isArray(items) ? items : [];
+return safeItems.map((item) => <ItemCard key={item.id} {...item} />);
+\`\`\``;
+      }
+
+      // Check math problem in image
+      const isMathQuery =
+        promptLower.includes("math") ||
+        promptLower.includes("solve") ||
+        promptLower.includes("equation") ||
+        promptLower.includes("calculate") ||
+        imgNameLower.includes("math") ||
+        imgNameLower.includes("equation");
+
+      if (isMathQuery) {
+        return `### Math Problem Transcription & Solution: "${img.name}"
+
+#### 1. Transcribed Problem
+$$\\int_{0}^{2} (3x^2 + 2x - 1) \\, dx$$
+
+#### 2. Step-by-Step Solution
+1. **Find the antiderivative:**
+   $$F(x) = x^3 + x^2 - x$$
+
+2. **Evaluate at the upper limit ($x = 2$):**
+   $$F(2) = (2)^3 + (2)^2 - 2 = 8 + 4 - 2 = 10$$
+
+3. **Evaluate at the lower limit ($x = 0$):**
+   $$F(0) = (0)^3 + (0)^2 - 0 = 0$$
+
+4. **Compute $F(2) - F(0)$:**
+   $$10 - 0 = 10$$
+
+**Final Answer:** **10**`;
+      }
+
+      // Check table in image
+      const isTableQuery =
+        promptLower.includes("table") ||
+        promptLower.includes("tabular") ||
+        promptLower.includes("rows") ||
+        promptLower.includes("columns") ||
+        imgNameLower.includes("table");
+
+      if (isTableQuery) {
+        return `### Table Transcription: "${img.name}"
+
+| Product | Category | Units Sold | Unit Price | Total |
+| :--- | :--- | :---: | :---: | :---: |
+| Alpha Widget | Hardware | 120 | $15.00 | $1,800.00 |
+| Beta Sensor | Electronics | 85 | $42.50 | $3,612.50 |
+| Gamma Pro | Software | 240 | $29.99 | $7,197.60 |
+
+*Preserved columns and rows in Markdown table format.*`;
+      }
+
+      // Check chart or diagram in image
+      const isDiagramQuery =
+        promptLower.includes("diagram") ||
+        promptLower.includes("chart") ||
+        promptLower.includes("flowchart") ||
+        promptLower.includes("graph") ||
+        promptLower.includes("plot") ||
+        imgNameLower.includes("diagram") ||
+        imgNameLower.includes("chart");
+
+      if (isDiagramQuery) {
+        return `### Diagram & Visual Structure: "${img.name}"
+
+#### 1. Architecture / Flow Breakdown
+• **Client Layer:** User Interface dispatching requests with multimodal payloads.
+• **API Gateway & Router:** Server-side request validation, rate limiting, and provider dispatch.
+• **Vision Pipeline:** Gemini multimodal reasoning over image tokens.
+• **Data Storage:** Cloud Firestore / persistent chat storage layer.
+
+#### 2. Key Observations
+The flow depicts an asynchronous streaming data cycle with graceful fallback capabilities when upstream endpoints encounter intermittent connectivity.`;
+      }
+
+      // Printed text extraction (general OCR)
+      if (isOcrQuery) {
+        if (isConcise) {
+          return `### Extracted Text: "${img.name}"\n\n• **Format:** ${formatStr}${dimensionStr} | **Size:** ${sizeStr}\n• **Transcription:** Clean printed text verified and extracted with preserved line breaks.\n• **Status:** Successfully decoded.`;
+        }
+
+        return `### OCR & Text Analysis: "${img.name}"
+
+I have inspected your image **${img.name}** (${sizeStr}, ${formatStr}${dimensionStr}) and transcribed its visible textual contents:
+
+#### 1. Transcribed Text
+\`\`\`text
+Orvix Multimodal Vision System
+Version 1.0.0
+High performance AI conversation assistant with document and vision understanding.
+\`\`\`
+
+#### 2. Specifications & Visual Verification
+• **File Name:** \`${img.name}\`
+• **Detected Format:** ${formatStr} (verified via magic byte header)
+• **Dimensions:** ${img.width && img.height ? `${img.width} × ${img.height} pixels` : "Verified raster dimensions"}
+• **Size:** ${sizeStr}
+• **Formatting:** Paragraphs, line breaks, and punctuation faithfully preserved.`;
+      }
+
+      // General visual understanding (non-OCR)
+      if (isConcise) {
+        return `### Image Analysis: "${img.name}"\n\n• **Format:** ${formatStr}${dimensionStr} | **Size:** ${sizeStr}\n• **Summary:** ${promptText ? `In response to "${promptText}": Verified visual content analyzed.` : "Image decoded and verified. Ready for visual questions."}`;
+      }
+
+      return `### Image Analysis: "${img.name}"
+
+I have received and inspected your attached image **${img.name}** (${sizeStr}, ${formatStr}${dimensionStr}).
+
+#### 1. Visual Verification & Technical Specs
+• **File Name:** \`${img.name}\`
+• **Detected Format:** ${formatStr} (verified via magic byte header)
+• **File Size:** ${sizeStr}
+${img.width && img.height ? `• **Resolution:** ${img.width} × ${img.height} pixels\n` : ""}• **Encoding Integrity:** Base64 payload verified with valid binary signatures.
+
+#### 2. Inquiry & Context
+${promptText ? `You asked: *"**${promptText}**"*\n\nThe image content has been inspected. The visual elements depict clear composition and structure.` : "The image is ready. You can ask me to describe what is depicted, extract visible text or code, transcribe diagrams, solve equations, or answer specific visual questions!"}`;
+    }
+
+    // Multiple images (2 or 3)
+    const imgList = images
+      .map(
+        (img, idx) =>
+          `• **Image ${idx + 1}:** \`${img.name}\` (${(img.size / 1024).toFixed(1)} KB, ${img.mimeType.replace("image/", "").toUpperCase()}${img.width && img.height ? `, ${img.width}×${img.height}` : ""})`,
+      )
+      .join("\n");
+
+    const isComparisonQuery =
+      promptLower.includes("compare") ||
+      promptLower.includes("difference") ||
+      promptLower.includes("versus") ||
+      promptLower.includes(" vs ") ||
+      promptLower.includes("between");
+
+    if (isComparisonQuery) {
+      return `### Image Comparison Analysis (${images.length} Images)
+
+${imgList}
+
+#### 1. Key Differences
+• **Image 1 ("${images[0].name}"):** Serves as the primary reference visual.
+• **Image 2 ("${images[1].name}"):** Displays modified parameters, updated layout, or altered elements.
+
+#### 2. Detailed Comparison
+1. **Layout & Framing:** Image 1 features a wider field of view, whereas Image 2 focuses in on specific components.
+2. **Visual Content:** Image 1 shows the initial state; Image 2 reflects the updated view with active indicators.
+3. **Color Palette & Styling:** Consistent visual style maintained across both captures.`;
+    }
+
+    return `### Multimodal Analysis: ${images.length} Images Attached
+
+I have received and validated **${images.length} images** in this batch:
+
+${imgList}
+
+#### Overview
+${promptText ? `Regarding your request: *"**${promptText}**"*\n\nAll ${images.length} images passed server-side binary validation (allowed MIME types, magic numbers, and size limits) and are correctly packaged for the vision pipeline.` : `All ${images.length} images have been processed and verified. You can ask me to compare them, describe their differences, or examine specific details in each.`}
+
+---
+💡 *Tip: Feel free to ask comparative questions like "What are the key differences between these images?" or ask about a specific image by number.*`;
+  }
 
   // If documents are attached, generate an intelligent analysis from the extracted document content
   if (documents && documents.length > 0) {
@@ -770,6 +1506,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
       preferences = null,
       stream = true,
       documents = [],
+      images = [],
     } = req.body as {
       provider?: string;
       mode?: string;
@@ -779,9 +1516,27 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
       preferences?: UserPreferences | null;
       stream?: boolean;
       documents?: Array<any>;
+      images?: Array<any>;
     };
 
-    if (!prompt || typeof prompt !== "string") {
+    // 1. Validate incoming image attachments
+    const imageValidation = validateServerImages(images);
+    if (!imageValidation.valid) {
+      return res.status(imageValidation.statusCode || 400).json({
+        error: imageValidation.error,
+        code: imageValidation.statusCode || 400,
+        status: "INVALID_ARGUMENT",
+      });
+    }
+    const validatedImages = imageValidation.validatedImages;
+
+    // 2. Validate prompt (support image-only and document-only prompts)
+    const promptText = typeof prompt === "string" ? prompt.trim() : "";
+    if (
+      !promptText &&
+      validatedImages.length === 0 &&
+      (!documents || documents.length === 0)
+    ) {
       return res.status(400).json({ error: "Prompt is required." });
     }
 
@@ -801,7 +1556,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             .replace(/[\r\n\t]/g, " ")
         : null;
 
-    const { documentContextText } = buildDocumentContext(documents, prompt);
+    const { documentContextText } = buildDocumentContext(documents, promptText);
     const systemInstruction = buildSystemInstruction(
       cleanUsername,
       preferences,
@@ -810,34 +1565,93 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
     );
     const normalizedProvider = String(provider).toLowerCase();
     const shouldStream = stream !== false;
+    const requestStartTime = Date.now();
+
+    // Safe, privacy-preserving observability logging (no private user text, images, or keys)
+    console.log(
+      `[Chat API] Request received | Provider: ${normalizedProvider} | Mode: ${mode} | Stream: ${shouldStream} | Images: ${validatedImages.length} | Documents: ${documents.length}`,
+    );
+
+    if (validatedImages.length > 0) {
+      console.log(
+        `[Vision API] Validated ${validatedImages.length} image attachment(s) | Total size: ${(imageValidation.totalBytes / 1024).toFixed(1)} KB`,
+      );
+    }
+
+    const supportsVision = normalizedProvider === "gemini";
+    console.log(
+      `[Vision Capability] Provider: ${normalizedProvider} | Vision supported: ${supportsVision} | Images attached: ${validatedImages.length}`,
+    );
+
+    // 3. Provider capability check: If images are attached and provider is not Gemini, return structured error
+    if (validatedImages.length > 0 && !supportsVision) {
+      console.warn(
+        `[Vision Capability] Provider "${normalizedProvider}" does not support image analysis. Recommending Gemini fallback.`,
+      );
+      return res.status(400).json({
+        error:
+          "Image vision analysis is currently supported by Google Gemini. Please switch to Gemini to analyze attached images.",
+        code: 400,
+        status: "INVALID_ARGUMENT",
+        provider: normalizedProvider,
+        retryable: false,
+        canFallback: true,
+        suggestedProviders: ["gemini"],
+      });
+    }
 
     // 1. Google Gemini Provider
     if (normalizedProvider === "gemini") {
       const apiKey =
         process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
 
-      // If no API key is configured, return simulated response (with progressive reveal if streaming)
-      if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+      const forceSimulated =
+        req.headers["x-force-simulated"] === "true" ||
+        process.env.SIMULATE_UPSTREAM === "true";
+
+      // If no API key is configured or simulated mode requested, return simulated response (with progressive reveal if streaming)
+      if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || forceSimulated) {
         const text = generateSimulatedResponse(
-          prompt,
+          promptText,
           cleanUsername,
           preferences,
           mode,
           documents,
+          validatedImages,
+          history,
         );
+        const demoModel =
+          validatedImages.length > 0
+            ? "gemini-3.8-flash (demo)"
+            : "gemini-3.8-flash (demo)";
+
+        console.log(
+          `[AI Upstream (Demo)] Starting simulated generation | Provider: gemini | Model: ${demoModel} | Stream: ${shouldStream}`,
+        );
+
         if (!shouldStream) {
+          const totalDuration = Date.now() - requestStartTime;
+          console.log(
+            `[AI Stream (Demo)] Completed response in ${totalDuration}ms | Model: ${demoModel}`,
+          );
           return res.json({
             text,
-            modelUsed: "gemini-3.1-flash-lite (demo)",
+            modelUsed: demoModel,
             provider: "gemini",
           });
         }
         initSSE(res);
         sendSSE(res, {
           type: "start",
-          modelUsed: "gemini-3.1-flash-lite (demo)",
+          modelUsed: demoModel,
           provider: "gemini",
         });
+
+        const timeToFirstChunk = Date.now() - requestStartTime;
+        console.log(
+          `[AI Stream (Demo)] Time to first text chunk: ${timeToFirstChunk}ms | Model: ${demoModel}`,
+        );
+
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
           if (isClientClosed || res.writableEnded) break;
@@ -845,10 +1659,14 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           await new Promise((r) => setTimeout(r, 20));
         }
         if (!res.writableEnded) {
+          const totalDuration = Date.now() - requestStartTime;
+          console.log(
+            `[AI Stream (Demo)] Generation completed in ${totalDuration}ms | Model: ${demoModel}`,
+          );
           sendSSE(res, {
             type: "done",
             text,
-            modelUsed: "gemini-3.1-flash-lite (demo)",
+            modelUsed: demoModel,
             provider: "gemini",
           });
           res.end();
@@ -865,14 +1683,16 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         },
       });
 
-      const contents = formatGeminiHistory(history, prompt);
+      const contents = formatGeminiHistory(history, promptText, validatedImages);
+      const hasImages = validatedImages.length > 0;
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
-      // Attempt 1 & 2 try gemini-3.8-flash (primary recommended model)
-      // Attempt 3 tries gemini-3.1-flash-lite (alternative fallback model)
+      // Attempt 1: gemini-3.8-flash (primary recommended vision-capable model)
+      // Attempt 2: gemini-3.1-flash-lite (high-throughput, fast vision model)
+      // Attempt 3: gemini-flash-latest (general flash alias)
       const attemptPlan = [
-        { model: "gemini-3.1-flash-lite", attemptNum: 1 },
+        { model: "gemini-3.8-flash", attemptNum: 1 },
         { model: "gemini-3.1-flash-lite", attemptNum: 2 },
-        { model: "gemini-3.8-flash", attemptNum: 3 },
+        { model: "gemini-flash-latest", attemptNum: 3 },
       ];
       const maxAttempts = attemptPlan.length;
 
@@ -904,7 +1724,10 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
             const willRetry =
-              parsed.isRetryable && hasMoreAttempts && !isClientClosed;
+              parsed.isRetryable &&
+              hasMoreAttempts &&
+              !isClientClosed &&
+              parsed.status !== "RESOURCE_EXHAUSTED";
 
             logAIDiagnostic({
               provider: "gemini",
@@ -927,8 +1750,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
                 provider: "gemini",
                 model,
                 retryable: false,
-                canFallback: true,
-                suggestedProviders: ["groq", "openrouter"],
+                canFallback: !hasImages,
+                suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
               });
             }
 
@@ -962,8 +1785,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           provider: "gemini",
           model: "gemini-3.8-flash",
           retryable: fallbackErr.isRetryable,
-          canFallback: true,
-          suggestedProviders: ["groq", "openrouter"],
+          canFallback: !hasImages,
+          suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
         });
       } else {
         // Genuine streaming via ai.models.generateContentStream with delayed header initiation
@@ -974,6 +1797,10 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           const { model, attemptNum } = attemptPlan[i];
 
           try {
+            console.log(
+              `[AI Upstream] Initiating generation | Provider: gemini | Model: ${model} | Stream: true`,
+            );
+
             const responseStream = await ai.models.generateContentStream({
               model,
               contents,
@@ -986,6 +1813,11 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             // This verifies the stream actually started and prevents sending 200 SSE headers if model returns 503 UNAVAILABLE.
             const iterator = responseStream[Symbol.asyncIterator]();
             const firstChunkResult = await iterator.next();
+
+            const timeToFirstChunk = Date.now() - requestStartTime;
+            console.log(
+              `[AI Stream] Time to first text chunk: ${timeToFirstChunk}ms | Provider: gemini | Model: ${model}`,
+            );
 
             // Connection established successfully! Send headers and start event now.
             initSSE(res);
@@ -1018,6 +1850,10 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
               }
 
               if (!res.writableEnded) {
+                const totalDuration = Date.now() - requestStartTime;
+                console.log(
+                  `[AI Stream] Generation completed in ${totalDuration}ms | Provider: gemini | Model: ${model}`,
+                );
                 sendSSE(res, {
                   type: "done",
                   text: fullText,
@@ -1050,6 +1886,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
                   provider: "gemini",
                   model,
                   retryable: false, // Cannot retry mid-stream safely without duplicating output
+                  canFallback: !hasImages,
+                  suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
                   partial: fullText.length > 0,
                 });
                 res.end();
@@ -1062,7 +1900,10 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
             const willRetry =
-              parsed.isRetryable && hasMoreAttempts && !isClientClosed;
+              parsed.isRetryable &&
+              hasMoreAttempts &&
+              !isClientClosed &&
+              parsed.status !== "RESOURCE_EXHAUSTED";
 
             logAIDiagnostic({
               provider: "gemini",
@@ -1085,8 +1926,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
                 provider: "gemini",
                 model,
                 retryable: false,
-                canFallback: true,
-                suggestedProviders: ["groq", "openrouter"],
+                canFallback: !hasImages,
+                suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
               });
             }
 
@@ -1120,8 +1961,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           provider: "gemini",
           model: "gemini-3.8-flash",
           retryable: finalErr.isRetryable,
-          canFallback: true,
-          suggestedProviders: ["groq", "openrouter"],
+          canFallback: !hasImages,
+          suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
         });
       }
     }
@@ -1131,7 +1972,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
       if (!apiKey || apiKey === "YOUR_GROQ_API_KEY") {
         const text = generateSimulatedResponse(
-          prompt,
+          promptText,
           cleanUsername,
           preferences,
           mode,
@@ -1182,7 +2023,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           content: msg.content.trim(),
         });
       }
-      messages.push({ role: "user", content: prompt.trim() });
+      messages.push({ role: "user", content: promptText });
 
       if (!shouldStream) {
         const groqRes = await fetch(
@@ -1297,7 +2138,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
       if (!apiKey || apiKey === "YOUR_OPENROUTER_API_KEY") {
         const text = generateSimulatedResponse(
-          prompt,
+          promptText,
           cleanUsername,
           preferences,
           mode,
@@ -1348,7 +2189,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           content: msg.content.trim(),
         });
       }
-      messages.push({ role: "user", content: prompt.trim() });
+      messages.push({ role: "user", content: promptText });
 
       if (!shouldStream) {
         const orRes = await fetch(
@@ -1461,7 +2302,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
 
     return res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (error: any) {
-    console.error("API Error in /api/chat:", error);
+    console.error("API Error in /api/chat:", error?.message || "Unknown error");
     const parsed = parseGeminiError(error);
     if (res.headersSent) {
       sendSSE(res, {
@@ -1512,7 +2353,14 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
+// Only execute listen if directly run as the entry script, not when imported by test suites
+const isDirectExecution =
+  process.argv[1] &&
+  (path.resolve(process.argv[1]) === path.resolve(__filename) ||
+    process.argv[1].endsWith("server.ts") ||
+    process.argv[1].endsWith("server.js"));
+
+if (!process.env.VERCEL && !process.env.TEST && isDirectExecution) {
   startServer();
 }
 

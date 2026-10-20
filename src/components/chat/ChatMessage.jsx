@@ -19,7 +19,10 @@ import {
   Table as TableIcon,
   Code as CodeIcon,
   FileCode,
-  File as FileIcon
+  File as FileIcon,
+  Image as ImageIcon,
+  ZoomIn,
+  X
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -335,11 +338,15 @@ export default function ChatMessage({
       id: currentProviderId,
       name: currentProviderId.charAt(0).toUpperCase() + currentProviderId.slice(1)
     };
-  const fallbackProviders = PROVIDER_OPTIONS.filter((p) => p.id !== currentProviderId);
+  const hasFailedImages = Array.isArray(message.failedImages) && message.failedImages.length > 0;
+  const fallbackProviders = PROVIDER_OPTIONS.filter(
+    (p) => p.id !== currentProviderId && (!hasFailedImages || p.id === 'gemini')
+  );
 
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
   const [draftContent, setDraftContent] = useState(message?.content || '');
+  const [previewImage, setPreviewImage] = useState(null);
   const editInputRef = useRef(null);
 
   const markdownComponents = useMemo(
@@ -353,6 +360,19 @@ export default function ChatMessage({
       setDraftContent(message?.content || '');
     }
   }, [isEditing, message?.content]);
+
+  // Handle Escape key to close image lightbox modal
+  useEffect(() => {
+    if (!previewImage) return undefined;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setPreviewImage(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewImage]);
 
   // Focus and auto-size textarea when edit mode is entered
   useEffect(() => {
@@ -593,11 +613,72 @@ export default function ChatMessage({
                 </div>
               </div>
             ) : (
-              /* Render user messages safely as plain text with attached documents chips */
+              /* Render user messages safely as plain text with attached documents and images */
               <div className="user-message-body">
                 {Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                  <div className="message-attachments-container" role="group" aria-label="Attached documents">
+                  <div className="message-attachments-container" role="group" aria-label="Attached files">
                     {message.attachments.map((att) => {
+                      const isImg =
+                        att.category === 'image' ||
+                        Boolean(att.previewUrl) ||
+                        Boolean(att.mimeType?.startsWith('image/')) ||
+                        Boolean(att.type?.startsWith('image/'));
+
+                      if (isImg) {
+                        const formatTag = (att.type || att.mimeType || 'IMAGE')
+                          .replace(/^image\//i, '')
+                          .toUpperCase();
+
+                        const dimText = att.width && att.height ? `${att.width}×${att.height}` : null;
+
+                        return (
+                          <div
+                            key={att.id || att.name}
+                            className="message-image-card"
+                            title={`${att.name} (${formatFileSize(att.size)})`}
+                          >
+                            {att.previewUrl ? (
+                              <div
+                                className="message-image-thumb-container"
+                                onClick={() => setPreviewImage(att)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    setPreviewImage(att);
+                                  }
+                                }}
+                                aria-label={`View full image: ${att.name}`}
+                              >
+                                <img
+                                  src={att.previewUrl}
+                                  alt={att.name}
+                                  className="message-image-thumb"
+                                  loading="lazy"
+                                />
+                                <div className="message-image-overlay-action" aria-hidden="true">
+                                  <ZoomIn size={14} />
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="message-image-fallback-icon" aria-hidden="true">
+                                <ImageIcon size={20} className="text-violet-400" />
+                              </div>
+                            )}
+
+                            <div className="message-image-info">
+                              <span className="msg-att-name" title={att.name}>{att.name}</span>
+                              <span className="msg-att-meta">
+                                {formatFileSize(att.size)}
+                                {dimText && ` • ${dimText}`}
+                                {` • ${formatTag}`}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      }
+
                       const meta = att.pageCount
                         ? `${formatFileSize(att.size)} • ${att.pageCount} p.`
                         : att.slideCount
@@ -625,6 +706,50 @@ export default function ChatMessage({
                   </div>
                 )}
                 <p className="user-text-content">{message.content || ''}</p>
+
+                {/* Lightbox Image Preview Modal */}
+                {previewImage && (
+                  <div
+                    className="image-lightbox-overlay"
+                    onClick={() => setPreviewImage(null)}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={`Preview ${previewImage.name}`}
+                  >
+                    <div
+                      className="image-lightbox-content"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="image-lightbox-header">
+                        <div className="image-lightbox-title-group">
+                          <ImageIcon size={16} className="text-violet-400" />
+                          <span className="image-lightbox-filename">{previewImage.name}</span>
+                          <span className="image-lightbox-meta">
+                            {formatFileSize(previewImage.size)}
+                            {previewImage.width && previewImage.height ? ` • ${previewImage.width}×${previewImage.height}` : ''}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className="image-lightbox-close"
+                          onClick={() => setPreviewImage(null)}
+                          aria-label="Close image preview"
+                          title="Close (Esc)"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+
+                      <div className="image-lightbox-body">
+                        <img
+                          src={previewImage.previewUrl}
+                          alt={previewImage.name}
+                          className="image-lightbox-img"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )
           ) : isStreaming && !hasContent ? (
