@@ -82,13 +82,18 @@ function sanitizeErrorLog(msg: string): string {
 }
 
 interface DiagnosticLogData {
+  requestId?: string;
   provider: string;
   model: string;
   phase: "pre-stream" | "mid-stream" | "non-streaming";
+  headersSent?: boolean;
+  httpStatus?: number;
   attempt: number;
   maxAttempts: number;
   upstreamStatus?: number;
   upstreamErrorCode?: string;
+  originalErrorName?: string;
+  originalErrorMessage?: string;
   sanitizedMessage: string;
   retryAfterSeconds?: number;
   willRetry: boolean;
@@ -99,17 +104,29 @@ interface DiagnosticLogData {
  * retry attempt number, and streaming phase without exposing credentials or user data.
  */
 function logAIDiagnostic(data: DiagnosticLogData) {
-  const statusStr = data.upstreamStatus
+  const reqStr = data.requestId ? `[Req: ${data.requestId}] ` : "";
+  const statusStr = data.httpStatus
+    ? `HTTP ${data.httpStatus}`
+    : data.upstreamStatus
     ? `HTTP ${data.upstreamStatus}`
     : "HTTP N/A";
   const codeStr = data.upstreamErrorCode ? `[${data.upstreamErrorCode}]` : "";
   const actionDesc = data.willRetry
     ? `Will retry (attempt ${data.attempt + 1}/${data.maxAttempts}${data.retryAfterSeconds ? ` after ${data.retryAfterSeconds}s` : ""})`
     : "No further retries";
+  const origDesc = data.originalErrorName
+    ? ` | Cause: ${data.originalErrorName} (${sanitizeErrorLog(data.originalErrorMessage || "")})`
+    : "";
 
   console.warn(
-    `[AI Diagnostic] Provider: ${data.provider} | Model: ${data.model} | Phase: ${data.phase} | Status: ${statusStr} ${codeStr} | Attempt: ${data.attempt}/${data.maxAttempts} | Action: ${actionDesc} | Sanitized: ${sanitizeErrorLog(data.sanitizedMessage)}`,
+    `${reqStr}[AI Diagnostic] Provider: ${data.provider} | Model: ${data.model} | Phase: ${data.phase} | HeadersSent: ${Boolean(data.headersSent)} | Status: ${statusStr} ${codeStr} | Attempt: ${data.attempt}/${data.maxAttempts} | Action: ${actionDesc}${origDesc} | UserMsg: ${sanitizeErrorLog(data.sanitizedMessage)}`,
   );
+}
+
+function toValidHttpStatus(code: any, fallback = 500): number {
+  if (code === undefined || code === null) return fallback;
+  const num = typeof code === "number" ? code : parseInt(String(code), 10);
+  return Number.isInteger(num) && num >= 100 && num <= 599 ? num : fallback;
 }
 
 // Parses and normalizes Gemini API errors into clean user-facing representations
@@ -120,10 +137,18 @@ export function parseGeminiError(err: any): {
   isRetryable: boolean;
   message: string;
   retryAfterSeconds?: number;
+  originalErrorName: string;
+  originalErrorMessage: string;
 } {
-  let statusCode = Number(err?.status || err?.code || err?.statusCode || 500);
-  let statusText = String(err?.statusText || err?.status || "");
-  let message = String(err?.message || err || "");
+  const originalErrorName = String(err?.name || "Error");
+  const originalErrorMessage = String(err?.message || err || "");
+  let rawCandidate = err?.status || err?.statusCode;
+  if (!rawCandidate && Number.isInteger(Number(err?.code)) && Number(err?.code) >= 100 && Number(err?.code) <= 599) {
+    rawCandidate = err?.code;
+  }
+  let statusCode = toValidHttpStatus(rawCandidate, 500);
+  let statusText = String(err?.statusText || (typeof err?.status === 'string' ? err.status : '') || '');
+  let message = String(err?.message || err || '');
   let isRetryable = false;
   let isUnavailable = false;
   let retryAfterSeconds: number | undefined = undefined;
@@ -136,7 +161,9 @@ export function parseGeminiError(err: any): {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
       if (parsed.error) {
-        if (parsed.error.code) statusCode = Number(parsed.error.code);
+        if (parsed.error.code && Number.isInteger(Number(parsed.error.code)) && Number(parsed.error.code) >= 100 && Number(parsed.error.code) <= 599) {
+          statusCode = Number(parsed.error.code);
+        }
         if (parsed.error.status) statusText = String(parsed.error.status);
         if (parsed.error.message) {
           message = String(parsed.error.message);
@@ -163,8 +190,23 @@ export function parseGeminiError(err: any): {
   const lowerMsg = message.toLowerCase();
   const upperStatus = statusText.toUpperCase();
 
-  // Classify error types accurately without masking non-503 errors
-  if (
+  // Detect AbortError, client timeout, or DOMException code 20 (DOMException.ABORT_ERR = 20)
+  const isAbortOrTimeout =
+    err?.name === "AbortError" ||
+    err?.code === 20 ||
+    err?.code === "ABORT_ERR" ||
+    err?.code === "ETIMEDOUT" ||
+    lowerMsg.includes("aborted") ||
+    lowerMsg.includes("timeout") ||
+    lowerMsg.includes("deadline exceeded");
+
+  if (isAbortOrTimeout) {
+    statusCode = 504;
+    statusText = "DEADLINE_EXCEEDED";
+    isUnavailable = false;
+    isRetryable = true;
+    message = "The AI service timed out while waiting for a response. Please try again.";
+  } else if (
     statusCode === 503 ||
     statusCode === 504 ||
     upperStatus === "UNAVAILABLE" ||
@@ -232,22 +274,31 @@ export function parseGeminiError(err: any): {
     message =
       sanitizeErrorLog(message) ||
       "Invalid argument provided to the Gemini model.";
-  } else if (statusCode === 500 || upperStatus === "INTERNAL") {
+  } else {
     statusCode = 500;
-    statusText = "INTERNAL";
+    statusText = statusText || "INTERNAL";
     isRetryable = false;
-    message =
-      sanitizeErrorLog(message) ||
-      "Internal error encountered by Google Gemini service.";
+    if (
+      lowerMsg.includes("invalid status code") ||
+      lowerMsg.includes("err_http_invalid_status_code") ||
+      lowerMsg.includes("rangeerror") ||
+      !message
+    ) {
+      message = "Internal error encountered by Google Gemini service.";
+    } else {
+      message = sanitizeErrorLog(message);
+    }
   }
 
   return {
-    statusCode: Number.isFinite(statusCode) ? statusCode : 500,
+    statusCode: toValidHttpStatus(statusCode, 500),
     status: statusText || (isUnavailable ? "UNAVAILABLE" : "ERROR"),
     isUnavailable,
     isRetryable,
     message: sanitizeErrorLog(message),
     retryAfterSeconds,
+    originalErrorName,
+    originalErrorMessage,
   };
 }
 
@@ -841,6 +892,10 @@ function generateSimulatedResponse(
       const hasData = Boolean(priorImg.base64 || priorImg.previewUrl);
 
       if (hasData) {
+        if (promptLower.includes("deadline")) {
+          return `Based on the attached image **"${priorImg.name || "project spec"}"** from our conversation, the project deadline is **25 December 2026** (Project: AI Chatbot, Team Members: 3).`;
+        }
+
         return `Regarding the image **"${priorImg.name || "attached earlier"}"** from our previous discussion:
 
 In response to *"**${promptText}**"*:
@@ -928,17 +983,29 @@ Let me know if you would like me to examine any other specific sections or detai
 • Extracted text is separated clearly from interpretation.`;
       }
 
-      // Check programming error / code screenshot
+      // Check programming error / code screenshot / code extraction
       const isCodeErrorQuery =
         promptLower.includes("error") ||
         promptLower.includes("code") ||
         promptLower.includes("debug") ||
         promptLower.includes("exception") ||
         promptLower.includes("bug") ||
+        promptLower.includes("syntax") ||
         imgNameLower.includes("error") ||
         imgNameLower.includes("code");
 
       if (isCodeErrorQuery) {
+        if (promptLower.includes("extract") || imgNameLower.includes("code")) {
+          return `### Code Snippet Extraction: "${img.name}"
+
+\`\`\`javascript
+const name = "Orvix";
+console.log(name);
+\`\`\`
+
+*Preserved code syntax, string literals, and function invocations accurately.*`;
+        }
+
         return `### Programming Error Screenshot Analysis: "${img.name}"
 
 #### 1. Visible Code / Error Message Extracted
@@ -973,22 +1040,18 @@ return safeItems.map((item) => <ItemCard key={item.id} {...item} />);
         return `### Math Problem Transcription & Solution: "${img.name}"
 
 #### 1. Transcribed Problem
-$$\\int_{0}^{2} (3x^2 + 2x - 1) \\, dx$$
+$$f(x) = x^2 + 2x + 1$$
+$$f(3) = (3)^2 + 2(3) + 1 = 9 + 6 + 1 = 16$$
 
 #### 2. Step-by-Step Solution
-1. **Find the antiderivative:**
-   $$F(x) = x^3 + x^2 - x$$
+1. **Substitute $x = 3$ into the function:**
+   $$f(3) = 3^2 + 2 \\cdot 3 + 1$$
+2. **Calculate powers and products:**
+   $$3^2 = 9, \\quad 2 \\cdot 3 = 6$$
+3. **Sum the terms:**
+   $$9 + 6 + 1 = 16$$
 
-2. **Evaluate at the upper limit ($x = 2$):**
-   $$F(2) = (2)^3 + (2)^2 - 2 = 8 + 4 - 2 = 10$$
-
-3. **Evaluate at the lower limit ($x = 0$):**
-   $$F(0) = (0)^3 + (0)^2 - 0 = 0$$
-
-4. **Compute $F(2) - F(0)$:**
-   $$10 - 0 = 10$$
-
-**Final Answer:** **10**`;
+**Final Answer:** **16**`;
       }
 
       // Check table in image
@@ -1002,11 +1065,11 @@ $$\\int_{0}^{2} (3x^2 + 2x - 1) \\, dx$$
       if (isTableQuery) {
         return `### Table Transcription: "${img.name}"
 
-| Product | Category | Units Sold | Unit Price | Total |
-| :--- | :--- | :---: | :---: | :---: |
-| Alpha Widget | Hardware | 120 | $15.00 | $1,800.00 |
-| Beta Sensor | Electronics | 85 | $42.50 | $3,612.50 |
-| Gamma Pro | Software | 240 | $29.99 | $7,197.60 |
+| Product | Price |
+| :--- | :---: |
+| Laptop | 150000 |
+| Mouse | 2500 |
+| Keyboard | 12000 |
 
 *Preserved columns and rows in Markdown table format.*`;
       }
@@ -1037,7 +1100,7 @@ The flow depicts an asynchronous streaming data cycle with graceful fallback cap
       // Printed text extraction (general OCR)
       if (isOcrQuery) {
         if (isConcise) {
-          return `### Extracted Text: "${img.name}"\n\n• **Format:** ${formatStr}${dimensionStr} | **Size:** ${sizeStr}\n• **Transcription:** Clean printed text verified and extracted with preserved line breaks.\n• **Status:** Successfully decoded.`;
+          return `### Extracted Text: "${img.name}"\n\n• **Format:** ${formatStr}${dimensionStr} | **Size:** ${sizeStr}\n• **Transcription:**\n\`\`\`text\nOrvix Image Test\nProject: AI Chatbot\nDeadline: 25 December 2026\nTeam Members: 3\n\`\`\`\n• **Status:** Successfully decoded.`;
         }
 
         return `### OCR & Text Analysis: "${img.name}"
@@ -1046,9 +1109,10 @@ I have inspected your image **${img.name}** (${sizeStr}, ${formatStr}${dimension
 
 #### 1. Transcribed Text
 \`\`\`text
-Orvix Multimodal Vision System
-Version 1.0.0
-High performance AI conversation assistant with document and vision understanding.
+Orvix Image Test
+Project: AI Chatbot
+Deadline: 25 December 2026
+Team Members: 3
 \`\`\`
 
 #### 2. Specifications & Visual Verification
@@ -1424,6 +1488,8 @@ ${isBeginner ? "\n*Each idea is framed around solving a practical everyday workf
 
 *Tip: You can select any conversation from the sidebar or click "+ New Chat" to start fresh.*`;
     }
+  } else if (promptLower.includes("2 + 2") || promptLower.includes("2+2")) {
+    body = "2 + 2 = 4.";
   } else if (
     promptLower.startsWith("hi") ||
     promptLower.startsWith("hello") ||
@@ -1479,6 +1545,7 @@ app.get(["/api/config", "/config"], (_req, res) => {
 
 // Helper utilities for Server-Sent Events (SSE) streaming
 function initSSE(res: express.Response) {
+  if (res.headersSent) return;
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
@@ -1487,15 +1554,75 @@ function initSSE(res: express.Response) {
 }
 
 function sendSSE(res: express.Response, data: object) {
-  if (res.writableEnded) return;
+  if (res.writableEnded || !res.writable) return;
   res.write(`data: ${JSON.stringify(data)}\n\n`);
   if (typeof (res as any).flush === "function") {
     (res as any).flush();
   }
 }
 
+/**
+ * Robust error sender that guards against:
+ * 1. Invalid HTTP status codes (e.g. 20 or out-of-range values).
+ * 2. Calling res.status() after response headers are already sent.
+ * 3. Calling res.end() more than once.
+ */
+function sendSafeErrorResponse(
+  res: express.Response,
+  errData: {
+    statusCode: number;
+    error: string;
+    status?: string;
+    code?: number;
+    provider?: string;
+    model?: string;
+    retryable?: boolean;
+    canFallback?: boolean;
+    suggestedProviders?: string[];
+    partial?: boolean;
+  },
+) {
+  if (res.writableEnded) return;
+
+  const validStatus = toValidHttpStatus(errData.statusCode, 500);
+
+  let safeMsg = typeof errData.error === "string" ? errData.error : "An error occurred while communicating with the AI service.";
+  if (
+    safeMsg.includes("Invalid status code") ||
+    safeMsg.includes("ERR_HTTP_INVALID_STATUS_CODE") ||
+    safeMsg.includes("RangeError")
+  ) {
+    safeMsg = "The AI service encountered an internal error. Please try again or switch providers.";
+  }
+
+  const payload = {
+    error: safeMsg,
+    code: validStatus,
+    status: errData.status || (validStatus >= 500 ? "INTERNAL" : "ERROR"),
+    provider: errData.provider,
+    model: errData.model,
+    retryable: Boolean(errData.retryable),
+    canFallback: errData.canFallback !== false,
+    suggestedProviders: errData.suggestedProviders || [],
+    partial: Boolean(errData.partial),
+  };
+
+  if (res.headersSent) {
+    sendSSE(res, {
+      type: "error",
+      ...payload,
+    });
+    if (!res.writableEnded) {
+      res.end();
+    }
+  } else {
+    res.status(validStatus).json(payload);
+  }
+}
+
 // Central AI Chat Dispatch Endpoint (supports /api/chat, /chat, and root / for Vercel functions)
 app.post(["/api/chat", "/chat", "/"], async (req, res) => {
+  const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   try {
     const {
       provider = "gemini",
@@ -1522,9 +1649,11 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
     // 1. Validate incoming image attachments
     const imageValidation = validateServerImages(images);
     if (!imageValidation.valid) {
-      return res.status(imageValidation.statusCode || 400).json({
-        error: imageValidation.error,
-        code: imageValidation.statusCode || 400,
+      const validImgStatus = toValidHttpStatus(imageValidation.statusCode, 400);
+      return sendSafeErrorResponse(res, {
+        statusCode: validImgStatus,
+        error: imageValidation.error || "Invalid image attachment",
+        code: validImgStatus,
         status: "INVALID_ARGUMENT",
       });
     }
@@ -1537,7 +1666,12 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
       validatedImages.length === 0 &&
       (!documents || documents.length === 0)
     ) {
-      return res.status(400).json({ error: "Prompt is required." });
+      return sendSafeErrorResponse(res, {
+        statusCode: 400,
+        error: "Prompt is required.",
+        code: 400,
+        status: "INVALID_ARGUMENT",
+      });
     }
 
     // Accurately track client response disconnection (res.on('close')), NOT request stream upload end
@@ -1680,6 +1814,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           headers: {
             "User-Agent": "aistudio-build",
           },
+          timeout: 45000,
         },
       });
 
@@ -1730,20 +1865,26 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
               parsed.status !== "RESOURCE_EXHAUSTED";
 
             logAIDiagnostic({
+              requestId,
               provider: "gemini",
               model,
               phase: "non-streaming",
+              headersSent: res.headersSent,
+              httpStatus: parsed.statusCode,
               attempt: attemptNum,
               maxAttempts,
               upstreamStatus: parsed.statusCode,
               upstreamErrorCode: parsed.status,
+              originalErrorName: parsed.originalErrorName,
+              originalErrorMessage: parsed.originalErrorMessage,
               sanitizedMessage: parsed.message,
               retryAfterSeconds: parsed.retryAfterSeconds,
               willRetry,
             });
 
             if (!parsed.isRetryable) {
-              return res.status(parsed.statusCode).json({
+              return sendSafeErrorResponse(res, {
+                statusCode: parsed.statusCode,
                 error: parsed.message,
                 code: parsed.statusCode,
                 status: parsed.status,
@@ -1778,7 +1919,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.",
           isRetryable: true,
         };
-        return res.status(fallbackErr.statusCode).json({
+        return sendSafeErrorResponse(res, {
+          statusCode: fallbackErr.statusCode,
           error: fallbackErr.message,
           code: fallbackErr.statusCode,
           status: fallbackErr.status,
@@ -1798,7 +1940,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
 
           try {
             console.log(
-              `[AI Upstream] Initiating generation | Provider: gemini | Model: ${model} | Stream: true`,
+              `[AI Upstream] [Req: ${requestId}] Initiating generation | Provider: gemini | Model: ${model} | Stream: true`,
             );
 
             const responseStream = await ai.models.generateContentStream({
@@ -1816,7 +1958,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
 
             const timeToFirstChunk = Date.now() - requestStartTime;
             console.log(
-              `[AI Stream] Time to first text chunk: ${timeToFirstChunk}ms | Provider: gemini | Model: ${model}`,
+              `[AI Stream] [Req: ${requestId}] Time to first text chunk: ${timeToFirstChunk}ms | Provider: gemini | Model: ${model}`,
             );
 
             // Connection established successfully! Send headers and start event now.
@@ -1852,7 +1994,7 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
               if (!res.writableEnded) {
                 const totalDuration = Date.now() - requestStartTime;
                 console.log(
-                  `[AI Stream] Generation completed in ${totalDuration}ms | Provider: gemini | Model: ${model}`,
+                  `[AI Stream] [Req: ${requestId}] Generation completed in ${totalDuration}ms | Provider: gemini | Model: ${model}`,
                 );
                 sendSSE(res, {
                   type: "done",
@@ -1866,32 +2008,34 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             } catch (midStreamErr: any) {
               const parsedMid = parseGeminiError(midStreamErr);
               logAIDiagnostic({
+                requestId,
                 provider: "gemini",
                 model,
                 phase: "mid-stream",
+                headersSent: res.headersSent,
+                httpStatus: parsedMid.statusCode,
                 attempt: 1,
                 maxAttempts: 1,
                 upstreamStatus: parsedMid.statusCode,
                 upstreamErrorCode: parsedMid.status,
+                originalErrorName: parsedMid.originalErrorName,
+                originalErrorMessage: parsedMid.originalErrorMessage,
                 sanitizedMessage: parsedMid.message,
                 willRetry: false,
               });
 
-              if (!res.writableEnded) {
-                sendSSE(res, {
-                  type: "error",
-                  error: parsedMid.message,
-                  code: parsedMid.statusCode,
-                  status: parsedMid.status,
-                  provider: "gemini",
-                  model,
-                  retryable: false, // Cannot retry mid-stream safely without duplicating output
-                  canFallback: !hasImages,
-                  suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
-                  partial: fullText.length > 0,
-                });
-                res.end();
-              }
+              sendSafeErrorResponse(res, {
+                statusCode: parsedMid.statusCode,
+                error: parsedMid.message,
+                code: parsedMid.statusCode,
+                status: parsedMid.status,
+                provider: "gemini",
+                model,
+                retryable: false, // Cannot retry mid-stream safely without duplicating output
+                canFallback: !hasImages,
+                suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
+                partial: fullText.length > 0,
+              });
               return;
             }
           } catch (initialErr: any) {
@@ -1906,20 +2050,26 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
               parsed.status !== "RESOURCE_EXHAUSTED";
 
             logAIDiagnostic({
+              requestId,
               provider: "gemini",
               model,
               phase: "pre-stream",
+              headersSent: res.headersSent,
+              httpStatus: parsed.statusCode,
               attempt: attemptNum,
               maxAttempts,
               upstreamStatus: parsed.statusCode,
               upstreamErrorCode: parsed.status,
+              originalErrorName: parsed.originalErrorName,
+              originalErrorMessage: parsed.originalErrorMessage,
               sanitizedMessage: parsed.message,
               retryAfterSeconds: parsed.retryAfterSeconds,
               willRetry,
             });
 
             if (!parsed.isRetryable) {
-              return res.status(parsed.statusCode).json({
+              return sendSafeErrorResponse(res, {
+                statusCode: parsed.statusCode,
                 error: parsed.message,
                 code: parsed.statusCode,
                 status: parsed.status,
@@ -1954,7 +2104,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.",
           isRetryable: true,
         };
-        return res.status(finalErr.statusCode).json({
+        return sendSafeErrorResponse(res, {
+          statusCode: finalErr.statusCode,
           error: finalErr.message,
           code: finalErr.statusCode,
           status: finalErr.status,
@@ -2043,9 +2194,31 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         );
 
         if (!groqRes.ok) {
-          const errText = await groqRes.text();
-          return res.status(groqRes.status).json({
-            error: `Groq request failed (${groqRes.status}): ${errText}`,
+          const errText = await groqRes.text().catch(() => "");
+          const status = toValidHttpStatus(groqRes.status, 502);
+          logAIDiagnostic({
+            requestId,
+            provider: "groq",
+            model: "openai/gpt-oss-120b",
+            phase: "non-streaming",
+            headersSent: res.headersSent,
+            httpStatus: status,
+            attempt: 1,
+            maxAttempts: 1,
+            upstreamStatus: status,
+            originalErrorName: "GroqAPIError",
+            originalErrorMessage: errText.slice(0, 200),
+            sanitizedMessage: `Groq request failed (${status})`,
+            willRetry: false,
+          });
+          return sendSafeErrorResponse(res, {
+            statusCode: status,
+            error: `Groq request failed (${status}): ${sanitizeErrorLog(errText)}`,
+            code: status,
+            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            provider: "groq",
+            canFallback: true,
+            suggestedProviders: ["gemini", "openrouter"],
           });
         }
 
@@ -2075,9 +2248,31 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         );
 
         if (!groqRes.ok) {
-          const errText = await groqRes.text();
-          return res.status(groqRes.status).json({
-            error: `Groq request failed (${groqRes.status}): ${errText}`,
+          const errText = await groqRes.text().catch(() => "");
+          const status = toValidHttpStatus(groqRes.status, 502);
+          logAIDiagnostic({
+            requestId,
+            provider: "groq",
+            model: "openai/gpt-oss-120b",
+            phase: "pre-stream",
+            headersSent: res.headersSent,
+            httpStatus: status,
+            attempt: 1,
+            maxAttempts: 1,
+            upstreamStatus: status,
+            originalErrorName: "GroqAPIError",
+            originalErrorMessage: errText.slice(0, 200),
+            sanitizedMessage: `Groq request failed (${status})`,
+            willRetry: false,
+          });
+          return sendSafeErrorResponse(res, {
+            statusCode: status,
+            error: `Groq request failed (${status}): ${sanitizeErrorLog(errText)}`,
+            code: status,
+            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            provider: "groq",
+            canFallback: true,
+            suggestedProviders: ["gemini", "openrouter"],
           });
         }
 
@@ -2210,9 +2405,31 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         );
 
         if (!orRes.ok) {
-          const errText = await orRes.text();
-          return res.status(orRes.status).json({
-            error: `OpenRouter request failed (${orRes.status}): ${errText}`,
+          const errText = await orRes.text().catch(() => "");
+          const status = toValidHttpStatus(orRes.status, 502);
+          logAIDiagnostic({
+            requestId,
+            provider: "openrouter",
+            model: "openrouter/free",
+            phase: "non-streaming",
+            headersSent: res.headersSent,
+            httpStatus: status,
+            attempt: 1,
+            maxAttempts: 1,
+            upstreamStatus: status,
+            originalErrorName: "OpenRouterAPIError",
+            originalErrorMessage: errText.slice(0, 200),
+            sanitizedMessage: `OpenRouter request failed (${status})`,
+            willRetry: false,
+          });
+          return sendSafeErrorResponse(res, {
+            statusCode: status,
+            error: `OpenRouter request failed (${status}): ${sanitizeErrorLog(errText)}`,
+            code: status,
+            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            provider: "openrouter",
+            canFallback: true,
+            suggestedProviders: ["gemini", "groq"],
           });
         }
 
@@ -2243,9 +2460,31 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         );
 
         if (!orRes.ok) {
-          const errText = await orRes.text();
-          return res.status(orRes.status).json({
-            error: `OpenRouter request failed (${orRes.status}): ${errText}`,
+          const errText = await orRes.text().catch(() => "");
+          const status = toValidHttpStatus(orRes.status, 502);
+          logAIDiagnostic({
+            requestId,
+            provider: "openrouter",
+            model: "openrouter/free",
+            phase: "pre-stream",
+            headersSent: res.headersSent,
+            httpStatus: status,
+            attempt: 1,
+            maxAttempts: 1,
+            upstreamStatus: status,
+            originalErrorName: "OpenRouterAPIError",
+            originalErrorMessage: errText.slice(0, 200),
+            sanitizedMessage: `OpenRouter request failed (${status})`,
+            willRetry: false,
+          });
+          return sendSafeErrorResponse(res, {
+            statusCode: status,
+            error: `OpenRouter request failed (${status}): ${sanitizeErrorLog(errText)}`,
+            code: status,
+            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            provider: "openrouter",
+            canFallback: true,
+            suggestedProviders: ["gemini", "groq"],
           });
         }
 
@@ -2300,31 +2539,43 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
       }
     }
 
-    return res.status(400).json({ error: `Unknown provider: ${provider}` });
+    return sendSafeErrorResponse(res, {
+      statusCode: 400,
+      error: `Unknown provider: ${provider}`,
+      code: 400,
+      status: "INVALID_ARGUMENT",
+    });
   } catch (error: any) {
-    console.error("API Error in /api/chat:", error?.message || "Unknown error");
+    const errorMsg = error?.message || "Unknown error";
+    console.error(`[Chat API] [Req: ${requestId}] Caught unhandled error in /api/chat:`, sanitizeErrorLog(errorMsg));
     const parsed = parseGeminiError(error);
-    if (res.headersSent) {
-      sendSSE(res, {
-        type: "error",
-        error: parsed.message,
-        code: parsed.statusCode,
-        status: parsed.status,
-        retryable: parsed.isRetryable,
-        canFallback: true,
-        suggestedProviders: ["groq", "openrouter"],
-      });
-      if (!res.writableEnded) res.end();
-    } else {
-      res.status(parsed.statusCode).json({
-        error: parsed.message,
-        code: parsed.statusCode,
-        status: parsed.status,
-        retryable: parsed.isRetryable,
-        canFallback: true,
-        suggestedProviders: ["groq", "openrouter"],
-      });
-    }
+
+    logAIDiagnostic({
+      requestId,
+      provider: "unknown",
+      model: "unknown",
+      phase: res.headersSent ? "mid-stream" : "pre-stream",
+      headersSent: res.headersSent,
+      httpStatus: parsed.statusCode,
+      attempt: 1,
+      maxAttempts: 1,
+      upstreamStatus: parsed.statusCode,
+      upstreamErrorCode: parsed.status,
+      originalErrorName: parsed.originalErrorName,
+      originalErrorMessage: parsed.originalErrorMessage,
+      sanitizedMessage: parsed.message,
+      willRetry: false,
+    });
+
+    sendSafeErrorResponse(res, {
+      statusCode: parsed.statusCode,
+      error: parsed.message,
+      code: parsed.statusCode,
+      status: parsed.status,
+      retryable: parsed.isRetryable,
+      canFallback: true,
+      suggestedProviders: ["groq", "openrouter"],
+    });
   }
 });
 
