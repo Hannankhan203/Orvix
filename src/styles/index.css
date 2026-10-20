@@ -2452,12 +2452,61 @@ html, body {
 }
 
 /* Tables */
+.table-block-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  margin: 12px 0;
+}
+
+.table-copy-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(20, 27, 36, 0.85);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.table-copy-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-medium);
+  color: var(--text-primary);
+  transform: translateY(-0.5px);
+}
+
+.table-copy-btn.copied {
+  background-color: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #34d399;
+}
+
+:root[data-theme="light"] .table-copy-btn,
+html[data-theme="light"] .table-copy-btn,
+body.theme-light .table-copy-btn {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
 .table-responsive-wrapper {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  margin: 12px 0;
+  margin: 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background-color: var(--bg-card);
@@ -5532,5 +5581,3 @@ body.theme-light .listening-text,
   color: #6d28d9;
   border-color: #7c3aed;
 }
-
-

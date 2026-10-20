@@ -20,6 +20,12 @@ import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
+import {
+  tableElementToAlignedPlainText,
+  formatMarkdownTablesInText,
+  copyTextWithHtml,
+  escapeHtml
+} from '../../utils/tableAlignment.js';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -31,6 +37,85 @@ function extractNodeText(node) {
   if (Array.isArray(node)) return node.map(extractNodeText).join('');
   if (node.props?.children) return extractNodeText(node.props.children);
   return '';
+}
+
+/**
+ * Interactive table wrapper component with alignment-preserving copy support.
+ * Renders the table neatly and provides both a dedicated "Copy table" action
+ * and automatic clipboard intercept on user table text selection.
+ */
+function MarkdownTableBlock({ children, ...props }) {
+  const [copied, setCopied] = useState(false);
+  const tableRef = useRef(null);
+  const wrapperRef = useRef(null);
+
+  const handleCopyTable = async (e) => {
+    e?.stopPropagation();
+    if (!tableRef.current) return;
+
+    const alignedText = tableElementToAlignedPlainText(tableRef.current);
+    if (!alignedText) return;
+
+    const success = await copyTextWithHtml(alignedText);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleNativeCopy = (e) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+
+    if (
+      tableRef.current &&
+      (tableRef.current.contains(selection.anchorNode) || tableRef.current.contains(selection.focusNode))
+    ) {
+      const alignedText = tableElementToAlignedPlainText(tableRef.current);
+      if (alignedText && e.clipboardData) {
+        e.clipboardData.setData('text/plain', alignedText);
+        e.clipboardData.setData(
+          'text/html',
+          `<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre; font-size: 13px; line-height: 1.5; margin: 0; padding: 0;">${escapeHtml(alignedText)}</pre>`
+        );
+        e.preventDefault();
+      }
+    }
+  };
+
+  return (
+    <div
+      className="table-block-wrapper"
+      ref={wrapperRef}
+      onCopy={handleNativeCopy}
+    >
+      <button
+        type="button"
+        className={`table-copy-btn ${copied ? 'copied' : ''}`}
+        onClick={handleCopyTable}
+        title="Copy table with preserved alignment"
+        aria-label="Copy table"
+      >
+        {copied ? (
+          <>
+            <Check size={12} className="copy-icon success" />
+            <span>Copied!</span>
+          </>
+        ) : (
+          <>
+            <Copy size={12} className="copy-icon" />
+            <span>Copy table</span>
+          </>
+        )}
+      </button>
+
+      <div className="table-responsive-wrapper">
+        <table className="markdown-table" ref={tableRef} {...props}>
+          {children}
+        </table>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -88,13 +173,9 @@ function createMarkdownComponents(isStreaming = false) {
       );
     },
 
-    // Responsive scrollable tables
+    // Responsive scrollable tables with alignment-preserving copy
     table: ({ children, ...props }) => (
-      <div className="table-responsive-wrapper">
-        <table className="markdown-table" {...props}>
-          {children}
-        </table>
-      </div>
+      <MarkdownTableBlock {...props}>{children}</MarkdownTableBlock>
     ),
     thead: ({ children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
     tbody: ({ children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
@@ -304,8 +385,11 @@ export default function ChatMessage({
     if (!message?.content) return;
 
     try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(message.content);
+      // Preserve table alignment in copied response text
+      const contentToCopy = formatMarkdownTablesInText(message.content);
+      const success = await copyTextWithHtml(contentToCopy);
+
+      if (success) {
         setCopied(true);
         setCopyFeedback('Copied');
         setTimeout(() => {
@@ -314,34 +398,8 @@ export default function ChatMessage({
         }, 2000);
         return;
       }
-      throw new Error('Clipboard API unavailable');
+      throw new Error('Clipboard copy failed');
     } catch (err) {
-      // Graceful fallback for restricted contexts (e.g. iframes / permissions)
-      try {
-        const textarea = document.createElement('textarea');
-        textarea.value = message.content;
-        textarea.style.position = 'fixed';
-        textarea.style.left = '-9999px';
-        textarea.style.top = '0';
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        const success = document.execCommand('copy');
-        document.body.removeChild(textarea);
-
-        if (success) {
-          setCopied(true);
-          setCopyFeedback('Copied');
-          setTimeout(() => {
-            setCopied(false);
-            setCopyFeedback('Copy');
-          }, 2000);
-          return;
-        }
-      } catch (fallbackErr) {
-        console.warn('Fallback copy failed:', fallbackErr);
-      }
-
       console.warn('Clipboard write failed:', err);
       setCopyFeedback('Failed to copy');
       setTimeout(() => setCopyFeedback('Copy'), 2500);
