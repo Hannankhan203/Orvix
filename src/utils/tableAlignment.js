@@ -22,11 +22,12 @@ export function cleanCellTextForPlainText(text) {
   // 1. Flatten <br> or <br/> or <br /> to a single space
   str = str.replace(/<br\s*\/?>/gi, ' ');
 
-  // 2. Replace non-breaking spaces and tabs
-  str = str.replace(/&nbsp;/gi, ' ').replace(/\u00A0/g, ' ').replace(/\t/g, ' ');
+  // 2. Replace non-breaking spaces, zero-width spaces, and tabs
+  str = str.replace(/&nbsp;/gi, ' ').replace(/[\u00A0\u200B\uFEFF]/g, ' ').replace(/\t/g, ' ');
 
   // 3. Strip HTML tags like <span>, <strong>, <em>, <code>, <small>, <b>, <i>, etc.
-  str = str.replace(/<[^>]+>/g, '');
+  // Use HTML tag name start so mathematical comparisons (e.g. `< 0.2`) are strictly preserved
+  str = str.replace(/<[a-zA-Z\/][^>]*>/g, '');
 
   // 4. Strip markdown images: ![alt](url) -> alt
   str = str.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
@@ -195,11 +196,11 @@ export function formatMatrixToAlignedTable(matrix) {
       if (c < numCols - 1) {
         rowText += cellText.padEnd(columnWidths[c], ' ') + separator;
       } else {
-        // Last column: append directly without trailing spaces
-        rowText += cellText;
+        // Last column: append trimmed value without trailing spaces
+        rowText += cellText.trimEnd();
       }
     }
-    return rowText.trimEnd();
+    return rowText;
   });
 
   return outputLines.join('\n');
