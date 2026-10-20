@@ -12,23 +12,18 @@ import {
   ChevronDown,
   Sparkles,
   Loader2,
-  Globe,
-  Paperclip,
-  FileUp,
-  Image as ImageIcon
+  Globe
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
-import AttachmentManager from './AttachmentManager.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
 
 /**
  * ChatArea Component
  * Coordinates the scrollable message stream / welcome state,
- * error retries, and the fixed bottom message composer with professional voice dictation,
- * document attachments, and image uploads.
+ * error retries, and the fixed bottom message composer with professional voice dictation.
  *
  * @param {Object} props
  * @param {string|null} [props.activeChatId=null]
@@ -45,14 +40,6 @@ import { sendAIMessage } from '../../services/aiRouter.js';
  * @param {(mode: string) => void} [props.onSelectMode]
  * @param {string|null} [props.modeChangeNotice=null]
  * @param {() => void} [props.onDismissModeNotice]
- * @param {Array<Object>} [props.attachments=[]]
- * @param {(files: File[]) => void} [props.onAttachFiles]
- * @param {(files: File[]) => void} [props.onAttachImages]
- * @param {(id: string) => void} [props.onRemoveAttachment]
- * @param {string|null} [props.attachmentError=null]
- * @param {() => void} [props.onClearAttachmentError]
- * @param {boolean} [props.isExtractingAttachments=false]
- * @param {boolean} [props.isProcessingImages=false]
  */
 export default function ChatArea({
   activeChatId = null,
@@ -80,87 +67,11 @@ export default function ChatArea({
   activeMode = 'general',
   onSelectMode,
   modeChangeNotice = null,
-  onDismissModeNotice,
-  attachments = [],
-  onAttachFiles,
-  onAttachImages,
-  onRemoveAttachment,
-  attachmentError = null,
-  onClearAttachmentError,
-  isExtractingAttachments = false,
-  isProcessingImages = false
+  onDismissModeNotice
 }) {
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
   const scrollViewportRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const imageInputRef = useRef(null);
-
-  // Drag and drop attachment state
-  const [isDraggingOver, setIsDraggingOver] = useState(false);
-
-  const handleFileInputChange = (e) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length > 0 && onAttachFiles) {
-      onAttachFiles(files);
-    }
-    if (e.target) {
-      e.target.value = '';
-    }
-  };
-
-  const handleImageInputChange = (e) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length > 0 && onAttachImages) {
-      onAttachImages(files);
-    }
-    if (e.target) {
-      e.target.value = '';
-    }
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!isDraggingOver) setIsDraggingOver(true);
-  };
-
-  const handleDragLeave = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.currentTarget.contains(e.relatedTarget)) return;
-    setIsDraggingOver(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(false);
-    const files = Array.from(e.dataTransfer?.files || []);
-    if (!files.length) return;
-
-    const imageFiles = [];
-    const docFiles = [];
-
-    for (const file of files) {
-      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-      if (
-        ['.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext) ||
-        file.type.startsWith('image/')
-      ) {
-        imageFiles.push(file);
-      } else {
-        docFiles.push(file);
-      }
-    }
-
-    if (imageFiles.length > 0 && onAttachImages) {
-      onAttachImages(imageFiles);
-    }
-    if (docFiles.length > 0 && onAttachFiles) {
-      onAttachFiles(docFiles);
-    }
-  };
 
   // Floating scroll-to-bottom button visibility
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -223,19 +134,6 @@ export default function ChatArea({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [messages.length]);
-
-  // Prevent browser from navigating away if files are dropped outside the composer
-  useEffect(() => {
-    const preventFileNavigation = (e) => {
-      e.preventDefault();
-    };
-    window.addEventListener('dragover', preventFileNavigation);
-    window.addEventListener('drop', preventFileNavigation);
-    return () => {
-      window.removeEventListener('dragover', preventFileNavigation);
-      window.removeEventListener('drop', preventFileNavigation);
-    };
-  }, []);
 
   // Handle conversation switching / opening:
   // Starts each opened conversation at the top (scrollTop = 0)
@@ -418,7 +316,7 @@ export default function ChatArea({
       }
       clearLastSessionTranscript();
       setSuggestedRefinement(null);
-      if (onSubmit && hasContent && !isLoading && !isExtractingAttachments && !isProcessingImages) {
+      if (onSubmit && inputValue.trim() && !isLoading) {
         onSubmit();
       }
     }
@@ -431,7 +329,7 @@ export default function ChatArea({
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
-    if (onSubmit && hasContent && !isLoading && !isExtractingAttachments && !isProcessingImages) {
+    if (onSubmit && inputValue.trim() && !isLoading) {
       onSubmit();
     }
   };
@@ -485,12 +383,7 @@ Transcript:
     clearLastSessionTranscript();
   };
 
-  const hasReadyAttachments = attachments.some(
-    (a) =>
-      a.status === 'ready' ||
-      (!a.status && (a.text || a.category === 'image' || a.previewUrl))
-  );
-  const hasContent = inputValue.trim().length > 0 || hasReadyAttachments;
+  const hasContent = inputValue.trim().length > 0;
   const hasMessages = messages.length > 0;
   // Dictation dock is only active when actively requesting, listening, paused, or finalizing
   const isRecordingActive =
@@ -542,21 +435,7 @@ Transcript:
 
       {/* Message Composer Dock */}
       <div className="chat-composer-dock">
-        <div
-          className={`chat-composer-inner ${isDraggingOver ? 'is-dragging' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          {/* Drag-and-drop indicator overlay */}
-          {isDraggingOver && (
-            <div className="composer-drop-overlay" aria-hidden="true">
-              <div className="drop-overlay-label">
-                <FileUp size={16} />
-                <span>Drop images (.png, .jpg, .webp) or documents (.pdf, .docx, .txt, etc.)</span>
-              </div>
-            </div>
-          )}
+        <div className="chat-composer-inner">
           {/* ChatGPT-style Floating Scroll-to-Bottom Button */}
           {showScrollBottom && (
             <div className="scroll-to-bottom-dock">
@@ -852,14 +731,6 @@ Transcript:
             </div>
           )}
 
-          {/* Attached Documents Preview Dock */}
-          <AttachmentManager
-            attachments={attachments}
-            onRemove={onRemoveAttachment}
-            attachmentError={attachmentError}
-            onClearError={onClearAttachmentError}
-          />
-
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
             <textarea
               ref={textareaRef}
@@ -889,68 +760,6 @@ Transcript:
             />
 
             <div className="composer-actions">
-              {/* Image Attachment Hidden File Input */}
-              <input
-                type="file"
-                ref={imageInputRef}
-                onChange={handleImageInputChange}
-                multiple
-                accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
-                style={{ display: 'none' }}
-                tabIndex={-1}
-                aria-hidden="true"
-              />
-
-              {/* Image Attachment Button */}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-round"
-                disabled={isLoading || isProcessingImages}
-                onClick={() => imageInputRef.current?.click()}
-                title="Attach images (.png, .jpg, .webp - up to 5 MB each)"
-                ariaLabel="Attach images"
-                className="composer-image-btn"
-                icon={
-                  isProcessingImages ? (
-                    <Loader2 size={16} className="spin-icon" />
-                  ) : (
-                    <ImageIcon size={18} />
-                  )
-                }
-              />
-
-              {/* Document Attachment Hidden File Input */}
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileInputChange}
-                multiple
-                accept=".pdf,.docx,.pptx,.txt,.md,.csv,.json,text/plain,text/markdown,text/csv,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                style={{ display: 'none' }}
-                tabIndex={-1}
-                aria-hidden="true"
-              />
-
-              {/* Document Attachment Button */}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-round"
-                disabled={isLoading || isExtractingAttachments}
-                onClick={() => fileInputRef.current?.click()}
-                title="Attach documents (.pdf, .docx, .pptx, .txt, .md, .csv, .json)"
-                ariaLabel="Attach documents"
-                className="composer-attach-btn"
-                icon={
-                  isExtractingAttachments ? (
-                    <Loader2 size={16} className="spin-icon" />
-                  ) : (
-                    <Paperclip size={18} />
-                  )
-                }
-              />
-
               {/* Voice Dictation Microphone Button */}
               <Button
                 type="button"
@@ -1011,7 +820,7 @@ Transcript:
                   type="submit"
                   variant={hasContent ? 'primary' : 'ghost'}
                   size="icon-round"
-                  disabled={!hasContent || isLoading || isExtractingAttachments || isProcessingImages}
+                  disabled={!hasContent}
                   title={enterToSend ? 'Send message (Enter)' : 'Send message (⌘/Ctrl+Enter)'}
                   ariaLabel="Send message"
                   className="composer-send-btn"

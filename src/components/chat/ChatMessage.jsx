@@ -13,50 +13,13 @@ import {
   VolumeX,
   Cpu,
   Pause,
-  Play,
-  FileText,
-  Presentation,
-  Table as TableIcon,
-  Code as CodeIcon,
-  FileCode,
-  File as FileIcon,
-  Image as ImageIcon,
-  ZoomIn,
-  X
+  Play
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
-import {
-  tableElementToAlignedPlainText,
-  formatMarkdownTablesInText,
-  copyTextWithHtml,
-  escapeHtml
-} from '../../utils/tableAlignment.js';
-import { formatFileSize, getFileExtension } from '../../utils/documentExtractor.js';
-
-function getMessageDocIcon(filename = '') {
-  const ext = getFileExtension(filename);
-  switch (ext) {
-    case '.pdf':
-      return <FileText size={14} className="doc-icon-svg pdf-color" />;
-    case '.docx':
-      return <FileText size={14} className="doc-icon-svg docx-color" />;
-    case '.pptx':
-      return <Presentation size={14} className="doc-icon-svg pptx-color" />;
-    case '.csv':
-      return <TableIcon size={14} className="doc-icon-svg csv-color" />;
-    case '.json':
-      return <CodeIcon size={14} className="doc-icon-svg json-color" />;
-    case '.md':
-      return <FileCode size={14} className="doc-icon-svg md-color" />;
-    case '.txt':
-    default:
-      return <FileIcon size={14} className="doc-icon-svg txt-color" />;
-  }
-}
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -68,85 +31,6 @@ function extractNodeText(node) {
   if (Array.isArray(node)) return node.map(extractNodeText).join('');
   if (node.props?.children) return extractNodeText(node.props.children);
   return '';
-}
-
-/**
- * Interactive table wrapper component with alignment-preserving copy support.
- * Renders the table neatly and provides both a dedicated "Copy table" action
- * and automatic clipboard intercept on user table text selection.
- */
-function MarkdownTableBlock({ children, ...props }) {
-  const [copied, setCopied] = useState(false);
-  const tableRef = useRef(null);
-  const wrapperRef = useRef(null);
-
-  const handleCopyTable = async (e) => {
-    e?.stopPropagation();
-    if (!tableRef.current) return;
-
-    const alignedText = tableElementToAlignedPlainText(tableRef.current);
-    if (!alignedText) return;
-
-    const success = await copyTextWithHtml(alignedText);
-    if (success) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const handleNativeCopy = (e) => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) return;
-
-    if (
-      tableRef.current &&
-      (tableRef.current.contains(selection.anchorNode) || tableRef.current.contains(selection.focusNode))
-    ) {
-      const alignedText = tableElementToAlignedPlainText(tableRef.current);
-      if (alignedText && e.clipboardData) {
-        e.clipboardData.setData('text/plain', alignedText);
-        e.clipboardData.setData(
-          'text/html',
-          `<pre style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre; font-size: 13px; line-height: 1.5; margin: 0; padding: 0;">${escapeHtml(alignedText)}</pre>`
-        );
-        e.preventDefault();
-      }
-    }
-  };
-
-  return (
-    <div
-      className="table-block-wrapper"
-      ref={wrapperRef}
-      onCopy={handleNativeCopy}
-    >
-      <button
-        type="button"
-        className={`table-copy-btn ${copied ? 'copied' : ''}`}
-        onClick={handleCopyTable}
-        title="Copy table with preserved alignment"
-        aria-label="Copy table"
-      >
-        {copied ? (
-          <>
-            <Check size={12} className="copy-icon success" />
-            <span>Copied!</span>
-          </>
-        ) : (
-          <>
-            <Copy size={12} className="copy-icon" />
-            <span>Copy table</span>
-          </>
-        )}
-      </button>
-
-      <div className="table-responsive-wrapper">
-        <table className="markdown-table" ref={tableRef} {...props}>
-          {children}
-        </table>
-      </div>
-    </div>
-  );
 }
 
 /**
@@ -204,9 +88,13 @@ function createMarkdownComponents(isStreaming = false) {
       );
     },
 
-    // Responsive scrollable tables with alignment-preserving copy
+    // Responsive scrollable tables
     table: ({ children, ...props }) => (
-      <MarkdownTableBlock {...props}>{children}</MarkdownTableBlock>
+      <div className="table-responsive-wrapper">
+        <table className="markdown-table" {...props}>
+          {children}
+        </table>
+      </div>
     ),
     thead: ({ children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
     tbody: ({ children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
@@ -338,15 +226,11 @@ export default function ChatMessage({
       id: currentProviderId,
       name: currentProviderId.charAt(0).toUpperCase() + currentProviderId.slice(1)
     };
-  const hasFailedImages = Array.isArray(message.failedImages) && message.failedImages.length > 0;
-  const fallbackProviders = PROVIDER_OPTIONS.filter(
-    (p) => p.id !== currentProviderId && (!hasFailedImages || p.id === 'gemini')
-  );
+  const fallbackProviders = PROVIDER_OPTIONS.filter((p) => p.id !== currentProviderId);
 
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
   const [draftContent, setDraftContent] = useState(message?.content || '');
-  const [previewImage, setPreviewImage] = useState(null);
   const editInputRef = useRef(null);
 
   const markdownComponents = useMemo(
@@ -360,19 +244,6 @@ export default function ChatMessage({
       setDraftContent(message?.content || '');
     }
   }, [isEditing, message?.content]);
-
-  // Handle Escape key to close image lightbox modal
-  useEffect(() => {
-    if (!previewImage) return undefined;
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setPreviewImage(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [previewImage]);
 
   // Focus and auto-size textarea when edit mode is entered
   useEffect(() => {
@@ -433,11 +304,8 @@ export default function ChatMessage({
     if (!message?.content) return;
 
     try {
-      // Preserve table alignment in copied response text
-      const contentToCopy = formatMarkdownTablesInText(message.content);
-      const success = await copyTextWithHtml(contentToCopy);
-
-      if (success) {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(message.content);
         setCopied(true);
         setCopyFeedback('Copied');
         setTimeout(() => {
@@ -446,8 +314,34 @@ export default function ChatMessage({
         }, 2000);
         return;
       }
-      throw new Error('Clipboard copy failed');
+      throw new Error('Clipboard API unavailable');
     } catch (err) {
+      // Graceful fallback for restricted contexts (e.g. iframes / permissions)
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = message.content;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const success = document.execCommand('copy');
+        document.body.removeChild(textarea);
+
+        if (success) {
+          setCopied(true);
+          setCopyFeedback('Copied');
+          setTimeout(() => {
+            setCopied(false);
+            setCopyFeedback('Copy');
+          }, 2000);
+          return;
+        }
+      } catch (fallbackErr) {
+        console.warn('Fallback copy failed:', fallbackErr);
+      }
+
       console.warn('Clipboard write failed:', err);
       setCopyFeedback('Failed to copy');
       setTimeout(() => setCopyFeedback('Copy'), 2500);
@@ -613,144 +507,8 @@ export default function ChatMessage({
                 </div>
               </div>
             ) : (
-              /* Render user messages safely as plain text with attached documents and images */
-              <div className="user-message-body">
-                {Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                  <div className="message-attachments-container" role="group" aria-label="Attached files">
-                    {message.attachments.map((att) => {
-                      const isImg =
-                        att.category === 'image' ||
-                        Boolean(att.previewUrl) ||
-                        Boolean(att.mimeType?.startsWith('image/')) ||
-                        Boolean(att.type?.startsWith('image/'));
-
-                      if (isImg) {
-                        const formatTag = (att.type || att.mimeType || 'IMAGE')
-                          .replace(/^image\//i, '')
-                          .toUpperCase();
-
-                        const dimText = att.width && att.height ? `${att.width}×${att.height}` : null;
-
-                        return (
-                          <div
-                            key={att.id || att.name}
-                            className="message-image-card"
-                            title={`${att.name} (${formatFileSize(att.size)})`}
-                          >
-                            {att.previewUrl ? (
-                              <div
-                                className="message-image-thumb-container"
-                                onClick={() => setPreviewImage(att)}
-                                role="button"
-                                tabIndex={0}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    setPreviewImage(att);
-                                  }
-                                }}
-                                aria-label={`View full image: ${att.name}`}
-                              >
-                                <img
-                                  src={att.previewUrl}
-                                  alt={att.name}
-                                  className="message-image-thumb"
-                                  loading="lazy"
-                                />
-                                <div className="message-image-overlay-action" aria-hidden="true">
-                                  <ZoomIn size={14} />
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="message-image-fallback-icon" aria-hidden="true">
-                                <ImageIcon size={20} className="text-violet-400" />
-                              </div>
-                            )}
-
-                            <div className="message-image-info">
-                              <span className="msg-att-name" title={att.name}>{att.name}</span>
-                              <span className="msg-att-meta">
-                                {formatFileSize(att.size)}
-                                {dimText && ` • ${dimText}`}
-                                {` • ${formatTag}`}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      const meta = att.pageCount
-                        ? `${formatFileSize(att.size)} • ${att.pageCount} p.`
-                        : att.slideCount
-                        ? `${formatFileSize(att.size)} • ${att.slideCount} slides`
-                        : att.rowCount
-                        ? `${formatFileSize(att.size)} • ${att.rowCount} rows`
-                        : formatFileSize(att.size);
-
-                      return (
-                        <div
-                          key={att.id || att.name}
-                          className="message-attachment-chip"
-                          title={`${att.name} (${meta})`}
-                        >
-                          <div className="msg-att-icon" aria-hidden="true">
-                            {getMessageDocIcon(att.name)}
-                          </div>
-                          <div className="msg-att-info">
-                            <span className="msg-att-name">{att.name}</span>
-                            <span className="msg-att-meta">{meta}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <p className="user-text-content">{message.content || ''}</p>
-
-                {/* Lightbox Image Preview Modal */}
-                {previewImage && (
-                  <div
-                    className="image-lightbox-overlay"
-                    onClick={() => setPreviewImage(null)}
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label={`Preview ${previewImage.name}`}
-                  >
-                    <div
-                      className="image-lightbox-content"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <div className="image-lightbox-header">
-                        <div className="image-lightbox-title-group">
-                          <ImageIcon size={16} className="text-violet-400" />
-                          <span className="image-lightbox-filename">{previewImage.name}</span>
-                          <span className="image-lightbox-meta">
-                            {formatFileSize(previewImage.size)}
-                            {previewImage.width && previewImage.height ? ` • ${previewImage.width}×${previewImage.height}` : ''}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          className="image-lightbox-close"
-                          onClick={() => setPreviewImage(null)}
-                          aria-label="Close image preview"
-                          title="Close (Esc)"
-                        >
-                          <X size={18} />
-                        </button>
-                      </div>
-
-                      <div className="image-lightbox-body">
-                        <img
-                          src={previewImage.previewUrl}
-                          alt={previewImage.name}
-                          className="image-lightbox-img"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+              /* Render user messages safely as plain text */
+              <p className="user-text-content">{message.content || ''}</p>
             )
           ) : isStreaming && !hasContent ? (
             /* Subtle thinking state before first streaming chunk arrives */

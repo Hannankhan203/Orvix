@@ -4,8 +4,6 @@
  * Calling Gemini from the server protects the API key and adheres to AI Studio best practices.
  */
 
-import { formatImagePayload } from '../utils/imageValidator.js';
-
 /**
  * Retrieves the configured Gemini API key (kept for interface compatibility; server handles actual authentication).
  */
@@ -57,7 +55,7 @@ export function formatConversationHistory(messages = [], currentPrompt, maxConte
  * @param {string|null} [params.username=null] - Preferred username for personalization
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGeminiMessage({ prompt, history = [], username = null, preferences = null, mode = 'general', documents = [], images = [] }) {
+export async function sendGeminiMessage({ prompt, history = [], username = null, preferences = null, mode = 'general' }) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -69,9 +67,7 @@ export async function sendGeminiMessage({ prompt, history = [], username = null,
       prompt,
       history,
       username: username ? String(username).trim() : null,
-      preferences: preferences || null,
-      documents,
-      images: formatImagePayload(images)
+      preferences: preferences || null
     })
   });
 
@@ -105,13 +101,11 @@ export async function sendGeminiMessage({ prompt, history = [], username = null,
  * @param {string|null} [params.username=null]
  * @param {Object|null} [params.preferences=null]
  * @param {string} [params.mode='general']
- * @param {Array} [params.documents=[]]
- * @param {Array} [params.images=[]]
  * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGeminiMessage({ prompt, history = [], username = null, preferences = null, mode = 'general', documents = [], images = [], onChunk, signal }) {
+export async function streamGeminiMessage({ prompt, history = [], username = null, preferences = null, mode = 'general', onChunk, signal }) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -125,8 +119,6 @@ export async function streamGeminiMessage({ prompt, history = [], username = nul
       history,
       username: username ? String(username).trim() : null,
       preferences: preferences || null,
-      documents,
-      images: formatImagePayload(images),
       stream: true
     }),
     signal
