@@ -5581,3 +5581,351 @@ body.theme-light .listening-text,
   color: #6d28d9;
   border-color: #7c3aed;
 }
+
+/* ==========================================================================
+   Document Upload & Attachment System Styles
+   ========================================================================== */
+.attachments-dock-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 6px;
+  animation: attachmentDockFade 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes attachmentDockFade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.attachment-chips-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  box-shadow: var(--shadow-sm);
+  max-width: 320px;
+  min-width: 180px;
+  transition: all var(--transition-fast);
+}
+
+.attachment-chip:hover {
+  border-color: var(--border-active);
+  background-color: var(--bg-card-hover);
+}
+
+.attachment-chip.is-ready {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.attachment-chip.is-extracting {
+  border-color: rgba(59, 130, 246, 0.4);
+  background-color: rgba(37, 99, 235, 0.06);
+}
+
+.attachment-chip.is-error {
+  border-color: rgba(239, 68, 68, 0.4);
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
+.attachment-chip-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.doc-icon-svg.pdf-color { color: #f87171; }
+.doc-icon-svg.docx-color { color: #60a5fa; }
+.doc-icon-svg.pptx-color { color: #fb923c; }
+.doc-icon-svg.csv-color { color: #34d399; }
+.doc-icon-svg.json-color { color: #fbbf24; }
+.doc-icon-svg.md-color { color: #a78bfa; }
+.doc-icon-svg.txt-color { color: #94a3b8; }
+
+.attachment-chip-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-chip-top {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.attachment-chip-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.01em;
+}
+
+.attachment-chip-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.attachment-chip-size {
+  color: var(--text-muted);
+}
+
+.attachment-chip-submeta {
+  color: var(--text-dim);
+}
+
+.attachment-chip-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.68rem;
+  font-weight: 500;
+  margin-left: auto;
+}
+
+.attachment-chip-status.extracting {
+  color: #60a5fa;
+}
+
+.attachment-chip-status.ready {
+  color: #34d399;
+}
+
+.attachment-chip-status.error {
+  color: #f87171;
+}
+
+.attachment-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+
+.attachment-chip-remove:hover {
+  color: #f87171;
+  background-color: rgba(239, 68, 68, 0.12);
+}
+
+/* Attachment Error Banner */
+.attachment-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-md);
+  color: #fca5a5;
+  font-size: 0.78rem;
+  animation: attachmentErrorIn 160ms ease-out;
+}
+
+@keyframes attachmentErrorIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.attachment-error-content {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-error-icon {
+  flex-shrink: 0;
+  color: #ef4444;
+}
+
+.attachment-error-msg {
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.attachment-error-dismiss {
+  background: transparent;
+  border: none;
+  color: #fca5a5;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.8;
+  transition: opacity var(--transition-fast);
+}
+
+.attachment-error-dismiss:hover {
+  opacity: 1;
+}
+
+/* Drag-and-Drop Overlay Indicator */
+.composer-drop-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(37, 99, 235, 0.15);
+  border: 2px dashed var(--accent-primary);
+  border-radius: var(--radius-xl);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+  animation: dropOverlayFadeIn 140ms ease-out;
+}
+
+@keyframes dropOverlayFadeIn {
+  from { opacity: 0; transform: scale(0.99); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.drop-overlay-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: var(--accent-primary);
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Message Attachments Container (rendered in chat history user bubble) */
+.message-attachments-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.message-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  max-width: 100%;
+}
+
+.msg-att-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.msg-att-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.msg-att-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.msg-att-meta {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+/* Light Mode Overrides for Document Attachments */
+[data-theme="light"] .attachment-chip {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .attachment-chip:hover {
+  background-color: #f8fafc;
+  border-color: #2563eb;
+}
+
+[data-theme="light"] .attachment-chip.is-ready {
+  border-color: #10b981;
+}
+
+[data-theme="light"] .attachment-chip.is-extracting {
+  background-color: #eff6ff;
+  border-color: #60a5fa;
+}
+
+[data-theme="light"] .attachment-chip.is-error {
+  background-color: #fef2f2;
+  border-color: #f87171;
+}
+
+[data-theme="light"] .attachment-error-banner {
+  background-color: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+[data-theme="light"] .attachment-error-dismiss {
+  color: #991b1b;
+}
+
+[data-theme="light"] .message-attachment-chip {
+  background-color: rgba(255, 255, 255, 0.8);
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #0f172a;
+}
+

@@ -13,7 +13,13 @@ import {
   VolumeX,
   Cpu,
   Pause,
-  Play
+  Play,
+  FileText,
+  Presentation,
+  Table as TableIcon,
+  Code as CodeIcon,
+  FileCode,
+  File as FileIcon
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -26,6 +32,28 @@ import {
   copyTextWithHtml,
   escapeHtml
 } from '../../utils/tableAlignment.js';
+import { formatFileSize, getFileExtension } from '../../utils/documentExtractor.js';
+
+function getMessageDocIcon(filename = '') {
+  const ext = getFileExtension(filename);
+  switch (ext) {
+    case '.pdf':
+      return <FileText size={14} className="doc-icon-svg pdf-color" />;
+    case '.docx':
+      return <FileText size={14} className="doc-icon-svg docx-color" />;
+    case '.pptx':
+      return <Presentation size={14} className="doc-icon-svg pptx-color" />;
+    case '.csv':
+      return <TableIcon size={14} className="doc-icon-svg csv-color" />;
+    case '.json':
+      return <CodeIcon size={14} className="doc-icon-svg json-color" />;
+    case '.md':
+      return <FileCode size={14} className="doc-icon-svg md-color" />;
+    case '.txt':
+    default:
+      return <FileIcon size={14} className="doc-icon-svg txt-color" />;
+  }
+}
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -565,8 +593,39 @@ export default function ChatMessage({
                 </div>
               </div>
             ) : (
-              /* Render user messages safely as plain text */
-              <p className="user-text-content">{message.content || ''}</p>
+              /* Render user messages safely as plain text with attached documents chips */
+              <div className="user-message-body">
+                {Array.isArray(message.attachments) && message.attachments.length > 0 && (
+                  <div className="message-attachments-container" role="group" aria-label="Attached documents">
+                    {message.attachments.map((att) => {
+                      const meta = att.pageCount
+                        ? `${formatFileSize(att.size)} • ${att.pageCount} p.`
+                        : att.slideCount
+                        ? `${formatFileSize(att.size)} • ${att.slideCount} slides`
+                        : att.rowCount
+                        ? `${formatFileSize(att.size)} • ${att.rowCount} rows`
+                        : formatFileSize(att.size);
+
+                      return (
+                        <div
+                          key={att.id || att.name}
+                          className="message-attachment-chip"
+                          title={`${att.name} (${meta})`}
+                        >
+                          <div className="msg-att-icon" aria-hidden="true">
+                            {getMessageDocIcon(att.name)}
+                          </div>
+                          <div className="msg-att-info">
+                            <span className="msg-att-name">{att.name}</span>
+                            <span className="msg-att-meta">{meta}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <p className="user-text-content">{message.content || ''}</p>
+              </div>
             )
           ) : isStreaming && !hasContent ? (
             /* Subtle thinking state before first streaming chunk arrives */

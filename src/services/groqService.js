@@ -8,6 +8,7 @@
  */
 
 import { getChatMode } from '../config/chatModes.js';
+import { buildDocumentContext } from '../utils/documentContext.js';
 
 export function getGroqApiKey() {
   try {
@@ -36,17 +37,24 @@ const DEFAULT_MODEL = 'openai/gpt-oss-120b';
  * @param {string} [mode='general']
  * @returns {Array<{ role: string, content: string }>}
  */
-export function formatGroqMessages(history = [], prompt, maxContextMessages = 12, mode = 'general') {
+export function formatGroqMessages(history = [], prompt, maxContextMessages = 12, mode = 'general', documents = []) {
   const modeObj = getChatMode(mode);
-  const systemContent = [
+  const systemContentParts = [
     'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.',
     modeObj.instruction
-  ].filter(Boolean).join(' ');
+  ];
+
+  if (documents && documents.length > 0) {
+    const { documentContextText } = buildDocumentContext(documents, prompt);
+    if (documentContextText) {
+      systemContentParts.push(documentContextText);
+    }
+  }
 
   const messages = [
     {
       role: 'system',
-      content: systemContent
+      content: systemContentParts.filter(Boolean).join('\n\n')
     }
   ];
 
@@ -74,9 +82,11 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
  * @param {Object} params
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
+ * @param {string} [params.mode='general']
+ * @param {Array} [params.documents=[]]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGroqMessage({ prompt, history = [], mode = 'general' }) {
+export async function sendGroqMessage({ prompt, history = [], mode = 'general', documents = [] }) {
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -85,7 +95,7 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general' }
     );
   }
 
-  const messages = formatGroqMessages(history, prompt, 12, mode);
+  const messages = formatGroqMessages(history, prompt, 12, mode, documents);
 
   let response;
   try {
@@ -149,7 +159,7 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general' }
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGroqMessage({ prompt, history = [], mode = 'general', onChunk, signal }) {
+export async function streamGroqMessage({ prompt, history = [], mode = 'general', documents = [], onChunk, signal }) {
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -158,7 +168,7 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
     );
   }
 
-  const messages = formatGroqMessages(history, prompt, 12, mode);
+  const messages = formatGroqMessages(history, prompt, 12, mode, documents);
 
   let response;
   try {

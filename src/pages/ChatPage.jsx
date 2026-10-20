@@ -1,9 +1,8 @@
-
-import React, { useState, useRef, useEffect } from 'react';
-import Layout from '../components/layout/Layout.jsx';
-import ChatArea from '../components/chat/ChatArea.jsx';
-import { SAMPLE_CHATS } from '../config/sampleData.js';
-import { streamAIMessage, DEFAULT_PROVIDER } from '../services/aiRouter.js';
+import React, { useState, useRef, useEffect } from "react";
+import Layout from "../components/layout/Layout.jsx";
+import ChatArea from "../components/chat/ChatArea.jsx";
+import { SAMPLE_CHATS } from "../config/sampleData.js";
+import { streamAIMessage, DEFAULT_PROVIDER } from "../services/aiRouter.js";
 import {
   createChatDocument,
   saveChatMessage,
@@ -14,58 +13,127 @@ import {
   subscribeToUserChats,
   loadConversationMessages,
   generateChatTitle,
-  updateChatMode
-} from '../services/chatStorageService.js';
-import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
-import { isFirebaseConfigured } from '../config/firebaseConfig.js';
-import { getChatMode } from '../config/chatModes.js';
-import { useAuth } from '../context/AuthContext.jsx';
-import { useSettings } from '../context/SettingsContext.jsx';
-import { useSpeech } from '../context/SpeechContext.jsx';
-import { AlertCircle, X, Check } from 'lucide-react';
+  updateChatMode,
+} from "../services/chatStorageService.js";
+import {
+  exportAsMarkdown,
+  exportAsPlainText,
+} from "../utils/exportConversation.js";
+import { isFirebaseConfigured } from "../config/firebaseConfig.js";
+import { getChatMode } from "../config/chatModes.js";
+import { useAuth } from "../context/AuthContext.jsx";
+import { useSettings } from "../context/SettingsContext.jsx";
+import { useSpeech } from "../context/SpeechContext.jsx";
+import { AlertCircle, X, Check } from "lucide-react";
+import {
+  extractDocumentContent,
+  validateAttachmentFile,
+  formatFileSize,
+} from "../utils/documentExtractor.js";
 
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
   const { settings } = useSettings();
   const { stopSpeech } = useSpeech();
-  const isCloudEnabled =
-    isFirebaseConfigured() && Boolean(currentUser?.uid);
+
+  const isCloudEnabled = isFirebaseConfigured() && Boolean(currentUser?.uid);
 
   const [userChats, setUserChats] = useState([]);
   const [chatsLoading, setChatsLoading] = useState(isCloudEnabled);
 
   const [activeChatId, setActiveChatId] = useState(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       return (
-        sessionStorage.getItem('orvix_active_chat') ||
-        sessionStorage.getItem('chatora_active_chat') ||
+        sessionStorage.getItem("orvix_active_chat") ||
+        sessionStorage.getItem("chatora_active_chat") ||
         null
       );
     }
+
     return null;
   });
 
-  const [activeMode, setActiveMode] = useState(() => {
-    return settings?.defaultMode || 'general';
-  });
+  const [activeMode, setActiveMode] = useState(
+    () => settings?.defaultMode || "general",
+  );
+
   const [modeChangeNotice, setModeChangeNotice] = useState(null);
 
   const [messages, setMessages] = useState([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
-  const [inputValue, setInputValue] = useState('');
+  const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [persistenceError, setPersistenceError] = useState(null);
   const [exportNotice, setExportNotice] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
 
+  // Document attachment states
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState(null);
+  const [isExtractingAttachments, setIsExtractingAttachments] = useState(false);
+
+  // Read and extract uploaded documents.
+  const handleAttachFiles = async (files = []) => {
+    if (!files.length) return;
+
+    setAttachmentError(null);
+    setIsExtractingAttachments(true);
+
+    try {
+      const newAttachments = [];
+
+      for (const file of files) {
+        const validationError = validateAttachmentFile(file);
+
+        if (validationError) {
+          setAttachmentError(`${file.name}: ${validationError}`);
+          continue;
+        }
+
+        try {
+          const document = await extractDocumentContent(file);
+
+          newAttachments.push({
+            ...document,
+            status: "ready",
+            displaySize: formatFileSize(file.size),
+          });
+        } catch (error) {
+          setAttachmentError(
+            `${file.name}: ${error?.message || "Failed to read this file."}`,
+          );
+        }
+      }
+
+      if (newAttachments.length > 0) {
+        setAttachments((previous) => [...previous, ...newAttachments]);
+      }
+    } finally {
+      setIsExtractingAttachments(false);
+    }
+  };
+
+  const handleRemoveAttachment = (attachmentId) => {
+    setAttachments((previous) =>
+      previous.filter((attachment) => attachment.id !== attachmentId),
+    );
+
+    setAttachmentError(null);
+  };
+
+  const handleClearAttachmentError = () => {
+    setAttachmentError(null);
+  };
+
   const [selectedProvider, setSelectedProvider] = useState(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       return (
-        localStorage.getItem('orvix_selected_provider') ||
-        localStorage.getItem('chatora_selected_provider') ||
+        localStorage.getItem("orvix_selected_provider") ||
+        localStorage.getItem("chatora_selected_provider") ||
         DEFAULT_PROVIDER
       );
     }
+
     return DEFAULT_PROVIDER;
   });
 
@@ -84,46 +152,52 @@ export default function ChatPage() {
   const handleSelectProvider = (provider) => {
     setSelectedProvider(provider);
 
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('orvix_selected_provider', provider);
-      localStorage.setItem('chatora_selected_provider', provider);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("orvix_selected_provider", provider);
+      localStorage.setItem("chatora_selected_provider", provider);
     }
   };
 
-  // Stop any running animation, speech synthesis, and network request when the page unmounts.
+  // Clean up speech, animation and network requests on unmount.
   useEffect(() => {
     return () => {
       stopSpeech();
+
       if (activeAbortControllerRef.current) {
         try {
           activeAbortControllerRef.current.abort();
         } catch (_) {}
       }
+
       if (activeAnimationRef.current) {
         activeAnimationRef.current();
       }
     };
   }, [stopSpeech]);
 
-  // Auto-dismiss export notification banner
+  // Auto-dismiss export notifications.
   useEffect(() => {
-    if (!exportNotice) return;
+    if (!exportNotice) return undefined;
+
     const timer = setTimeout(() => {
       setExportNotice(null);
     }, 4500);
+
     return () => clearTimeout(timer);
   }, [exportNotice]);
 
-  // Auto-dismiss mode change notification banner
+  // Auto-dismiss mode-change notifications.
   useEffect(() => {
-    if (!modeChangeNotice) return;
+    if (!modeChangeNotice) return undefined;
+
     const timer = setTimeout(() => {
       setModeChangeNotice(null);
     }, 4500);
+
     return () => clearTimeout(timer);
   }, [modeChangeNotice]);
 
-  // Synchronize starting mode with user's configured default mode on empty new chat
+  // Synchronize the configured default mode on a new conversation.
   useEffect(() => {
     if (!activeChatId && settings?.defaultMode) {
       setActiveMode(settings.defaultMode);
@@ -133,15 +207,15 @@ export default function ChatPage() {
   // Guest storage helpers.
   const getGuestPinnedIds = () => {
     try {
-      if (typeof window !== 'undefined') {
+      if (typeof window !== "undefined") {
         const stored =
-          localStorage.getItem('orvix_guest_pins') ||
-          localStorage.getItem('chatora_guest_pins');
+          localStorage.getItem("orvix_guest_pins") ||
+          localStorage.getItem("chatora_guest_pins");
 
         return stored ? JSON.parse(stored) : [];
       }
     } catch (error) {
-      console.warn('Could not read guest pins:', error);
+      console.warn("Could not read guest pins:", error);
     }
 
     return [];
@@ -149,27 +223,22 @@ export default function ChatPage() {
 
   const saveGuestPinnedIds = (pinnedIds) => {
     try {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(
-          'orvix_guest_pins',
-          JSON.stringify(pinnedIds)
-        );
-        localStorage.setItem(
-          'chatora_guest_pins',
-          JSON.stringify(pinnedIds)
-        );
+      if (typeof window !== "undefined") {
+        localStorage.setItem("orvix_guest_pins", JSON.stringify(pinnedIds));
+
+        localStorage.setItem("chatora_guest_pins", JSON.stringify(pinnedIds));
       }
     } catch (error) {
-      console.warn('Could not save guest pins:', error);
+      console.warn("Could not save guest pins:", error);
     }
   };
 
   const getGuestChats = () => {
     try {
-      if (typeof window !== 'undefined') {
+      if (typeof window !== "undefined") {
         const stored =
-          localStorage.getItem('orvix_guest_chats') ||
-          localStorage.getItem('chatora_guest_chats');
+          localStorage.getItem("orvix_guest_chats") ||
+          localStorage.getItem("chatora_guest_chats");
 
         if (stored) {
           const parsed = JSON.parse(stored);
@@ -177,7 +246,7 @@ export default function ChatPage() {
         }
       }
     } catch (error) {
-      console.warn('Could not read guest chats:', error);
+      console.warn("Could not read guest chats:", error);
     }
 
     return null;
@@ -185,18 +254,13 @@ export default function ChatPage() {
 
   const saveGuestChats = (chats) => {
     try {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(
-          'orvix_guest_chats',
-          JSON.stringify(chats)
-        );
-        localStorage.setItem(
-          'chatora_guest_chats',
-          JSON.stringify(chats)
-        );
+      if (typeof window !== "undefined") {
+        localStorage.setItem("orvix_guest_chats", JSON.stringify(chats));
+
+        localStorage.setItem("chatora_guest_chats", JSON.stringify(chats));
       }
     } catch (error) {
-      console.warn('Could not save guest chats:', error);
+      console.warn("Could not save guest chats:", error);
     }
   };
 
@@ -209,12 +273,12 @@ export default function ChatPage() {
 
       const initialGuestChats = baseChats.map((chat) => ({
         ...chat,
-        isPinned:
-          guestPinned.includes(chat.id) || Boolean(chat.isPinned)
+        isPinned: guestPinned.includes(chat.id) || Boolean(chat.isPinned),
       }));
 
       setUserChats(initialGuestChats);
       setChatsLoading(false);
+
       return undefined;
     }
 
@@ -227,12 +291,14 @@ export default function ChatPage() {
         setChatsLoading(false);
       },
       (error) => {
-        console.warn('Firestore subscription error:', error);
+        console.warn("Firestore subscription error:", error);
+
         setPersistenceError(
-          'Unable to sync conversation list from Cloud Firestore.'
+          "Unable to sync conversation list from Cloud Firestore.",
         );
+
         setChatsLoading(false);
-      }
+      },
     );
 
     return () => unsubscribe();
@@ -241,18 +307,15 @@ export default function ChatPage() {
   // 2. Restore conversation messages safely.
   useEffect(() => {
     stopSpeech();
+
     const currentRequestId = ++fetchRequestIdRef.current;
 
-    // A newly created chat already has messages in component state.
-    // Do not load an empty Firestore document over those messages.
-    if (
-      activeChatId &&
-      skipNextChatLoadRef.current === activeChatId
-    ) {
+    // A new chat may already contain messages in component state.
+    if (activeChatId && skipNextChatLoadRef.current === activeChatId) {
       skipNextChatLoadRef.current = null;
 
-      sessionStorage.setItem('orvix_active_chat', activeChatId);
-      sessionStorage.setItem('chatora_active_chat', activeChatId);
+      sessionStorage.setItem("orvix_active_chat", activeChatId);
+      sessionStorage.setItem("chatora_active_chat", activeChatId);
 
       setMessagesLoading(false);
       return undefined;
@@ -261,47 +324,43 @@ export default function ChatPage() {
     if (!activeChatId) {
       setMessages([]);
       setMessagesLoading(false);
-      setActiveMode(settings?.defaultMode || 'general');
-      sessionStorage.removeItem('orvix_active_chat');
-      sessionStorage.removeItem('chatora_active_chat');
+      setActiveMode(settings?.defaultMode || "general");
+
+      sessionStorage.removeItem("orvix_active_chat");
+      sessionStorage.removeItem("chatora_active_chat");
+
       return undefined;
     }
 
-    sessionStorage.setItem('orvix_active_chat', activeChatId);
-    sessionStorage.setItem('chatora_active_chat', activeChatId);
+    sessionStorage.setItem("orvix_active_chat", activeChatId);
+    sessionStorage.setItem("chatora_active_chat", activeChatId);
 
-    // Sync active mode from chat metadata (default to 'general' for legacy chats)
     const matchingChat =
       userChats.find((chat) => chat.id === activeChatId) ||
       SAMPLE_CHATS.find((chat) => chat.id === activeChatId);
+
     if (matchingChat) {
-      setActiveMode(matchingChat.mode || 'general');
+      setActiveMode(matchingChat.mode || "general");
     }
 
     // Demo conversations.
-    const sample = SAMPLE_CHATS.find(
-      (chat) => chat.id === activeChatId
-    );
+    const sample = SAMPLE_CHATS.find((chat) => chat.id === activeChatId);
 
     if (sample) {
       setMessages([...sample.messages]);
-      setActiveMode(sample.mode || 'general');
+      setActiveMode(sample.mode || "general");
       setMessagesLoading(false);
+
       return undefined;
     }
 
     // Guest conversations.
-    const guestChat = userChats.find(
-      (chat) => chat.id === activeChatId
-    );
+    const guestChat = userChats.find((chat) => chat.id === activeChatId);
 
-    if (
-      !isCloudEnabled &&
-      guestChat &&
-      Array.isArray(guestChat.messages)
-    ) {
+    if (!isCloudEnabled && guestChat && Array.isArray(guestChat.messages)) {
       setMessages([...guestChat.messages]);
       setMessagesLoading(false);
+
       return undefined;
     }
 
@@ -334,27 +393,18 @@ export default function ChatPage() {
           });
         })
         .catch((error) => {
-          if (
-            cancelled ||
-            fetchRequestIdRef.current !== currentRequestId
-          ) {
+          if (cancelled || fetchRequestIdRef.current !== currentRequestId) {
             return;
           }
 
-          console.error(
-            'Failed to load conversation messages:',
-            error
-          );
+          console.error("Failed to load conversation messages:", error);
 
           setPersistenceError(
-            'Failed to load conversation history from Cloud Firestore.'
+            "Failed to load conversation history from Cloud Firestore.",
           );
         })
         .finally(() => {
-          if (
-            !cancelled &&
-            fetchRequestIdRef.current === currentRequestId
-          ) {
+          if (!cancelled && fetchRequestIdRef.current === currentRequestId) {
             setMessagesLoading(false);
           }
         });
@@ -365,17 +415,16 @@ export default function ChatPage() {
     }
 
     setMessagesLoading(false);
+
     return undefined;
   }, [activeChatId, isCloudEnabled, currentUser?.uid]);
 
-  const currentChat = userChats.find(
-    (chat) => chat.id === activeChatId
-  );
+  const currentChat = userChats.find((chat) => chat.id === activeChatId);
 
   const activeTitle = currentChat
     ? currentChat.title
     : messages.length > 0
-      ? 'Current Conversation'
+      ? "Current Conversation"
       : null;
 
   // Start a fresh conversation.
@@ -386,6 +435,7 @@ export default function ChatPage() {
       try {
         activeAbortControllerRef.current.abort();
       } catch (_) {}
+
       activeAbortControllerRef.current = null;
     }
 
@@ -394,22 +444,26 @@ export default function ChatPage() {
       activeAnimationRef.current = null;
     }
 
-    // Invalidate any outstanding history load.
     fetchRequestIdRef.current += 1;
     activeChatIdRef.current = null;
 
     setActiveChatId(null);
     setMessages([]);
-    setInputValue('');
+    setInputValue("");
     setEditingMessageId(null);
     setIsLoading(false);
     setMessagesLoading(false);
-    isSubmittingRef.current = false;
-    setModeChangeNotice(null);
-    setActiveMode(settings?.defaultMode || 'general');
+    setAttachments([]);
+    setAttachmentError(null);
+    setIsExtractingAttachments(false);
 
-    sessionStorage.removeItem('orvix_active_chat');
-    sessionStorage.removeItem('chatora_active_chat');
+    isSubmittingRef.current = false;
+
+    setModeChangeNotice(null);
+    setActiveMode(settings?.defaultMode || "general");
+
+    sessionStorage.removeItem("orvix_active_chat");
+    sessionStorage.removeItem("chatora_active_chat");
   };
 
   // Switch conversations without allowing old history to overwrite new messages.
@@ -422,6 +476,7 @@ export default function ChatPage() {
       try {
         activeAbortControllerRef.current.abort();
       } catch (_) {}
+
       activeAbortControllerRef.current = null;
     }
 
@@ -433,43 +488,41 @@ export default function ChatPage() {
     setIsLoading(false);
     isSubmittingRef.current = false;
     setEditingMessageId(null);
+    setAttachments([]);
+    setAttachmentError(null);
 
     fetchRequestIdRef.current += 1;
     activeChatIdRef.current = chatId;
 
     setActiveChatId(chatId);
-    setInputValue('');
+    setInputValue("");
     setMessages([]);
     setMessagesLoading(Boolean(isCloudEnabled));
   };
 
   // Rename a conversation.
   const handleRenameChat = async (chatId, newTitle) => {
-    const sanitized = (newTitle || '').trim();
+    const sanitized = (newTitle || "").trim();
+
     if (!sanitized) return;
 
     try {
       if (isCloudEnabled && currentUser?.uid) {
-        await renameConversation(
-          currentUser.uid,
-          chatId,
-          sanitized
-        );
+        await renameConversation(currentUser.uid, chatId, sanitized);
       } else {
         setUserChats((previous) => {
           const next = previous.map((chat) =>
-            chat.id === chatId
-              ? { ...chat, title: sanitized }
-              : chat
+            chat.id === chatId ? { ...chat, title: sanitized } : chat,
           );
 
           saveGuestChats(next);
+
           return next;
         });
       }
     } catch (error) {
-      console.error('Failed to rename conversation:', error);
-      setPersistenceError('Failed to rename conversation.');
+      console.error("Failed to rename conversation:", error);
+      setPersistenceError("Failed to rename conversation.");
     }
   };
 
@@ -480,11 +533,10 @@ export default function ChatPage() {
         await deleteConversation(currentUser.uid, chatId);
       } else {
         setUserChats((previous) => {
-          const next = previous.filter(
-            (chat) => chat.id !== chatId
-          );
+          const next = previous.filter((chat) => chat.id !== chatId);
 
           saveGuestChats(next);
+
           return next;
         });
       }
@@ -494,37 +546,32 @@ export default function ChatPage() {
       }
 
       if (!isCloudEnabled || !currentUser?.uid) {
-        const remainingPins = getGuestPinnedIds().filter(
-          (id) => id !== chatId
-        );
+        const remainingPins = getGuestPinnedIds().filter((id) => id !== chatId);
 
         saveGuestPinnedIds(remainingPins);
       }
     } catch (error) {
-      console.error('Failed to delete conversation:', error);
+      console.error("Failed to delete conversation:", error);
+
       setPersistenceError(
-        'Failed to delete conversation from Cloud Firestore.'
+        "Failed to delete conversation from Cloud Firestore.",
       );
     }
   };
 
   // Pin/unpin conversations, with a maximum of five pinned chats.
   const handleTogglePin = async (chatId) => {
-    const targetChat = userChats.find(
-      (chat) => chat.id === chatId
-    );
+    const targetChat = userChats.find((chat) => chat.id === chatId);
 
     if (!targetChat) return;
 
     const willPin = !targetChat.isPinned;
 
-    if (
-      willPin &&
-      userChats.filter((chat) => chat.isPinned).length >= 5
-    ) {
+    if (willPin && userChats.filter((chat) => chat.isPinned).length >= 5) {
       setPersistenceError(
-        'You can pin up to 5 chats. Unpin a chat before pinning another.'
+        "You can pin up to 5 chats. Unpin a chat before pinning another.",
       );
+
       return;
     }
 
@@ -532,16 +579,12 @@ export default function ChatPage() {
 
     if (isCloudEnabled && currentUser?.uid) {
       try {
-        await toggleChatPinned(
-          currentUser.uid,
-          chatId,
-          willPin
-        );
+        await toggleChatPinned(currentUser.uid, chatId, willPin);
       } catch (error) {
-        console.error('Failed to toggle pin in Firestore:', error);
+        console.error("Failed to toggle pin in Firestore:", error);
+
         setPersistenceError(
-          error.message ||
-            'Failed to update pin status in Cloud Firestore.'
+          error.message || "Failed to update pin status in Cloud Firestore.",
         );
       }
 
@@ -554,37 +597,43 @@ export default function ChatPage() {
           ? {
               ...chat,
               isPinned: willPin,
-              pinnedAt: willPin ? Date.now() : null
+              pinnedAt: willPin ? Date.now() : null,
             }
-          : chat
+          : chat,
       );
 
       saveGuestChats(next);
+
       saveGuestPinnedIds(
-        next.filter((chat) => chat.isPinned).map((chat) => chat.id)
+        next.filter((chat) => chat.isPinned).map((chat) => chat.id),
       );
 
       return next;
     });
   };
 
-  // Handle mode selection (both on New Chat and in active conversations)
+  // Handle mode selection.
   const handleSelectMode = async (newMode) => {
     const modeObj = getChatMode(newMode);
+
     setActiveMode(newMode);
 
-    // If there is an active conversation, persist the mode change to that conversation
     if (activeChatIdRef.current) {
       const currentChatId = activeChatIdRef.current;
+
       setModeChangeNotice(
-        `Switched to ${modeObj.name} mode. Subsequent responses will follow ${modeObj.shortName} guidelines, preserving existing message history.`
+        `Switched to ${modeObj.name} mode. Subsequent responses will follow ${modeObj.shortName} guidelines, preserving existing message history.`,
       );
 
-      // Persist to Cloud Firestore or Guest Storage
       if (isCloudEnabled && currentUser?.uid) {
-        updateChatMode(currentUser.uid, currentChatId, newMode).catch((err) => {
-          console.warn('Could not update conversation mode in Cloud Firestore:', err);
-        });
+        updateChatMode(currentUser.uid, currentChatId, newMode).catch(
+          (error) => {
+            console.warn(
+              "Could not update conversation mode in Cloud Firestore:",
+              error,
+            );
+          },
+        );
       } else {
         setUserChats((previous) => {
           const next = previous.map((chat) =>
@@ -592,11 +641,13 @@ export default function ChatPage() {
               ? {
                   ...chat,
                   mode: newMode,
-                  rawUpdatedAt: Date.now()
+                  rawUpdatedAt: Date.now(),
                 }
-              : chat
+              : chat,
           );
+
           saveGuestChats(next);
+
           return next;
         });
       }
@@ -611,23 +662,18 @@ export default function ChatPage() {
       return;
     }
 
-    // Reserve the ID before starting the asynchronous write.
     persistedMessageIdsRef.current.add(message.id);
 
     if (isCloudEnabled && currentUser?.uid) {
       try {
-        await saveChatMessage(
-          currentUser.uid,
-          chatId,
-          message
-        );
+        await saveChatMessage(currentUser.uid, chatId, message);
       } catch (error) {
-        // Allow a future retry if this write failed.
         persistedMessageIdsRef.current.delete(message.id);
 
-        console.warn('Firestore write warning:', error);
+        console.warn("Firestore write warning:", error);
+
         setPersistenceError(
-          'Notice: Could not save message to Cloud Firestore. Kept in memory.'
+          "Notice: Could not save message to Cloud Firestore. Kept in memory.",
         );
       }
 
@@ -638,22 +684,27 @@ export default function ChatPage() {
       const next = previous.map((chat) => {
         if (chat.id !== chatId) return chat;
 
-        const hasExisting = (chat.messages || []).some(
-          (item) => item.id === message.id
+        const existingMessages = chat.messages || [];
+
+        const hasExisting = existingMessages.some(
+          (item) => item.id === message.id,
         );
 
         const updatedMessages = hasExisting
-          ? (chat.messages || []).map((item) => (item.id === message.id ? message : item))
-          : [...(chat.messages || []), message];
+          ? existingMessages.map((item) =>
+              item.id === message.id ? message : item,
+            )
+          : [...existingMessages, message];
 
         return {
           ...chat,
           rawUpdatedAt: Date.now(),
-          messages: updatedMessages
+          messages: updatedMessages,
         };
       });
 
       saveGuestChats(next);
+
       return next;
     });
   };
@@ -666,17 +717,19 @@ export default function ChatPage() {
     historyContext,
     targetChatId,
     assistantMessageId,
-    overrideProvider = null
+    overrideProvider = null,
+    documents = [],
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
+
     setIsLoading(true);
     isUserStoppedRef.current = false;
 
-    // Stop any existing network request and animation pump.
     if (activeAbortControllerRef.current) {
       try {
         activeAbortControllerRef.current.abort();
       } catch (_) {}
+
       activeAbortControllerRef.current = null;
     }
 
@@ -685,11 +738,8 @@ export default function ChatPage() {
       activeAnimationRef.current = null;
     }
 
-    const abortController = new AbortController();
-    activeAbortControllerRef.current = abortController;
-
-    let targetText = '';
-    let displayedText = '';
+    let targetText = "";
+    let displayedText = "";
     let activeModel = null;
     let finalProvider = providerToUse;
     let isStreamDone = false;
@@ -698,9 +748,8 @@ export default function ChatPage() {
     let isFinalized = false;
 
     const prefersReducedMotion =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)')
-        ?.matches;
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 
     const cancelCurrentAnimation = () => {
       isCancelled = true;
@@ -713,13 +762,11 @@ export default function ChatPage() {
 
     activeAnimationRef.current = cancelCurrentAnimation;
 
-    // Finalize exactly once. Do not call cancelCurrentAnimation first:
-    // cancellation intentionally prevents this function from running.
     const finalizeAssistantMessage = async (
       contentToSave,
       modelToUse,
       providerToFinalize,
-      isStopped = false
+      isStopped = false,
     ) => {
       if (isCancelled || isFinalized) return;
 
@@ -727,25 +774,23 @@ export default function ChatPage() {
 
       const completedMessage = {
         id: assistantMessageId,
-        sender: 'assistant',
+        sender: "assistant",
         provider: providerToFinalize || finalProvider || providerToUse,
         modelUsed: modelToUse || activeModel,
         timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
+          hour: "2-digit",
+          minute: "2-digit",
         }),
         content: contentToSave,
         isStreaming: false,
-        isStopped: Boolean(isStopped)
+        isStopped: Boolean(isStopped),
       };
 
       if (activeChatIdRef.current === targetChatId) {
         setMessages((previous) =>
           previous.map((message) =>
-            message.id === assistantMessageId
-              ? completedMessage
-              : message
-          )
+            message.id === assistantMessageId ? completedMessage : message,
+          ),
         );
       }
 
@@ -765,7 +810,6 @@ export default function ChatPage() {
       isSubmittingRef.current = false;
     };
 
-    // Gradually reveal the received response.
     const pumpAnimation = () => {
       timerId = null;
 
@@ -795,10 +839,7 @@ export default function ChatPage() {
             stepSize = 2;
           }
 
-          displayedText = targetText.slice(
-            0,
-            displayedText.length + stepSize
-          );
+          displayedText = targetText.slice(0, displayedText.length + stepSize);
         }
 
         setMessages((previous) =>
@@ -809,30 +850,33 @@ export default function ChatPage() {
                   content: displayedText,
                   modelUsed: activeModel || message.modelUsed,
                   provider: finalProvider || message.provider,
-                  isStreaming: true
+                  isStreaming: true,
                 }
-              : message
-          )
+              : message,
+          ),
         );
 
         timerId = setTimeout(pumpAnimation, 18);
+
         return;
       }
 
       if (isStreamDone) {
-        void finalizeAssistantMessage(
-          targetText,
-          activeModel,
-          finalProvider
-        );
+        void finalizeAssistantMessage(targetText, activeModel, finalProvider);
       }
     };
 
     const triggerPump = () => {
-      if (isCancelled || isFinalized || timerId !== null) return;
+      if (isCancelled || isFinalized || timerId !== null) {
+        return;
+      }
 
       timerId = setTimeout(pumpAnimation, 10);
     };
+
+    const abortController = new AbortController();
+
+    activeAbortControllerRef.current = abortController;
 
     try {
       const result = await streamAIMessage({
@@ -840,17 +884,19 @@ export default function ChatPage() {
         mode: activeMode,
         prompt: promptText,
         history: historyContext,
-        username:
-          username || currentUser?.displayName || null,
+        documents,
+        username: username || currentUser?.displayName || null,
         preferences: {
-          responseLength: settings?.responseLength || 'balanced',
-          beginnerFriendly: Boolean(settings?.beginnerFriendly)
+          responseLength: settings?.responseLength || "balanced",
+          beginnerFriendly: Boolean(settings?.beginnerFriendly),
         },
         signal: abortController.signal,
 
         onStart: ({ modelUsed, provider: reportedProvider } = {}) => {
           if (modelUsed) activeModel = modelUsed;
-          if (reportedProvider) finalProvider = reportedProvider;
+          if (reportedProvider) {
+            finalProvider = reportedProvider;
+          }
 
           if (activeChatIdRef.current === targetChatId) {
             setMessages((previous) =>
@@ -859,52 +905,53 @@ export default function ChatPage() {
                   ? {
                       ...message,
                       modelUsed: activeModel,
-                      provider: finalProvider
+                      provider: finalProvider,
                     }
-                  : message
-              )
+                  : message,
+              ),
             );
           }
         },
 
         onChunk: (_chunkText, currentAccumulated) => {
-          // Accept the cumulative text supplied by the router.
-          if (typeof currentAccumulated === 'string') {
+          if (typeof currentAccumulated === "string") {
             targetText = currentAccumulated;
           }
 
           triggerPump();
-        }
+        },
       });
 
       const resolvedText =
-        typeof result?.text === 'string'
-          ? result.text
-          : targetText;
+        typeof result?.text === "string" ? result.text : targetText;
 
       targetText = resolvedText;
 
-      if (result?.modelUsed) activeModel = result.modelUsed;
-      if (result?.provider) finalProvider = result.provider;
+      if (result?.modelUsed) {
+        activeModel = result.modelUsed;
+      }
+
+      if (result?.provider) {
+        finalProvider = result.provider;
+      }
 
       isStreamDone = true;
 
-      // If the user has switched chats, persist this answer in the
-      // original conversation without touching the currently visible chat.
+      // Persist the answer in the original conversation if the user switched chats.
       if (activeChatIdRef.current !== targetChatId) {
         cancelCurrentAnimation();
 
         const completedMessage = {
           id: assistantMessageId,
-          sender: 'assistant',
+          sender: "assistant",
           provider: finalProvider || providerToUse,
           modelUsed: activeModel,
           timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
+            hour: "2-digit",
+            minute: "2-digit",
           }),
           content: resolvedText,
-          isStreaming: false
+          isStreaming: false,
         };
 
         if (targetChatId) {
@@ -913,13 +960,11 @@ export default function ChatPage() {
 
         setIsLoading(false);
         isSubmittingRef.current = false;
+
         return;
       }
 
-      if (
-        !prefersReducedMotion &&
-        displayedText.length < targetText.length
-      ) {
+      if (!prefersReducedMotion && displayedText.length < targetText.length) {
         triggerPump();
       } else {
         if (timerId !== null) {
@@ -937,17 +982,13 @@ export default function ChatPage() {
                   content: targetText,
                   modelUsed: activeModel || message.modelUsed,
                   provider: finalProvider || message.provider,
-                  isStreaming: false
+                  isStreaming: false,
                 }
-              : message
-          )
+              : message,
+          ),
         );
 
-        await finalizeAssistantMessage(
-          targetText,
-          activeModel,
-          finalProvider
-        );
+        await finalizeAssistantMessage(targetText, activeModel, finalProvider);
       }
     } catch (error) {
       isStreamDone = true;
@@ -964,35 +1005,36 @@ export default function ChatPage() {
       const isAbortedByUser =
         isUserStoppedRef.current ||
         abortController.signal.aborted ||
-        error?.name === 'AbortError' ||
-        String(error?.message || '').toLowerCase().includes('aborted');
+        error?.name === "AbortError" ||
+        String(error?.message || "")
+          .toLowerCase()
+          .includes("aborted");
 
       if (isAbortedByUser) {
-        // Distinguish intentional stop from genuine error: preserve partial response
         const stoppedText =
-          targetText.trim().length > 0 ? targetText : 'Response generation stopped.';
+          targetText.trim().length > 0
+            ? targetText
+            : "Response generation stopped.";
 
         const stoppedMessage = {
           id: assistantMessageId,
-          sender: 'assistant',
+          sender: "assistant",
           provider: finalProvider || providerToUse,
           modelUsed: activeModel,
           timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
+            hour: "2-digit",
+            minute: "2-digit",
           }),
           content: stoppedText,
           isStreaming: false,
-          isStopped: true
+          isStopped: true,
         };
 
         if (activeChatIdRef.current === targetChatId) {
           setMessages((previous) =>
             previous.map((message) =>
-              message.id === assistantMessageId
-                ? stoppedMessage
-                : message
-            )
+              message.id === assistantMessageId ? stoppedMessage : message,
+            ),
           );
         }
 
@@ -1002,25 +1044,21 @@ export default function ChatPage() {
 
         setIsLoading(false);
         isSubmittingRef.current = false;
+
         return;
       }
 
-      console.error('Streaming prompt execution error:', error);
+      console.error("Streaming prompt execution error:", error);
 
-      isStreamDone = true;
-      cancelCurrentAnimation();
+      let rawMsg = String(error?.message || "");
 
-      if (activeAnimationRef.current === cancelCurrentAnimation) {
-        activeAnimationRef.current = null;
-      }
-
-      // Parse error message and extract JSON if stringified
-      let rawMsg = String(error?.message || '');
-      if (rawMsg.includes('{') && rawMsg.includes('}')) {
+      if (rawMsg.includes("{") && rawMsg.includes("}")) {
         try {
           const match = rawMsg.match(/\{[\s\S]*\}/);
+
           if (match) {
             const parsed = JSON.parse(match[0]);
+
             if (parsed.error?.message) {
               rawMsg = parsed.error.message;
             }
@@ -1030,36 +1068,40 @@ export default function ChatPage() {
 
       const is503 =
         (error?.code === 503 ||
-          error?.status === 'UNAVAILABLE' ||
-          rawMsg.toLowerCase().includes('high demand') ||
-          rawMsg.toLowerCase().includes('spikes in demand') ||
-          rawMsg.toLowerCase().includes('overloaded')) &&
+          error?.status === "UNAVAILABLE" ||
+          rawMsg.toLowerCase().includes("high demand") ||
+          rawMsg.toLowerCase().includes("spikes in demand") ||
+          rawMsg.toLowerCase().includes("overloaded")) &&
         error?.code !== 500;
 
-      const is500 = error?.code === 500 || error?.status === 'INTERNAL';
+      const is500 = error?.code === 500 || error?.status === "INTERNAL";
+
       const isAuthError =
         error?.code === 401 ||
         error?.code === 403 ||
-        error?.status === 'UNAUTHENTICATED' ||
-        error?.status === 'PERMISSION_DENIED';
+        error?.status === "UNAUTHENTICATED" ||
+        error?.status === "PERMISSION_DENIED";
+
       const isRateLimit =
-        error?.code === 429 || error?.status === 'RESOURCE_EXHAUSTED';
+        error?.code === 429 || error?.status === "RESOURCE_EXHAUSTED";
 
       let friendlyMsg = rawMsg;
+
       if (is503) {
         friendlyMsg =
-          'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.';
+          "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.";
       } else if (is500) {
         friendlyMsg =
-          rawMsg && !rawMsg.includes('Server request failed') && !rawMsg.includes('Internal Server Error')
+          rawMsg &&
+          !rawMsg.includes("Server request failed") &&
+          !rawMsg.includes("Internal Server Error")
             ? `The AI service encountered an internal error: ${rawMsg}. You can retry or switch to another provider below.`
-            : `The AI service encountered an internal error (HTTP 500). Please try again in a moment, or switch to Groq or OpenRouter below.`;
+            : "The AI service encountered an internal error (HTTP 500). Please try again in a moment, or switch to Groq or OpenRouter below.";
       } else if (isAuthError) {
-        friendlyMsg =
-          `Authentication or permission error with ${providerToUse}. Please check your API key configuration or switch providers below.`;
+        friendlyMsg = `Authentication or permission error with ${providerToUse}. Please check your API key configuration or switch providers below.`;
       } else if (isRateLimit) {
         friendlyMsg =
-          'AI rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.';
+          "AI rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.";
       } else if (!friendlyMsg) {
         friendlyMsg = `An unexpected error occurred while communicating with ${providerToUse}.`;
       }
@@ -1068,27 +1110,25 @@ export default function ChatPage() {
         if (targetText.trim().length > 0) {
           const partialMessage = {
             id: assistantMessageId,
-            sender: 'assistant',
+            sender: "assistant",
             provider: finalProvider || providerToUse,
             modelUsed: activeModel,
             timestamp: new Date().toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit'
+              hour: "2-digit",
+              minute: "2-digit",
             }),
             content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
             isStreaming: false,
             isInterrupted: true,
             failedPrompt: promptText,
             failedProvider: finalProvider || providerToUse,
-            canSwitchProvider: true
+            canSwitchProvider: true,
           };
 
           setMessages((previous) =>
             previous.map((message) =>
-              message.id === assistantMessageId
-                ? partialMessage
-                : message
-            )
+              message.id === assistantMessageId ? partialMessage : message,
+            ),
           );
 
           if (targetChatId) {
@@ -1097,42 +1137,40 @@ export default function ChatPage() {
         } else {
           const errorMessage = {
             id: `error-${Date.now()}`,
-            sender: 'assistant',
+            sender: "assistant",
             isError: true,
             failedPrompt: promptText,
             failedProvider: finalProvider || providerToUse,
             canSwitchProvider: true,
             timestamp: new Date().toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit'
+              hour: "2-digit",
+              minute: "2-digit",
             }),
-            content: friendlyMsg
+            content: friendlyMsg,
           };
 
           setMessages((previous) =>
             previous.map((message) =>
-              message.id === assistantMessageId
-                ? errorMessage
-                : message
-            )
+              message.id === assistantMessageId ? errorMessage : message,
+            ),
           );
         }
       } else if (targetChatId && targetText.trim().length > 0) {
         const partialMessage = {
           id: assistantMessageId,
-          sender: 'assistant',
+          sender: "assistant",
           provider: finalProvider || providerToUse,
           modelUsed: activeModel,
           timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
+            hour: "2-digit",
+            minute: "2-digit",
           }),
           content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
           isStreaming: false,
           isInterrupted: true,
           failedPrompt: promptText,
           failedProvider: finalProvider || providerToUse,
-          canSwitchProvider: true
+          canSwitchProvider: true,
         };
 
         await persistMessageSafe(targetChatId, partialMessage);
@@ -1143,43 +1181,61 @@ export default function ChatPage() {
     }
   };
 
-  // Submit a new message.
+  // Submit a new message, including attached documents.
+  // Submit a new message, with optional extracted document attachments.
   const handleSubmit = async () => {
     stopSpeech();
 
-    const trimmed = inputValue
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .trim();
+    const trimmed = inputValue.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
 
-    if (!trimmed || isLoading || isSubmittingRef.current) return;
+    // Only use successfully extracted documents.
+    const readyAttachments = attachments.filter(
+      (attachment) =>
+        attachment?.status === "ready" ||
+        (!attachment?.status &&
+          typeof attachment?.text === "string" &&
+          attachment.text.trim().length > 0),
+    );
+
+    // Allow document-only messages, but prevent empty submissions.
+    if (
+      (!trimmed && readyAttachments.length === 0) ||
+      isLoading ||
+      isSubmittingRef.current ||
+      isExtractingAttachments
+    ) {
+      return;
+    }
 
     isSubmittingRef.current = true;
     setIsLoading(true);
     setPersistenceError(null);
 
+    const promptForAI =
+      trimmed ||
+      "Please analyze the attached document and help me understand it.";
+
     let currentChatId = activeChatIdRef.current;
 
     try {
-      // Create a conversation only when the user sends their first message.
+      // Create a conversation if one does not already exist.
       if (!currentChatId) {
-        const titleSnippet = generateChatTitle(trimmed);
+        const titleSnippet = generateChatTitle(promptForAI);
 
         if (isCloudEnabled && currentUser?.uid) {
           try {
             currentChatId = await createChatDocument(
               currentUser.uid,
               titleSnippet,
-              activeMode
+              activeMode,
             );
 
-            // Prevent the history effect from replacing the new chat's
-            // messages with an empty database result.
             skipNextChatLoadRef.current = currentChatId;
           } catch (error) {
-            console.warn('Could not create Firestore chat doc:', error);
+            console.warn("Could not create Firestore chat document:", error);
 
             setPersistenceError(
-              'Failed to initialize conversation in Cloud Firestore.'
+              "Failed to initialize conversation in Cloud Firestore.",
             );
 
             setIsLoading(false);
@@ -1189,19 +1245,17 @@ export default function ChatPage() {
         } else {
           currentChatId = `guest-${Date.now()}`;
 
-          // Prevent the history effect from replacing the new chat's
-          // messages with an empty guest list before they are persisted.
           skipNextChatLoadRef.current = currentChatId;
 
           const newGuestChat = {
             id: currentChatId,
             title: titleSnippet,
-            mode: activeMode || 'general',
-            timestamp: 'Just now',
+            mode: activeMode || "general",
+            timestamp: "Just now",
             rawUpdatedAt: Date.now(),
             isPinned: false,
             pinnedAt: null,
-            messages: []
+            messages: [],
           };
 
           setUserChats((previous) => {
@@ -1211,73 +1265,114 @@ export default function ChatPage() {
           });
         }
 
-        // Update the ref immediately; setState alone does not do this
-        // synchronously, and the first AI chunks may arrive before rerender.
+        // Update the active conversation immediately.
         activeChatIdRef.current = currentChatId;
         setActiveChatId(currentChatId);
 
-        sessionStorage.setItem(
-          'orvix_active_chat',
-          currentChatId
-        );
-        sessionStorage.setItem(
-          'chatora_active_chat',
-          currentChatId
-        );
+        sessionStorage.setItem("orvix_active_chat", currentChatId);
+
+        sessionStorage.setItem("chatora_active_chat", currentChatId);
       }
 
       const now = Date.now();
 
+      /*
+       * Store display-only attachment metadata in the user message.
+       *
+       * Do not put extracted document text here. The actual extracted
+       * documents are passed separately to executePrompt below.
+       */
+      const messageAttachments = readyAttachments.map((attachment, index) => {
+        const name =
+          attachment.name ||
+          attachment.filename ||
+          attachment.fileName ||
+          attachment.originalName ||
+          `Attached document ${index + 1}`;
+
+        const rawSize = attachment.size ?? attachment.fileSize ?? 0;
+
+        const parsedSize = Number(rawSize);
+
+        const size = Number.isFinite(parsedSize) ? parsedSize : 0;
+
+        return {
+          id: attachment.id || `${name}-${index}`,
+          name,
+          size,
+          type: attachment.type || attachment.mimeType || "",
+          pageCount: attachment.pageCount,
+          slideCount: attachment.slideCount,
+          rowCount: attachment.rowCount,
+        };
+      });
+
+      // Create the user message with its attachment metadata.
       const userMessage = {
         id: `user-${now}`,
-        sender: 'user',
+        sender: "user",
         timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
+          hour: "2-digit",
+          minute: "2-digit",
         }),
-        content: trimmed
+        content: promptForAI,
+        ...(messageAttachments.length > 0
+          ? { attachments: messageAttachments }
+          : {}),
       };
 
-      const assistantMessageId =
-        `${selectedProvider}-${now}-assistant`;
+      const assistantMessageId = `${selectedProvider}-${now}-assistant`;
 
       const initialAssistantMessage = {
         id: assistantMessageId,
-        sender: 'assistant',
+        sender: "assistant",
         provider: selectedProvider,
         modelUsed: null,
         timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
+          hour: "2-digit",
+          minute: "2-digit",
         }),
-        content: '',
-        isStreaming: true
+        content: "",
+        isStreaming: true,
       };
 
-      const validHistory = messages.filter(
-        (message) => !message.isError
-      );
+      const validHistory = messages.filter((message) => !message.isError);
 
+      // Immediately display the user message and assistant placeholder.
       setMessages((previous) => [
         ...previous,
         userMessage,
-        initialAssistantMessage
+        initialAssistantMessage,
       ]);
 
-      setInputValue('');
+      setInputValue("");
 
+      // Clear the composer attachments after capturing them above.
+      setAttachments([]);
+      setAttachmentError(null);
+
+      // Persist the user message with its attachment metadata.
       if (currentChatId) {
         void persistMessageSafe(currentChatId, userMessage);
       }
 
+      /*
+       * Pass the extracted documents separately to the AI.
+       *
+       * This assumes your executePrompt function accepts documents
+       * as its sixth argument, as in your current document-aware code.
+       */
       await executePrompt(
-        trimmed,
+        promptForAI,
         validHistory,
         currentChatId,
-        assistantMessageId
+        assistantMessageId,
+        null,
+        readyAttachments,
       );
     } catch (error) {
-      console.error('Submission error:', error);
+      console.error("Submission error:", error);
+
       setIsLoading(false);
       isSubmittingRef.current = false;
     }
@@ -1287,11 +1382,7 @@ export default function ChatPage() {
   const handleRetry = (failedMessage) => {
     stopSpeech();
 
-    if (
-      isLoading ||
-      isSubmittingRef.current ||
-      !failedMessage?.failedPrompt
-    ) {
+    if (isLoading || isSubmittingRef.current || !failedMessage?.failedPrompt) {
       return;
     }
 
@@ -1299,35 +1390,32 @@ export default function ChatPage() {
     setIsLoading(true);
 
     const currentChatId = activeChatIdRef.current;
+
     const providerToUse = failedMessage.failedProvider || selectedProvider;
 
     const updatedMessages = messages.filter(
-      (message) => message.id !== failedMessage.id
+      (message) => message.id !== failedMessage.id,
     );
 
-    const assistantMessageId =
-      `${providerToUse}-${Date.now()}-retry`;
+    const assistantMessageId = `${providerToUse}-${Date.now()}-retry`;
 
     const initialAssistantMessage = {
       id: assistantMessageId,
-      sender: 'assistant',
+      sender: "assistant",
       provider: providerToUse,
       modelUsed: null,
       timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
+        hour: "2-digit",
+        minute: "2-digit",
       }),
-      content: '',
-      isStreaming: true
+      content: "",
+      isStreaming: true,
     };
 
-    setMessages([
-      ...updatedMessages,
-      initialAssistantMessage
-    ]);
+    setMessages([...updatedMessages, initialAssistantMessage]);
 
     const validHistory = updatedMessages.filter(
-      (message) => !message.isError && !message.isInterrupted
+      (message) => !message.isError && !message.isInterrupted,
     );
 
     void executePrompt(
@@ -1335,22 +1423,19 @@ export default function ChatPage() {
       validHistory,
       currentChatId,
       assistantMessageId,
-      providerToUse
+      providerToUse,
     );
   };
 
-  // User-controlled provider switch & retry without duplicating conversation messages
+  // Switch provider and retry without duplicating conversation messages.
   const handleSwitchProviderAndRetry = (failedMessage, newProviderId) => {
     stopSpeech();
 
-    if (
-      isLoading ||
-      isSubmittingRef.current ||
-      !failedMessage?.failedPrompt
-    ) {
+    if (isLoading || isSubmittingRef.current || !failedMessage?.failedPrompt) {
       return;
     }
 
+    // FIX: Removed the stray, invalid standalone "setAttachments" line.
     handleSelectProvider(newProviderId);
 
     isSubmittingRef.current = true;
@@ -1359,32 +1444,28 @@ export default function ChatPage() {
     const currentChatId = activeChatIdRef.current;
 
     const updatedMessages = messages.filter(
-      (message) => message.id !== failedMessage.id
+      (message) => message.id !== failedMessage.id,
     );
 
-    const assistantMessageId =
-      `${newProviderId}-${Date.now()}-fallback`;
+    const assistantMessageId = `${newProviderId}-${Date.now()}-fallback`;
 
     const initialAssistantMessage = {
       id: assistantMessageId,
-      sender: 'assistant',
+      sender: "assistant",
       provider: newProviderId,
       modelUsed: null,
       timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
+        hour: "2-digit",
+        minute: "2-digit",
       }),
-      content: '',
-      isStreaming: true
+      content: "",
+      isStreaming: true,
     };
 
-    setMessages([
-      ...updatedMessages,
-      initialAssistantMessage
-    ]);
+    setMessages([...updatedMessages, initialAssistantMessage]);
 
     const validHistory = updatedMessages.filter(
-      (message) => !message.isError && !message.isInterrupted
+      (message) => !message.isError && !message.isInterrupted,
     );
 
     void executePrompt(
@@ -1392,7 +1473,7 @@ export default function ChatPage() {
       validHistory,
       currentChatId,
       assistantMessageId,
-      newProviderId
+      newProviderId,
     );
   };
 
@@ -1401,35 +1482,44 @@ export default function ChatPage() {
     setInputValue(promptText);
 
     setMessages((previous) =>
-      previous.filter(
-        (message) => message.failedPrompt !== promptText
-      )
+      previous.filter((message) => message.failedPrompt !== promptText),
     );
   };
 
-  // Regenerate an assistant response in-place using current model & preserved conversation context
+  // Regenerate an assistant response in place.
   const handleRegenerate = async (assistantMessage) => {
     stopSpeech();
 
-    if (isLoading || isSubmittingRef.current || !assistantMessage?.id) return;
+    if (isLoading || isSubmittingRef.current || !assistantMessage?.id) {
+      return;
+    }
 
     const currentChatId = activeChatIdRef.current;
-    const msgIndex = messages.findIndex((m) => m.id === assistantMessage.id);
+
+    const msgIndex = messages.findIndex(
+      (message) => message.id === assistantMessage.id,
+    );
+
     if (msgIndex === -1) return;
 
-    // Find the user prompt preceding this assistant message
     const precedingUserMessage = [...messages.slice(0, msgIndex)]
       .reverse()
-      .find((m) => m.sender === 'user');
+      .find((message) => message.sender === "user");
 
     if (!precedingUserMessage || !precedingUserMessage.content) {
-      console.warn('Cannot regenerate: preceding user prompt not found.');
+      console.warn("Cannot regenerate: preceding user prompt not found.");
       return;
     }
 
     const userPromptText = precedingUserMessage.content;
-    const userMsgIndex = messages.findIndex((m) => m.id === precedingUserMessage.id);
-    const validHistory = messages.slice(0, userMsgIndex).filter((m) => !m.isError);
+
+    const userMsgIndex = messages.findIndex(
+      (message) => message.id === precedingUserMessage.id,
+    );
+
+    const validHistory = messages
+      .slice(0, userMsgIndex)
+      .filter((message) => !message.isError);
 
     isSubmittingRef.current = true;
     setIsLoading(true);
@@ -1437,47 +1527,47 @@ export default function ChatPage() {
 
     const targetAssistantId = assistantMessage.id;
 
-    // Allow cache/Firestore overwrite for this message ID
     persistedMessageIdsRef.current.delete(targetAssistantId);
 
-    // Update in-place to streaming state without creating duplicate messages
     setMessages((previous) =>
-      previous.map((m) =>
-        m.id === targetAssistantId
+      previous.map((message) =>
+        message.id === targetAssistantId
           ? {
-              ...m,
-              content: '',
+              ...message,
+              content: "",
               modelUsed: null,
               provider: selectedProvider,
               timestamp: new Date().toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit'
+                hour: "2-digit",
+                minute: "2-digit",
               }),
               isStreaming: true,
               isError: false,
-              isStopped: false
+              isStopped: false,
             }
-          : m
-      )
+          : message,
+      ),
     );
 
     await executePrompt(
       userPromptText,
       validHistory,
       currentChatId,
-      targetAssistantId
+      targetAssistantId,
     );
   };
 
-  // Stop active AI response generation
+  // Stop active AI response generation.
   const handleStopGenerating = () => {
     stopSpeech();
+
     isUserStoppedRef.current = true;
 
     if (activeAbortControllerRef.current) {
       try {
         activeAbortControllerRef.current.abort();
       } catch (_) {}
+
       activeAbortControllerRef.current = null;
     }
 
@@ -1490,31 +1580,36 @@ export default function ChatPage() {
     isSubmittingRef.current = false;
   };
 
-  // Start inline editing mode for a user message
+  // Start inline editing mode.
   const handleStartEdit = (messageId) => {
     if (isLoading || isSubmittingRef.current) return;
+
     setEditingMessageId(messageId);
   };
 
-  // Cancel inline editing mode
+  // Cancel inline editing mode.
   const handleCancelEdit = () => {
     setEditingMessageId(null);
   };
 
-  // Edit and resend an eligible user message with contextual branch truncation
+  // Edit and resend a user message, truncating the later conversation branch.
   const handleEditResend = async (userMessageId, newPromptText) => {
     stopSpeech();
 
-    const trimmed = (newPromptText || '')
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    const trimmed = (newPromptText || "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
       .trim();
 
-    if (!trimmed || isLoading || isSubmittingRef.current) return;
+    if (!trimmed || isLoading || isSubmittingRef.current) {
+      return;
+    }
 
-    const userMsgIndex = messages.findIndex((m) => m.id === userMessageId);
+    const userMsgIndex = messages.findIndex(
+      (message) => message.id === userMessageId,
+    );
+
     if (userMsgIndex === -1) return;
 
-    // Reset inline edit mode
     setEditingMessageId(null);
 
     isSubmittingRef.current = true;
@@ -1523,161 +1618,190 @@ export default function ChatPage() {
 
     let currentChatId = activeChatIdRef.current;
 
-    // Ensure we have an active chat ID
     if (!currentChatId) {
       const titleSnippet = generateChatTitle(trimmed);
+
       if (isCloudEnabled && currentUser?.uid) {
         try {
-          currentChatId = await createChatDocument(currentUser.uid, titleSnippet);
+          currentChatId = await createChatDocument(
+            currentUser.uid,
+            titleSnippet,
+          );
+
           skipNextChatLoadRef.current = currentChatId;
         } catch (error) {
-          console.warn('Could not create Firestore chat doc for edit:', error);
-          setPersistenceError('Failed to initialize conversation in Cloud Firestore.');
+          console.warn("Could not create Firestore chat doc for edit:", error);
+
+          setPersistenceError(
+            "Failed to initialize conversation in Cloud Firestore.",
+          );
+
           setIsLoading(false);
           isSubmittingRef.current = false;
+
           return;
         }
       } else {
         currentChatId = `guest-${Date.now()}`;
+
         const newGuestChat = {
           id: currentChatId,
           title: titleSnippet,
-          timestamp: 'Just now',
+          timestamp: "Just now",
           rawUpdatedAt: Date.now(),
           isPinned: false,
           pinnedAt: null,
-          messages: []
+          messages: [],
         };
+
         setUserChats((previous) => {
           const next = [newGuestChat, ...previous];
+
           saveGuestChats(next);
+
           return next;
         });
       }
 
       activeChatIdRef.current = currentChatId;
       setActiveChatId(currentChatId);
-      sessionStorage.setItem('orvix_active_chat', currentChatId);
-      sessionStorage.setItem('chatora_active_chat', currentChatId);
+
+      sessionStorage.setItem("orvix_active_chat", currentChatId);
+
+      sessionStorage.setItem("chatora_active_chat", currentChatId);
     }
 
-    // 1. Context: identify all previous non-error messages strictly before this message
     const earlierMessages = messages.slice(0, userMsgIndex);
-    const validHistory = earlierMessages.filter((m) => !m.isError);
 
-    // 2. Truncation: identify all contradictory later messages to be removed from the thread
+    const validHistory = earlierMessages.filter((message) => !message.isError);
+
     const laterMessages = messages.slice(userMsgIndex + 1);
-    const laterMessageIds = laterMessages.map((m) => m.id).filter(Boolean);
 
-    // 3. Invalidate persistence cache for truncated message IDs
+    const laterMessageIds = laterMessages
+      .map((message) => message.id)
+      .filter(Boolean);
+
     laterMessageIds.forEach((id) => {
       persistedMessageIdsRef.current.delete(id);
     });
 
-    // 4. Update the user message in-place with the edited prompt and current timestamp
     const updatedUserMessage = {
       ...messages[userMsgIndex],
       content: trimmed,
       timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      })
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
     };
 
-    // Remove user message ID from persistence cache to allow fresh write
     persistedMessageIdsRef.current.delete(updatedUserMessage.id);
 
-    // 5. Create fresh assistant response placeholder
     const now = Date.now();
+
     const assistantMessageId = `${selectedProvider}-${now}-assistant`;
+
     const initialAssistantMessage = {
       id: assistantMessageId,
-      sender: 'assistant',
+      sender: "assistant",
       provider: selectedProvider,
       modelUsed: null,
       timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
+        hour: "2-digit",
+        minute: "2-digit",
       }),
-      content: '',
-      isStreaming: true
+      content: "",
+      isStreaming: true,
     };
 
-    // 6. Truncate conversation state to: earlier + updatedUserMessage + initialAssistantMessage
     const nextMessages = [
       ...earlierMessages,
       updatedUserMessage,
-      initialAssistantMessage
+      initialAssistantMessage,
     ];
+
     setMessages(nextMessages);
 
-    // 7. Persist changes to Cloud Firestore or Guest Storage
     if (isCloudEnabled && currentUser?.uid) {
       if (laterMessageIds.length > 0) {
-        deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds).catch((err) => {
-          console.warn('Could not delete truncated messages from Cloud Firestore:', err);
+        deleteChatMessages(
+          currentUser.uid,
+          currentChatId,
+          laterMessageIds,
+        ).catch((error) => {
+          console.warn(
+            "Could not delete truncated messages from Cloud Firestore:",
+            error,
+          );
         });
       }
+
       void persistMessageSafe(currentChatId, updatedUserMessage);
     } else {
       setUserChats((previous) => {
         const next = previous.map((chat) => {
           if (chat.id !== currentChatId) return chat;
+
           return {
             ...chat,
             rawUpdatedAt: Date.now(),
-            messages: nextMessages
+            messages: nextMessages,
           };
         });
+
         saveGuestChats(next);
+
         return next;
       });
     }
 
-    // 8. If editing the initial message of the conversation, update the conversation title
     if (userMsgIndex === 0) {
       const refreshedTitle = generateChatTitle(trimmed);
+
       void handleRenameChat(currentChatId, refreshedTitle);
     }
 
-    // 9. Execute AI stream with correct earlier history and edited prompt
     await executePrompt(
       trimmed,
       validHistory,
       currentChatId,
-      assistantMessageId
+      assistantMessageId,
     );
   };
 
-  // Export handlers for active conversation
+  // Export handlers for the active conversation.
   const hasExportableMessages = messages.some(
-    (m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
+    (message) =>
+      !message.isError &&
+      typeof message.content === "string" &&
+      message.content.trim().length > 0,
   );
 
   const handleExportMarkdown = () => {
     if (messagesLoading) {
       setExportNotice({
-        type: 'warning',
-        message: 'Please wait until the conversation finishes loading before exporting.'
+        type: "warning",
+        message:
+          "Please wait until the conversation finishes loading before exporting.",
       });
+
       return;
     }
 
     const result = exportAsMarkdown({
-      title: activeTitle || 'Conversation',
+      title: activeTitle || "Conversation",
       messages,
-      username
+      username,
     });
 
     if (result.success) {
       setExportNotice({
-        type: 'success',
-        message: `Exported conversation as Markdown (${result.filename}).`
+        type: "success",
+        message: `Exported conversation as Markdown (${result.filename}).`,
       });
     } else {
       setExportNotice({
-        type: 'warning',
-        message: result.error || 'This conversation has no messages to export.'
+        type: "warning",
+        message: result.error || "This conversation has no messages to export.",
       });
     }
   };
@@ -1685,27 +1809,29 @@ export default function ChatPage() {
   const handleExportText = () => {
     if (messagesLoading) {
       setExportNotice({
-        type: 'warning',
-        message: 'Please wait until the conversation finishes loading before exporting.'
+        type: "warning",
+        message:
+          "Please wait until the conversation finishes loading before exporting.",
       });
+
       return;
     }
 
     const result = exportAsPlainText({
-      title: activeTitle || 'Conversation',
+      title: activeTitle || "Conversation",
       messages,
-      username
+      username,
     });
 
     if (result.success) {
       setExportNotice({
-        type: 'success',
-        message: `Exported conversation as Plain Text (${result.filename}).`
+        type: "success",
+        message: `Exported conversation as Plain Text (${result.filename}).`,
       });
     } else {
       setExportNotice({
-        type: 'warning',
-        message: result.error || 'This conversation has no messages to export.'
+        type: "warning",
+        message: result.error || "This conversation has no messages to export.",
       });
     }
   };
@@ -1736,7 +1862,7 @@ export default function ChatPage() {
           role="status"
           aria-live="polite"
         >
-          {exportNotice.type === 'success' ? (
+          {exportNotice.type === "success" ? (
             <Check
               size={15}
               className="persistence-alert-icon text-emerald-400"
@@ -1748,9 +1874,7 @@ export default function ChatPage() {
             />
           )}
 
-          <span className="persistence-alert-text">
-            {exportNotice.message}
-          </span>
+          <span className="persistence-alert-text">{exportNotice.message}</span>
 
           <button
             type="button"
@@ -1762,19 +1886,12 @@ export default function ChatPage() {
           </button>
         </div>
       )}
-      {persistenceError && (
-        <div
-          className="persistence-alert-banner"
-          role="status"
-        >
-          <AlertCircle
-            size={15}
-            className="persistence-alert-icon"
-          />
 
-          <span className="persistence-alert-text">
-            {persistenceError}
-          </span>
+      {persistenceError && (
+        <div className="persistence-alert-banner" role="status">
+          <AlertCircle size={15} className="persistence-alert-icon" />
+
+          <span className="persistence-alert-text">{persistenceError}</span>
 
           <button
             type="button"
@@ -1814,6 +1931,12 @@ export default function ChatPage() {
         onSelectMode={handleSelectMode}
         modeChangeNotice={modeChangeNotice}
         onDismissModeNotice={() => setModeChangeNotice(null)}
+        attachments={attachments}
+        onAttachFiles={handleAttachFiles}
+        onRemoveAttachment={handleRemoveAttachment}
+        attachmentError={attachmentError}
+        onClearAttachmentError={handleClearAttachmentError}
+        isExtractingAttachments={isExtractingAttachments}
       />
     </Layout>
   );

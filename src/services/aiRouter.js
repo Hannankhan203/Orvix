@@ -181,6 +181,7 @@ export async function streamAIMessage({
   history = [],
   username = null,
   preferences = null,
+  documents = [],
   onChunk,
   onStart,
   signal
@@ -209,6 +210,7 @@ export async function streamAIMessage({
           history,
           username: username ? String(username).trim() : null,
           preferences: preferences || null,
+          documents,
           stream: true
         }),
         signal
@@ -347,7 +349,7 @@ export async function streamAIMessage({
   // Client-side direct service fallback
   switch (normalizedProvider) {
     case AI_PROVIDERS.GROQ: {
-      const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
+      const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, documents, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.GROQ
@@ -355,7 +357,7 @@ export async function streamAIMessage({
     }
 
     case AI_PROVIDERS.OPENROUTER: {
-      const result = await streamOpenRouterMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
+      const result = await streamOpenRouterMessage({ prompt, history, mode: normalizedMode, documents, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
@@ -364,7 +366,7 @@ export async function streamAIMessage({
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, onChunk, signal });
+      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, documents, onChunk, signal });
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI
