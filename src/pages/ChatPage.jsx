@@ -843,6 +843,7 @@ export default function ChatPage() {
     const providerToUse = overrideProvider || selectedProvider;
 
     setIsLoading(true);
+    isSubmittingRef.current = true;
     isUserStoppedRef.current = false;
 
     if (activeAbortControllerRef.current) {
@@ -887,6 +888,7 @@ export default function ChatPage() {
       modelToUse,
       providerToFinalize,
       isStopped = false,
+      fallbackOccurred = false,
     ) => {
       if (isCancelled || isFinalized) return;
 
@@ -904,6 +906,7 @@ export default function ChatPage() {
         content: contentToSave,
         isStreaming: false,
         isStopped: Boolean(isStopped),
+        ...(fallbackOccurred ? { fallbackOccurred: true } : {}),
       };
 
       if (activeChatIdRef.current === targetChatId) {
@@ -1027,6 +1030,24 @@ export default function ChatPage() {
                       ...message,
                       modelUsed: activeModel,
                       provider: finalProvider,
+                    }
+                  : message,
+              ),
+            );
+          }
+        },
+
+        onFallback: ({ fromProvider, toProvider, reason } = {}) => {
+          if (toProvider) {
+            finalProvider = toProvider;
+          }
+          if (activeChatIdRef.current === targetChatId) {
+            setMessages((previous) =>
+              previous.map((message) =>
+                message.id === assistantMessageId
+                  ? {
+                      ...message,
+                      provider: toProvider || message.provider,
                     }
                   : message,
               ),
@@ -1208,9 +1229,13 @@ export default function ChatPage() {
 
       let friendlyMsg = rawMsg;
 
-      if (is503) {
+      if (error?.allProvidersFailed && rawMsg) {
+        friendlyMsg = rawMsg;
+      } else if (is503) {
         friendlyMsg =
-          "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.";
+          rawMsg && (rawMsg.includes("high demand") || rawMsg.includes("spikes in demand") || rawMsg.includes("overloaded"))
+            ? rawMsg
+            : "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.";
       } else if (is500) {
         friendlyMsg =
           rawMsg &&
@@ -1222,7 +1247,9 @@ export default function ChatPage() {
         friendlyMsg = `Authentication or permission error with ${providerToUse}. Please check your API key configuration or switch providers below.`;
       } else if (isRateLimit) {
         friendlyMsg =
-          "AI rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.";
+          rawMsg && (rawMsg.includes("quota") || rawMsg.includes("Gemini has reached") || rawMsg.includes("rate limit") || rawMsg.includes("Too Many Requests"))
+            ? rawMsg
+            : "AI rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.";
       } else if (!friendlyMsg) {
         friendlyMsg = `An unexpected error occurred while communicating with ${providerToUse}.`;
       }

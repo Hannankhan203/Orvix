@@ -30,16 +30,24 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "20mb" }));
 
 // Handle payload too large errors cleanly
-app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (err?.type === "entity.too.large" || err?.status === 413) {
-    return res.status(413).json({
-      error: "Request payload exceeds the maximum allowed upload limit (20 MB). Please reduce the size of attached images or documents.",
-      code: 413,
-      status: "PAYLOAD_TOO_LARGE",
-    });
-  }
-  next(err);
-});
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    if (err?.type === "entity.too.large" || err?.status === 413) {
+      return res.status(413).json({
+        error:
+          "Request payload exceeds the maximum allowed upload limit (20 MB). Please reduce the size of attached images or documents.",
+        code: 413,
+        status: "PAYLOAD_TOO_LARGE",
+      });
+    }
+    next(err);
+  },
+);
 
 // Helper to pause execution with backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,8 +116,8 @@ function logAIDiagnostic(data: DiagnosticLogData) {
   const statusStr = data.httpStatus
     ? `HTTP ${data.httpStatus}`
     : data.upstreamStatus
-    ? `HTTP ${data.upstreamStatus}`
-    : "HTTP N/A";
+      ? `HTTP ${data.upstreamStatus}`
+      : "HTTP N/A";
   const codeStr = data.upstreamErrorCode ? `[${data.upstreamErrorCode}]` : "";
   const actionDesc = data.willRetry
     ? `Will retry (attempt ${data.attempt + 1}/${data.maxAttempts}${data.retryAfterSeconds ? ` after ${data.retryAfterSeconds}s` : ""})`
@@ -143,12 +151,21 @@ export function parseGeminiError(err: any): {
   const originalErrorName = String(err?.name || "Error");
   const originalErrorMessage = String(err?.message || err || "");
   let rawCandidate = err?.status || err?.statusCode;
-  if (!rawCandidate && Number.isInteger(Number(err?.code)) && Number(err?.code) >= 100 && Number(err?.code) <= 599) {
+  if (
+    !rawCandidate &&
+    Number.isInteger(Number(err?.code)) &&
+    Number(err?.code) >= 100 &&
+    Number(err?.code) <= 599
+  ) {
     rawCandidate = err?.code;
   }
   let statusCode = toValidHttpStatus(rawCandidate, 500);
-  let statusText = String(err?.statusText || (typeof err?.status === 'string' ? err.status : '') || '');
-  let message = String(err?.message || err || '');
+  let statusText = String(
+    err?.statusText ||
+      (typeof err?.status === "string" ? err.status : "") ||
+      "",
+  );
+  let message = String(err?.message || err || "");
   let isRetryable = false;
   let isUnavailable = false;
   let retryAfterSeconds: number | undefined = undefined;
@@ -161,7 +178,12 @@ export function parseGeminiError(err: any): {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
       if (parsed.error) {
-        if (parsed.error.code && Number.isInteger(Number(parsed.error.code)) && Number(parsed.error.code) >= 100 && Number(parsed.error.code) <= 599) {
+        if (
+          parsed.error.code &&
+          Number.isInteger(Number(parsed.error.code)) &&
+          Number(parsed.error.code) >= 100 &&
+          Number(parsed.error.code) <= 599
+        ) {
           statusCode = Number(parsed.error.code);
         }
         if (parsed.error.status) statusText = String(parsed.error.status);
@@ -205,7 +227,8 @@ export function parseGeminiError(err: any): {
     statusText = "DEADLINE_EXCEEDED";
     isUnavailable = false;
     isRetryable = true;
-    message = "The AI service timed out while waiting for a response. Please try again.";
+    message =
+      "The AI service timed out while waiting for a response. Please try again.";
   } else if (
     statusCode === 503 ||
     statusCode === 504 ||
@@ -235,7 +258,7 @@ export function parseGeminiError(err: any): {
     statusCode = 429;
     statusText = "RESOURCE_EXHAUSTED";
     isUnavailable = true;
-    isRetryable = true;
+    isRetryable = false; // Rate-limit / quota exhaustion should not loop through same-provider models
     message =
       "Gemini rate limit or quota exceeded. Please wait a moment before trying again.";
   } else if (
@@ -462,9 +485,18 @@ export function validateServerImages(rawImages: any[]): ImageValidationResult {
 
     // SVG / XML: <?xml or <svg (3C 3F 78 6D or 3C 73 76 67 or 3C 21 44 4F)
     const isSvg =
-      (buffer[0] === 0x3c && buffer[1] === 0x3f && buffer[2] === 0x78 && buffer[3] === 0x6d) ||
-      (buffer[0] === 0x3c && buffer[1] === 0x73 && buffer[2] === 0x76 && buffer[3] === 0x67) ||
-      (buffer[0] === 0x3c && buffer[1] === 0x21 && buffer[2] === 0x44 && buffer[3] === 0x4f);
+      (buffer[0] === 0x3c &&
+        buffer[1] === 0x3f &&
+        buffer[2] === 0x78 &&
+        buffer[3] === 0x6d) ||
+      (buffer[0] === 0x3c &&
+        buffer[1] === 0x73 &&
+        buffer[2] === 0x76 &&
+        buffer[3] === 0x67) ||
+      (buffer[0] === 0x3c &&
+        buffer[1] === 0x21 &&
+        buffer[2] === 0x44 &&
+        buffer[3] === 0x4f);
     if (isSvg) {
       return {
         valid: false,
@@ -488,8 +520,14 @@ export function validateServerImages(rawImages: any[]): ImageValidationResult {
 
     // TIFF: II*. or MM.* (49 49 2A 00 or 4D 4D 00 2A)
     if (
-      (buffer[0] === 0x49 && buffer[1] === 0x49 && buffer[2] === 0x2a && buffer[3] === 0x00) ||
-      (buffer[0] === 0x4d && buffer[1] === 0x4d && buffer[2] === 0x00 && buffer[3] === 0x2a)
+      (buffer[0] === 0x49 &&
+        buffer[1] === 0x49 &&
+        buffer[2] === 0x2a &&
+        buffer[3] === 0x00) ||
+      (buffer[0] === 0x4d &&
+        buffer[1] === 0x4d &&
+        buffer[2] === 0x00 &&
+        buffer[3] === 0x2a)
     ) {
       return {
         valid: false,
@@ -513,9 +551,7 @@ export function validateServerImages(rawImages: any[]): ImageValidationResult {
 
     // JPEG: FF D8 FF
     const isJpeg =
-      buffer[0] === 0xff &&
-      buffer[1] === 0xd8 &&
-      buffer[2] === 0xff;
+      buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
 
     // WebP: RIFF .... WEBP
     const isWebp =
@@ -590,8 +626,8 @@ export function validateServerImages(rawImages: any[]): ImageValidationResult {
     const mimeType: "image/png" | "image/jpeg" | "image/webp" = isPng
       ? "image/png"
       : isJpeg
-      ? "image/jpeg"
-      : "image/webp";
+        ? "image/jpeg"
+        : "image/webp";
 
     validatedImages.push({
       id: typeof img?.id === "string" ? img.id : `img-${Date.now()}-${i}`,
@@ -613,7 +649,11 @@ export function validateServerImages(rawImages: any[]): ImageValidationResult {
 
 // Helper to format conversation history for Gemini with alternating roles and multimodal parts
 function formatGeminiHistory(
-  messages: Array<{ sender?: string; content?: string; attachments?: any[] }> = [],
+  messages: Array<{
+    sender?: string;
+    content?: string;
+    attachments?: any[];
+  }> = [],
   currentPrompt = "",
   images: ValidatedImageAttachment[] = [],
   maxContext = 12,
@@ -630,7 +670,8 @@ function formatGeminiHistory(
   const recent = messages.slice(-maxContext);
 
   for (const msg of recent) {
-    if (!msg.content && (!msg.attachments || msg.attachments.length === 0)) continue;
+    if (!msg.content && (!msg.attachments || msg.attachments.length === 0))
+      continue;
     const role = msg.sender === "user" ? "user" : "model";
     const parts: GeminiPart[] = [];
 
@@ -684,7 +725,9 @@ function formatGeminiHistory(
         : "";
 
   if (images.length > 1 && promptText) {
-    const labels = images.map((img, idx) => `Image ${idx + 1}: "${img.name}"`).join(", ");
+    const labels = images
+      .map((img, idx) => `Image ${idx + 1}: "${img.name}"`)
+      .join(", ");
     promptText = `[Attached Images: ${labels}]\n\n${promptText}`;
   }
 
@@ -758,28 +801,28 @@ function buildSystemInstruction(
 
   // Multi-turn image memory disclosure instruction
   instructions.push(
-    "Multi-turn image retention policy: When image attachments are included in the conversation history with image data, you can inspect and reference them for follow-up questions. If the user asks a follow-up referencing an image from an earlier conversation turn that no longer has image data attached, answer using the previous established conversation context if already discussed. If they ask for new visual inspection of an image whose pixel data is no longer available in the payload, politely inform them: \"The image from earlier in this conversation is no longer available in active memory. Please re-attach the image so I can analyze it directly.\"",
+    'Multi-turn image retention policy: When image attachments are included in the conversation history with image data, you can inspect and reference them for follow-up questions. If the user asks a follow-up referencing an image from an earlier conversation turn that no longer has image data attached, answer using the previous established conversation context if already discussed. If they ask for new visual inspection of an image whose pixel data is no longer available in the payload, politely inform them: "The image from earlier in this conversation is no longer available in active memory. Please re-attach the image so I can analyze it directly."',
   );
 
   // Vision, OCR & Visual Understanding Constitution
   instructions.push(
     "Image Vision & Multimodal Understanding Guidelines:\n" +
-    "1. Dual Capability (Text & Visual Content): Handle both images that contain text to transcribe/read, and visual images with little or no text (diagrams, photos, charts, screenshots, UI mockups, objects, artwork).\n" +
-    "2. Readable-Text Detection & Faithful Transcription:\n" +
-    "   - When the user asks to read, transcribe, extract text, or OCR an image, inspect the visual content to determine whether readable text is visibly present.\n" +
-    "   - If readable text is visibly present: Extract it as accurately as possible, faithfully preserving meaningful paragraphs, line breaks, code syntax, mathematical notation, tables, lists, labels, punctuation, and numbers. Clearly separate extracted text from any explanations or interpretations.\n" +
-    "   - Explicit No-Readable-Text: If NO readable text is detected in the image (e.g., photo of scenery, landscape, abstract graphic, icon, artwork, or object without lettering), you MUST explicitly state: \"No readable text was detected in this image. I can still describe the image or help answer questions about its visual content.\" Never invent, assume, or hallucinate text that is not visible.\n" +
-    "   - Blurry or Illegible Text: If text is visible but cannot be transcribed reliably due to blur, low resolution, cropping, or occlusion, state: \"Text appears to be present, but some of it is too blurry or unclear to transcribe reliably.\"\n" +
-    "   - Partial Legibility: When an image contains both readable and unreadable sections, transcribe the readable parts and explicitly identify uncertain or illegible sections with [?].\n" +
-    "3. General Image Understanding & Domain Analysis:\n" +
-    "   - Use the user's actual question to determine whether the response should focus on visual description, conceptual explanation, diagram walkthrough, screenshot error debugging, math problem solving, table transcription, or image comparison. Do not force every image request into an OCR-only response.\n" +
-    "   - For programming error screenshots: extract the visible error message, identify the root cause, and explain the fix.\n" +
-    "   - For math questions shown in an image: transcribe the visible problem clearly before solving it step-by-step.\n" +
-    "   - For tables: preserve rows and columns in Markdown format.\n" +
-    "   - For handwritten text: attempt transcription but explicitly acknowledge uncertainty when handwriting is ambiguous.\n" +
-    "   - If an image is provided without a prompt, give a concise, useful overview of what is depicted and invite questions.\n" +
-    "4. Multiple Images & Distinguishability:\n" +
-    "   - When multiple images are attached, maintain consistent ordering (Image 1, Image 2, etc.) and clearly differentiate between them when describing, comparing, or referencing differences.",
+      "1. Dual Capability (Text & Visual Content): Handle both images that contain text to transcribe/read, and visual images with little or no text (diagrams, photos, charts, screenshots, UI mockups, objects, artwork).\n" +
+      "2. Readable-Text Detection & Faithful Transcription:\n" +
+      "   - When the user asks to read, transcribe, extract text, or OCR an image, inspect the visual content to determine whether readable text is visibly present.\n" +
+      "   - If readable text is visibly present: Extract it as accurately as possible, faithfully preserving meaningful paragraphs, line breaks, code syntax, mathematical notation, tables, lists, labels, punctuation, and numbers. Clearly separate extracted text from any explanations or interpretations.\n" +
+      '   - Explicit No-Readable-Text: If NO readable text is detected in the image (e.g., photo of scenery, landscape, abstract graphic, icon, artwork, or object without lettering), you MUST explicitly state: "No readable text was detected in this image. I can still describe the image or help answer questions about its visual content." Never invent, assume, or hallucinate text that is not visible.\n' +
+      '   - Blurry or Illegible Text: If text is visible but cannot be transcribed reliably due to blur, low resolution, cropping, or occlusion, state: "Text appears to be present, but some of it is too blurry or unclear to transcribe reliably."\n' +
+      "   - Partial Legibility: When an image contains both readable and unreadable sections, transcribe the readable parts and explicitly identify uncertain or illegible sections with [?].\n" +
+      "3. General Image Understanding & Domain Analysis:\n" +
+      "   - Use the user's actual question to determine whether the response should focus on visual description, conceptual explanation, diagram walkthrough, screenshot error debugging, math problem solving, table transcription, or image comparison. Do not force every image request into an OCR-only response.\n" +
+      "   - For programming error screenshots: extract the visible error message, identify the root cause, and explain the fix.\n" +
+      "   - For math questions shown in an image: transcribe the visible problem clearly before solving it step-by-step.\n" +
+      "   - For tables: preserve rows and columns in Markdown format.\n" +
+      "   - For handwritten text: attempt transcription but explicitly acknowledge uncertainty when handwriting is ambiguous.\n" +
+      "   - If an image is provided without a prompt, give a concise, useful overview of what is depicted and invite questions.\n" +
+      "4. Multiple Images & Distinguishability:\n" +
+      "   - When multiple images are attached, maintain consistent ordering (Image 1, Image 2, etc.) and clearly differentiate between them when describing, comparing, or referencing differences.",
   );
 
   // Consistent, non-intrusive response preferences layer
@@ -842,7 +885,11 @@ function generateSimulatedResponse(
     wordCount?: number;
   }> = [],
   images: ValidatedImageAttachment[] = [],
-  history: Array<{ sender?: string; content?: string; attachments?: any[] }> = [],
+  history: Array<{
+    sender?: string;
+    content?: string;
+    attachments?: any[];
+  }> = [],
 ) {
   const promptLower = promptText.toLowerCase();
   const greetingName = username ? ` ${username}` : "";
@@ -952,7 +999,12 @@ Let me know if you would like me to examine any other specific sections or detai
         promptLower.includes("words") ||
         promptLower.includes("extract");
 
-      if (hasNoTextIndicators && (isOcrQuery || promptLower.includes("text") || promptLower.includes("read"))) {
+      if (
+        hasNoTextIndicators &&
+        (isOcrQuery ||
+          promptLower.includes("text") ||
+          promptLower.includes("read"))
+      ) {
         return "No readable text was detected in this image. I can still describe the image or help answer questions about its visual content.";
       }
 
@@ -1525,21 +1577,59 @@ app.get(["/api/health", "/health"], (_req, res) => {
   });
 });
 
+// Provider key validation helper: checks non-empty, length, and rejects placeholder tokens
+export function isKeyValid(key?: string | null): boolean {
+  if (!key || typeof key !== "string") return false;
+  const trimmed = key.trim();
+  if (
+    !trimmed ||
+    trimmed === "MY_GEMINI_API_KEY" ||
+    trimmed === "YOUR_GEMINI_API_KEY" ||
+    trimmed === "YOUR_GROQ_API_KEY" ||
+    trimmed === "YOUR_OPENROUTER_API_KEY" ||
+    trimmed.startsWith("YOUR_") ||
+    trimmed.startsWith("MY_") ||
+    trimmed.toLowerCase() === "placeholder" ||
+    trimmed.length < 8
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function getConfiguredProviders(): {
+  gemini: boolean;
+  groq: boolean;
+  openrouter: boolean;
+  configuredList: string[];
+} {
+  const geminiKey =
+    process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
+  const openrouterKey =
+    process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
+
+  const gemini = isKeyValid(geminiKey);
+  const groq = isKeyValid(groqKey);
+  const openrouter = isKeyValid(openrouterKey);
+
+  const configuredList: string[] = [];
+  if (gemini) configuredList.push("gemini");
+  if (groq) configuredList.push("groq");
+  if (openrouter) configuredList.push("openrouter");
+
+  return { gemini, groq, openrouter, configuredList };
+}
+
 // API Config Check (indicates configured providers without leaking keys)
 app.get(["/api/config", "/config"], (_req, res) => {
-  const geminiKey =
-    process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || "";
-  const groqKey =
-    process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || "";
-  const openrouterKey =
-    process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || "";
+  const configured = getConfiguredProviders();
 
   res.json({
-    geminiConfigured: Boolean(geminiKey && geminiKey !== "MY_GEMINI_API_KEY"),
-    groqConfigured: Boolean(groqKey && groqKey !== "YOUR_GROQ_API_KEY"),
-    openrouterConfigured: Boolean(
-      openrouterKey && openrouterKey !== "YOUR_OPENROUTER_API_KEY",
-    ),
+    geminiConfigured: configured.gemini,
+    groqConfigured: configured.groq,
+    openrouterConfigured: configured.openrouter,
+    configuredProviders: configured.configuredList,
   });
 });
 
@@ -1566,6 +1656,7 @@ function sendSSE(res: express.Response, data: object) {
  * 1. Invalid HTTP status codes (e.g. 20 or out-of-range values).
  * 2. Calling res.status() after response headers are already sent.
  * 3. Calling res.end() more than once.
+ * 4. Respects Retry-After header and passes retryAfterSeconds.
  */
 function sendSafeErrorResponse(
   res: express.Response,
@@ -1579,6 +1670,7 @@ function sendSafeErrorResponse(
     retryable?: boolean;
     canFallback?: boolean;
     suggestedProviders?: string[];
+    retryAfterSeconds?: number;
     partial?: boolean;
   },
 ) {
@@ -1586,13 +1678,21 @@ function sendSafeErrorResponse(
 
   const validStatus = toValidHttpStatus(errData.statusCode, 500);
 
-  let safeMsg = typeof errData.error === "string" ? errData.error : "An error occurred while communicating with the AI service.";
+  let safeMsg =
+    typeof errData.error === "string"
+      ? errData.error
+      : "An error occurred while communicating with the AI service.";
   if (
     safeMsg.includes("Invalid status code") ||
     safeMsg.includes("ERR_HTTP_INVALID_STATUS_CODE") ||
     safeMsg.includes("RangeError")
   ) {
-    safeMsg = "The AI service encountered an internal error. Please try again or switch providers.";
+    safeMsg =
+      "The AI service encountered an internal error. Please try again or switch providers.";
+  }
+
+  if (errData.retryAfterSeconds && !res.headersSent) {
+    res.setHeader("Retry-After", String(errData.retryAfterSeconds));
   }
 
   const payload = {
@@ -1602,8 +1702,9 @@ function sendSafeErrorResponse(
     provider: errData.provider,
     model: errData.model,
     retryable: Boolean(errData.retryable),
-    canFallback: errData.canFallback !== false,
+    canFallback: Boolean(errData.canFallback),
     suggestedProviders: errData.suggestedProviders || [],
+    retryAfterSeconds: errData.retryAfterSeconds,
     partial: Boolean(errData.partial),
   };
 
@@ -1712,26 +1813,93 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
       );
     }
 
-    const supportsVision = normalizedProvider === "gemini";
-    console.log(
-      `[Vision Capability] Provider: ${normalizedProvider} | Vision supported: ${supportsVision} | Images attached: ${validatedImages.length}`,
+    const supportsVision = ["gemini", "groq", "openrouter"].includes(
+      normalizedProvider,
     );
 
-    // 3. Provider capability check: If images are attached and provider is not Gemini, return structured error
     if (validatedImages.length > 0 && !supportsVision) {
-      console.warn(
-        `[Vision Capability] Provider "${normalizedProvider}" does not support image analysis. Recommending Gemini fallback.`,
-      );
       return res.status(400).json({
-        error:
-          "Image vision analysis is currently supported by Google Gemini. Please switch to Gemini to analyze attached images.",
+        error: "The selected provider does not support image analysis.",
         code: 400,
         status: "INVALID_ARGUMENT",
         provider: normalizedProvider,
         retryable: false,
         canFallback: true,
-        suggestedProviders: ["gemini"],
+        suggestedProviders: ["gemini", "groq", "openrouter"],
       });
+    }
+
+    function buildVisionMessages({
+      systemInstruction,
+      history = [],
+      promptText = "",
+      validatedImages = [],
+    }: {
+      systemInstruction: string;
+      history?: any[];
+      promptText: string;
+      validatedImages?: any[];
+    }) {
+      const messages: Array<{
+        role: "system" | "user" | "assistant";
+        content: any;
+      }> = [];
+
+      if (systemInstruction) {
+        messages.push({
+          role: "system",
+          content: systemInstruction,
+        });
+      }
+
+      for (const item of history) {
+        const role =
+          item?.role === "assistant" || item?.role === "model"
+            ? "assistant"
+            : "user";
+
+        const content =
+          typeof item?.content === "string"
+            ? item.content
+            : typeof item?.text === "string"
+              ? item.text
+              : Array.isArray(item?.parts)
+                ? item.parts
+                    .map((part: any) => part?.text)
+                    .filter(Boolean)
+                    .join("\n")
+                : "";
+
+        if (content.trim()) {
+          messages.push({ role, content });
+        }
+      }
+
+      const imageContent = validatedImages.map((image: any) => {
+        const mimeType = image.mimeType || image.type;
+
+        return {
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${image.base64}`,
+          },
+        };
+      });
+
+      const textContent = {
+        type: "text",
+        text:
+          promptText ||
+          "Read and analyze the attached image. Transcribe any readable text faithfully.",
+      };
+
+      messages.push({
+        role: "user",
+        content:
+          imageContent.length > 0 ? [textContent, ...imageContent] : promptText,
+      });
+
+      return messages;
     }
 
     // 1. Google Gemini Provider
@@ -1743,8 +1911,8 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         req.headers["x-force-simulated"] === "true" ||
         process.env.SIMULATE_UPSTREAM === "true";
 
-      // If no API key is configured or simulated mode requested, return simulated response (with progressive reveal if streaming)
-      if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || forceSimulated) {
+      // If no valid API key is configured or simulated mode requested, return simulated response (with progressive reveal if streaming)
+      if (!isKeyValid(apiKey) || forceSimulated) {
         const text = generateSimulatedResponse(
           promptText,
           cleanUsername,
@@ -1808,8 +1976,17 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         return;
       }
 
+      const hasImages = validatedImages.length > 0;
+      // Check which alternative providers are genuinely configured with valid keys
+      const configuredStatus = getConfiguredProviders();
+      const availableBackupProviders = hasImages
+        ? []
+        : ["groq", "openrouter"].filter((p) =>
+            configuredStatus.configuredList.includes(p),
+          );
+
       const ai = new GoogleGenAI({
-        apiKey,
+        apiKey: apiKey!,
         httpOptions: {
           headers: {
             "User-Agent": "aistudio-build",
@@ -1818,8 +1995,11 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
         },
       });
 
-      const contents = formatGeminiHistory(history, promptText, validatedImages);
-      const hasImages = validatedImages.length > 0;
+      const contents = formatGeminiHistory(
+        history,
+        promptText,
+        validatedImages,
+      );
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
       // Attempt 1: gemini-3.8-flash (primary recommended vision-capable model)
       // Attempt 2: gemini-3.1-flash-lite (high-throughput, fast vision model)
@@ -1891,8 +2071,9 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
                 provider: "gemini",
                 model,
                 retryable: false,
-                canFallback: !hasImages,
-                suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
+                canFallback: availableBackupProviders.length > 0 && !hasImages,
+                suggestedProviders: availableBackupProviders,
+                retryAfterSeconds: parsed.retryAfterSeconds,
               });
             }
 
@@ -1912,12 +2093,13 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           }
         }
 
-        const fallbackErr = lastParsedErr || {
+        const fallbackErr: any = lastParsedErr || {
           statusCode: 503,
           status: "UNAVAILABLE",
           message:
             "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.",
           isRetryable: true,
+          retryAfterSeconds: undefined,
         };
         return sendSafeErrorResponse(res, {
           statusCode: fallbackErr.statusCode,
@@ -1927,8 +2109,9 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           provider: "gemini",
           model: "gemini-3.8-flash",
           retryable: fallbackErr.isRetryable,
-          canFallback: !hasImages,
-          suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
+          canFallback: availableBackupProviders.length > 0 && !hasImages,
+          suggestedProviders: availableBackupProviders,
+          retryAfterSeconds: fallbackErr.retryAfterSeconds,
         });
       } else {
         // Genuine streaming via ai.models.generateContentStream with delayed header initiation
@@ -2032,8 +2215,9 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
                 provider: "gemini",
                 model,
                 retryable: false, // Cannot retry mid-stream safely without duplicating output
-                canFallback: !hasImages,
-                suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
+                canFallback: false, // Do not restart stream from another provider if partial content was delivered
+                suggestedProviders: [],
+                retryAfterSeconds: parsedMid.retryAfterSeconds,
                 partial: fullText.length > 0,
               });
               return;
@@ -2076,8 +2260,9 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
                 provider: "gemini",
                 model,
                 retryable: false,
-                canFallback: !hasImages,
-                suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
+                canFallback: availableBackupProviders.length > 0 && !hasImages,
+                suggestedProviders: availableBackupProviders,
+                retryAfterSeconds: parsed.retryAfterSeconds,
               });
             }
 
@@ -2097,12 +2282,13 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           }
         }
 
-        const finalErr = lastParsedErr || {
+        const finalErr: any = lastParsedErr || {
           statusCode: 503,
           status: "UNAVAILABLE",
           message:
             "Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.",
           isRetryable: true,
+          retryAfterSeconds: undefined,
         };
         return sendSafeErrorResponse(res, {
           statusCode: finalErr.statusCode,
@@ -2112,8 +2298,9 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
           provider: "gemini",
           model: "gemini-3.8-flash",
           retryable: finalErr.isRetryable,
-          canFallback: !hasImages,
-          suggestedProviders: hasImages ? [] : ["groq", "openrouter"],
+          canFallback: availableBackupProviders.length > 0 && !hasImages,
+          suggestedProviders: availableBackupProviders,
+          retryAfterSeconds: finalErr.retryAfterSeconds,
         });
       }
     }
@@ -2121,7 +2308,18 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
     // 2. Groq Provider
     if (normalizedProvider === "groq") {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
-      if (!apiKey || apiKey === "YOUR_GROQ_API_KEY") {
+      const isFallback = (req.body as any)?.isFallback === true;
+      if (!isKeyValid(apiKey)) {
+        if (isFallback) {
+          return sendSafeErrorResponse(res, {
+            statusCode: 400,
+            error: "Groq is not configured with a valid API key.",
+            code: 400,
+            status: "INVALID_ARGUMENT",
+            provider: "groq",
+            canFallback: false,
+          });
+        }
         const text = generateSimulatedResponse(
           promptText,
           cleanUsername,
@@ -2215,7 +2413,12 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             statusCode: status,
             error: `Groq request failed (${status}): ${sanitizeErrorLog(errText)}`,
             code: status,
-            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            status:
+              status === 429
+                ? "RESOURCE_EXHAUSTED"
+                : status === 401
+                  ? "UNAUTHENTICATED"
+                  : "ERROR",
             provider: "groq",
             canFallback: true,
             suggestedProviders: ["gemini", "openrouter"],
@@ -2269,7 +2472,12 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             statusCode: status,
             error: `Groq request failed (${status}): ${sanitizeErrorLog(errText)}`,
             code: status,
-            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            status:
+              status === 429
+                ? "RESOURCE_EXHAUSTED"
+                : status === 401
+                  ? "UNAUTHENTICATED"
+                  : "ERROR",
             provider: "groq",
             canFallback: true,
             suggestedProviders: ["gemini", "openrouter"],
@@ -2331,7 +2539,18 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
     if (normalizedProvider === "openrouter") {
       const apiKey =
         process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
-      if (!apiKey || apiKey === "YOUR_OPENROUTER_API_KEY") {
+      const isFallback = (req.body as any)?.isFallback === true;
+      if (!isKeyValid(apiKey)) {
+        if (isFallback) {
+          return sendSafeErrorResponse(res, {
+            statusCode: 400,
+            error: "OpenRouter is not configured with a valid API key.",
+            code: 400,
+            status: "INVALID_ARGUMENT",
+            provider: "openrouter",
+            canFallback: false,
+          });
+        }
         const text = generateSimulatedResponse(
           promptText,
           cleanUsername,
@@ -2426,7 +2645,12 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             statusCode: status,
             error: `OpenRouter request failed (${status}): ${sanitizeErrorLog(errText)}`,
             code: status,
-            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            status:
+              status === 429
+                ? "RESOURCE_EXHAUSTED"
+                : status === 401
+                  ? "UNAUTHENTICATED"
+                  : "ERROR",
             provider: "openrouter",
             canFallback: true,
             suggestedProviders: ["gemini", "groq"],
@@ -2481,7 +2705,12 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
             statusCode: status,
             error: `OpenRouter request failed (${status}): ${sanitizeErrorLog(errText)}`,
             code: status,
-            status: status === 429 ? "RESOURCE_EXHAUSTED" : status === 401 ? "UNAUTHENTICATED" : "ERROR",
+            status:
+              status === 429
+                ? "RESOURCE_EXHAUSTED"
+                : status === 401
+                  ? "UNAUTHENTICATED"
+                  : "ERROR",
             provider: "openrouter",
             canFallback: true,
             suggestedProviders: ["gemini", "groq"],
@@ -2547,7 +2776,10 @@ app.post(["/api/chat", "/chat", "/"], async (req, res) => {
     });
   } catch (error: any) {
     const errorMsg = error?.message || "Unknown error";
-    console.error(`[Chat API] [Req: ${requestId}] Caught unhandled error in /api/chat:`, sanitizeErrorLog(errorMsg));
+    console.error(
+      `[Chat API] [Req: ${requestId}] Caught unhandled error in /api/chat:`,
+      sanitizeErrorLog(errorMsg),
+    );
     const parsed = parseGeminiError(error);
 
     logAIDiagnostic({

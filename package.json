@@ -10,7 +10,8 @@
     "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx tests/fallback.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

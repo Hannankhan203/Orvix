@@ -68,13 +68,28 @@ export function isVisionSupported(provider) {
   return Boolean(p?.supportsVision);
 }
 
+let cachedConfiguredProviders = null;
+let lastConfigFetchTime = 0;
+
 /**
- * Checks if a given provider currently has an API key configured.
+ * Resets the in-memory cache of configured providers.
+ */
+export function clearConfiguredProvidersCache() {
+  cachedConfiguredProviders = null;
+  lastConfigFetchTime = 0;
+}
+
+/**
+ * Checks if a given provider currently has an API key configured on client or in cached server config.
  * @param {string} provider
  * @returns {boolean}
  */
 export function isProviderConfigured(provider) {
-  switch (provider) {
+  const norm = (provider || "").toLowerCase();
+  if (Array.isArray(cachedConfiguredProviders) && cachedConfiguredProviders.includes(norm)) {
+    return true;
+  }
+  switch (norm) {
     case AI_PROVIDERS.GROQ: {
       const key = getGroqApiKey();
       return Boolean(key && key !== "YOUR_GROQ_API_KEY");
@@ -89,6 +104,133 @@ export function isProviderConfigured(provider) {
       return Boolean(key && key !== "YOUR_GEMINI_API_KEY");
     }
   }
+}
+
+/**
+ * Fetches the list of genuinely configured AI providers from /api/config.
+ * Results are cached in memory for 30 seconds to minimize network overhead.
+ * @param {boolean} [forceRefresh=false]
+ * @returns {Promise<string[]>}
+ */
+export async function fetchConfiguredProviders(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && cachedConfiguredProviders && now - lastConfigFetchTime < 30000) {
+    return cachedConfiguredProviders;
+  }
+
+  try {
+    const res = await fetch("/api/config");
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.configuredProviders)) {
+        cachedConfiguredProviders = data.configuredProviders.map((p) => String(p).toLowerCase());
+        lastConfigFetchTime = now;
+        return cachedConfiguredProviders;
+      }
+      const list = [];
+      if (data?.geminiConfigured) list.push(AI_PROVIDERS.GEMINI);
+      if (data?.groqConfigured) list.push(AI_PROVIDERS.GROQ);
+      if (data?.openrouterConfigured) list.push(AI_PROVIDERS.OPENROUTER);
+      cachedConfiguredProviders = list;
+      lastConfigFetchTime = now;
+      return list;
+    }
+  } catch (_) {}
+
+  // Fallback to client-side env key detection
+  const list = [];
+  if (isProviderConfigured(AI_PROVIDERS.GEMINI)) list.push(AI_PROVIDERS.GEMINI);
+  if (isProviderConfigured(AI_PROVIDERS.GROQ)) list.push(AI_PROVIDERS.GROQ);
+  if (isProviderConfigured(AI_PROVIDERS.OPENROUTER)) list.push(AI_PROVIDERS.OPENROUTER);
+  cachedConfiguredProviders = list;
+  lastConfigFetchTime = now;
+  return list;
+}
+
+/**
+ * Determines whether an error is eligible for automatic alternative provider fallback.
+ * Eligible: HTTP 429 / RESOURCE_EXHAUSTED / quota limit, HTTP 503 / UNAVAILABLE, HTTP 504 / DEADLINE_EXCEEDED.
+ * Ineligible: 401/403 (auth errors), 400 (bad request), AbortError (user cancellation).
+ * @param {any} error
+ * @returns {boolean}
+ */
+export function isFallbackEligibleError(error) {
+  if (!error) return false;
+
+  // Never fallback on intentional user abort or cancellation
+  if (
+    error.name === "AbortError" ||
+    error.code === 20 ||
+    error.code === "ABORT_ERR" ||
+    error.status === "CANCELLED"
+  ) {
+    return false;
+  }
+
+  // Authentication and permission errors require configuration fixes, not silent fallback
+  if (
+    error.code === 401 ||
+    error.code === 403 ||
+    error.status === "UNAUTHENTICATED" ||
+    error.status === "PERMISSION_DENIED"
+  ) {
+    return false;
+  }
+
+  // Client validation / payload errors should not trigger alternative provider
+  if (error.code === 400 || error.status === "INVALID_ARGUMENT") {
+    return false;
+  }
+
+  const code = Number(error.code || error.statusCode);
+  const status = String(error.status || "").toUpperCase();
+  const lowerMsg = String(error.message || "").toLowerCase();
+
+  const isRateLimit =
+    code === 429 ||
+    status === "RESOURCE_EXHAUSTED" ||
+    lowerMsg.includes("rate limit") ||
+    lowerMsg.includes("quota") ||
+    lowerMsg.includes("too many requests") ||
+    lowerMsg.includes("resource_exhausted");
+
+  const isUnavailable =
+    code === 503 ||
+    code === 504 ||
+    status === "UNAVAILABLE" ||
+    status === "DEADLINE_EXCEEDED" ||
+    lowerMsg.includes("high demand") ||
+    lowerMsg.includes("spikes in demand") ||
+    lowerMsg.includes("overloaded");
+
+  return isRateLimit || isUnavailable;
+}
+
+/**
+ * Selects an eligible alternative fallback provider.
+ * Respects vision capabilities: Groq and OpenRouter cannot process images.
+ * @param {string} failedProvider
+ * @param {{ hasImages?: boolean }} [options]
+ * @returns {Promise<string|null>}
+ */
+export async function getEligibleFallbackProvider(failedProvider, { hasImages = false } = {}) {
+  // If images are attached, only Gemini supports vision analysis
+  if (hasImages) {
+    return null;
+  }
+
+  const configured = await fetchConfiguredProviders();
+  const normalizedFailed = (failedProvider || "").toLowerCase();
+
+  // Preferred fallback order: Groq (high speed inference) -> OpenRouter (multi-model)
+  const candidates = [AI_PROVIDERS.GROQ, AI_PROVIDERS.OPENROUTER, AI_PROVIDERS.GEMINI];
+  for (const candidate of candidates) {
+    if (candidate !== normalizedFailed && configured.includes(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -138,6 +280,12 @@ export function parseRouterError(rawError, statusCode = 500) {
     let model = undefined;
     let canFallback = undefined;
     let suggestedProviders = undefined;
+    let retryAfterSeconds = undefined;
+
+    if (rawError?.retryAfterSeconds) {
+      const p = parseInt(String(rawError.retryAfterSeconds), 10);
+      if (!isNaN(p)) retryAfterSeconds = p;
+    }
 
     // 2. Read actual HTTP response status first when a Fetch Response is available
     if (typeof Response !== "undefined" && rawError instanceof Response) {
@@ -320,6 +468,7 @@ export function parseRouterError(rawError, statusCode = 500) {
     if (model) err.model = model;
     if (typeof canFallback === "boolean") err.canFallback = canFallback;
     if (suggestedProviders) err.suggestedProviders = suggestedProviders;
+    if (retryAfterSeconds !== undefined) err.retryAfterSeconds = retryAfterSeconds;
     return err;
   } catch (_) {
     const fallbackErr = new Error(
@@ -343,151 +492,121 @@ export async function streamAIMessage({
   images = [],
   onChunk,
   onStart,
+  onFallback,
   signal,
+  allowFallback = true,
 }) {
-  const normalizedProvider = provider.toLowerCase();
+  const normalizedInitialProvider = (provider || DEFAULT_PROVIDER).toLowerCase();
   const normalizedMode = (mode || "general").toLowerCase();
+  const hasImages = Array.isArray(images) && images.length > 0;
 
-  // Primary path: Use secure server-side proxy route /api/chat with SSE
-  // Server executes bounded retries with jitter; avoid multiplying client-side delays
-  const maxClientAttempts = 1;
-  let clientAttempt = 0;
+  // Single-attempt streaming executor over /api/chat with SSE
+  async function executeStreamAttempt(providerToUse, isFallbackAttempt = false) {
+    let chunksEmitted = 0;
+    let accumulatedText = "";
+    let reportedModelUsed = null;
+    let reportedProvider = providerToUse;
 
-  while (clientAttempt < maxClientAttempts) {
-    clientAttempt++;
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify({
-          provider: normalizedProvider,
-          mode: normalizedMode,
-          prompt,
-          history,
-          username: username ? String(username).trim() : null,
-          preferences: preferences || null,
-          documents,
-          images: formatImagePayload(images),
-          stream: true,
-        }),
-        signal,
-      });
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({
+        provider: providerToUse,
+        mode: normalizedMode,
+        prompt,
+        history,
+        username: username ? String(username).trim() : null,
+        preferences: preferences || null,
+        documents,
+        images: formatImagePayload(images),
+        stream: true,
+        isFallback: isFallbackAttempt,
+      }),
+      signal,
+    });
 
-      if (!res.ok) {
-        let errJson = null;
-        let errText = "";
-        try {
-          const cloned = res.clone();
-          errJson = await cloned.json().catch(() => null);
-        } catch (_) {}
-        if (!errJson) {
-          errText = await res.text().catch(() => "");
-        }
-
-        const httpStatus = toValidHttpStatus(res.status, 500);
-        const rawPayload =
-          errJson || errText || `Server request failed (${httpStatus})`;
-        const parsedErr = parseRouterError(rawPayload, httpStatus);
-
-        if (errJson?.provider) parsedErr.provider = errJson.provider;
-        if (errJson?.model) parsedErr.model = errJson.model;
-        if (typeof errJson?.retryable === "boolean")
-          parsedErr.retryable = errJson.retryable;
-        if (typeof errJson?.canFallback === "boolean")
-          parsedErr.canFallback = errJson.canFallback;
-        if (Array.isArray(errJson?.suggestedProviders))
-          parsedErr.suggestedProviders = errJson.suggestedProviders;
-
-        throw parsedErr;
+    if (!res.ok) {
+      let errJson = null;
+      let errText = "";
+      try {
+        const cloned = res.clone();
+        errJson = await cloned.json().catch(() => null);
+      } catch (_) {}
+      if (!errJson) {
+        errText = await res.text().catch(() => "");
       }
 
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("text/event-stream") && res.body) {
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let accumulatedText = "";
-        let modelUsed = null;
-        let finalProvider = normalizedProvider;
+      const httpStatus = toValidHttpStatus(res.status, 500);
+      const rawPayload =
+        errJson || errText || `Server request failed (${httpStatus})`;
+      const parsedErr = parseRouterError(rawPayload, httpStatus);
 
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+      parsedErr.provider = providerToUse;
+      if (errJson?.provider) parsedErr.provider = errJson.provider;
+      if (errJson?.model) parsedErr.model = errJson.model;
+      if (typeof errJson?.retryable === "boolean")
+        parsedErr.retryable = errJson.retryable;
+      if (typeof errJson?.canFallback === "boolean")
+        parsedErr.canFallback = errJson.canFallback;
+      if (Array.isArray(errJson?.suggestedProviders))
+        parsedErr.suggestedProviders = errJson.suggestedProviders;
+      if (errJson?.retryAfterSeconds)
+        parsedErr.retryAfterSeconds = errJson.retryAfterSeconds;
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
+      throw parsedErr;
+    }
 
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith("data: ")) continue;
-              const dataStr = trimmed.slice(6);
-              try {
-                const data = JSON.parse(dataStr);
-                if (data.type === "start") {
-                  modelUsed = data.modelUsed;
-                  finalProvider = data.provider || normalizedProvider;
-                  onStart?.({ modelUsed, provider: finalProvider });
-                } else if (data.type === "chunk" && data.text) {
-                  accumulatedText += data.text;
-                  onChunk?.(data.text, accumulatedText);
-                } else if (data.type === "done") {
-                  if (data.modelUsed) modelUsed = data.modelUsed;
-                  if (data.provider) finalProvider = data.provider;
-                  const finalText = data.text || accumulatedText;
-                  return {
-                    text: finalText,
-                    modelUsed: modelUsed || "AI Model",
-                    provider: finalProvider,
-                  };
-                } else if (data.type === "error") {
-                  const sseCode = toValidHttpStatus(data.code, 500);
-                  const streamErr = parseRouterError(data, sseCode);
-                  if (data.provider) streamErr.provider = data.provider;
-                  if (data.model) streamErr.model = data.model;
-                  if (typeof data.retryable === "boolean")
-                    streamErr.retryable = data.retryable;
-                  if (typeof data.canFallback === "boolean")
-                    streamErr.canFallback = data.canFallback;
-                  if (Array.isArray(data.suggestedProviders))
-                    streamErr.suggestedProviders = data.suggestedProviders;
-                  throw streamErr;
-                }
-              } catch (jsonErr) {
-                if (jsonErr.message && !jsonErr.message.includes("JSON")) {
-                  throw jsonErr;
-                }
-              }
-            }
-          }
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("text/event-stream") && res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-          if (buffer && buffer.trim().startsWith("data: ")) {
-            const dataStr = buffer.trim().slice(6);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
+            const dataStr = trimmed.slice(6);
+
             try {
               const data = JSON.parse(dataStr);
               if (data.type === "start") {
-                modelUsed = data.modelUsed;
-                finalProvider = data.provider || normalizedProvider;
-                onStart?.({ modelUsed, provider: finalProvider });
+                reportedModelUsed = data.modelUsed;
+                reportedProvider = data.provider || providerToUse;
+                onStart?.({
+                  modelUsed: reportedModelUsed,
+                  provider: reportedProvider,
+                  isFallback: isFallbackAttempt,
+                });
               } else if (data.type === "chunk" && data.text) {
                 accumulatedText += data.text;
+                chunksEmitted++;
                 onChunk?.(data.text, accumulatedText);
               } else if (data.type === "done") {
-                if (data.modelUsed) modelUsed = data.modelUsed;
-                if (data.provider) finalProvider = data.provider;
+                if (data.modelUsed) reportedModelUsed = data.modelUsed;
+                if (data.provider) reportedProvider = data.provider;
                 return {
                   text: data.text || accumulatedText,
-                  modelUsed: modelUsed || "AI Model",
-                  provider: finalProvider,
+                  modelUsed: reportedModelUsed || "AI Model",
+                  provider: reportedProvider,
+                  isFallback: isFallbackAttempt,
+                  chunksEmitted,
                 };
               } else if (data.type === "error") {
                 const sseCode = toValidHttpStatus(data.code, 500);
                 const streamErr = parseRouterError(data, sseCode);
-                if (data.provider) streamErr.provider = data.provider;
+                streamErr.provider = data.provider || providerToUse;
                 if (data.model) streamErr.model = data.model;
                 if (typeof data.retryable === "boolean")
                   streamErr.retryable = data.retryable;
@@ -495,125 +614,188 @@ export async function streamAIMessage({
                   streamErr.canFallback = data.canFallback;
                 if (Array.isArray(data.suggestedProviders))
                   streamErr.suggestedProviders = data.suggestedProviders;
+                if (data.retryAfterSeconds)
+                  streamErr.retryAfterSeconds = data.retryAfterSeconds;
+
+                // Track whether any meaningful text was delivered to the user
+                if (chunksEmitted > 0 || accumulatedText.length > 0) {
+                  streamErr.partial = true;
+                  streamErr.partialContent = accumulatedText;
+                }
                 throw streamErr;
               }
-            } catch (error) {
-              if (error instanceof Error && error.message) {
-                throw error;
+            } catch (jsonErr) {
+              if (jsonErr.message && !jsonErr.message.includes("JSON")) {
+                throw jsonErr;
               }
             }
           }
-
-          return {
-            text: accumulatedText,
-            modelUsed: modelUsed || "AI Model",
-            provider: finalProvider,
-          };
-        } finally {
-          reader.releaseLock();
         }
-      } else {
-        // Non-streaming response fallback
-        const data = await res.json();
-        onChunk?.(data.text, data.text);
+
+        // Process any remainder in buffer
+        if (buffer && buffer.trim().startsWith("data: ")) {
+          const dataStr = buffer.trim().slice(6);
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.type === "done") {
+              if (data.modelUsed) reportedModelUsed = data.modelUsed;
+              if (data.provider) reportedProvider = data.provider;
+              return {
+                text: data.text || accumulatedText,
+                modelUsed: reportedModelUsed || "AI Model",
+                provider: reportedProvider,
+                isFallback: isFallbackAttempt,
+                chunksEmitted,
+              };
+            } else if (data.type === "error") {
+              const sseCode = toValidHttpStatus(data.code, 500);
+              const streamErr = parseRouterError(data, sseCode);
+              if (chunksEmitted > 0 || accumulatedText.length > 0) {
+                streamErr.partial = true;
+                streamErr.partialContent = accumulatedText;
+              }
+              throw streamErr;
+            }
+          } catch (_) {}
+        }
+
         return {
-          text: data.text,
-          modelUsed: data.modelUsed,
-          provider: data.provider || normalizedProvider,
+          text: accumulatedText,
+          modelUsed: reportedModelUsed || "AI Model",
+          provider: reportedProvider,
+          isFallback: isFallbackAttempt,
+          chunksEmitted,
         };
+      } finally {
+        reader.releaseLock();
       }
-    } catch (apiErr) {
-      if (
-        signal?.aborted ||
-        apiErr?.name === "AbortError" ||
-        apiErr?.code === 20 ||
-        apiErr?.code === "ABORT_ERR"
-      ) {
-        throw apiErr;
-      }
-
-      if (apiErr?.retryable && clientAttempt < maxClientAttempts) {
-        const delay = 1000 + Math.random() * 500;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
-      }
-
-      if (
-        apiErr.name === "TypeError" &&
-        isProviderConfigured(normalizedProvider)
-      ) {
-        console.warn(
-          "Backend proxy unreachable, attempting client-side streaming fallback:",
-          apiErr.message,
-        );
-        break;
-      }
-
-      throw apiErr;
+    } else {
+      // Non-streaming JSON response fallback
+      const data = await res.json();
+      onChunk?.(data.text, data.text);
+      return {
+        text: data.text,
+        modelUsed: data.modelUsed,
+        provider: data.provider || providerToUse,
+        isFallback: isFallbackAttempt,
+        chunksEmitted: 1,
+      };
     }
   }
 
-  // Client-side direct service fallback
-  if (images && images.length > 0 && !isVisionSupported(normalizedProvider)) {
-    const visionErr = new Error(
-      "Image vision analysis is currently supported by Google Gemini. Please switch to Gemini to analyze attached images.",
+  // Attempt primary provider
+  try {
+    const primaryResult = await executeStreamAttempt(
+      normalizedInitialProvider,
+      false,
     );
-    visionErr.code = 400;
-    visionErr.status = "INVALID_ARGUMENT";
-    visionErr.provider = normalizedProvider;
-    visionErr.canFallback = true;
-    visionErr.suggestedProviders = ["gemini"];
-    throw visionErr;
-  }
-
-  switch (normalizedProvider) {
-    case AI_PROVIDERS.GROQ: {
-      const result = await streamGroqMessage({
-        prompt,
-        history,
-        mode: normalizedMode,
-        documents,
-        onChunk,
-        signal,
-      });
-      return {
-        ...result,
-        provider: AI_PROVIDERS.GROQ,
-      };
+    return {
+      ...primaryResult,
+      fallbackOccurred: false,
+    };
+  } catch (primaryErr) {
+    // 1. Never fallback on intentional user abort or cancellation
+    if (
+      signal?.aborted ||
+      primaryErr?.name === "AbortError" ||
+      primaryErr?.code === 20 ||
+      primaryErr?.code === "ABORT_ERR"
+    ) {
+      throw primaryErr;
     }
 
-    case AI_PROVIDERS.OPENROUTER: {
-      const result = await streamOpenRouterMessage({
-        prompt,
-        history,
-        mode: normalizedMode,
-        documents,
-        onChunk,
-        signal,
-      });
-      return {
-        ...result,
-        provider: AI_PROVIDERS.OPENROUTER,
-      };
+    // 2. If partial stream content was already emitted to the user,
+    // do not restart stream from another provider to avoid duplicating/contradicting partial answer
+    if (primaryErr?.partial || primaryErr?.partialContent) {
+      throw primaryErr;
     }
 
-    case AI_PROVIDERS.GEMINI:
-    default: {
-      const result = await streamGeminiMessage({
-        prompt,
-        history,
-        username,
-        mode: normalizedMode,
-        documents,
-        images,
-        onChunk,
-        signal,
-      });
-      return {
-        ...result,
-        provider: AI_PROVIDERS.GEMINI,
-      };
+    // 3. Check fallback eligibility (429 rate-limit, 503 unavailable, 504 timeout)
+    const isEligible = allowFallback && isFallbackEligibleError(primaryErr);
+    if (!isEligible) {
+      throw primaryErr;
     }
+
+    // 4. Find an eligible alternative configured provider
+    const fallbackProvider = await getEligibleFallbackProvider(
+      normalizedInitialProvider,
+      {
+        hasImages,
+      },
+    );
+
+    if (fallbackProvider) {
+      console.warn(
+        `[AI Router] Provider "${normalizedInitialProvider}" rate-limited/unavailable (${primaryErr.code || primaryErr.status}). Executing automatic fallback to "${fallbackProvider}".`,
+      );
+
+      onFallback?.({
+        fromProvider: normalizedInitialProvider,
+        toProvider: fallbackProvider,
+        reason: primaryErr.message,
+      });
+
+      try {
+        const fallbackResult = await executeStreamAttempt(
+          fallbackProvider,
+          true,
+        );
+        return {
+          ...fallbackResult,
+          fallbackOccurred: true,
+          originalProvider: normalizedInitialProvider,
+        };
+      } catch (fallbackErr) {
+        if (signal?.aborted) throw fallbackErr;
+        console.error(
+          `[AI Router] Fallback provider "${fallbackProvider}" also failed:`,
+          fallbackErr.message,
+        );
+
+        const allFailedErr = new Error(
+          "Orvix couldn't generate a response because the available AI providers are currently unavailable or rate-limited. Please try again later or check your provider configuration.",
+        );
+        allFailedErr.code = 503;
+        allFailedErr.status = "UNAVAILABLE";
+        allFailedErr.allProvidersFailed = true;
+        allFailedErr.originalProvider = normalizedInitialProvider;
+        allFailedErr.failedBackupProvider = fallbackProvider;
+        allFailedErr.originalError = primaryErr;
+        allFailedErr.fallbackError = fallbackErr;
+        throw allFailedErr;
+      }
+    }
+
+    // 5. No eligible alternative backup is configured
+    const isRateLimit =
+      primaryErr.code === 429 ||
+      primaryErr.status === "RESOURCE_EXHAUSTED" ||
+      String(primaryErr.message || "")
+        .toLowerCase()
+        .includes("rate limit") ||
+      String(primaryErr.message || "")
+        .toLowerCase()
+        .includes("quota") ||
+      String(primaryErr.message || "")
+        .toLowerCase()
+        .includes("too many requests");
+
+    if (normalizedInitialProvider === AI_PROVIDERS.GEMINI && isRateLimit) {
+      const quotaMsg = hasImages
+        ? "Gemini has reached its current rate or quota limit. Image vision analysis is only supported by Google Gemini. Please wait a moment before trying again."
+        : "Gemini has reached its current rate or quota limit. Please wait and try again, check your Gemini API quota, or configure Groq/OpenRouter for automatic fallback.";
+
+      const quotaErr = new Error(quotaMsg);
+      quotaErr.code = 429;
+      quotaErr.status = "RESOURCE_EXHAUSTED";
+      quotaErr.provider = AI_PROVIDERS.GEMINI;
+      quotaErr.canFallback = false;
+      quotaErr.retryAfterSeconds = primaryErr.retryAfterSeconds;
+      quotaErr.originalError = primaryErr;
+      throw quotaErr;
+    }
+
+    throw primaryErr;
   }
 }
 
