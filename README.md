@@ -41,10 +41,11 @@
 
 **Orvix v0.1** is a high-performance, full-stack AI chatbot application crafted with a responsive React 19 single-page interface, an Obsidian Dark design system built on Tailwind CSS v4, and an integrated Node.js Express backend proxy.
 
-Orvix provides unified access to three first-class AI inference providers:
+Orvix provides unified access to four first-class AI inference providers:
 1. **Google Gemini** (`gemini-3.8-flash` & `gemini-3.1-flash-lite`) via the modern `@google/genai` TypeScript SDK.
 2. **Groq** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) via Groq's low-latency OpenAI-compatible API.
 3. **OpenRouter** (`openrouter/free`) for dynamic routing across free community open-weights models.
+4. **Hugging Face Inference Providers** (`meta-llama/Llama-3.3-70B-Instruct`) via Hugging Face's OpenAI-compatible router API.
 
 In addition to multi-model AI routing, Orvix v0.1 delivers true token-by-token Server-Sent Events (SSE) streaming, specialized conversation modes, real-time Cloud Firestore synchronization, zero-setup guest exploration, Web Speech voice dictation and text-to-speech, multi-format chat export, and PWA installability.
 
@@ -358,6 +359,7 @@ cp .env.example .env
 | `GEMINI_API_KEY` | Server | Optional | Google Gemini API key. Configured server-side for `@google/genai`. |
 | `GROQ_API_KEY` | Server | Optional | Groq API key for high-speed inference. |
 | `OPENROUTER_API_KEY` | Server | Optional | OpenRouter API key for dynamic open-weights models. |
+| `HUGGINGFACE_API_KEY`| Server | Optional | Hugging Face user access token for Hugging Face Inference Providers. |
 | `VITE_FIREBASE_API_KEY` | Client | Optional | Firebase Web API key for authentication and Firestore. |
 | `VITE_FIREBASE_AUTH_DOMAIN` | Client | Optional | Firebase Auth Domain (e.g. `your-app.firebaseapp.com`). |
 | `VITE_FIREBASE_PROJECT_ID` | Client | Optional | Firebase Project ID. |
@@ -375,6 +377,7 @@ PORT=3000
 GEMINI_API_KEY=your_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+HUGGINGFACE_API_KEY=your_huggingface_api_key_here
 
 # Firebase Client Configuration (Optional - for Cloud Persistence & Auth)
 VITE_FIREBASE_API_KEY=your_firebase_api_key_here
@@ -385,7 +388,7 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
 VITE_FIREBASE_APP_ID=your_firebase_app_id
 ```
 
-> **Security Note**: Never commit actual API keys or credentials to version control. AI keys placed under `GEMINI_API_KEY`, `GROQ_API_KEY`, and `OPENROUTER_API_KEY` are read exclusively by `server.ts` and are never exposed to client bundles.
+> **Security Note**: Never commit actual API keys or credentials to version control. AI keys placed under `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, and `HUGGINGFACE_API_KEY` are read exclusively by `server.ts` and are never exposed to client bundles.
 
 ---
 
