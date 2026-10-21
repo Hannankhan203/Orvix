@@ -7,14 +7,12 @@
 import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './geminiService.js';
 import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
 import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
-import { sendHuggingFaceMessage, streamHuggingFaceMessage, getHuggingFaceApiKey } from './huggingfaceService.js';
 import { sendCloudflareMessage, streamCloudflareMessage } from './cloudflareService.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
   OPENROUTER: 'openrouter',
-  HUGGINGFACE: 'huggingface',
   CLOUDFLARE: 'cloudflare'
 };
 
@@ -39,14 +37,6 @@ export const PROVIDER_OPTIONS = [
     modelTag: 'Llama 3.3 70B (Free)',
     description: 'Multi-model gateway',
     envKey: 'VITE_OPENROUTER_API_KEY'
-  },
-  {
-    id: AI_PROVIDERS.HUGGINGFACE,
-    name: 'Hugging Face',
-    modelTag: 'Llama 3.3 70B Instruct',
-    label: 'Hugging Face — Llama 3.3 70B Instruct',
-    description: 'Hugging Face Inference Providers',
-    envKey: 'HUGGINGFACE_API_KEY'
   },
   {
     id: AI_PROVIDERS.CLOUDFLARE,
@@ -74,10 +64,6 @@ export function isProviderConfigured(provider) {
     case AI_PROVIDERS.OPENROUTER: {
       const key = getOpenRouterApiKey();
       return Boolean(key && key !== 'YOUR_OPENROUTER_API_KEY');
-    }
-    case AI_PROVIDERS.HUGGINGFACE: {
-      const key = getHuggingFaceApiKey();
-      return Boolean(key && key !== 'YOUR_HUGGINGFACE_API_KEY');
     }
     case AI_PROVIDERS.CLOUDFLARE: {
       return true;
@@ -386,14 +372,6 @@ export async function streamAIMessage({
       return {
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
-      };
-    }
-
-    case AI_PROVIDERS.HUGGINGFACE: {
-      const result = await streamHuggingFaceMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
-      return {
-        ...result,
-        provider: AI_PROVIDERS.HUGGINGFACE
       };
     }
 
