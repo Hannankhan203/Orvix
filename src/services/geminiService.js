@@ -55,7 +55,15 @@ export function formatConversationHistory(messages = [], currentPrompt, maxConte
  * @param {string|null} [params.username=null] - Preferred username for personalization
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGeminiMessage({ prompt, history = [], username = null, preferences = null, mode = 'general' }) {
+export async function sendGeminiMessage({
+  prompt,
+  history = [],
+  username = null,
+  preferences = null,
+  mode = 'general',
+  conversationId = null,
+  attachments = []
+}) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -67,7 +75,9 @@ export async function sendGeminiMessage({ prompt, history = [], username = null,
       prompt,
       history,
       username: username ? String(username).trim() : null,
-      preferences: preferences || null
+      preferences: preferences || null,
+      conversationId: conversationId || null,
+      attachments: Array.isArray(attachments) ? attachments : []
     })
   });
 
@@ -103,9 +113,21 @@ export async function sendGeminiMessage({ prompt, history = [], username = null,
  * @param {string} [params.mode='general']
  * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
  * @param {AbortSignal} [params.signal]
+ * @param {string|null} [params.conversationId=null]
+ * @param {Array} [params.attachments=[]]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGeminiMessage({ prompt, history = [], username = null, preferences = null, mode = 'general', onChunk, signal }) {
+export async function streamGeminiMessage({
+  prompt,
+  history = [],
+  username = null,
+  preferences = null,
+  mode = 'general',
+  onChunk,
+  signal,
+  conversationId = null,
+  attachments = []
+}) {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -119,7 +141,9 @@ export async function streamGeminiMessage({ prompt, history = [], username = nul
       history,
       username: username ? String(username).trim() : null,
       preferences: preferences || null,
-      stream: true
+      stream: true,
+      conversationId: conversationId || null,
+      attachments: Array.isArray(attachments) ? attachments : []
     }),
     signal
   });

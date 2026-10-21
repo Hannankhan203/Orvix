@@ -196,7 +196,9 @@ export async function streamAIMessage({
   preferences = null,
   onChunk,
   onStart,
-  signal
+  signal,
+  conversationId = null,
+  attachments = []
 }) {
   const normalizedProvider = provider.toLowerCase();
   const normalizedMode = (mode || 'general').toLowerCase();
@@ -222,7 +224,9 @@ export async function streamAIMessage({
           history,
           username: username ? String(username).trim() : null,
           preferences: preferences || null,
-          stream: true
+          stream: true,
+          conversationId: conversationId || null,
+          attachments: Array.isArray(attachments) ? attachments : []
         }),
         signal
       });
@@ -360,7 +364,7 @@ export async function streamAIMessage({
   // Client-side direct service fallback
   switch (normalizedProvider) {
     case AI_PROVIDERS.GROQ: {
-      const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
+      const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, onChunk, signal, attachments, conversationId });
       return {
         ...result,
         provider: AI_PROVIDERS.GROQ
@@ -368,7 +372,7 @@ export async function streamAIMessage({
     }
 
     case AI_PROVIDERS.OPENROUTER: {
-      const result = await streamOpenRouterMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
+      const result = await streamOpenRouterMessage({ prompt, history, mode: normalizedMode, onChunk, signal, attachments, conversationId });
       return {
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
@@ -383,7 +387,7 @@ export async function streamAIMessage({
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, onChunk, signal });
+      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, onChunk, signal, attachments, conversationId });
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI

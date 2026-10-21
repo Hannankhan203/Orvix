@@ -152,6 +152,33 @@ export async function saveChatMessage(userId, chatId, message) {
     sender: message.sender,
     content: message.content,
     modelUsed: message.modelUsed || null,
+    provider: message.provider || null,
+    attachments: Array.isArray(message.attachments)
+      ? message.attachments.map((att) => ({
+          id: att.id,
+          name: att.name || att.originalName || 'document',
+          originalName: att.originalName || att.name || 'document',
+          size: att.size || 0,
+          formattedSize: att.formattedSize || '',
+          type: att.type || att.mimeType || '',
+          extension: att.extension || '',
+          status: att.status || 'uploaded',
+          extraction: att.extraction || null
+        }))
+      : [],
+    referencedAttachments: Array.isArray(message.referencedAttachments)
+      ? message.referencedAttachments.map((att) => ({
+          id: att.id,
+          name: att.name || att.originalName || 'document',
+          originalName: att.originalName || att.name || 'document',
+          size: att.size || 0,
+          formattedSize: att.formattedSize || '',
+          type: att.type || att.mimeType || '',
+          extension: att.extension || '',
+          status: att.status || 'uploaded',
+          extraction: att.extraction || null
+        }))
+      : [],
     createdAt: serverTimestamp(),
     clientTimestamp: message.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
@@ -377,7 +404,10 @@ export async function loadConversationMessages(userId, chatId) {
       id: docSnap.id,
       sender: data.sender,
       content: data.content,
-      modelUsed: data.modelUsed,
+      modelUsed: data.modelUsed || null,
+      provider: data.provider || null,
+      attachments: Array.isArray(data.attachments) ? data.attachments : [],
+      referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments : [],
       timestamp: data.clientTimestamp || (data.createdAt?.toDate ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
     });
   });

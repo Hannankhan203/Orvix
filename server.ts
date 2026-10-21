@@ -2,7 +2,97 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import crypto from 'crypto';
+import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
+// @ts-ignore - Document extraction JavaScript service
+import { extractDocumentContent } from './src/services/documentExtractor.js';
+// @ts-ignore - Document context JavaScript service
+import {
+  prepareDocumentContext,
+  generateSimulatedDocumentResponse,
+  adaptDocumentContextForProvider,
+  formatOpenAIMessages
+} from './src/services/documentContextService.js';
+
+export interface DocumentData {
+  fileId?: string;
+  id?: string;
+  filename?: string;
+  originalName: string;
+  name?: string;
+  format: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  status: string;
+  success?: boolean;
+  text: string;
+  summaryText?: string;
+  totalCharacters: number;
+  totalWords: number;
+  pageCount?: number;
+  pages?: Array<{ pageNumber: number; text: string; charCount: number }>;
+  slideCount?: number;
+  slides?: Array<{ slideNumber: number; title?: string; text: string; notes?: string; charCount: number }>;
+  sectionCount?: number;
+  sections?: Array<{ heading: string; level: number; content: string; charCount: number }>;
+  table?: {
+    headers: string[];
+    rowCount: number;
+    columnCount: number;
+    previewRows: string[][];
+    markdownTable: string;
+  };
+  isScanned?: boolean;
+  isTruncated?: boolean;
+  warning?: string;
+  error?: string;
+}
+
+export interface PreparedDocumentContext {
+  formattedContext: string;
+  hasErrorsOrWarnings: boolean;
+  unreadableDocNotes: string[];
+  targetedDocs: DocumentData[];
+  scope: string;
+  isBoundedOrChunked: boolean;
+  truncationNote?: string;
+  directAnswer?: string;
+}
+
+export interface DocumentExtractionResult {
+  fileId: string;
+  filename: string;
+  originalName: string;
+  format: string;
+  mimeType: string;
+  sizeBytes: number;
+  status: string;
+  success: boolean;
+  text: string;
+  summaryText?: string;
+  totalCharacters: number;
+  totalWords: number;
+  pageCount?: number;
+  pages?: Array<{ pageNumber: number; text: string; charCount: number }>;
+  slideCount?: number;
+  slides?: Array<{ slideNumber: number; title?: string; text: string; notes?: string; charCount: number }>;
+  sectionCount?: number;
+  sections?: Array<{ heading: string; level: number; content: string; charCount: number }>;
+  table?: {
+    headers: string[];
+    rowCount: number;
+    columnCount: number;
+    previewRows: string[][];
+    markdownTable: string;
+  };
+  isScanned?: boolean;
+  isTruncated?: boolean;
+  warning?: string;
+  error?: string;
+  extractedAt: string;
+}
 
 dotenv.config();
 
@@ -602,6 +692,607 @@ app.get(['/api/config', '/config'], (_req, res) => {
   });
 });
 
+/* ==========================================================================
+   Controlled Temporary File Upload & Storage Management Architecture
+   ========================================================================== */
+
+const UPLOAD_DIR = path.resolve(__dirname, 'uploads', 'temp');
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
+
+// Configurable upload constraints and lifecycle bounds
+const MAX_FILE_SIZE_BYTES =
+  parseInt(process.env.MAX_FILE_SIZE_BYTES || '', 10) || 25 * 1024 * 1024; // 25 MB default
+const MAX_ATTACHMENTS_PER_UPLOAD =
+  parseInt(process.env.MAX_ATTACHMENTS_PER_UPLOAD || '', 10) || 5; // Max 5 attachments per message
+const TEMP_FILE_TTL_MS =
+  parseInt(process.env.TEMP_FILE_TTL_MS || '', 10) || 2 * 60 * 60 * 1000; // 2 hours retention TTL
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const size = (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1);
+  return `${size} ${units[i]}`;
+}
+
+// Strict whitelist of permitted file extensions and their corresponding MIME types
+const ALLOWED_EXTENSIONS_MAP: Record<string, string[]> = {
+  '.pdf': ['application/pdf'],
+  '.docx': [
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/zip',
+    'application/octet-stream'
+  ],
+  '.doc': ['application/msword', 'application/octet-stream'],
+  '.pptx': [
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/zip',
+    'application/octet-stream'
+  ],
+  '.ppt': ['application/vnd.ms-powerpoint', 'application/octet-stream'],
+  '.xlsx': [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/zip',
+    'application/octet-stream'
+  ],
+  '.xls': ['application/vnd.ms-excel', 'application/octet-stream'],
+  '.txt': ['text/plain', 'application/octet-stream'],
+  '.md': ['text/markdown', 'text/plain', 'text/x-markdown', 'application/octet-stream'],
+  '.markdown': ['text/markdown', 'text/plain', 'application/octet-stream'],
+  '.csv': ['text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel', 'application/octet-stream'],
+  '.tsv': ['text/tab-separated-values', 'text/plain', 'application/octet-stream'],
+  '.json': ['application/json', 'text/json', 'text/plain', 'application/octet-stream'],
+  '.xml': ['application/xml', 'text/xml', 'text/plain', 'application/octet-stream']
+};
+
+/**
+ * Validates binary file headers and content signatures (magic numbers)
+ * to prevent executable binaries or corrupted files from being accepted under false extensions.
+ */
+async function verifyFileSignature(
+  filePath: string,
+  ext: string
+): Promise<{ valid: boolean; reason?: string }> {
+  let fd: number | null = null;
+  try {
+    const stats = await fs.promises.stat(filePath);
+    if (stats.size === 0) {
+      return { valid: false, reason: 'File is empty (0 bytes).' };
+    }
+
+    const buffer = Buffer.alloc(Math.min(512, stats.size));
+    fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buffer, 0, buffer.length, 0);
+    fs.closeSync(fd);
+    fd = null;
+
+    // Reject executable binary formats regardless of declared extension
+    // Linux ELF binary
+    if (
+      buffer.length >= 4 &&
+      buffer[0] === 0x7f &&
+      buffer[1] === 0x45 &&
+      buffer[2] === 0x4c &&
+      buffer[3] === 0x46
+    ) {
+      return { valid: false, reason: 'Binary executable format (ELF) is not permitted.' };
+    }
+    // Windows PE / MZ executable
+    if (buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a) {
+      return { valid: false, reason: 'Binary executable format (Windows PE) is not permitted.' };
+    }
+    // Mach-O binary
+    if (
+      buffer.length >= 4 &&
+      ((buffer[0] === 0xfe && buffer[1] === 0xed && buffer[2] === 0xfa && (buffer[3] === 0xce || buffer[3] === 0xcf)) ||
+       (buffer[0] === 0xcf && buffer[1] === 0xfa && buffer[2] === 0xed && buffer[3] === 0xfe))
+    ) {
+      return { valid: false, reason: 'Binary executable format (Mach-O) is not permitted.' };
+    }
+
+    // Format-specific verification
+    if (ext === '.pdf') {
+      const header = buffer.toString('utf-8', 0, Math.min(10, buffer.length));
+      if (!header.startsWith('%PDF-')) {
+        return { valid: false, reason: 'Invalid PDF format: missing standard %PDF- header signature.' };
+      }
+      return { valid: true };
+    }
+
+    if (ext === '.docx' || ext === '.pptx' || ext === '.xlsx') {
+      // Standard PK Zip archive header: PK\x03\x04 or PK\x05\x06
+      if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b) {
+        return { valid: true };
+      }
+      return {
+        valid: false,
+        reason: `Invalid ${ext.toUpperCase().slice(1)} format: missing standard OpenXML zip container signature.`
+      };
+    }
+
+    if (ext === '.doc' || ext === '.ppt' || ext === '.xls') {
+      // OLE Compound File signature D0 CF 11 E0 A1 B1 1A E1
+      if (
+        buffer.length >= 8 &&
+        buffer[0] === 0xd0 &&
+        buffer[1] === 0xcf &&
+        buffer[2] === 0x11 &&
+        buffer[3] === 0xe0 &&
+        buffer[4] === 0xa1 &&
+        buffer[5] === 0xb1 &&
+        buffer[6] === 0x1a &&
+        buffer[7] === 0xe1
+      ) {
+        return { valid: true };
+      }
+      return { valid: false, reason: 'Invalid legacy Office document: missing OLE compound binary signature.' };
+    }
+
+    // Text formats: disallow null bytes \0 to prevent disguised binary files
+    if (['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml'].includes(ext)) {
+      for (let i = 0; i < buffer.length; i++) {
+        if (buffer[i] === 0x00) {
+          return { valid: false, reason: 'Text file contains unexpected null binary bytes.' };
+        }
+      }
+      if (ext === '.json') {
+        const str = buffer.toString('utf-8').trim();
+        if (
+          str &&
+          !str.startsWith('{') &&
+          !str.startsWith('[') &&
+          !str.startsWith('"') &&
+          !str.startsWith('true') &&
+          !str.startsWith('false') &&
+          !str.startsWith('null') &&
+          isNaN(Number(str[0]))
+        ) {
+          return { valid: false, reason: 'Invalid JSON format: file does not begin with valid JSON syntax.' };
+        }
+      }
+      return { valid: true };
+    }
+
+    return { valid: true };
+  } catch (err: any) {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (_) {}
+    }
+    return { valid: false, reason: `File inspection failed: ${err?.message || 'unknown error'}` };
+  }
+}
+
+// Multer storage engine writing to controlled uploads/temp directory with secure UUIDs
+const uploadStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const fileId = crypto.randomUUID();
+    // Safe filename prevents path traversal
+    cb(null, `${fileId}${ext}`);
+  }
+});
+
+// Multer pre-upload file filter
+const uploadFilter = (
+  _req: express.Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback
+) => {
+  const originalName = file.originalname || '';
+  const baseName = path.basename(originalName);
+  const ext = path.extname(baseName).toLowerCase();
+
+  if (!ext || !ALLOWED_EXTENSIONS_MAP[ext]) {
+    return cb(
+      new Error(
+        `Unsupported file extension: '${ext || 'none'}'. Supported: PDF, DOCX, DOC, TXT, MD, PPT, PPTX, CSV, TSV, JSON, XML, XLSX, XLS.`
+      )
+    );
+  }
+
+  const allowedMimes = ALLOWED_EXTENSIONS_MAP[ext];
+  const clientMime = (file.mimetype || '').toLowerCase();
+  if (
+    clientMime &&
+    !allowedMimes.includes(clientMime) &&
+    clientMime !== 'application/octet-stream'
+  ) {
+    return cb(
+      new Error(
+        `MIME type '${clientMime}' is not permitted for ${ext.toUpperCase()} files.`
+      )
+    );
+  }
+
+  cb(null, true);
+};
+
+const uploadMiddleware = multer({
+  storage: uploadStorage,
+  limits: {
+    fileSize: MAX_FILE_SIZE_BYTES,
+    files: MAX_ATTACHMENTS_PER_UPLOAD
+  },
+  fileFilter: uploadFilter as any
+});
+
+interface UploadedFileRecord {
+  id: string;
+  originalName: string;
+  diskFilename: string;
+  mimeType: string;
+  extension: string;
+  size: number;
+  formattedSize: string;
+  status: 'uploaded' | 'ready';
+  uploadedAt: string;
+  expiresAt: number;
+  conversationId?: string;
+  extraction?: DocumentExtractionResult;
+}
+
+// In-memory registry tracking uploaded temporary files and their lifecycle
+const fileRegistry = new Map<string, UploadedFileRecord>();
+// Conversation to file IDs association mapping (strictly isolates documents per conversation)
+const conversationDocuments = new Map<string, Set<string>>();
+
+/**
+ * Automated lifecycle cleanup: Sweeps the temporary upload directory and registry,
+ * unlinking files exceeding the TTL (default: 2 hours).
+ */
+function cleanupExpiredUploads() {
+  try {
+    const now = Date.now();
+    for (const [id, record] of fileRegistry.entries()) {
+      if (record.expiresAt <= now) {
+        fileRegistry.delete(id);
+        const fullPath = path.join(UPLOAD_DIR, record.diskFilename);
+        fs.promises.unlink(fullPath).catch(() => {});
+      }
+    }
+
+    fs.readdir(UPLOAD_DIR, (err, files) => {
+      if (err || !Array.isArray(files)) return;
+      for (const filename of files) {
+        const filePath = path.join(UPLOAD_DIR, filename);
+        fs.stat(filePath, (statErr, stats) => {
+          if (statErr || !stats) return;
+          if (now - stats.mtimeMs > TEMP_FILE_TTL_MS) {
+            fs.unlink(filePath, () => {});
+          }
+        });
+      }
+    });
+  } catch (e) {
+    console.warn('[Upload Cleanup] Error during temp file cleanup:', e);
+  }
+}
+
+// Run cleanup every 15 minutes
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+const cleanupTimer = setInterval(cleanupExpiredUploads, CLEANUP_INTERVAL_MS);
+if (cleanupTimer.unref) cleanupTimer.unref();
+
+// Upload Configuration Endpoint (returns limits and supported formats)
+app.get(['/api/upload/config', '/upload/config'], (_req, res) => {
+  res.json({
+    maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
+    maxFileSizeFormatted: formatBytes(MAX_FILE_SIZE_BYTES),
+    maxAttachments: MAX_ATTACHMENTS_PER_UPLOAD,
+    allowedExtensions: Object.keys(ALLOWED_EXTENSIONS_MAP).map((e) =>
+      e.replace('.', '').toUpperCase()
+    ),
+    ttlMinutes: Math.round(TEMP_FILE_TTL_MS / (60 * 1000))
+  });
+});
+
+// Upload Attachment Metadata Endpoint
+app.get(['/api/upload/:id', '/upload/:id'], (req, res) => {
+  const fileId = req.params.id;
+  if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+    return res.status(400).json({ error: 'Invalid attachment ID format.' });
+  }
+
+  const record = fileRegistry.get(fileId);
+  if (!record) {
+    return res.status(404).json({ error: 'Attachment not found or has expired.' });
+  }
+
+  return res.json({
+    id: record.id,
+    name: record.originalName,
+    originalName: record.originalName,
+    extension: record.extension,
+    mimeType: record.mimeType,
+    type: record.mimeType,
+    size: record.size,
+    formattedSize: record.formattedSize,
+    status: record.status,
+    uploadedAt: record.uploadedAt,
+    expiresAt: record.expiresAt,
+    extraction: record.extraction
+  });
+});
+
+// Dedicated Document Extraction Detail Endpoint
+app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, res) => {
+  const fileId = req.params.id;
+  if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+    return res.status(400).json({ error: 'Invalid attachment ID format.' });
+  }
+
+  const record = fileRegistry.get(fileId);
+  if (!record) {
+    return res.status(404).json({ error: 'Attachment not found or has expired.' });
+  }
+
+  if (record.extraction) {
+    return res.json(record.extraction);
+  }
+
+  const filePath = path.join(UPLOAD_DIR, record.diskFilename);
+  const ext = path.extname(record.diskFilename);
+  const extraction = (await extractDocumentContent(
+    filePath,
+    record.originalName,
+    ext,
+    record.mimeType,
+    record.id
+  )) as DocumentExtractionResult;
+  record.extraction = extraction;
+  return res.json(extraction);
+});
+
+// Dedicated Attachment File Serving & Download Endpoint (Requirements 4, 6, 8)
+app.get(
+  ['/api/upload/:id/file', '/upload/:id/file', '/api/upload/:id/download', '/upload/:id/download'],
+  async (req, res) => {
+    const fileId = req.params.id;
+    if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+      return res.status(400).json({ error: 'Invalid attachment ID format.' });
+    }
+
+    const record = fileRegistry.get(fileId);
+    let diskFilename = record?.diskFilename;
+    let originalName = record?.originalName || 'document';
+    let mimeType = record?.mimeType || 'application/octet-stream';
+
+    if (!diskFilename) {
+      try {
+        const files = await fs.promises.readdir(UPLOAD_DIR);
+        const match = files.find((f) => f.startsWith(fileId));
+        if (match) {
+          diskFilename = match;
+          const ext = path.extname(match).toLowerCase();
+          mimeType = (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) || 'application/octet-stream';
+        }
+      } catch (_) {}
+    }
+
+    if (!diskFilename) {
+      return res.status(404).json({ error: 'Attachment file not found or has expired.' });
+    }
+
+    const filePath = path.join(UPLOAD_DIR, diskFilename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Attachment file not found or has expired.' });
+    }
+
+    const forceDownload = req.query.download === 'true' || req.path.includes('/download');
+    const isInline =
+      !forceDownload &&
+      (mimeType === 'application/pdf' ||
+        mimeType.startsWith('text/') ||
+        mimeType.startsWith('image/'));
+
+    const safeFilename = path.basename(originalName).replace(/["\r\n]/g, '_');
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
+    );
+
+    return res.sendFile(filePath);
+  }
+);
+
+// Upload Deletion Endpoint (cleans up staging file if removed before submission)
+app.delete(['/api/upload/:id', '/upload/:id'], async (req, res) => {
+  const fileId = req.params.id;
+  if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+    return res.status(400).json({ error: 'Invalid attachment ID format.' });
+  }
+
+  const record = fileRegistry.get(fileId);
+  fileRegistry.delete(fileId);
+  if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
+    conversationDocuments.get(record.conversationId)!.delete(fileId);
+  }
+
+  try {
+    const files = await fs.promises.readdir(UPLOAD_DIR);
+    for (const fname of files) {
+      if (fname.startsWith(fileId)) {
+        await fs.promises.unlink(path.join(UPLOAD_DIR, fname));
+      }
+    }
+  } catch (_) {}
+
+  return res.json({ success: true, id: fileId });
+});
+
+// Dedicated Multipart File Upload Endpoint
+app.post(['/api/upload', '/upload'], (req, res) => {
+  uploadMiddleware.array('files', MAX_ATTACHMENTS_PER_UPLOAD)(req as any, res as any, async (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({
+            error: `File exceeds maximum allowed size of ${formatBytes(MAX_FILE_SIZE_BYTES)}.`,
+            code: 'FILE_TOO_LARGE'
+          });
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+          return res.status(400).json({
+            error: `Maximum of ${MAX_ATTACHMENTS_PER_UPLOAD} attachments allowed per upload.`,
+            code: 'TOO_MANY_FILES'
+          });
+        }
+        if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+          return res.status(400).json({
+            error: "Unexpected field in upload. Expected field name 'files'.",
+            code: 'UNEXPECTED_FIELD'
+          });
+        }
+      }
+      return res.status(400).json({
+        error: err.message || 'File upload failed.',
+        code: 'UPLOAD_ERROR'
+      });
+    }
+
+    const files = req.files as Express.Multer.File[] | undefined;
+    if (!files || files.length === 0) {
+      return res.status(400).json({
+        error: 'No files provided for upload.',
+        code: 'NO_FILES'
+      });
+    }
+
+    const conversationId = req.body?.conversationId ? String(req.body.conversationId).trim() : undefined;
+    const uploadedResults: UploadedFileRecord[] = [];
+    const validationErrors: string[] = [];
+
+    // Inspect each uploaded file for size and binary signature integrity
+    for (const file of files) {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const safeBaseName = path.basename(file.originalname).replace(/[\r\n\t]/g, ' ').slice(0, 150);
+
+      if (file.size === 0) {
+        validationErrors.push(`File '${safeBaseName}' is empty (0 bytes).`);
+        try {
+          await fs.promises.unlink(file.path);
+        } catch (_) {}
+        continue;
+      }
+
+      const sigResult = await verifyFileSignature(file.path, ext);
+      if (!sigResult.valid) {
+        validationErrors.push(`File '${safeBaseName}': ${sigResult.reason}`);
+        try {
+          await fs.promises.unlink(file.path);
+        } catch (_) {}
+        continue;
+      }
+
+      const fileId = path.basename(file.filename, ext);
+      const nowIso = new Date().toISOString();
+      const record: UploadedFileRecord = {
+        id: fileId,
+        originalName: safeBaseName,
+        diskFilename: file.filename,
+        mimeType: file.mimetype || 'application/octet-stream',
+        extension: ext.replace('.', '').toUpperCase(),
+        size: file.size,
+        formattedSize: formatBytes(file.size),
+        status: 'uploaded',
+        uploadedAt: nowIso,
+        expiresAt: Date.now() + TEMP_FILE_TTL_MS,
+        conversationId
+      };
+
+      fileRegistry.set(fileId, record);
+      if (conversationId) {
+        let docSet = conversationDocuments.get(conversationId);
+        if (!docSet) {
+          docSet = new Set<string>();
+          conversationDocuments.set(conversationId, docSet);
+        }
+        docSet.add(fileId);
+      }
+      uploadedResults.push(record);
+    }
+
+    // If any file in this batch was invalid, purge all files uploaded in this batch
+    if (validationErrors.length > 0) {
+      for (const rec of uploadedResults) {
+        fileRegistry.delete(rec.id);
+        if (conversationId && conversationDocuments.has(conversationId)) {
+          conversationDocuments.get(conversationId)!.delete(rec.id);
+        }
+        try {
+          await fs.promises.unlink(path.join(UPLOAD_DIR, rec.diskFilename));
+        } catch (_) {}
+      }
+      return res.status(400).json({
+        error: validationErrors.join(' '),
+        code: 'INVALID_FILE_CONTENT'
+      });
+    }
+
+    // Execute server-side text and structure extraction for each uploaded file
+    for (const rec of uploadedResults) {
+      try {
+        const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
+        const ext = path.extname(rec.diskFilename);
+        const extraction = (await extractDocumentContent(
+          fullDiskPath,
+          rec.originalName,
+          ext,
+          rec.mimeType,
+          rec.id
+        )) as DocumentExtractionResult;
+        rec.extraction = extraction;
+        rec.status = extraction.success || extraction.status === 'scanned_or_image_only' ? 'ready' : 'uploaded';
+      } catch (err: any) {
+        console.warn(`[Document Extraction] Extraction error for ${rec.originalName}:`, err);
+      }
+    }
+
+    // Return structured metadata without exposing server-internal storage paths
+    return res.status(200).json({
+      success: true,
+      count: uploadedResults.length,
+      attachments: uploadedResults.map((r) => ({
+        id: r.id,
+        originalName: r.originalName,
+        name: r.originalName,
+        extension: r.extension,
+        mimeType: r.mimeType,
+        type: r.mimeType,
+        size: r.size,
+        formattedSize: r.formattedSize,
+        status: r.status,
+        uploadedAt: r.uploadedAt,
+        extraction: r.extraction
+          ? {
+              status: r.extraction.status,
+              success: r.extraction.success,
+              format: r.extraction.format,
+              totalCharacters: r.extraction.totalCharacters,
+              totalWords: r.extraction.totalWords,
+              summaryText: r.extraction.summaryText,
+              pageCount: r.extraction.pageCount,
+              slideCount: r.extraction.slideCount,
+              sectionCount: r.extraction.sectionCount,
+              isScanned: r.extraction.isScanned,
+              isTruncated: r.extraction.isTruncated,
+              warning: r.extraction.warning,
+              error: r.extraction.error
+            }
+          : undefined
+      }))
+    });
+  });
+});
+
 // Helper utilities for Server-Sent Events (SSE) streaming
 function initSSE(res: express.Response) {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -629,15 +1320,19 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       history = [],
       username = null,
       preferences = null,
-      stream = true
+      stream = true,
+      conversationId = null,
+      attachments = []
     } = req.body as {
       provider?: string;
       mode?: string;
       prompt?: string;
-      history?: Array<{ sender?: string; content?: string }>;
+      history?: Array<{ sender?: string; content?: string; attachments?: any[] }>;
       username?: string | null;
       preferences?: UserPreferences | null;
       stream?: boolean;
+      conversationId?: string | null;
+      attachments?: any[];
     };
 
     if (!prompt || typeof prompt !== 'string') {
@@ -652,14 +1347,135 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     });
 
+    // Associate attachments sent in this turn with the conversation
+    if (conversationId && Array.isArray(attachments)) {
+      let docSet = conversationDocuments.get(conversationId);
+      if (!docSet) {
+        docSet = new Set<string>();
+        conversationDocuments.set(conversationId, docSet);
+      }
+      for (const att of attachments) {
+        if (att?.id) {
+          docSet.add(att.id);
+          const existing = fileRegistry.get(att.id);
+          if (existing) {
+            existing.conversationId = conversationId;
+          } else if (att.extraction) {
+            fileRegistry.set(att.id, {
+              id: att.id,
+              originalName: att.originalName || att.name || 'document',
+              diskFilename: att.id,
+              mimeType: att.type || att.mimeType || 'application/octet-stream',
+              extension: att.extension || '',
+              size: att.size || 0,
+              formattedSize: att.formattedSize || '',
+              status: att.status || 'ready',
+              uploadedAt: att.uploadedAt || new Date().toISOString(),
+              expiresAt: Date.now() + TEMP_FILE_TTL_MS,
+              conversationId,
+              extraction: att.extraction
+            });
+          }
+        }
+      }
+    }
+
+    // Collect available documents for this specific conversation (Requirement 3: strict conversation isolation)
+    const availableDocs: DocumentData[] = [];
+    const seenDocIds = new Set<string>();
+
+    const addDocIfValid = (docData: DocumentData, fromConvId?: string) => {
+      // Never use a document associated with a different conversation!
+      if (fromConvId && conversationId && fromConvId !== conversationId) {
+        return;
+      }
+      const docKey = docData.fileId || docData.id || docData.originalName || docData.filename;
+      if (docKey && !seenDocIds.has(docKey)) {
+        seenDocIds.add(docKey);
+        availableDocs.push(docData);
+      }
+    };
+
+    // 1. Current turn attachments
+    if (Array.isArray(attachments)) {
+      for (const att of attachments) {
+        if (!att?.id) continue;
+        const record = fileRegistry.get(att.id);
+        if (record?.extraction) {
+          addDocIfValid(record.extraction as DocumentData, record.conversationId);
+        } else if (att.extraction) {
+          addDocIfValid(att.extraction as DocumentData, conversationId || undefined);
+        }
+      }
+    }
+
+    // 2. Attachments in history of this conversation
+    if (Array.isArray(history)) {
+      for (const hMsg of history) {
+        if (Array.isArray(hMsg?.attachments)) {
+          for (const hAtt of hMsg.attachments) {
+            if (!hAtt?.id) continue;
+            const record = fileRegistry.get(hAtt.id);
+            if (record?.extraction) {
+              addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+            } else if (hAtt.extraction) {
+              addDocIfValid(hAtt.extraction as DocumentData, conversationId || undefined);
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Conversation-registered files for this conversation
+    if (conversationId && conversationDocuments.has(conversationId)) {
+      const convSet = conversationDocuments.get(conversationId)!;
+      for (const fileId of convSet) {
+        const record = fileRegistry.get(fileId);
+        if (record?.extraction) {
+          addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId);
+        }
+      }
+    }
+
+    // Prepare document context for the prompt
+    const prepDoc: PreparedDocumentContext = prepareDocumentContext(prompt, availableDocs) as PreparedDocumentContext;
+    const normalizedProvider = String(provider).toLowerCase();
+    const shouldStream = stream !== false;
+
+    // If an immediate direct answer is determined (e.g. unreadable scanned file, empty doc, page out of bounds)
+    if (prepDoc.directAnswer) {
+      if (!shouldStream) {
+        return res.json({
+          text: prepDoc.directAnswer,
+          modelUsed: 'Document Analyzer',
+          provider: normalizedProvider
+        });
+      }
+      initSSE(res);
+      sendSSE(res, { type: 'start', modelUsed: 'Document Analyzer', provider: normalizedProvider });
+      sendSSE(res, { type: 'chunk', text: prepDoc.directAnswer });
+      sendSSE(res, { type: 'done', text: prepDoc.directAnswer, modelUsed: 'Document Analyzer', provider: normalizedProvider });
+      res.end();
+      return;
+    }
+
     const cleanUsername =
       typeof username === 'string' && username.trim()
         ? username.trim().slice(0, 50).replace(/[\r\n\t]/g, ' ')
         : null;
 
-    const systemInstruction = buildSystemInstruction(cleanUsername, preferences, mode);
-    const normalizedProvider = String(provider).toLowerCase();
-    const shouldStream = stream !== false;
+    const baseSystemInstruction = buildSystemInstruction(cleanUsername, preferences, mode);
+
+    // Shared Provider-Independent Document Context Adaptation (Requirements 2, 3, 5, 7, 8)
+    const adapted: any = adaptDocumentContextForProvider({
+      provider: normalizedProvider,
+      prompt,
+      baseSystemInstruction,
+      preparedContext: prepDoc
+    });
+
+    const effectiveSystemInstruction = adapted.effectiveSystemInstruction;
+    const effectivePrompt = adapted.effectivePrompt;
 
     // 1. Google Gemini Provider
     if (normalizedProvider === 'gemini') {
@@ -667,24 +1483,27 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       // If no API key is configured, return simulated response (with progressive reveal if streaming)
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const text = availableDocs.length > 0
+          ? generateSimulatedDocumentResponse(prompt, prepDoc)
+          : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.1-flash-lite (demo)';
         if (!shouldStream) {
           return res.json({
             text,
-            modelUsed: 'gemini-3.1-flash-lite (demo)',
+            modelUsed: demoModel,
             provider: 'gemini'
           });
         }
         initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: 'gemini-3.1-flash-lite (demo)', provider: 'gemini' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'gemini' });
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
           if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 20));
+          await new Promise((r) => setTimeout(r, 15));
         }
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: 'gemini-3.1-flash-lite (demo)', provider: 'gemini' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'gemini' });
           res.end();
         }
         return;
@@ -699,13 +1518,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
       });
 
-      const contents = formatGeminiHistory(history, prompt);
+      const contents = formatGeminiHistory(history, effectivePrompt);
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
-      // Attempt 1 & 2 try gemini-3.8-flash (primary recommended model)
-      // Attempt 3 tries gemini-3.1-flash-lite (alternative fallback model)
+      // Attempt 1 tries gemini-3.8-flash (primary recommended model)
+      // Attempt 2 tries gemini-3-flash-preview (fast reliable fallback preview model)
+      // Attempt 3 tries gemini-3.1-flash-lite (alternative lite model)
       const attemptPlan = [
         { model: 'gemini-3.8-flash', attemptNum: 1 },
-        { model: 'gemini-3.8-flash', attemptNum: 2 },
+        { model: 'gemini-3-flash-preview', attemptNum: 2 },
         { model: 'gemini-3.1-flash-lite', attemptNum: 3 }
       ];
       const maxAttempts = attemptPlan.length;
@@ -722,7 +1542,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               model,
               contents,
               config: {
-                systemInstruction
+                systemInstruction: effectiveSystemInstruction
               }
             });
 
@@ -804,7 +1624,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               model,
               contents,
               config: {
-                systemInstruction
+                systemInstruction: effectiveSystemInstruction
               }
             });
 
@@ -939,44 +1759,37 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'groq') {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
       if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const text = availableDocs.length > 0
+          ? generateSimulatedDocumentResponse(prompt, prepDoc)
+          : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'Llama 3.3 70B (demo)';
         if (!shouldStream) {
           return res.json({
             text,
-            modelUsed: 'Llama 3.3 70B (demo)',
+            modelUsed: demoModel,
             provider: 'groq'
           });
         }
         initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: 'Llama 3.3 70B (demo)', provider: 'groq' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'groq' });
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
           if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 20));
+          await new Promise((r) => setTimeout(r, 15));
         }
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: 'Llama 3.3 70B (demo)', provider: 'groq' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'groq' });
           res.end();
         }
         return;
       }
 
-      const messages = [
-        {
-          role: 'system',
-          content: systemInstruction
-        }
-      ];
-
-      for (const msg of history.slice(-12)) {
-        if (!msg.content) continue;
-        messages.push({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content.trim()
-        });
-      }
-      messages.push({ role: 'user', content: prompt.trim() });
+      const messages = formatOpenAIMessages({
+        systemInstruction: effectiveSystemInstruction,
+        history,
+        prompt: effectivePrompt
+      });
 
       if (!shouldStream) {
         const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -994,8 +1807,17 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
         if (!groqRes.ok) {
           const errText = await groqRes.text();
+          let friendlyError = `Groq request failed (${groqRes.status}): ${errText}`;
+          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
+            friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+          }
           return res.status(groqRes.status).json({
-            error: `Groq request failed (${groqRes.status}): ${errText}`
+            error: friendlyError,
+            code: groqRes.status,
+            provider: 'groq',
+            model: 'openai/gpt-oss-120b',
+            canFallback: true,
+            suggestedProviders: ['gemini', 'openrouter']
           });
         }
 
@@ -1023,8 +1845,17 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
         if (!groqRes.ok) {
           const errText = await groqRes.text();
+          let friendlyError = `Groq request failed (${groqRes.status}): ${errText}`;
+          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
+            friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+          }
           return res.status(groqRes.status).json({
-            error: `Groq request failed (${groqRes.status}): ${errText}`
+            error: friendlyError,
+            code: groqRes.status,
+            provider: 'groq',
+            model: 'openai/gpt-oss-120b',
+            canFallback: true,
+            suggestedProviders: ['gemini', 'openrouter']
           });
         }
 
@@ -1074,44 +1905,37 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'openrouter') {
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
       if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const text = availableDocs.length > 0
+          ? generateSimulatedDocumentResponse(prompt, prepDoc)
+          : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'openrouter/free (demo)';
         if (!shouldStream) {
           return res.json({
             text,
-            modelUsed: 'openrouter/free (demo)',
+            modelUsed: demoModel,
             provider: 'openrouter'
           });
         }
         initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: 'openrouter/free (demo)', provider: 'openrouter' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'openrouter' });
         const tokens = text.split(/(\s+)/);
         for (const token of tokens) {
           if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 20));
+          await new Promise((r) => setTimeout(r, 15));
         }
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: 'openrouter/free (demo)', provider: 'openrouter' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'openrouter' });
           res.end();
         }
         return;
       }
 
-      const messages = [
-        {
-          role: 'system',
-          content: systemInstruction
-        }
-      ];
-
-      for (const msg of history.slice(-12)) {
-        if (!msg.content) continue;
-        messages.push({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content.trim()
-        });
-      }
-      messages.push({ role: 'user', content: prompt.trim() });
+      const messages = formatOpenAIMessages({
+        systemInstruction: effectiveSystemInstruction,
+        history,
+        prompt: effectivePrompt
+      });
 
       if (!shouldStream) {
         const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -1130,8 +1954,17 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
         if (!orRes.ok) {
           const errText = await orRes.text();
+          let friendlyError = `OpenRouter request failed (${orRes.status}): ${errText}`;
+          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
+            friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+          }
           return res.status(orRes.status).json({
-            error: `OpenRouter request failed (${orRes.status}): ${errText}`
+            error: friendlyError,
+            code: orRes.status,
+            provider: 'openrouter',
+            model: 'openrouter/free',
+            canFallback: true,
+            suggestedProviders: ['gemini', 'groq']
           });
         }
 
@@ -1160,8 +1993,17 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
         if (!orRes.ok) {
           const errText = await orRes.text();
+          let friendlyError = `OpenRouter request failed (${orRes.status}): ${errText}`;
+          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
+            friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+          }
           return res.status(orRes.status).json({
-            error: `OpenRouter request failed (${orRes.status}): ${errText}`
+            error: friendlyError,
+            code: orRes.status,
+            provider: 'openrouter',
+            model: 'openrouter/free',
+            canFallback: true,
+            suggestedProviders: ['gemini', 'groq']
           });
         }
 
@@ -1221,8 +2063,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         accountId === 'YOUR_CLOUDFLARE_ACCOUNT_ID' ||
         apiToken === 'YOUR_CLOUDFLARE_API_TOKEN'
       ) {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = 'Cloudflare Workers AI — Llama 3.1 8B (demo)';
+        const text = availableDocs.length > 0
+          ? generateSimulatedDocumentResponse(prompt, prepDoc)
+          : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'Cloudflare Workers AI — Llama 3.1 8B (demo)';
         if (!shouldStream) {
           return res.json({
             text,
@@ -1236,7 +2080,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         for (const token of tokens) {
           if (isClientClosed || res.writableEnded) break;
           sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 20));
+          await new Promise((r) => setTimeout(r, 15));
         }
         if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'cloudflare' });
@@ -1245,21 +2089,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         return;
       }
 
-      const messages = [
-        {
-          role: 'system',
-          content: systemInstruction
-        }
-      ];
-
-      for (const msg of history.slice(-12)) {
-        if (!msg.content) continue;
-        messages.push({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content.trim()
-        });
-      }
-      messages.push({ role: 'user', content: prompt.trim() });
+      const messages = formatOpenAIMessages({
+        systemInstruction: effectiveSystemInstruction,
+        history,
+        prompt: effectivePrompt
+      });
 
       const cfEndpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId.trim())}/ai/run/${modelId}`;
 

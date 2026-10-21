@@ -8,6 +8,7 @@
  */
 
 import { getChatMode } from '../config/chatModes.js';
+import { prepareDocumentContext, adaptDocumentContextForProvider } from './documentContextService.js';
 
 export function getOpenRouterApiKey() {
   try {
@@ -30,24 +31,47 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MODEL = 'openrouter/free';
 
 /**
- * Formats conversation history into OpenAI-compatible format expected by OpenRouter.
+ * Formats conversation history into OpenAI-compatible format expected by OpenRouter,
+ * integrating document context adaptation when attachments are provided.
  * @param {Array} history
  * @param {string} prompt
  * @param {number} [maxContextMessages=12]
  * @param {string} [mode='general']
+ * @param {Array} [attachments=[]]
  * @returns {Array<{ role: string, content: string }>}
  */
-export function formatOpenRouterMessages(history = [], prompt, maxContextMessages = 12, mode = 'general') {
+export function formatOpenRouterMessages(history = [], prompt, maxContextMessages = 12, mode = 'general', attachments = []) {
   const modeObj = getChatMode(mode);
-  const systemContent = [
+  const baseSystemContent = [
     'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.',
     modeObj.instruction
   ].filter(Boolean).join(' ');
 
+  let effectiveSystemContent = baseSystemContent;
+  let effectivePrompt = prompt;
+
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const docs = attachments
+      .filter((a) => a?.extraction)
+      .map((a) => a.extraction);
+
+    if (docs.length > 0) {
+      const prepDoc = prepareDocumentContext(prompt, docs);
+      const adapted = adaptDocumentContextForProvider({
+        provider: 'openrouter',
+        prompt,
+        baseSystemInstruction: baseSystemContent,
+        preparedContext: prepDoc
+      });
+      effectiveSystemContent = adapted.effectiveSystemInstruction;
+      effectivePrompt = adapted.effectivePrompt;
+    }
+  }
+
   const messages = [
     {
       role: 'system',
-      content: systemContent
+      content: effectiveSystemContent
     }
   ];
 
@@ -60,10 +84,10 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
     });
   }
 
-  if (prompt && prompt.trim()) {
+  if (effectivePrompt && effectivePrompt.trim()) {
     messages.push({
       role: 'user',
-      content: prompt.trim()
+      content: effectivePrompt.trim()
     });
   }
 
@@ -75,9 +99,10 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
  * @param {Object} params
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
+ * @param {Array} [params.attachments=[]]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general' }) {
+export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general', attachments = [] }) {
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
@@ -86,7 +111,7 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
     );
   }
 
-  const messages = formatOpenRouterMessages(history, prompt, 12, mode);
+  const messages = formatOpenRouterMessages(history, prompt, 12, mode, attachments);
 
   let response;
   try {
@@ -152,7 +177,7 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal }) {
+export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [] }) {
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
@@ -161,7 +186,7 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
     );
   }
 
-  const messages = formatOpenRouterMessages(history, prompt, 12, mode);
+  const messages = formatOpenRouterMessages(history, prompt, 12, mode, attachments);
 
   let response;
   try {

@@ -8,6 +8,7 @@
  */
 
 import { getChatMode } from '../config/chatModes.js';
+import { prepareDocumentContext, adaptDocumentContextForProvider } from './documentContextService.js';
 
 export function getGroqApiKey() {
   try {
@@ -29,24 +30,47 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
 /**
- * Formats conversation history into OpenAI-compatible format expected by Groq.
+ * Formats conversation history into OpenAI-compatible format expected by Groq,
+ * integrating document context adaptation when attachments are provided.
  * @param {Array} history
  * @param {string} prompt
  * @param {number} [maxContextMessages=12]
  * @param {string} [mode='general']
+ * @param {Array} [attachments=[]]
  * @returns {Array<{ role: string, content: string }>}
  */
-export function formatGroqMessages(history = [], prompt, maxContextMessages = 12, mode = 'general') {
+export function formatGroqMessages(history = [], prompt, maxContextMessages = 12, mode = 'general', attachments = []) {
   const modeObj = getChatMode(mode);
-  const systemContent = [
+  const baseSystemContent = [
     'You are Orvix, an intelligent, helpful, and concise AI conversation companion. Provide clear explanations, code blocks with languages where appropriate, and formatted answers.',
     modeObj.instruction
   ].filter(Boolean).join(' ');
 
+  let effectiveSystemContent = baseSystemContent;
+  let effectivePrompt = prompt;
+
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const docs = attachments
+      .filter((a) => a?.extraction)
+      .map((a) => a.extraction);
+
+    if (docs.length > 0) {
+      const prepDoc = prepareDocumentContext(prompt, docs);
+      const adapted = adaptDocumentContextForProvider({
+        provider: 'groq',
+        prompt,
+        baseSystemInstruction: baseSystemContent,
+        preparedContext: prepDoc
+      });
+      effectiveSystemContent = adapted.effectiveSystemInstruction;
+      effectivePrompt = adapted.effectivePrompt;
+    }
+  }
+
   const messages = [
     {
       role: 'system',
-      content: systemContent
+      content: effectiveSystemContent
     }
   ];
 
@@ -59,10 +83,10 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
     });
   }
 
-  if (prompt && prompt.trim()) {
+  if (effectivePrompt && effectivePrompt.trim()) {
     messages.push({
       role: 'user',
-      content: prompt.trim()
+      content: effectivePrompt.trim()
     });
   }
 
@@ -74,9 +98,10 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
  * @param {Object} params
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
+ * @param {Array} [params.attachments=[]]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGroqMessage({ prompt, history = [], mode = 'general' }) {
+export async function sendGroqMessage({ prompt, history = [], mode = 'general', attachments = [] }) {
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -85,7 +110,7 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general' }
     );
   }
 
-  const messages = formatGroqMessages(history, prompt, 12, mode);
+  const messages = formatGroqMessages(history, prompt, 12, mode, attachments);
 
   let response;
   try {
@@ -149,7 +174,7 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general' }
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGroqMessage({ prompt, history = [], mode = 'general', onChunk, signal }) {
+export async function streamGroqMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [] }) {
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -158,7 +183,7 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
     );
   }
 
-  const messages = formatGroqMessages(history, prompt, 12, mode);
+  const messages = formatGroqMessages(history, prompt, 12, mode, attachments);
 
   let response;
   try {

@@ -2182,6 +2182,322 @@ html, body {
   overflow-wrap: anywhere;
 }
 
+/* User Message Attachments List */
+.user-message-content-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.message-attachments-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Interactive Attachment Card */
+.attachment-card-wrapper {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.message-attachment-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  max-width: 280px;
+  box-sizing: border-box;
+  user-select: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.message-attachment-card:hover {
+  background-color: rgba(255, 255, 255, 0.09);
+  border-color: rgba(96, 165, 250, 0.45);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.message-attachment-card:active {
+  transform: translateY(0);
+}
+
+.message-attachment-card:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+/* Compact mode (for assistant referenced documents) */
+.message-attachment-card.is-compact {
+  padding: 4px 8px;
+  gap: 6px;
+  max-width: 220px;
+  background-color: rgba(0, 0, 0, 0.18);
+  border-color: var(--border-subtle);
+}
+
+.message-attachment-card.is-compact:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-medium);
+}
+
+.message-attachment-card.is-compact .message-attachment-name {
+  font-size: 0.75rem;
+  max-width: 120px;
+}
+
+.message-attachment-card.is-compact .message-attachment-size {
+  font-size: 0.64rem;
+}
+
+/* Unavailable State */
+.message-attachment-card.is-unavailable {
+  opacity: 0.65;
+  border-style: dashed;
+  border-color: rgba(245, 158, 11, 0.4);
+  cursor: not-allowed;
+}
+
+.message-attachment-card.is-unavailable:hover {
+  transform: none;
+  background-color: rgba(245, 158, 11, 0.05);
+  border-color: rgba(245, 158, 11, 0.6);
+}
+
+/* Icon & Format Badges */
+.message-attachment-icon-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.attachment-ext-tag {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+
+/* Format color accents */
+.format-pdf {
+  color: #f87171;
+  background-color: rgba(239, 68, 68, 0.12);
+}
+.format-pdf .attachment-ext-tag {
+  color: #fca5a5;
+}
+
+.format-doc {
+  color: #60a5fa;
+  background-color: rgba(37, 99, 235, 0.12);
+}
+.format-doc .attachment-ext-tag {
+  color: #93c5fd;
+}
+
+.format-ppt {
+  color: #fb923c;
+  background-color: rgba(249, 115, 22, 0.12);
+}
+.format-ppt .attachment-ext-tag {
+  color: #fdba74;
+}
+
+.format-sheet {
+  color: #34d399;
+  background-color: rgba(16, 185, 129, 0.12);
+}
+.format-sheet .attachment-ext-tag {
+  color: #6ee7b7;
+}
+
+.format-text {
+  color: #a78bfa;
+  background-color: rgba(139, 92, 246, 0.12);
+}
+.format-text .attachment-ext-tag {
+  color: #c4b5fd;
+}
+
+.format-default {
+  color: var(--text-secondary);
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* Attachment Details */
+.message-attachment-details {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+}
+
+.message-attachment-name {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+  line-height: 1.25;
+}
+
+.message-attachment-size {
+  font-size: 0.66rem;
+  color: var(--text-muted);
+  line-height: 1.2;
+}
+
+/* Action Buttons */
+.attachment-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+  flex-shrink: 0;
+  opacity: 0.75;
+  transition: opacity var(--transition-fast);
+}
+
+.message-attachment-card:hover .attachment-card-actions {
+  opacity: 1;
+}
+
+.attachment-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  padding: 0;
+}
+
+.attachment-action-btn:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.attachment-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Popover notification for unavailable files */
+.attachment-notice-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-card);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-size: 0.72rem;
+  color: #fbbf24;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Assistant Message Referenced Attachments Banner */
+.assistant-referenced-attachments {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background-color: rgba(37, 99, 235, 0.05);
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.referenced-attachments-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #60a5fa;
+  letter-spacing: 0.01em;
+}
+
+.referenced-icon {
+  flex-shrink: 0;
+}
+
+.referenced-attachments-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Light Theme Overrides */
+[data-theme="light"] .message-attachment-card {
+  background-color: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .message-attachment-card:hover {
+  background-color: rgba(0, 0, 0, 0.07);
+  border-color: #2563eb;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .message-attachment-card.is-compact {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .message-attachment-card.is-compact:hover {
+  background-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .assistant-referenced-attachments {
+  background-color: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+[data-theme="light"] .referenced-attachments-header {
+  color: #1e40af;
+}
+
+[data-theme="light"] .attachment-action-btn:hover {
+  background-color: rgba(0, 0, 0, 0.08);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .attachment-notice-popover {
+  background-color: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+}
+
 /* User Message Inline Editor */
 .message-wrapper.user-wrapper.is-editing .user-body {
   max-width: 100%;
@@ -2826,34 +3142,286 @@ html, body {
   }
 }
 
-/* Error State */
+/* ==========================================================================
+   Error State & AI Generation Recovery UI
+   ========================================================================== */
 .error-wrapper .error-avatar {
-  background-color: rgba(239, 68, 68, 0.15);
+  background-color: rgba(239, 68, 68, 0.14);
   color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.16);
 }
 
 .error-message-box {
-  background-color: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(239, 68, 68, 0.08) 0%, rgba(239, 68, 68, 0.03) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-left: 3px solid #ef4444;
   border-radius: var(--radius-md);
-  padding: 12px 14px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-width: 600px;
+  gap: 12px;
+  margin-top: 4px;
+  box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.3);
+  transition: all var(--transition-fast);
+  overflow: hidden;
+}
+
+.error-message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.error-header-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.error-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background-color: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+  flex-shrink: 0;
+}
+
+.error-header-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #f87171;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-provider-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background-color: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.error-referenced-attachments {
+  margin-bottom: 2px;
+  width: 100%;
+}
+
+.error-message-body {
+  width: 100%;
+  min-width: 0;
 }
 
 .error-text {
-  color: #fca5a5;
+  color: #fecdd3;
   font-size: 0.88rem;
-  line-height: 1.45;
+  line-height: 1.55;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  margin: 0;
 }
 
 .error-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid rgba(239, 68, 68, 0.16);
+}
+
+.error-action-btn {
+  font-size: 0.78rem;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  white-space: normal;
+  text-align: left;
+  max-width: 100%;
+}
+
+.error-retry-btn {
+  background-color: rgba(239, 68, 68, 0.14) !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  color: #fca5a5 !important;
+}
+
+.error-retry-btn:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.24) !important;
+  border-color: rgba(239, 68, 68, 0.6) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.25);
+}
+
+.error-fallback-btn {
+  background-color: var(--bg-card) !important;
+  border: 1px solid var(--border-medium) !important;
+  color: var(--text-primary) !important;
+}
+
+.error-fallback-btn:hover:not(:disabled) {
+  background-color: var(--bg-card-hover) !important;
+  border-color: var(--accent-primary) !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+}
+
+.error-restore-btn {
+  color: var(--text-secondary) !important;
+  border: 1px solid transparent !important;
+}
+
+.error-restore-btn:hover:not(:disabled) {
+  color: var(--text-primary) !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Interrupted Response Retry Actions */
+.interrupted-retry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  margin-top: 12px;
+  background-color: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-left: 3px solid #f59e0b;
+  border-radius: var(--radius-md);
+  box-sizing: border-box;
+}
+
+/* Light Theme Overrides */
+[data-theme="light"] .error-wrapper .error-avatar {
+  background-color: #fee2e2;
+  color: #dc2626;
+  border-color: #fca5a5;
+  box-shadow: 0 0 10px rgba(220, 38, 38, 0.1);
+}
+
+[data-theme="light"] .error-message-box {
+  background: linear-gradient(180deg, #fff5f5 0%, #fef2f2 100%);
+  border-color: #fca5a5;
+  border-left: 3px solid #dc2626;
+  box-shadow: 0 2px 8px -2px rgba(220, 38, 38, 0.08);
+}
+
+[data-theme="light"] .error-icon-badge {
+  background-color: #fee2e2;
+  color: #dc2626;
+}
+
+[data-theme="light"] .error-header-title {
+  color: #b91c1c;
+}
+
+[data-theme="light"] .error-provider-tag {
+  background-color: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+[data-theme="light"] .error-text {
+  color: #7f1d1d;
+}
+
+[data-theme="light"] .error-actions {
+  border-top-color: #fecaca;
+}
+
+[data-theme="light"] .error-retry-btn {
+  background-color: #fee2e2 !important;
+  border-color: #fca5a5 !important;
+  color: #991b1b !important;
+}
+
+[data-theme="light"] .error-retry-btn:hover:not(:disabled) {
+  background-color: #fecaca !important;
+  border-color: #f87171 !important;
+  color: #7f1d1d !important;
+}
+
+[data-theme="light"] .error-fallback-btn {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  color: #1e293b !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .error-fallback-btn:hover:not(:disabled) {
+  background-color: #f8fafc !important;
+  border-color: #2563eb !important;
+  color: #1d4ed8 !important;
+}
+
+[data-theme="light"] .error-restore-btn {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .error-restore-btn:hover:not(:disabled) {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .interrupted-retry-actions {
+  background-color: #fffbeb;
+  border-color: #fcd34d;
+  border-left-color: #d97706;
+}
+
+/* Mobile & Narrow Screen Responsiveness */
+@media (max-width: 640px) {
+  .error-message-box {
+    padding: 12px 12px;
+    gap: 10px;
+  }
+
+  .error-header-title-wrap {
+    flex: 1 1 auto;
+  }
+
+  .error-header-title {
+    font-size: 0.84rem;
+  }
+
+  .error-text {
+    font-size: 0.84rem;
+  }
+
+  .error-actions {
+    gap: 6px;
+    padding-top: 6px;
+  }
+
+  .error-actions .btn-sm,
+  .interrupted-retry-actions .btn-sm {
+    padding: 5px 8px;
+    font-size: 0.74rem;
+    min-height: 30px;
+  }
 }
 
 /* Typing Indicator */
@@ -3048,14 +3616,17 @@ html, body {
   }
 }
 
+.composer-file-input {
+  display: none !important;
+}
+
 .composer-form {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  flex-direction: column;
   background-color: var(--bg-card);
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-xl);
-  padding: 6px 8px 6px 14px;
+  padding: 6px 8px 6px 8px;
   box-shadow: var(--shadow-md);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   width: 100%;
@@ -3064,6 +3635,106 @@ html, body {
 .composer-form:focus-within {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-md);
+}
+
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  width: 100%;
+}
+
+.composer-attach-btn {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  padding-bottom: 2px;
+}
+
+.composer-attach-btn:hover:not(:disabled) {
+  background-color: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.composer-attachments-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 6px 8px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 4px;
+  max-height: 130px;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.composer-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  max-width: 240px;
+  transition: all var(--transition-fast);
+}
+
+.composer-attachment-chip:hover {
+  border-color: var(--accent-primary);
+}
+
+.attachment-chip-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #60a5fa;
+  background-color: rgba(37, 99, 235, 0.16);
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.attachment-chip-name {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+  font-weight: 500;
+}
+
+.attachment-chip-size {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+.attachment-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: var(--radius-xs);
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.attachment-chip-remove:hover {
+  background-color: rgba(239, 68, 68, 0.16);
+  color: #ef4444;
 }
 
 .composer-textarea {

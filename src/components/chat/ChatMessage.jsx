@@ -13,11 +13,13 @@ import {
   VolumeX,
   Cpu,
   Pause,
-  Play
+  Play,
+  Paperclip
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
+import AttachmentCard from './AttachmentCard.jsx';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 
@@ -31,6 +33,29 @@ function extractNodeText(node) {
   if (Array.isArray(node)) return node.map(extractNodeText).join('');
   if (node.props?.children) return extractNodeText(node.props.children);
   return '';
+}
+
+/**
+ * Generates a clean, user-friendly title for the error banner based on error text
+ */
+function getErrorTitle(content = '') {
+  const text = String(content || '').toLowerCase();
+  if (text.includes('rate limit') || text.includes('quota') || text.includes('429') || text.includes('resource_exhausted')) {
+    return 'Rate Limit or Quota Exceeded';
+  }
+  if (text.includes('high demand') || text.includes('503') || text.includes('spikes in demand') || text.includes('overloaded') || text.includes('unavailable')) {
+    return 'Service Temporarily Busy';
+  }
+  if (text.includes('auth') || text.includes('permission') || text.includes('api key') || text.includes('401') || text.includes('403')) {
+    return 'Authentication or Permission Issue';
+  }
+  if (text.includes('internal error') || text.includes('500') || text.includes('service error')) {
+    return 'AI Provider Service Error';
+  }
+  if (text.includes('network') || text.includes('fetch') || text.includes('connection') || text.includes('offline')) {
+    return 'Network Connection Error';
+  }
+  return 'Request Failed';
 }
 
 /**
@@ -422,9 +447,42 @@ export default function ChatMessage({
 
         <div className="message-content">
           {isError ? (
-            <div className="error-message-box">
-              <p className="error-text">{message.content || 'An error occurred.'}</p>
-              <div className="error-actions">
+            <div className="error-message-box" role="alert" aria-live="assertive">
+              <div className="error-message-header">
+                <div className="error-header-title-wrap">
+                  <span className="error-icon-badge" aria-hidden="true">
+                    <AlertCircle size={14} />
+                  </span>
+                  <span className="error-header-title">
+                    {getErrorTitle(message.content)}
+                  </span>
+                </div>
+                {currentProviderObj?.name && (
+                  <span className="error-provider-tag" title={`Request failed on ${currentProviderObj.name}`}>
+                    {currentProviderObj.name}
+                  </span>
+                )}
+              </div>
+
+              {message.referencedAttachments && message.referencedAttachments.length > 0 && (
+                <div className="assistant-referenced-attachments error-referenced-attachments" aria-label="Referenced files">
+                  <div className="referenced-attachments-header">
+                    <Paperclip size={11} className="referenced-icon" />
+                    <span>Referenced document{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
+                  </div>
+                  <div className="referenced-attachments-list">
+                    {message.referencedAttachments.map((att, idx) => (
+                      <AttachmentCard key={att.id || idx} attachment={att} compact={true} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="error-message-body">
+                <p className="error-text">{message.content || 'An error occurred while communicating with the AI service.'}</p>
+              </div>
+
+              <div className="error-actions" role="group" aria-label="Error recovery options">
                 {onRetry && (
                   <Button
                     variant="outline"
@@ -432,6 +490,7 @@ export default function ChatMessage({
                     onClick={() => onRetry(message)}
                     icon={<RotateCcw size={13} />}
                     title={`Retry this request with ${currentProviderObj.name}`}
+                    className="error-action-btn error-retry-btn"
                   >
                     Retry with {currentProviderObj.name}
                   </Button>
@@ -445,7 +504,7 @@ export default function ChatMessage({
                       onClick={() => onSwitchProvider(message, p.id)}
                       icon={<Cpu size={13} />}
                       title={`Switch to ${p.name} and send prompt`}
-                      className="fallback-provider-btn"
+                      className="fallback-provider-btn error-action-btn error-fallback-btn"
                     >
                       Try with {p.name}
                     </Button>
@@ -457,6 +516,7 @@ export default function ChatMessage({
                     onClick={() => onRestorePrompt(message.failedPrompt)}
                     icon={<Edit3 size={13} />}
                     title="Restore prompt into composer"
+                    className="error-action-btn error-restore-btn"
                   >
                     Edit prompt
                   </Button>
@@ -507,28 +567,55 @@ export default function ChatMessage({
                 </div>
               </div>
             ) : (
-              /* Render user messages safely as plain text */
-              <p className="user-text-content">{message.content || ''}</p>
+              /* Render user messages safely as plain text and attachment chips */
+              <div className="user-message-content-wrapper">
+                {message.attachments && message.attachments.length > 0 && (
+                  <div className="message-attachments-list" role="region" aria-label="Attached files">
+                    {message.attachments.map((att, idx) => (
+                      <AttachmentCard key={att.id || idx} attachment={att} />
+                    ))}
+                  </div>
+                )}
+                {message.content ? (
+                  <p className="user-text-content">{message.content}</p>
+                ) : null}
+              </div>
             )
-          ) : isStreaming && !hasContent ? (
-            /* Subtle thinking state before first streaming chunk arrives */
-            <div className="streaming-thinking-state" role="status" aria-label="Thinking">
-              <span className="typing-dot dot-1" />
-              <span className="typing-dot dot-2" />
-              <span className="typing-dot dot-3" />
-            </div>
           ) : (
             /* Render AI messages as rich, safe Markdown with progressive streaming cursor */
             <div className={`ai-markdown-container ${isStreaming ? 'is-streaming' : ''}`}>
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={markdownComponents}
-              >
-                {message.content || ''}
-              </ReactMarkdown>
+              {message.referencedAttachments && message.referencedAttachments.length > 0 && (
+                <div className="assistant-referenced-attachments" aria-label="Referenced files">
+                  <div className="referenced-attachments-header">
+                    <Paperclip size={11} className="referenced-icon" />
+                    <span>Referenced document{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
+                  </div>
+                  <div className="referenced-attachments-list">
+                    {message.referencedAttachments.map((att, idx) => (
+                      <AttachmentCard key={att.id || idx} attachment={att} compact={true} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {isStreaming && !hasContent ? (
+                /* Subtle thinking state before first streaming chunk arrives */
+                <div className="streaming-thinking-state" role="status" aria-label="Thinking">
+                  <span className="typing-dot dot-1" />
+                  <span className="typing-dot dot-2" />
+                  <span className="typing-dot dot-3" />
+                </div>
+              ) : (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={markdownComponents}
+                >
+                  {message.content || ''}
+                </ReactMarkdown>
+              )}
 
               {message.isInterrupted && message.failedPrompt && (
-                <div className="interrupted-retry-actions mt-3 flex flex-wrap items-center gap-2">
+                <div className="interrupted-retry-actions" role="group" aria-label="Interrupted response recovery options">
                   {onRetry && (
                     <Button
                       variant="outline"
@@ -536,6 +623,7 @@ export default function ChatMessage({
                       onClick={() => onRetry(message)}
                       icon={<RotateCcw size={13} />}
                       title={`Retry this request with ${currentProviderObj.name}`}
+                      className="error-action-btn error-retry-btn"
                     >
                       Retry with {currentProviderObj.name}
                     </Button>
@@ -549,7 +637,7 @@ export default function ChatMessage({
                         onClick={() => onSwitchProvider(message, p.id)}
                         icon={<Cpu size={13} />}
                         title={`Switch to ${p.name} and send prompt`}
-                        className="fallback-provider-btn"
+                        className="fallback-provider-btn error-action-btn error-fallback-btn"
                       >
                         Try with {p.name}
                       </Button>
@@ -561,6 +649,7 @@ export default function ChatMessage({
                       onClick={() => onRestorePrompt(message.failedPrompt)}
                       icon={<Edit3 size={13} />}
                       title="Restore prompt into composer"
+                      className="error-action-btn error-restore-btn"
                     >
                       Edit prompt
                     </Button>

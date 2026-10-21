@@ -12,13 +12,22 @@ import {
   ChevronDown,
   Sparkles,
   Loader2,
-  Globe
+  Globe,
+  Paperclip
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const size = (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1);
+  return `${size} ${units[i]}`;
+}
 
 /**
  * ChatArea Component
@@ -72,6 +81,45 @@ export default function ChatArea({
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
   const scrollViewportRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // Selected file attachments state
+  const [attachments, setAttachments] = useState([]);
+
+  const handleAttachClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const newAttachments = Array.from(files).map((file) => {
+      const ext = file.name.includes('.')
+        ? file.name.split('.').pop().toUpperCase()
+        : 'FILE';
+      return {
+        id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        name: file.name,
+        size: file.size,
+        formattedSize: formatFileSize(file.size),
+        type: file.type || 'application/octet-stream',
+        extension: ext,
+        file
+      };
+    });
+
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveAttachment = (idToRemove) => {
+    setAttachments((prev) => prev.filter((att) => att.id !== idToRemove));
+  };
 
   // Floating scroll-to-bottom button visibility
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -316,8 +364,10 @@ export default function ChatArea({
       }
       clearLastSessionTranscript();
       setSuggestedRefinement(null);
-      if (onSubmit && inputValue.trim() && !isLoading) {
-        onSubmit();
+      if (onSubmit && (inputValue.trim() || attachments.length > 0) && !isLoading) {
+        const currentAttachments = [...attachments];
+        setAttachments([]);
+        onSubmit(currentAttachments);
       }
     }
   };
@@ -329,8 +379,10 @@ export default function ChatArea({
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
-    if (onSubmit && inputValue.trim() && !isLoading) {
-      onSubmit();
+    if (onSubmit && (inputValue.trim() || attachments.length > 0) && !isLoading) {
+      const currentAttachments = [...attachments];
+      setAttachments([]);
+      onSubmit(currentAttachments);
     }
   };
 
@@ -383,7 +435,7 @@ Transcript:
     clearLastSessionTranscript();
   };
 
-  const hasContent = inputValue.trim().length > 0;
+  const hasContent = inputValue.trim().length > 0 || attachments.length > 0;
   const hasMessages = messages.length > 0;
   // Dictation dock is only active when actively requesting, listening, paused, or finalizing
   const isRecordingActive =
@@ -732,101 +784,154 @@ Transcript:
           )}
 
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
-            <textarea
-              ref={textareaRef}
-              className="composer-textarea"
-              placeholder={
-                isListening
-                  ? 'Listening to speech...'
-                  : isPaused
-                  ? 'Dictation paused — speak or type...'
-                  : isRequesting
-                  ? 'Connecting microphone...'
-                  : isLoading
-                  ? 'Orvix is responding...'
-                  : activeMode === 'coding'
-                  ? 'Ask a coding question, debug an error, or request code...'
-                  : activeMode === 'writing'
-                  ? 'Draft an email, polish prose, or rewrite content...'
-                  : activeMode === 'learning'
-                  ? 'Ask to explain a concept, break down a topic, or quiz you...'
-                  : 'Ask Orvix anything...'
-              }
-              value={inputValue}
-              rows={1}
-              onChange={(e) => onInputChange && onInputChange(e.target.value)}
-              onKeyDown={handleKeyDown}
-              aria-label="Message input text"
+            {/* Native file input supporting PDF, DOCX, TXT, MD, PPT, PPTX, CSV, etc. */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              multiple
+              accept=".pdf,.docx,.doc,.txt,.md,.markdown,.ppt,.pptx,.csv,.tsv,.json,.xml,.xlsx,.xls,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/csv,application/json"
+              className="composer-file-input"
+              tabIndex={-1}
+              aria-hidden="true"
             />
 
-            <div className="composer-actions">
-              {/* Voice Dictation Microphone Button */}
+            {/* Selected attachments preview strip */}
+            {attachments.length > 0 && (
+              <div className="composer-attachments-preview" role="region" aria-label="Attached files">
+                {attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="composer-attachment-chip"
+                    title={`${att.name} (${att.formattedSize})`}
+                  >
+                    <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
+                    <span className="attachment-chip-name">{att.name}</span>
+                    <span className="attachment-chip-size">{att.formattedSize}</span>
+                    <button
+                      type="button"
+                      className="attachment-chip-remove"
+                      onClick={() => handleRemoveAttachment(att.id)}
+                      title={`Remove ${att.name}`}
+                      aria-label={`Remove ${att.name}`}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="composer-input-row">
+              {/* Attachment Button */}
               <Button
                 type="button"
-                variant={isListening ? 'primary' : isRequesting ? 'outline' : 'ghost'}
+                variant="ghost"
                 size="icon-round"
                 disabled={isLoading}
-                onClick={toggleListening}
-                title={
-                  !isSupported
-                    ? 'Voice dictation is not supported in this browser. Please use Chrome, Edge, or Safari.'
-                    : isListening
-                    ? 'Stop listening (Voice dictation active)'
-                    : isRequesting
-                    ? 'Connecting microphone... Click to cancel'
-                    : isPaused
-                    ? 'Resume listening (Voice dictation paused)'
-                    : `Dictate message (${activeLang.label})`
-                }
-                ariaLabel={
-                  !isSupported
-                    ? 'Voice dictation not supported'
-                    : isListening
-                    ? 'Stop listening'
-                    : isRequesting
-                    ? 'Connecting microphone'
-                    : isPaused
-                    ? 'Resume dictation'
-                    : 'Start voice dictation'
-                }
-                className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : ''}`}
-                icon={
-                  isListening ? (
-                    <Square size={13} fill="currentColor" />
-                  ) : isRequesting ? (
-                    <Loader2 size={16} className="spin-icon" />
-                  ) : isPaused ? (
-                    <Play size={13} fill="currentColor" />
-                  ) : (
-                    <Mic size={18} />
-                  )
-                }
+                onClick={handleAttachClick}
+                title="Attach files (PDF, DOCX, TXT, MD, PPT, CSV, etc.)"
+                ariaLabel="Attach files"
+                className="composer-attach-btn"
+                icon={<Paperclip size={18} />}
               />
 
-              {/* Message Submission or Stop Generating Button */}
-              {isLoading ? (
+              <textarea
+                ref={textareaRef}
+                className="composer-textarea"
+                placeholder={
+                  isListening
+                    ? 'Listening to speech...'
+                    : isPaused
+                    ? 'Dictation paused — speak or type...'
+                    : isRequesting
+                    ? 'Connecting microphone...'
+                    : isLoading
+                    ? 'Orvix is responding...'
+                    : activeMode === 'coding'
+                    ? 'Ask a coding question, debug an error, or request code...'
+                    : activeMode === 'writing'
+                    ? 'Draft an email, polish prose, or rewrite content...'
+                    : activeMode === 'learning'
+                    ? 'Ask to explain a concept, break down a topic, or quiz you...'
+                    : 'Ask Orvix anything...'
+                }
+                value={inputValue}
+                rows={1}
+                onChange={(e) => onInputChange && onInputChange(e.target.value)}
+                onKeyDown={handleKeyDown}
+                aria-label="Message input text"
+              />
+
+              <div className="composer-actions">
+                {/* Voice Dictation Microphone Button */}
                 <Button
                   type="button"
-                  variant="outline"
+                  variant={isListening ? 'primary' : isRequesting ? 'outline' : 'ghost'}
                   size="icon-round"
-                  onClick={onStopGenerating}
-                  title="Stop generating response (Esc)"
-                  ariaLabel="Stop generating response"
-                  className="composer-stop-btn"
-                  icon={<Square size={13} fill="currentColor" />}
+                  disabled={isLoading}
+                  onClick={toggleListening}
+                  title={
+                    !isSupported
+                      ? 'Voice dictation is not supported in this browser. Please use Chrome, Edge, or Safari.'
+                      : isListening
+                      ? 'Stop listening (Voice dictation active)'
+                      : isRequesting
+                      ? 'Connecting microphone... Click to cancel'
+                      : isPaused
+                      ? 'Resume listening (Voice dictation paused)'
+                      : `Dictate message (${activeLang.label})`
+                  }
+                  ariaLabel={
+                    !isSupported
+                      ? 'Voice dictation not supported'
+                      : isListening
+                      ? 'Stop listening'
+                      : isRequesting
+                      ? 'Connecting microphone'
+                      : isPaused
+                      ? 'Resume dictation'
+                      : 'Start voice dictation'
+                  }
+                  className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : ''}`}
+                  icon={
+                    isListening ? (
+                      <Square size={13} fill="currentColor" />
+                    ) : isRequesting ? (
+                      <Loader2 size={16} className="spin-icon" />
+                    ) : isPaused ? (
+                      <Play size={13} fill="currentColor" />
+                    ) : (
+                      <Mic size={18} />
+                    )
+                  }
                 />
-              ) : (
-                <Button
-                  type="submit"
-                  variant={hasContent ? 'primary' : 'ghost'}
-                  size="icon-round"
-                  disabled={!hasContent}
-                  title={enterToSend ? 'Send message (Enter)' : 'Send message (⌘/Ctrl+Enter)'}
-                  ariaLabel="Send message"
-                  className="composer-send-btn"
-                  icon={<ArrowUp size={18} />}
-                />
-              )}
+
+                {/* Message Submission or Stop Generating Button */}
+                {isLoading ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-round"
+                    onClick={onStopGenerating}
+                    title="Stop generating response (Esc)"
+                    ariaLabel="Stop generating response"
+                    className="composer-stop-btn"
+                    icon={<Square size={13} fill="currentColor" />}
+                  />
+                ) : (
+                  <Button
+                    type="submit"
+                    variant={hasContent ? 'primary' : 'ghost'}
+                    size="icon-round"
+                    disabled={!hasContent}
+                    title={enterToSend ? 'Send message (Enter)' : 'Send message (⌘/Ctrl+Enter)'}
+                    ariaLabel="Send message"
+                    className="composer-send-btn"
+                    icon={<ArrowUp size={18} />}
+                  />
+                )}
+              </div>
             </div>
           </form>
 
