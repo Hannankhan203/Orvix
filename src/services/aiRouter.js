@@ -7,13 +7,11 @@
 import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './geminiService.js';
 import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
 import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
-import { sendCloudflareMessage, streamCloudflareMessage } from './cloudflareService.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
-  OPENROUTER: 'openrouter',
-  CLOUDFLARE: 'cloudflare'
+  OPENROUTER: 'openrouter'
 };
 
 export const PROVIDER_OPTIONS = [
@@ -37,14 +35,6 @@ export const PROVIDER_OPTIONS = [
     modelTag: 'Llama 3.3 70B (Free)',
     description: 'Multi-model gateway',
     envKey: 'VITE_OPENROUTER_API_KEY'
-  },
-  {
-    id: AI_PROVIDERS.CLOUDFLARE,
-    name: 'Cloudflare Workers AI',
-    modelTag: 'Llama 3.1 8B',
-    label: 'Cloudflare Workers AI — Llama 3.1 8B',
-    description: 'Cloudflare Workers AI serverless GPU inference',
-    envKey: 'CLOUDFLARE_API_TOKEN'
   }
 ];
 
@@ -64,9 +54,6 @@ export function isProviderConfigured(provider) {
     case AI_PROVIDERS.OPENROUTER: {
       const key = getOpenRouterApiKey();
       return Boolean(key && key !== 'YOUR_OPENROUTER_API_KEY');
-    }
-    case AI_PROVIDERS.CLOUDFLARE: {
-      return true;
     }
     case AI_PROVIDERS.GEMINI:
     default: {
@@ -194,7 +181,6 @@ export async function streamAIMessage({
   history = [],
   username = null,
   preferences = null,
-  attachments = [],
   onChunk,
   onStart,
   signal
@@ -223,7 +209,6 @@ export async function streamAIMessage({
           history,
           username: username ? String(username).trim() : null,
           preferences: preferences || null,
-          attachments: Array.isArray(attachments) ? attachments : [],
           stream: true
         }),
         signal
@@ -374,14 +359,6 @@ export async function streamAIMessage({
       return {
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
-      };
-    }
-
-    case AI_PROVIDERS.CLOUDFLARE: {
-      const result = await streamCloudflareMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
-      return {
-        ...result,
-        provider: AI_PROVIDERS.CLOUDFLARE
       };
     }
 

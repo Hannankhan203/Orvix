@@ -12,23 +12,13 @@ import {
   ChevronDown,
   Sparkles,
   Loader2,
-  Globe,
-  Paperclip,
-  FileText
+  Globe
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
-import {
-  createAttachmentMetadata,
-  formatFileSize,
-  ATTACHMENT_ACCEPT_STRING,
-  validateAttachmentFile,
-  MAX_ATTACHMENTS_PER_MESSAGE
-} from '../../utils/fileAttachmentUtils.js';
-import { uploadAttachmentFiles, deleteUploadedAttachment } from '../../services/uploadService.js';
 
 /**
  * ChatArea Component
@@ -80,14 +70,8 @@ export default function ChatArea({
   onDismissModeNotice
 }) {
   const textareaRef = useRef(null);
-  const fileInputRef = useRef(null);
   const langMenuRef = useRef(null);
   const scrollViewportRef = useRef(null);
-
-  // File attachments state (PDF, DOCX, TXT, MD, PPT, PPTX, CSV, etc.)
-  const [attachments, setAttachments] = useState([]);
-  const [attachmentError, setAttachmentError] = useState(null);
-  const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
 
   // Floating scroll-to-bottom button visibility
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -104,68 +88,6 @@ export default function ChatArea({
   // AI Transcript Refinement (Phase 4) state
   const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
   const [suggestedRefinement, setSuggestedRefinement] = useState(null);
-
-  // Clear pending attachments when switching conversations
-  useEffect(() => {
-    setAttachments([]);
-    setAttachmentError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  }, [activeChatId]);
-
-  const triggerFileInput = () => {
-    if (isLoading || isUploadingAttachments) return;
-    setAttachmentError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  const handleFileSelect = (e) => {
-    setAttachmentError(null);
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-
-    // Check maximum attachment count limit
-    if (attachments.length + files.length > MAX_ATTACHMENTS_PER_MESSAGE) {
-      setAttachmentError(
-        `Maximum ${MAX_ATTACHMENTS_PER_MESSAGE} attachments allowed per message. You already have ${attachments.length} selected.`
-      );
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
-    // Client-side pre-validation for each selected file
-    for (const file of files) {
-      const check = validateAttachmentFile(file);
-      if (!check.isValid) {
-        setAttachmentError(check.error || 'Invalid file selected.');
-        if (fileInputRef.current) fileInputRef.current.value = '';
-        return;
-      }
-    }
-
-    const newAttachments = files.map((file, idx) => createAttachmentMetadata(file, idx));
-    setAttachments((prev) => [...prev, ...newAttachments]);
-
-    // Reset input so user can re-select same file if previously removed
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-    }
-  };
-
-  const handleRemoveAttachment = (attachmentId) => {
-    setAttachmentError(null);
-    const target = attachments.find((item) => item.id === attachmentId);
-    if (target?.serverId) {
-      deleteUploadedAttachment(target.serverId).catch(() => {});
-    }
-    setAttachments((prev) => prev.filter((item) => item.id !== attachmentId));
-  };
 
   // Computes distance from bottom and updates floating button visibility
   const updateScrollButtonVisibility = () => {
@@ -389,58 +311,27 @@ export default function ChatArea({
 
     if (shouldSend) {
       e.preventDefault();
-      triggerSubmit();
+      if (isListening || isPaused || isRequesting) {
+        stopListening();
+      }
+      clearLastSessionTranscript();
+      setSuggestedRefinement(null);
+      if (onSubmit && inputValue.trim() && !isLoading) {
+        onSubmit();
+      }
     }
   };
 
-  const triggerSubmit = async () => {
+  const handleSubmit = (e) => {
+    e.preventDefault();
     if (isListening || isPaused || isRequesting) {
       stopListening();
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
-    setAttachmentError(null);
-
-    if ((!inputValue.trim() && attachments.length === 0) || isLoading || isUploadingAttachments) {
-      return;
+    if (onSubmit && inputValue.trim() && !isLoading) {
+      onSubmit();
     }
-
-    let finalAttachments = [];
-    if (attachments.length > 0) {
-      setIsUploadingAttachments(true);
-      try {
-        const rawFiles = attachments.map((att) => att.rawFile).filter(Boolean);
-        if (rawFiles.length > 0) {
-          const uploaded = await uploadAttachmentFiles(rawFiles);
-          finalAttachments = uploaded;
-        } else {
-          finalAttachments = attachments.map((att) => ({
-            id: att.id,
-            name: att.name,
-            size: att.size,
-            type: att.type,
-            extension: att.extension,
-            status: 'uploaded'
-          }));
-        }
-      } catch (uploadErr) {
-        setAttachmentError(uploadErr?.message || 'File upload failed. Please verify your file.');
-        setIsUploadingAttachments(false);
-        return;
-      } finally {
-        setIsUploadingAttachments(false);
-      }
-    }
-
-    if (onSubmit) {
-      onSubmit({ content: inputValue, attachments: finalAttachments });
-      setAttachments([]);
-    }
-  };
-
-  const handleSubmit = (e) => {
-    if (e) e.preventDefault();
-    triggerSubmit();
   };
 
   // Optional AI Transcript Refinement Handler (Phase 4)
@@ -492,7 +383,7 @@ Transcript:
     clearLastSessionTranscript();
   };
 
-  const hasContent = inputValue.trim().length > 0 || attachments.length > 0;
+  const hasContent = inputValue.trim().length > 0;
   const hasMessages = messages.length > 0;
   // Dictation dock is only active when actively requesting, listening, paused, or finalizing
   const isRecordingActive =
@@ -572,24 +463,6 @@ Transcript:
                 className="dictation-error-dismiss"
                 onClick={clearDictationError}
                 aria-label="Dismiss error notification"
-              >
-                <X size={13} />
-              </button>
-            </div>
-          )}
-
-          {/* Attachment Upload Error Notification */}
-          {attachmentError && (
-            <div className="composer-dictation-error composer-attachment-error" role="alert">
-              <div className="dictation-error-content">
-                <AlertCircle size={14} className="dictation-error-icon" aria-hidden="true" />
-                <span>{attachmentError}</span>
-              </div>
-              <button
-                type="button"
-                className="dictation-error-dismiss"
-                onClick={() => setAttachmentError(null)}
-                aria-label="Dismiss upload error notification"
               >
                 <X size={13} />
               </button>
@@ -858,65 +731,7 @@ Transcript:
             </div>
           )}
 
-          {/* Selected Attachments Preview Strip */}
-          {attachments.length > 0 && (
-            <div className="composer-attachments-bar" role="region" aria-label="Selected file attachments">
-              <div className="composer-attachments-scroll">
-                {attachments.map((att) => (
-                  <div
-                    key={att.id}
-                    className="attachment-preview-chip"
-                    title={`${att.name} (${formatFileSize(att.size)})`}
-                  >
-                    <div className="attachment-chip-icon">
-                      <FileText size={15} className="attachment-icon-svg" aria-hidden="true" />
-                      <span className="attachment-chip-ext">{att.extension || 'FILE'}</span>
-                    </div>
-                    <div className="attachment-chip-details">
-                      <span className="attachment-chip-name">{att.name}</span>
-                      <span className="attachment-chip-size">{formatFileSize(att.size)}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="attachment-chip-remove"
-                      onClick={() => handleRemoveAttachment(att.id)}
-                      title={`Remove ${att.name}`}
-                      aria-label={`Remove ${att.name}`}
-                    >
-                      <X size={13} aria-hidden="true" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
-            {/* Native Hidden Multi-File Input */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept={ATTACHMENT_ACCEPT_STRING}
-              onChange={handleFileSelect}
-              tabIndex={-1}
-              style={{ display: 'none' }}
-              aria-hidden="true"
-            />
-
-            {/* File Attachment Button */}
-            <Button
-              type="button"
-              variant={attachments.length > 0 ? 'secondary' : 'ghost'}
-              size="icon-round"
-              disabled={isLoading}
-              onClick={triggerFileInput}
-              title="Attach files (PDF, DOCX, TXT, MD, PPT, PPTX, CSV)"
-              ariaLabel="Attach files"
-              className={`composer-attach-btn ${attachments.length > 0 ? 'has-attachments' : ''}`}
-              icon={<Paperclip size={18} />}
-            />
-
             <textarea
               ref={textareaRef}
               className="composer-textarea"
@@ -999,17 +814,6 @@ Transcript:
                   ariaLabel="Stop generating response"
                   className="composer-stop-btn"
                   icon={<Square size={13} fill="currentColor" />}
-                />
-              ) : isUploadingAttachments ? (
-                <Button
-                  type="button"
-                  variant="primary"
-                  size="icon-round"
-                  disabled={true}
-                  title="Uploading attachments..."
-                  ariaLabel="Uploading attachments"
-                  className="composer-send-btn uploading"
-                  icon={<Loader2 size={18} className="spin-icon" />}
                 />
               ) : (
                 <Button

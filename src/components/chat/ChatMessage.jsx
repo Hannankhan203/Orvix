@@ -13,15 +13,13 @@ import {
   VolumeX,
   Cpu,
   Pause,
-  Play,
-  FileText
+  Play
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
-import { formatFileSize, getFileExtension } from '../../utils/fileAttachmentUtils.js';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -509,28 +507,8 @@ export default function ChatMessage({
                 </div>
               </div>
             ) : (
-              /* Render user messages safely as plain text + attachments if present */
-              <div className="user-message-body">
-                {Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                  <div className="message-attachments-grid" role="list" aria-label="Attached files">
-                    {message.attachments.map((att, idx) => (
-                      <div key={att.id || `att-${idx}`} className="message-attachment-item" role="listitem">
-                        <div className="attachment-icon-wrap">
-                          <FileText size={15} className="attachment-icon-svg" aria-hidden="true" />
-                          <span className="attachment-ext-badge">{att.extension || getFileExtension(att.name) || 'FILE'}</span>
-                        </div>
-                        <div className="message-attachment-details">
-                          <span className="message-attachment-filename" title={att.name}>{att.name}</span>
-                          <span className="message-attachment-meta">
-                            {formatFileSize(att.size)}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {message.content && <p className="user-text-content">{message.content}</p>}
-              </div>
+              /* Render user messages safely as plain text */
+              <p className="user-text-content">{message.content || ''}</p>
             )
           ) : isStreaming && !hasContent ? (
             /* Subtle thinking state before first streaming chunk arrives */

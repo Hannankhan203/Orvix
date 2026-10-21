@@ -1,346 +1,310 @@
 # Orvix
 
-**Version: v0.4**
-
 <p align="center">
-  <strong>An Intelligent, Multi-Model AI Conversation Companion & Full-Stack Chat Application</strong>
+  <strong>An Intelligent, Modern AI Conversation Companion</strong>
 </p>
 
 ---
 
-## Table of Contents
+## 1. Project Overview
 
-- [1. Overview & Purpose](#1-overview--purpose)
-- [2. Current Project Status](#2-current-project-status)
-- [3. Current Implemented Features](#3-current-implemented-features)
-- [4. AI Providers & Selectable Models](#4-ai-providers--selectable-models)
-- [5. Frontend Architecture & Technologies](#5-frontend-architecture--technologies)
-- [6. Backend Architecture & Technologies](#6-backend-architecture--technologies)
-- [7. AI Provider Routing, Streaming & Fallback Behavior](#7-ai-provider-routing-streaming--fallback-behavior)
-- [8. Firebase Integration & Authentication](#8-firebase-integration--authentication)
-- [9. Chat Functionality & Conversation History](#9-chat-functionality--conversation-history)
-- [10. Project Structure & Important Files](#10-project-structure--important-files)
-- [11. Prerequisites & Installation Instructions](#11-prerequisites--installation-instructions)
-- [12. Environment Variables & Configuration](#12-environment-variables--configuration)
-- [13. Development & Build Commands](#13-development--build-commands)
-- [14. Deployment Instructions](#14-deployment-instructions)
-- [15. Current Limitations](#15-current-limitations)
-- [16. Planned & Future Features](#16-planned--future-features)
-- [17. Version History & Changelog](#17-version-history--changelog)
-- [18. License](#18-license)
+**Orvix** is a high-performance, responsive AI chatbot web application built with a modern React 19 single-page frontend, styled with an Obsidian Dark design system using Tailwind CSS, and backed by a dual-mode Node.js Express server.
+
+Orvix provides seamless multi-model intelligence through three first-class AI providers:
+- **Google Gemini** (Gemini 3.1 Flash Lite & Gemini 3.8 Flash) via the modern `@google/genai` TypeScript SDK.
+- **Groq** (Llama 3.3 70B Versatile) via Groq's high-speed inference engine.
+- **OpenRouter** (Dynamic Free Model Gateway) allowing access to open-weights models without friction.
+
+The application supports complete multi-turn conversation threads, persistent Cloud Firestore storage with subcollections, real-time sync, an instant zero-friction Guest/Demo mode with browser storage fallback, markdown rendering with syntax-highlighted code blocks and one-click copying, inline conversation renaming, batch message deletion, and conversation pinning with a 5-chat limit.
 
 ---
 
-## 1. Overview & Purpose
+## 2. Project Goals and Purpose
 
-**Orvix v0.4** is a production-grade, full-stack AI chatbot web application featuring an Obsidian Dark and Crisp Light design system, built on React 19, Tailwind CSS v4, and a secure Express backend proxy.
-
-### Primary Purpose
-Orvix provides a unified interface across leading artificial intelligence models. Rather than locking users into a single model or provider, Orvix allows users to switch between providers mid-conversation while preserving full dialogue history, enabling direct comparison of reasoning, coding, writing, and analytical capabilities.
-
-### Core Principles
-1. **Multi-Model Sovereignty**: Users select from four top-tier AI providers without losing conversation context or thread continuity.
-2. **Server-Side Security**: All model API credentials (Gemini, Groq, OpenRouter, Cloudflare) remain exclusively on the server, shielded from client bundles and browser network inspectors.
-3. **Zero-Setup Accessibility**: An instant Guest Exploration mode provides immediate offline local persistence and mode-aware simulated responses if API keys are not supplied.
-4. **Structured Persistence**: Cloud Firestore subcollections guarantee strict user isolation, atomic message deletions, and granular security rules.
-5. **Universal Accessibility**: Native Web Speech voice dictation, text-to-speech audio synthesis, responsive mobile layouts, and complete PWA installability.
+The primary goals of Orvix are:
+1. **Multi-Model Flexibility**: Allow users to seamlessly switch between Google Gemini, Groq, and OpenRouter within the same application interface, comparing outputs while preserving the ongoing conversation history.
+2. **Zero-Friction Access**: Provide a fully functional Guest Mode with mock authentication and local storage persistence so users can immediately test AI capabilities without mandatory registration or API keys.
+3. **Secure Full-Stack Architecture**: Route AI generation and secret keys through a server-side Express proxy (`/api/chat`) while maintaining client-side fallbacks for standalone prototypes.
+4. **Reliable Persistence**: Leverage Firebase Cloud Firestore to structure user conversations into parent chat documents and child message subcollections, protected by granular security rules.
+5. **Modern, Distraction-Free UI**: Offer a clean obsidian dark aesthetic with collapsible navigation, auto-expanding message composer, starter prompt suggestions, and smooth loading states.
 
 ---
 
-## 2. Current Project Status
+## 3. Key Features
 
-- **Current Version**: `v0.4`
-- **Application State**: Fully operational full-stack application with four integrated AI providers, Server-Sent Events (SSE) streaming, Cloud Firestore persistence, multi-mode reasoning, and guest exploration.
-- **Runtime Environment**: Node.js 22 LTS, Vite 8, React 19, Express 4.
-- **Build Status**: Verified and compiling cleanly (`npm run build`, `npm run lint`).
-
----
-
-## 3. Current Implemented Features
-
-### Conversational Experience
-- **Four-Provider Model Selector**: Switch seamlessly between Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI at any time.
-- **Server-Sent Events (SSE) Streaming**: Token-by-token progressive rendering with an animated typing indicator, dynamic word chunking, and instant **Stop Generating** control.
-- **Context-Aware Multi-Turn History**: Automatically formats and passes the last 12 messages to the selected provider for coherent conversations.
-- **Simulated Response Fallback**: When API keys are not provided in the environment, the backend automatically generates rich, mode-specific simulated responses for offline testing and demo sessions.
-- **Smart Conversation Titles**: Automatically derives concise 36-character titles from the user's opening prompt.
-- **Message Action Bar**:
-  - One-click copy for complete responses or individual syntax-highlighted code blocks.
-  - **Edit & Resend**: In-place editing of previous user prompts with automatic thread regeneration.
-  - **Regenerate Response**: Request an alternative response from the assistant.
-  - **Inline Error Recovery**: Error banners with one-click **Retry** and one-click provider fallback buttons.
-
-### Chat Modes
-- **General Assistant**: Balanced, versatile companion for everyday queries, planning, and brainstorming.
-- **Coding Mode**: Software architecture, debugging, clean code blocks with syntax highlighting, and edge-case callouts.
-- **Writing Mode**: Drafting, editing, tone adjustment, and prose enhancement.
-- **Learning Mode**: Step-by-step conceptual breakdowns, analogies, and comprehension checks.
-
-### Speech & Accessibility
-- **Voice Dictation (Speech-to-Text)**: Microphone input powered by the Web Speech API with interim transcript preview, recording timer, pause/resume, and punctuation sanitation.
-- **Text-to-Speech (Read Aloud)**: In-browser speech synthesis for assistant responses with adjustable playback speed (0.75x to 2.0x), system voice selection, and pause/resume controls.
-
-### Conversation Management
-- **Conversation Pinning (5-Chat Limit)**: Pin up to 5 priority conversations to a dedicated top section in the sidebar with gold badge indicators and limit enforcement.
-- **Inline Renaming**: Double-click or click the edit icon to rename threads inline (Enter to save, Esc to cancel).
-- **Atomic Deletion**: Purges conversation message subcollections in atomic batches (up to 400 messages per chunk) before removing the parent chat record.
-- **Multi-Format Export**: Export any active conversation to **Markdown (`.md`)**, **JSON (`.json`)**, or **Plain Text (`.txt`)**.
-
-### User Personalization & Settings
-- **Theme Support**: Obsidian Dark (default), Crisp Light, or System match with zero-flash reload script.
-- **Response Length Preference**: Choose between *Concise*, *Balanced*, or *Detailed* outputs injected into model system instructions.
-- **Beginner-Friendly Mode**: Injects guidance asking models to use accessible analogies and avoid unexplained jargon.
-- **PWA Installation**: Installable Progressive Web App with Web App Manifest, maskable app icons, and in-app install prompt.
+- **Multi-Provider AI Routing**: Instant dropdown model switching between Google Gemini, Groq, and OpenRouter.
+- **Full-Stack Backend Proxy**: Centralized `/api/chat` route protects API keys server-side, with automated graceful fallbacks.
+- **Context-Aware Conversations**: Multi-turn history (up to the last 12 messages) is formatted and passed to each AI provider for conversational continuity.
+- **Simulated Fallback Mode**: When API keys are not yet configured in the environment, the app generates high-quality simulated responses so the UI can be tested without interruption.
+- **Rich Markdown & Code Highlighting**: Formats responses with `react-markdown` and `remark-gfm`, including language labels, copy buttons, responsive tables, blockquotes, and safe link handling.
+- **Persistent Cloud Storage**: Organizes conversation metadata in `/users/{userId}/chats/{chatId}` and chronological message history in `/users/{userId}/chats/{chatId}/messages/{messageId}`.
+- **Guest / Demo Mode**: Instant access with zero setup; conversations and pinned statuses are preserved across page reloads via `sessionStorage` and `localStorage`.
+- **Conversation Pinning (5-Chat Limit)**: Pin up to 5 vital conversations to the top of the sidebar with dedicated visual indicators.
+- **Inline Renaming & Deletion**: Rename any thread inline or trigger safe deletion with batch-write subcollection purging.
+- **Automatic Smart Titles**: Derives clean, concise 36-character thread titles from the user's initial prompt.
+- **Error Recovery & Prompt Restore**: Failed requests display inline error bubbles with one-click **Retry** and **Edit prompt** actions that restore the text to the composer.
+- **Responsive Layout**: Collapsible sidebar with mobile overlay backdrop, custom slim scrollbars, and accessible keyboard navigation.
 
 ---
 
-## 4. AI Providers & Selectable Models
+## 4. Detailed Explanation of the Three AI Providers
 
-Orvix features four fully implemented AI inference providers selectable via the navigation header dropdown:
+Orvix unifies three distinct AI providers through a standardized interface managed by `src/services/aiRouter.js` and the backend Express endpoint in `server.ts`.
 
-| Provider | Display Label | Model ID / Identifier | Protocol | Default Scope |
-|---|---|---|---|---|
-| **Google Gemini** | `Gemini (Gemini 3.1 Flash Lite)` | `gemini-3.8-flash` (primary)<br>`gemini-3.1-flash-lite` (fallback) | `@google/genai` TypeScript SDK (v2.4.0) | Server-side (`GEMINI_API_KEY`) |
-| **Groq** | `Groq (Llama 3.3 70B)` | `openai/gpt-oss-120b` | OpenAI-compatible SSE REST API | Server-side (`GROQ_API_KEY`) |
-| **OpenRouter** | `OpenRouter (Llama 3.3 70B (Free))` | `openrouter/free` | OpenAI-compatible SSE REST API | Server-side (`OPENROUTER_API_KEY`) |
-| **Cloudflare Workers AI** | `Cloudflare Workers AI — Llama 3.1 8B` | `@cf/meta/llama-3.1-8b-instruct` | Cloudflare Workers AI REST API | Server-side (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) |
-
-### Provider Details & Implementations
-
-1. **Google Gemini**:
-   - Integrates with Google's modern `@google/genai` TypeScript SDK.
-   - Executes multi-tier retries with exponential backoff and jitter. Attempts primary generation on `gemini-3.8-flash` before gracefully falling back to `gemini-3.1-flash-lite`.
-   - Delayed SSE header initiation guarantees HTTP 503 high-demand errors are caught before sending 200 stream headers.
-
-2. **Groq**:
-   - Communicates with Groq's high-speed inference endpoint (`https://api.groq.com/openai/v1/chat/completions`).
-   - Supports genuine Server-Sent Events token streaming and multi-turn message formatting.
-
-3. **OpenRouter**:
-   - Interacts with OpenRouter's multi-model gateway (`https://openrouter.ai/api/v1/chat/completions`).
-   - Dynamically accesses community-available open-weights models under `openrouter/free`.
-
-4. **Cloudflare Workers AI**:
-   - Calls Cloudflare's official REST API endpoint: `https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct`.
-   - Handles Cloudflare's native Server-Sent Events stream format (`data: {"response":"..."}` and `data: [DONE]`).
-   - Implements server-side adaptation: if a non-streaming response is received, it is seamlessly transformed into standard Orvix SSE events without client interruption.
-   - Error classification specifically distinguishes Cloudflare 401/403 authorization failures, 404 account/model errors, 429 rate limits, and 5xx server issues.
-
----
-
-## 5. Frontend Architecture & Technologies
-
-The frontend is constructed as a React 19 Single Page Application (SPA) bundled with Vite 8.
-
-```text
-src/
-├── App.jsx                     # Root application component & auth router
-├── main.jsx                    # React 19 DOM bootstrap
-├── index.css                   # Global Tailwind CSS v4 & custom variables
-├── components/
-│   ├── auth/AuthScreen.jsx     # Firebase auth & guest mode login screen
-│   ├── chat/                   # Conversational workspace components
-│   │   ├── ChatArea.jsx        # Main chat scroll container & composer dock
-│   │   ├── ChatMessage.jsx     # Markdown renderer, code blocks, retry actions
-│   │   ├── CodeBlock.jsx       # Syntax highlighter with copy action
-│   │   ├── ExportChatMenu.jsx  # Markdown, JSON, Text download dropdown
-│   │   ├── MessageList.jsx     # Rendered list with scroll anchoring
-│   │   ├── ModeSelector.jsx    # General / Coding / Writing / Learning switcher
-│   │   ├── ModelSelector.jsx   # AI provider selector (5 providers)
-│   │   ├── PromptSuggestions.jsx # Context-sensitive starter prompts
-│   │   ├── TypingIndicator.jsx # Animated thinking pill
-│   │   └── WelcomeScreen.jsx   # Empty-state hero and mode selection
-│   ├── layout/                 # App frame and responsive navigation
-│   │   ├── Header.jsx          # Top navigation bar, mode/model selectors, user menu
-│   │   ├── Layout.jsx          # Responsive shell managing sidebar collapse
-│   │   ├── Sidebar.jsx         # Pinned/recent chats list and user footer
-│   │   └── SidebarChatItem.jsx # Individual thread item with rename/delete
-│   ├── settings/SettingsModal.jsx # Personalization & preference dialog
-│   └── ui/                     # Primitives (Button, OrvixLogo)
-├── context/
-│   ├── AuthContext.jsx         # Firebase Auth & guest identity state
-│   ├── SettingsContext.jsx     # Theme, response length, voice preferences
-│   └── SpeechContext.jsx       # Web Speech TTS synthesis engine
-├── hooks/
-│   ├── usePWAInstall.js        # PWA beforeinstallprompt handler
-│   └── useVoiceDictation.js    # Web Speech STT dictation hook
-├── services/                   # Client-side API dispatchers
-│   ├── aiRouter.js             # Central multi-provider client dispatcher
-│   ├── cloudflareService.js    # Cloudflare Workers AI client helper
-│   ├── geminiService.js        # Gemini client helper
-│   ├── groqService.js          # Groq client helper
-│   └── openrouterService.js    # OpenRouter client helper
-└── utils/                      # Text cleaners, syntax highlighters, exporters
+```
+                    ┌─────────────────────────┐
+                    │      Client Browser     │
+                    │   (selectedProvider)    │
+                    └────────────┬────────────┘
+                                 │ POST /api/chat
+                                 ▼
+                    ┌─────────────────────────┐
+                    │   server.ts (/api/chat) │
+                    └──────┬─────┬─────┬──────┘
+             Gemini        │     │     │     OpenRouter
+       ┌───────────────────┘     │     └───────────────────┐
+       ▼                         ▼                         ▼
+┌───────────────┐        ┌───────────────┐        ┌──────────────────┐
+│ GoogleGenAI   │        │ Groq REST API │        │ OpenRouter API   │
+│ SDK (v2.4.0)  │        │ (OpenAI-comp) │        │ (Free Gateway)   │
+└───────────────┘        └───────────────┘        └──────────────────┘
 ```
 
-### Key Frontend Technologies
-- **React 19**: Component lifecycle, concurrent rendering, and hooks (`useRef`, `useState`, `useEffect`, `useCallback`, `useMemo`).
-- **Tailwind CSS v4 (`@tailwindcss/vite`)**: Next-generation utility-first styling with `@import "tailwindcss";` and CSS variable theming.
-- **Lucide React**: Clean vector icon suite for all navigation, message actions, and controls.
-- **React Markdown & Remark GFM**: Safe markdown rendering supporting tables, fenced code blocks, and formatted lists.
-- **Web Speech API**: In-browser speech recognition (`webkitSpeechRecognition`) and speech synthesis (`speechSynthesis`).
+### A. Google Gemini
+- **Service Handler**: `server.ts` (backend) / `src/services/geminiService.js` (client fallback).
+- **SDK**: `@google/genai` (v2.4.0).
+- **Configured Models**:
+  - Primary: `gemini-3.1-flash-lite` (fast, efficient default).
+  - Secondary / Fallback: `gemini-3.8-flash` (used if primary encounters 503 high traffic or 404).
+- **Environment Variable**: `GEMINI_API_KEY` (server-side) or `VITE_GEMINI_API_KEY` (client).
+- **Request Format**: Formats messages as `{ role: 'user' | 'model', parts: [{ text }] }`. System instruction specifies Orvix's conversational persona.
+- **Fallback Behavior**: If no API key is provided, generates an in-memory simulated answer marked as `gemini-3.1-flash-lite (demo)`.
+
+### B. Groq
+- **Service Handler**: `server.ts` (backend) / `src/services/groqService.js` (client fallback).
+- **API Endpoint**: `https://api.groq.com/openai/v1/chat/completions`.
+- **Configured Model**: `llama-3.3-70b-versatile` (backend) / `openai/gpt-oss-120b` (client fallback).
+- **Environment Variable**: `GROQ_API_KEY` (server-side) or `VITE_GROQ_API_KEY` (client).
+- **Request Format**: Standard OpenAI-compatible format with `system`, `user`, and `assistant` messages, temperature set to 0.7.
+- **Fallback Behavior**: If unconfigured, outputs demo responses with `modelUsed: 'Llama 3.3 70B (demo)'`.
+
+### C. OpenRouter
+- **Service Handler**: `server.ts` (backend) / `src/services/openrouterService.js` (client fallback).
+- **API Endpoint**: `https://openrouter.ai/api/v1/chat/completions`.
+- **Configured Model**: `openrouter/free` (OpenRouter's free router that dynamically routes queries across available high-capacity free community models).
+- **Environment Variable**: `OPENROUTER_API_KEY` (server-side) or `VITE_OPENROUTER_API_KEY` (client).
+- **Request Headers**: Passes `Authorization: Bearer <KEY>`, `X-Title: Orvix`, and `HTTP-Referer`.
+- **Fallback Behavior**: If unconfigured, outputs demo responses with `modelUsed: 'openrouter/free (demo)'`.
+
+### Context & Provider Switching Behavior
+- All providers receive the last **12 conversation messages** formatted into their respective message schemas.
+- Switching between providers does **not** erase, truncate, or reset existing conversation history. The next message sent will forward the prior thread messages regardless of which model created them.
 
 ---
 
-## 6. Backend Architecture & Technologies
+## 5. Complete Technology Stack
 
-The backend is built with Node.js and Express in `server.ts`, functioning both as an API server and as Vite's development middleware host.
+### Core Runtime & Frameworks
+| Dependency | Version | Role in Application |
+|---|---|---|
+| `react` | `^19.0.1` | Core UI component framework (React 19). |
+| `react-dom` | `^19.0.1` | React DOM rendering for web browsers. |
+| `express` | `^4.21.2` | Node.js backend server handling `/api/chat` proxy routes and static file serving. |
+| `vite` | `^8.3.0` | Development server and production build bundler. |
+| `tsx` | `^4.21.0` | TypeScript execution engine used to run `server.ts` directly in development. |
+| `typescript` | `^7.0.2` | Type-checking and interface definitions. |
 
-```text
-server.ts
-├── Express HTTP Server (Port 3000, 0.0.0.0)
-│   ├── CORS & JSON Body Parser (10MB limit)
-│   ├── Route: GET  /api/health   → Uptime, status check
-│   ├── Route: GET  /api/config   → Safe provider availability check (no keys leaked)
-│   └── Route: POST /api/chat     → Central multi-provider dispatch with SSE
-│         ├── Provider 1: Google Gemini (@google/genai SDK v2.4.0)
-│         ├── Provider 2: Groq (OpenAI-compatible fetch)
-│         ├── Provider 3: OpenRouter (OpenAI-compatible fetch)
-│         ├── Provider 4: Cloudflare Workers AI (Cloudflare REST API fetch)
-│         └── Fallback:   Mode-aware demo simulated response
-└── Environment Modes
-    ├── Development: Express mounts Vite middlewares (appType: 'spa')
-    └── Production:  Express serves static dist/ with index.html fallback
+### AI Integration & SDKs
+| Dependency | Version | Role in Application |
+|---|---|---|
+| `@google/genai` | `^2.4.0` | Official Google Gen AI TypeScript SDK for Gemini 3.1 Flash Lite and 3.8 Flash. |
+| Native `fetch` | Built-in | Used for HTTP requests to Groq and OpenRouter OpenAI-compatible endpoints. |
+
+### Database & Authentication
+| Dependency | Version | Role in Application |
+|---|---|---|
+| `firebase` | `^13.0.0` | Client SDK providing Firebase Authentication (Email/Password) and Cloud Firestore persistence. |
+
+### Styling, Icons & UI Utilities
+| Dependency | Version | Role in Application |
+|---|---|---|
+| `tailwindcss` | `^4.3.3` | Utility-first CSS framework (v4). |
+| `@tailwindcss/vite` | `^4.3.3` | Vite plugin for Tailwind CSS v4 compilation. |
+| `lucide-react` | `^0.546.0` | Modern, consistent icon pack (Bot, User, Sparkles, Pin, Trash, Pencil, etc.). |
+| `motion` | `^12.23.24` | Animation and motion primitives for smooth transitions. |
+| `react-markdown` | `^10.1.0` | Markdown parser for rendering assistant output safely. |
+| `remark-gfm` | `^4.0.1` | GitHub Flavored Markdown plugin (tables, autolinks, strikethrough, task lists). |
+| `dotenv` | `^17.2.3` | Loads environment variables from `.env` into `process.env`. |
+
+---
+
+## 6. Application Architecture
+
+```
+┌────────────────────────────────────────────────────────┐
+│                   React 19 Frontend                    │
+│                                                        │
+│   App.jsx                                              │
+│     ├── AuthProvider (AuthContext.jsx)                 │
+│     │     ├── AuthScreen.jsx (Sign in / Create acct)   │
+│     │     └── ChatPage.jsx                             │
+│     │           ├── Layout.jsx                         │
+│     │           │     ├── Sidebar.jsx                  │
+│     │           │     └── Header.jsx (ModelSelector)   │
+│     │           └── ChatArea.jsx                       │
+│     │                 ├── WelcomeScreen.jsx            │
+│     │                 ├── MessageList.jsx              │
+│     │                 │     └── ChatMessage.jsx        │
+│     │                 └── Composer Dock                │
+└───────────────────────────┬────────────────────────────┘
+                            │
+               HTTP Requests to /api/chat
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│                  Express Backend                       │
+│                                                        │
+│   server.ts                                            │
+│     ├── GET  /api/health                               │
+│     ├── GET  /api/config                               │
+│     ├── POST /api/chat                                 │
+│     │     ├── Gemini Provider (@google/genai SDK)      │
+│     │     ├── Groq Provider (OpenAI REST)              │
+│     │     └── OpenRouter Provider (OpenAI REST)        │
+│     └── Middleware                                     │
+│           ├── Dev: Vite middleware mode (`npm run dev`)│
+│           └── Prod: Express static serving ('dist/')   │
+└───────────────────────────┬────────────────────────────┘
+                            │
+              Direct Client SDK Operations
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│                  Google Firebase                       │
+│     ├── Firebase Auth (Email/Password & Sessions)      │
+│     └── Cloud Firestore                                │
+│           ├── /users/{userId}/chats/{chatId}           │
+│           └── .../messages/{messageId}                 │
+└────────────────────────────────────────────────────────┘
 ```
 
-### Backend Responsibilities
-- **Credential Protection**: All API keys and tokens (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) remain exclusively on the server.
-- **Client Disconnection Management**: Tracks client disconnections (`res.on('close')`) to cancel upstream fetch readers and backoff timers immediately.
-- **Error Sanitization**: `sanitizeErrorLog` redacts API keys, bearer tokens, and credentials from all server logs and client-facing error payloads.
-- **Diagnostic Logging**: `logAIDiagnostic` records provider, model, attempt number, phase (pre-stream, mid-stream, non-streaming), and sanitized upstream errors.
+1. **Development Mode**: `npm run dev` executes `tsx server.ts`. Express mounts Vite in middleware mode on port 3000, serving React hot-reloaded while listening on `/api/*` endpoints.
+2. **Production Mode**: `npm run build` compiles client assets to `dist/`. `node server.ts` serves static assets from `dist/` with SPA fallback routing.
+3. **Resilience Strategy**: If the Express backend proxy is unreachable, the client-side router (`aiRouter.js`) automatically falls back to browser-side API calls.
 
 ---
 
-## 7. AI Provider Routing, Streaming & Fallback Behavior
+## 7. Project Directory Structure
 
-### Client-to-Server Flow
-1. User enters a prompt in `ChatArea.jsx`.
-2. `ChatPage.jsx` creates message records and invokes `streamAIMessage` from `src/services/aiRouter.js`.
-3. `aiRouter.js` initiates an HTTP POST to `/api/chat` with `{ provider, mode, prompt, history, username, preferences, stream: true }`.
-4. `server.ts` validates the request, normalizes history turns, injects mode and user preferences into system instructions, and connects to the target provider.
-5. Upstream stream chunks are parsed into unified Server-Sent Events (`data: {"type":"chunk","text":"..."}`).
-6. The client reader renders tokens smoothly, gradually revealing text to match natural reading speed.
-
-### Fallback & Recovery Architecture
-- **Missing API Keys**: Automatically returns mode-aware simulated responses so the application functions in demo environments without manual setup.
-- **Pre-Stream Failure**: If an upstream connection fails before stream initialization (e.g. 503 High Demand or 429 Quota Exceeded), the server returns a clean JSON error with a suggested provider list.
-- **Inline Switching**: Message error banners offer one-click buttons to retry immediately with any alternative configured provider (e.g., "Try with Cloudflare Workers AI", "Try with Groq").
-- **Partial Stream Preservation**: If an error occurs mid-stream, partial tokens already rendered remain preserved, flagged with an interruption notice rather than discarding generated content.
-
----
-
-## 8. Firebase Integration & Authentication
-
-### Authentication
-- **Engine**: Firebase Authentication (v13.0.0 SDK) via email and password (`createUserWithEmailAndPassword`, `signInWithEmailAndPassword`, `signOut`).
-- **Observer**: `onAuthStateChanged` restores authenticated user state upon page reload.
-- **Error Sanitization**: `formatAuthError` maps Firebase errors (such as `auth/email-already-in-use` or `auth/invalid-credential`) into user-friendly messages without exposing internal codes.
-
-### Cloud Firestore Schema
-Conversations are stored hierarchically:
-
-```text
-/users/{userId}/chats/{chatId}
-  ├── id: string
-  ├── title: string
-  ├── userId: string
-  ├── mode: "general" | "coding" | "writing" | "learning"
-  ├── isPinned: boolean
-  ├── pinnedAt: number | null
-  ├── createdAt: timestamp
-  ├── updatedAt: timestamp
-  └── /messages/{messageId}
-        ├── id: string
-        ├── sender: "user" | "assistant"
-        ├── content: string
-        ├── provider: string
-        ├── modelUsed: string | null
-        ├── createdAt: timestamp
-        └── clientTimestamp: string
 ```
-
-### Security Rules (`firestore.rules`)
-- Access is strictly restricted to the authenticated document owner (`request.auth.uid == userId`).
-- Disallows listing or writing across foreign user directories.
-- Validates title lengths (1 to 120 characters) and message content lengths (1 to 100,000 characters).
-- Enforces message roles to `user` or `assistant`.
-
-### Guest Exploration Mode
-When Firebase credentials are not provided or a user selects **Continue as Guest**:
-- An anonymous session ID (`guest-xxxxxxx`) is established in `sessionStorage`.
-- Conversations and message histories are saved to `localStorage` under `orvix_guest_chats`.
-- Pinned chat IDs are stored in `localStorage` under `orvix_guest_pins`.
-- Guest settings are stored in `localStorage` under `orvix_guest_settings`.
-- Guest data persists across reloads and functions completely offline.
-
----
-
-## 9. Chat Functionality & Conversation History
-
-- **Multi-Turn Context**: Preserves previous context up to 12 turns, maintaining conversational coherence across all five providers.
-- **Chat Pinning**: Pin up to 5 vital conversations to a dedicated top tier in the sidebar. Attempting to pin a 6th conversation alerts the user to unpin an existing one first.
-- **Inline Title Editing**: Double-click or click the edit icon on any sidebar thread to rename it. Pressing Enter saves; pressing Escape cancels.
-- **Atomic Batch Deletion**: Safely purges subcollection message documents in batches before deleting the parent conversation document, preventing orphaned database records.
-- **Conversation Switching**: Switching threads smoothly updates the active viewport while ensuring ongoing background responses finish saving to their origin thread.
-
----
-
-## 10. Project Structure & Important Files
-
-```text
-Orvix/
+.
 ├── .env.example                  # Environment variable reference template
-├── .gitignore                    # Git ignored directories and files
-├── README.md                     # Comprehensive project documentation
-├── api/                          # Serverless function handlers
-│   ├── chat.ts                   # /api/chat route proxy adapter
-│   ├── config.ts                 # /api/config route proxy adapter
-│   └── health.ts                 # /api/health route proxy adapter
-├── firebase-blueprint.json       # Schema definition for Firestore collections
-├── firestore.rules               # Cloud Firestore security rules
-├── index.html                    # SPA HTML entry point with inline theme script
-├── metadata.json                 # AI Studio applet capabilities and metadata
-├── package.json                  # NPM packages, dependencies, and project scripts
-├── public/                       # Static public assets (icons, manifest)
-│   ├── apple-touch-icon.png
-│   ├── favicon.ico
-│   ├── favicon.svg
-│   ├── icon-192.png
-│   ├── icon-512.png
-│   └── manifest.webmanifest      # Progressive Web App manifest
-├── server.ts                     # Full-stack Express server & multi-provider proxy
-├── src/                          # Frontend source code
-│   ├── App.jsx                   # Root application component & auth router
-│   ├── main.jsx                  # React DOM bootstrap
-│   ├── index.css                 # Global CSS entry importing Tailwind & Obsidian styles
-│   ├── components/               # React UI components (auth, chat, layout, settings, ui)
-│   ├── config/                   # Configuration constants (appConfig, chatModes, firebaseConfig)
-│   ├── context/                  # React Context providers (Auth, Settings, Speech)
-│   ├── hooks/                    # Custom hooks (usePWAInstall, useVoiceDictation)
-│   ├── pages/                    # ChatPage primary workspace view
-│   ├── services/                 # AI router, provider services, Firestore service
-│   ├── styles/                   # Design system CSS variables and layout rules
-│   └── utils/                    # Exporters, text cleaners, syntax highlighter
+├── .gitignore                    # Git ignore specifications
+├── README.md                     # Complete project documentation
+├── firebase-blueprint.json       # Blueprint schema definitions for Firestore
+├── firestore.rules               # Cloud Firestore database security rules
+├── index.html                    # Single-page HTML entry point
+├── metadata.json                 # AI Studio applet metadata & capabilities
+├── package.json                  # NPM dependencies, scripts, and package metadata
+├── server.ts                     # Express server & /api/chat AI proxy implementation
 ├── tsconfig.json                 # TypeScript compiler configuration
-├── vercel.json                   # Vercel deployment routes and build settings
-└── vite.config.ts                # Vite build and development configuration
+├── vite.config.ts                # Vite bundler, alias, and dev server configuration
+└── src/
+    ├── App.jsx                   # Root application component & auth gatekeeper
+    ├── index.css                 # Global CSS entry importing Tailwind & Obsidian styles
+    ├── main.jsx                  # React DOM bootstrap entry point
+    ├── components/
+    │   ├── auth/
+    │   │   └── AuthScreen.jsx    # Email/password authentication & guest mode launcher
+    │   ├── chat/
+    │   │   ├── ChatArea.jsx      # Scrollable message viewport & bottom composer dock
+    │   │   ├── ChatMessage.jsx   # Message bubble rendering, Markdown, and code copy
+    │   │   ├── MessageList.jsx   # Message collection container with auto-scroll pinning
+    │   │   ├── ModelSelector.jsx # Header dropdown for Gemini, Groq, and OpenRouter
+    │   │   ├── PromptSuggestions.jsx # Welcome screen starter prompt cards
+    │   │   ├── TypingIndicator.jsx   # Thinking animation indicator
+    │   │   └── WelcomeScreen.jsx     # Zero-state empty conversation screen
+    │   ├── layout/
+    │   │   ├── Header.jsx        # Navigation bar, thread title, model selector & logout
+    │   │   ├── Layout.jsx        # Responsive shell managing sidebar collapse & backdrop
+    │   │   ├── Sidebar.jsx       # Conversations list, pinned section & user profile
+    │   │   └── SidebarChatItem.jsx # Chat item with pin, inline rename, and delete actions
+    │   └── ui/
+    │       └── Button.jsx        # Reusable styled button component
+    ├── config/
+    │   ├── appConfig.js          # App branding, constants, and starter prompt templates
+    │   ├── firebaseConfig.js     # Firebase SDK initialization & config verification
+    │   └── sampleData.js         # Visual demonstration mock conversation data
+    ├── context/
+    │   └── AuthContext.jsx       # Authentication state, login/signup/logout & guest mode
+    ├── pages/
+    │   └── ChatPage.jsx          # Main conversational coordinator & state orchestrator
+    ├── services/
+    │   ├── aiRouter.js           # Central dispatch routing prompts to the active AI provider
+    │   ├── authService.js        # Dedicated Firebase Auth helper with error normalization
+    │   ├── chatStorageService.js # Cloud Firestore CRUD operations, pinning, & batch delete
+    │   ├── geminiService.js      # Google Gemini client fallback integration
+    │   ├── groqService.js        # Groq client fallback integration
+    │   ├── index.js              # Service module registry
+    │   ├── mockChatService.js    # Local simulated response generator
+    │   └── openrouterService.js  # OpenRouter client fallback integration
+    └── styles/
+        └── index.css             # Comprehensive Obsidian theme design system
 ```
 
 ---
 
-## 11. Prerequisites & Installation Instructions
+## 8. Source Files and Their Responsibilities
 
-### Prerequisites
-- **Node.js**: Version `22.x` LTS recommended (compatible with `20.x`+).
-- **npm**: Version `10.x` or higher.
-- A modern web browser supporting ES2022 and Server-Sent Events.
+### Root Configuration
+- **`server.ts`**: Express application creating `/api/chat`, `/api/health`, and `/api/config`. Handles server-side calls to Gemini, Groq, and OpenRouter. In dev, mounts Vite middlewares; in production, serves static assets from `dist/`.
+- **`vite.config.ts`**: Configures React plugin, Tailwind CSS v4, path alias (`@/*`), environment variable defines, and the dev server on `0.0.0.0:3000`.
+- **`package.json`**: Defines scripts (`dev`, `build`, `start`, `preview`, `lint`), dependencies, and package metadata.
+- **`firestore.rules`**: Production Firestore rules requiring authentication, checking resource ownership (`request.auth.uid == userId`), and validating data structure schemas and string bounds.
 
-### Installation Steps
+### React Application Entry & Shell
+- **`src/main.jsx`**: Initializes the React 19 root into `#root`.
+- **`src/App.jsx`**: Top-level gatekeeper. Renders a loading splash during initial auth checks, directs unauthenticated visitors to `AuthScreen`, and displays `ChatPage` for active users.
+- **`src/context/AuthContext.jsx`**: Manages auth lifecycle (`currentUser`, `login`, `signup`, `logout`, `continueAsGuest`). Supports dual-key session storage compatibility.
+- **`src/pages/ChatPage.jsx`**: Core state orchestrator. Subscribes to Firestore user chats, coordinates message dispatch, handles race conditions across rapid chat switching, persists messages, and manages pinning.
+
+### UI Components
+- **`src/components/layout/Layout.jsx`**: Manages the responsive layout container, collapsible sidebar, and mobile backdrop overlay.
+- **`src/components/layout/Header.jsx`**: Top bar with sidebar toggle button, thread title breadcrumb, `ModelSelector` dropdown, "New Chat" button, user email, and logout.
+- **`src/components/layout/Sidebar.jsx`**: Displays conversations divided into "Pinned (X/5)" and "Recent" sections, plus "New Chat" button and session status footer.
+- **`src/components/layout/SidebarChatItem.jsx`**: Interactive chat row with inline renaming (input with Enter/Esc triggers), delete confirmation prompt, and pin toggle button.
+- **`src/components/chat/ChatArea.jsx`**: Manages the main chat stream, zero-state `WelcomeScreen`, and the fixed bottom composer dock with auto-resizing textarea.
+- **`src/components/chat/ChatMessage.jsx`**: Individual message bubble rendering user or assistant messages. Includes rich Markdown parsing, syntax-highlighted code with copy buttons, error bubbles with retry/edit actions, and model badges.
+- **`src/components/chat/ModelSelector.jsx`**: Clean dropdown component allowing users to switch AI providers.
+- **`src/components/chat/PromptSuggestions.jsx`**: Renders 4 starter prompt cards on the welcome screen.
+- **`src/components/chat/TypingIndicator.jsx`**: Three-dot pulsing loading state when waiting for an AI response.
+- **`src/components/ui/Button.jsx`**: Standardized button component with variants (`primary`, `secondary`, `ghost`, `outline`) and sizes.
+
+### Service Modules
+- **`src/services/aiRouter.js`**: Normalizes and dispatches prompts to `/api/chat` (or fallback client services). Exposes provider list and configuration checks.
+- **`src/services/chatStorageService.js`**: Encapsulates all Firestore queries (`createChatDocument`, `saveChatMessage`, `renameConversation`, `deleteConversation`, `toggleChatPinned`, `subscribeToUserChats`, `loadConversationMessages`).
+- **`src/services/geminiService.js`**: Client-side Gemini integration with automatic fallback from `gemini-3.1-flash-lite` to `gemini-3.8-flash`.
+- **`src/services/groqService.js`**: Client-side Groq OpenAI-compatible fetch client.
+- **`src/services/openrouterService.js`**: Client-side OpenRouter fetch client using `openrouter/free`.
+- **`src/services/authService.js`**: Wraps Firebase Auth calls and translates technical error codes into readable text.
+
+---
+
+## 9. Prerequisites
+
+Before installing and running Orvix, ensure you have:
+- **Node.js**: Version 20.x or 22.x LTS (Node.js 22 is recommended).
+- **npm**: Version 10.x or higher (included with Node.js).
+- Modern web browser with JavaScript enabled (Chrome, Safari, Firefox, Edge).
+- *(Optional)* A Google Cloud or Firebase project for cloud persistence.
+- *(Optional)* API keys for Google Gemini, Groq, or OpenRouter.
+
+---
+
+## 10. Installation Instructions
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/Hannankhan203/Orvix.git
-   cd Orvix
+   git clone https://github.com/Hannankhan203/text.git orvix
+   cd orvix
    ```
 
 2. **Install dependencies**:
@@ -348,97 +312,305 @@ Orvix/
    npm install
    ```
 
-3. **Configure environment variables**:
+3. **Configure Environment Variables**:
+   Create a `.env` file based on the provided template:
    ```bash
    cp .env.example .env
    ```
-   Add any available API keys to `.env`. If no keys are provided, the application will boot in **Demo / Guest Mode** using built-in simulated responses.
-
-4. **Start the development server**:
-   ```bash
-   npm run dev
-   ```
-
-5. **Open the application**:
-   Navigate to [http://localhost:3000](http://localhost:3000) (or `http://0.0.0.0:3000`) in your browser.
 
 ---
 
-## 12. Environment Variables & Configuration
+## 11. Local Development Setup
 
-Configure these variables in your root `.env` file (or your hosting platform's environment settings):
+To start the local development server:
 
-| Variable | Scope | Required? | Description |
-|---|---|---|---|
-| `PORT` | Server | Optional | Port for the Express server (defaults to `3000`). |
-| `GEMINI_API_KEY` | Server | Optional | Google Gemini API key. Configured server-side for `@google/genai`. |
-| `GROQ_API_KEY` | Server | Optional | Groq API key for high-speed inference. |
-| `OPENROUTER_API_KEY` | Server | Optional | OpenRouter API key for dynamic open-weights models. |
-| `CLOUDFLARE_ACCOUNT_ID` | Server | Optional | Cloudflare Account ID for Workers AI inference. |
-| `CLOUDFLARE_API_TOKEN` | Server | Optional | Cloudflare API Token with Workers AI Read permissions. |
-| `VITE_FIREBASE_API_KEY` | Client | Optional | Firebase Web API key for authentication and Firestore. |
-| `VITE_FIREBASE_AUTH_DOMAIN` | Client | Optional | Firebase Auth Domain (e.g. `your-app.firebaseapp.com`). |
-| `VITE_FIREBASE_PROJECT_ID` | Client | Optional | Firebase Project ID. |
-| `VITE_FIREBASE_STORAGE_BUCKET`| Client | Optional | Firebase Cloud Storage Bucket name. |
-| `VITE_FIREBASE_MESSAGING_SENDER_ID`| Client | Optional | Firebase Messaging Sender ID. |
-| `VITE_FIREBASE_APP_ID` | Client | Optional | Firebase Web Application ID. |
-
-### Safe `.env` Template
-
-```env
-# Server Configuration
-PORT=3000
-
-# Server-Side AI API Keys (Kept secure on backend)
-GEMINI_API_KEY=your_gemini_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id_here
-CLOUDFLARE_API_TOKEN=your_cloudflare_api_token_here
-
-# Firebase Client Configuration (Optional - for Cloud Persistence & Auth)
-VITE_FIREBASE_API_KEY=your_firebase_api_key_here
-VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your_project_id
-VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
-VITE_FIREBASE_APP_ID=your_firebase_app_id
+```bash
+npm run dev
 ```
 
-> **Security Note**: Never commit actual API keys or credentials to version control. AI keys are read exclusively by `server.ts` and are never exposed to browser bundles.
+The server will start on `http://localhost:3000` (or `http://0.0.0.0:3000`).
+
+- The development server runs `tsx server.ts`.
+- Express runs the API endpoints on `/api/*` and mounts Vite in middleware mode for instant frontend updates.
+- If no API keys or Firebase variables are supplied, Orvix automatically boots in **Guest / Demo Mode** with simulated AI responses.
 
 ---
 
-## 13. Development & Build Commands
+## 12. Environment Variables
 
-All commands are executed using `npm`:
+The table below lists all supported environment variables.
 
-| Command | Action | Description |
+| Variable Name | Required? | Location | Description |
+|---|---|---|---|
+| `GEMINI_API_KEY` | Optional | Server | Google Gemini API key used by the backend Express proxy. |
+| `GROQ_API_KEY` | Optional | Server | Groq API key used by the backend Express proxy. |
+| `OPENROUTER_API_KEY` | Optional | Server | OpenRouter API key used by the backend Express proxy. |
+| `VITE_GEMINI_API_KEY` | Optional | Client/Build | Gemini API key for client-side direct fallback requests. |
+| `VITE_GROQ_API_KEY` | Optional | Client/Build | Groq API key for client-side direct fallback requests. |
+| `VITE_OPENROUTER_API_KEY` | Optional | Client/Build | OpenRouter API key for client-side direct fallback requests. |
+| `VITE_FIREBASE_API_KEY` | Optional | Client/Build | Firebase Web API key. |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Optional | Client/Build | Firebase Auth Domain (e.g., `project-id.firebaseapp.com`). |
+| `VITE_FIREBASE_PROJECT_ID` | Optional | Client/Build | Firebase Project ID. |
+| `VITE_FIREBASE_STORAGE_BUCKET`| Optional | Client/Build | Firebase Cloud Storage Bucket name. |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Optional | Client/Build | Firebase Cloud Messaging sender ID. |
+| `VITE_FIREBASE_APP_ID` | Optional | Client/Build | Firebase Web Application ID. |
+| `PORT` | Optional | Server | Server port (defaults to `3000`). |
+
+> **IMPORTANT SECURITY NOTE**: Any variable prefixed with `VITE_` is baked into client-side JavaScript bundles by Vite during build time. For production deployments, configure API keys on the server (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`) so secrets remain strictly on the backend.
+
+---
+
+## 13. Safe `.env` Configuration Example
+
+```ini
+# ==============================================================================
+# Orvix Environment Configuration
+# Use real keys in your private environment. NEVER commit real secrets to Git.
+# ==============================================================================
+
+# Server-Side AI API Keys (Recommended for security)
+GEMINI_API_KEY=AIzaSyExampleKeyForGeminiOnly
+GROQ_API_KEY=gsk_ExampleKeyForGroqInference
+OPENROUTER_API_KEY=sk-or-v1-ExampleOpenRouterKey
+
+# Optional Client-Side Direct AI Keys (Used only if backend is bypassed)
+VITE_GEMINI_API_KEY=
+VITE_GROQ_API_KEY=
+VITE_OPENROUTER_API_KEY=
+
+# Firebase Client Configuration (Required for cloud authentication and database sync)
+VITE_FIREBASE_API_KEY=AIzaSyExampleFirebaseWebApiKey
+VITE_FIREBASE_AUTH_DOMAIN=orvix-app.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=orvix-app
+VITE_FIREBASE_STORAGE_BUCKET=orvix-app.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=123456789012
+VITE_FIREBASE_APP_ID=1:123456789012:web:abcdef1234567890
+
+# Server Runtime
+PORT=3000
+NODE_ENV=development
+```
+
+---
+
+## 14. Firebase Project Setup
+
+To enable user registration and persistent cloud storage across devices:
+
+1. Go to the [Firebase Console](https://console.firebase.google.com/) and click **Add Project**.
+2. Name your project (e.g., `orvix-ai`).
+3. Under **Project Settings** > **General**, click **Add app** (select Web `</>`).
+4. Register your web app and copy the `firebaseConfig` properties into your `.env` file under the matching `VITE_FIREBASE_*` variables.
+5. In the left navigation, click **Authentication** > **Get Started**, then enable **Email/Password** provider.
+6. In the left navigation, click **Firestore Database** > **Create Database** (choose a region close to your users).
+7. Deploy the provided `firestore.rules` (see section 16).
+
+---
+
+## 15. Firebase Authentication Configuration
+
+Orvix implements Email and Password authentication via `firebase/auth`:
+- **Registration**: Calls `signupWithEmail(email, password)` which invokes `createUserWithEmailAndPassword`.
+- **Sign In**: Calls `loginWithEmail(email, password)` which invokes `signInWithEmailAndPassword`.
+- **Sign Out**: Calls `logout()` which invokes `signOut` and clears guest session keys.
+- **State Listener**: Subscribes to `onAuthStateChanged` to restore sessions automatically on refresh.
+- **Error Formatting**: `formatAuthError` maps Firebase codes (e.g., `auth/email-already-in-use`, `auth/wrong-password`) to clean error messages while stripping any raw API tokens.
+
+---
+
+## 16. Firestore Configuration and Security Considerations
+
+### Document Structure
+```
+/users/{userId}
+  └── /chats/{chatId}
+        ├── id: string
+        ├── title: string
+        ├── userId: string
+        ├── createdAt: timestamp
+        ├── updatedAt: timestamp
+        ├── isPinned: boolean (optional)
+        ├── pinnedAt: timestamp (optional)
+        └── /messages/{messageId}
+              ├── id: string
+              ├── sender: "user" | "assistant"
+              ├── content: string
+              ├── modelUsed: string | null
+              ├── createdAt: timestamp
+              └── clientTimestamp: string
+```
+
+### Security Rules Audit
+The repository includes `firestore.rules` enforcing strict ownership:
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() { return request.auth != null; }
+    function isOwner(userId) { return isAuthenticated() && request.auth.uid == userId; }
+
+    match /users/{userId} {
+      allow read, write: if false; // Deny direct user document access
+
+      match /chats/{chatId} {
+        allow read, delete: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 120;
+
+        match /messages/{messageId} {
+          allow read, delete: if isOwner(userId);
+          allow create, update: if isOwner(userId)
+            && request.resource.data.sender in ['user', 'assistant']
+            && request.resource.data.content.size() > 0
+            && request.resource.data.content.size() <= 100000;
+        }
+      }
+    }
+  }
+}
+```
+
+> **Security Rule Constraint Note**: While the rules enforce that `isPinned` must be a boolean, Firestore security rules do not support aggregate count queries. As a result, the **5-pinned-chat limit is enforced at the application/service layer**, not by Firestore security rules directly.
+
+---
+
+## 17. Gemini API Configuration
+
+1. Obtain a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+2. Set `GEMINI_API_KEY=your_key` in `.env`.
+3. In `server.ts`, the server initializes `@google/genai`:
+   ```typescript
+   const ai = new GoogleGenAI({ apiKey });
+   ```
+4. The system requests `gemini-3.1-flash-lite` with a fallback to `gemini-3.8-flash` in case of high traffic (HTTP 503).
+
+---
+
+## 18. Groq API Configuration
+
+1. Obtain an API key from the [Groq Console](https://console.groq.com/keys).
+2. Set `GROQ_API_KEY=your_key` in `.env`.
+3. Groq uses standard OpenAI-compatible endpoints with ultra-fast latency.
+4. Configured model: `llama-3.3-70b-versatile` with temperature 0.7.
+
+---
+
+## 19. OpenRouter API Configuration
+
+1. Obtain an API key from [OpenRouter](https://openrouter.ai/keys).
+2. Set `OPENROUTER_API_KEY=your_key` in `.env`.
+3. Configured model: `openrouter/free`. OpenRouter dynamically routes queries to available free community models without requiring paid credits.
+
+---
+
+## 20. Chat History and Data-Persistence Behavior
+
+1. **New Chat Creation**: Clicking "New Chat" resets the viewport immediately in memory. A document is only created in Firestore when the user actually submits their first prompt.
+2. **Subcollection Writes**: Messages are saved as individual documents in `messages` subcollections. This prevents documents from exceeding Firestore's 1MB single-document size limit.
+3. **Atomic Batch Deletion**: When a user deletes a conversation, `deleteConversation` queries all messages in the subcollection, chunks deletions into batches of 400 (well within Firestore's 500-write batch limit), commits the message batch, and then deletes the parent chat document.
+4. **Real-time Synchronization**: `subscribeToUserChats` uses `onSnapshot` to automatically reflect new conversations, renames, and pins across tabs in real-time.
+
+---
+
+## 21. Guest-Mode Behavior
+
+Orvix features an immediate **Continue as Guest (Demo Mode)** workflow:
+- **No Credentials Needed**: Users can explore the app immediately without Firebase configuration or account creation.
+- **Session Identity**: Creates an anonymous user profile `{ uid: 'guest-xxxxxxx', email: 'guest@orvix.ai', displayName: 'Guest Explorer', isAnonymous: true }` saved in `sessionStorage`.
+- **Local Persistence**: Guest conversations and messages are persisted in browser `localStorage` (`orvix_guest_chats`). Pinned chat IDs are stored in `localStorage` (`orvix_guest_pins`).
+- **Page Refresh Resilience**: Guest sessions and messages survive page refreshes and browser tab navigation.
+- **Scope & Limitations**: Guest data is strictly client-local. It does not synchronize across different devices or browsers, and there is currently no automated account migration to convert guest history into an authenticated account upon signing up.
+
+---
+
+## 22. Pinned Chats and the Five-Chat Limit
+
+- **Pinning Action**: Users can click the Pin icon on any chat item in the sidebar.
+- **Dedicated UI Group**: Pinned conversations are elevated into a dedicated **Pinned (X/5)** section at the top of the sidebar.
+- **Five-Chat Constraint**:
+  - Validated in the frontend (`ChatPage.jsx`): If 5 chats are already pinned, attempting to pin a 6th chat immediately triggers a warning banner: *"You can pin up to 5 chats. Unpin a chat before pinning another."*
+  - Validated in the Firestore service layer (`chatStorageService.js`): Checks active pinned count via query before executing the document update.
+  - In Guest Mode, the 5-chat limit is equally enforced in local state and `localStorage`.
+
+---
+
+## 23. Available NPM Scripts
+
+| Command | Script Definition | What It Does |
 |---|---|---|
-| `npm run dev` | `tsx server.ts` | Starts the Express server with Vite dev middleware on port 3000. |
-| `npm run build` | `vite build` | Compiles client assets and outputs production bundles to `dist/`. |
-| `npm start` | `node server.ts` | Runs the production server, serving compiled assets from `dist/`. |
-| `npm run preview` | `vite preview` | Previews the compiled production build locally. |
-| `npm run lint` | `tsc --noEmit` | Runs the TypeScript compiler to validate type safety across the project. |
-| `npm run clean` | `rm -rf dist server.js` | Removes compiled artifacts and build outputs. |
+| `npm run dev` | `tsx server.ts` | Starts the Express server with Vite in middleware mode on port 3000. |
+| `npm run build` | `vite build` | Compiles and bundles production frontend assets into the `dist/` directory. |
+| `npm start` | `node server.ts` | Starts the production server, serving compiled assets from `dist/`. |
+| `npm run preview`| `vite preview` | Previews the production build locally via Vite. |
+| `npm run clean` | `rm -rf dist server.js` | Cleans the build directory. |
+| `npm run lint` | `tsc --noEmit` | Runs the TypeScript compiler in dry-run mode to validate type safety. |
 
 ---
 
-## 14. Deployment Instructions
+## 24. How to Run the Development Server
 
-### Production Node.js Deployment
-1. Set `NODE_ENV=production` and configure port and API keys in your environment.
-2. Build the production bundle:
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Start the dev server
+npm run dev
+```
+
+Visit `http://localhost:3000` in your browser.
+
+---
+
+## 25. How to Build the Production Version
+
+```bash
+# Compile client assets into dist/
+npm run build
+```
+
+The output bundle will be generated in `dist/`.
+
+---
+
+## 26. How to Preview the Production Build
+
+```bash
+# Run Vite preview server
+npm run preview
+```
+
+---
+
+## 27. Testing Instructions
+
+- **Static Type Validation**:
+  ```bash
+  npm run lint
+  ```
+  This command executes `tsc --noEmit` to verify type safety across the entire application without emitting output files.
+- **Unit / End-to-End Tests**:
+  There are currently no automated unit test frameworks (such as Jest or Vitest) configured in `package.json`. Testing is performed via static type checking and manual integration verification.
+
+---
+
+## 28. Deployment Instructions
+
+### Production Deployment with Node.js
+1. Set `NODE_ENV=production` in your deployment environment.
+2. Build the client application:
    ```bash
    npm run build
    ```
-3. Launch the server:
+3. Start the application:
    ```bash
    npm start
    ```
-   The Express server listens on `0.0.0.0:3000`, serves the `/api/*` endpoints, and serves compiled client files from `dist/` with single-page fallback.
+   In production, `server.ts` statically serves files from `dist/` and routes all non-API paths to `dist/index.html`.
 
-### Containerized Deployment (Docker / Google Cloud Run)
+### Docker / Cloud Run Hosting
+Orvix can be deployed to containerized platforms like Google Cloud Run:
 ```dockerfile
 FROM node:22-slim
 WORKDIR /app
@@ -448,79 +620,73 @@ COPY . .
 RUN npm run build
 EXPOSE 3000
 ENV PORT=3000
-ENV NODE_ENV=production
 CMD ["npm", "start"]
 ```
 
 ---
 
-## 15. Current Limitations
+## 29. Troubleshooting Common Setup and Runtime Errors
 
-- **Guest to Cloud Account Migration**: Conversations created in Guest Mode reside in browser `localStorage`. Logging in or registering later does not automatically import local guest threads into Cloud Firestore.
-- **Database Pin Limit Enforcement**: The 5-pinned-chat constraint is validated in frontend state and Firestore service queries, but cannot be strictly enforced at the database security rule level due to Firestore rule aggregation limits.
-- **Web Speech Browser Compatibility**: Voice dictation (Speech-to-Text) and Text-to-Speech audio depend on browser support for `SpeechRecognition` and `SpeechSynthesis` (optimal on Chromium-based browsers and Safari).
-- **Automated Test Coverage**: The project currently uses `tsc --noEmit` for static type verification; automated unit test suites (e.g., Vitest or Jest) are not yet integrated.
+### 1. `Firebase is not configured` Banner
+- **Cause**: Environment variables `VITE_FIREBASE_*` are missing or contain placeholder values.
+- **Solution**: Either click **Continue as Guest (Demo Mode)** to use Orvix locally without Firebase, or provide valid project credentials in `.env`.
 
----
+### 2. `Invalid or unauthorized Gemini API key`
+- **Cause**: The `GEMINI_API_KEY` provided is expired, invalid, or lacks Generative Language API access.
+- **Solution**: Generate a fresh key at [Google AI Studio](https://aistudio.google.com/app/apikey) and restart the server.
 
-## 16. Planned & Future Features
+### 3. `Groq rate limit or quota exceeded` (HTTP 429)
+- **Cause**: You exceeded the free tier RPM (requests per minute) or TPM limit on Groq.
+- **Solution**: Wait a few moments, or switch to Gemini or OpenRouter via the header dropdown.
 
-The following capabilities are planned for upcoming releases:
+### 4. `OpenRouter request failed (402/429)`
+- **Cause**: Credit exhaustion or temporary rate limits on OpenRouter.
+- **Solution**: Orvix uses `openrouter/free` by default; ensure your key is valid and has free-tier routing permissions enabled.
 
-- [ ] **Account Linking & Migration**: One-click import tool to transfer guest conversations into an authenticated Cloud Firestore account upon registration.
-- [ ] **Multimodal File & Image Uploads**: Image, PDF, and text document attachments supported by multimodal models.
-- [ ] **Full-Text Conversation Search**: Instant search bar in the sidebar to search across titles and message bodies.
-- [ ] **Automated Test Suite**: Unit and integration test coverage with Vitest and React Testing Library.
-- [ ] **Custom System Prompts**: User-defined custom instructions and personality presets in the settings modal.
-- [ ] **Web Search Grounding**: Real-time Google Search grounding support for the Gemini provider.
-
----
-
-## 17. Version History & Changelog
-
-### Changelog
-
-#### v0.4 — Hugging Face API Deprecation & Provider Streamlining
-- **Removed Hugging Face API Integration**: Completely removed Hugging Face backend routing, error handling, and client helpers from the codebase.
-- **Provider Lineup Streamlining**: Streamlined Orvix to four dedicated, production-ready inference providers: Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI.
-- **Selector & UI Cleanup**: Removed Hugging Face options, labels, and icons from provider selectors and conversation action interfaces.
-- **Error Fallback Optimization**: Updated all server and client error recovery handlers, suggested providers lists, and switch-provider actions to exclude Hugging Face.
-- **Environment & Configuration Clean**: Removed `HUGGINGFACE_API_KEY`, `HF_TOKEN`, and `VITE_HUGGINGFACE_API_KEY` references from `.env.example`, project documentation, and build definitions.
-
-#### v0.3 — Cloudflare Workers AI Integration
-- **Added Cloudflare Workers AI Provider**: Integrated Cloudflare Workers AI as an independent, selectable AI inference provider.
-- **Model Support**: Added `@cf/meta/llama-3.1-8b-instruct` running on Cloudflare's serverless GPU infrastructure.
-- **Distinct Model Option**: Added the selector option labelled **`Cloudflare Workers AI — Llama 3.1 8B`** across desktop and mobile headers.
-- **Official REST API**: Connected to `https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct` using bearer token authentication.
-- **SSE Streaming & Fallback**: Implemented native Server-Sent Events (SSE) streaming support (`data: {"response":"..."}`) and server-side adaptation for non-streaming response payloads.
-- **Server-Side Security**: Configured `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` server-side variables, keeping all credentials protected from browser bundles.
-- **Error Normalization & Diagnostics**: Classified Cloudflare-specific error codes (401/403 unauthorized, 404 account/model not found, 429 rate limit, 5xx server issues) with automatic fallback options.
-- **Updated Configuration**: Documented Cloudflare environment variables in `.env.example` and added `cloudflareConfigured` check to `/api/config`.
-
-#### v0.2 — Hugging Face Inference Providers Integration
-- **Added Hugging Face Provider**: Integrated Hugging Face Inference Providers as an independently selectable AI provider.
-- **Model Support**: Added model support for `meta-llama/Llama-3.3-70B-Instruct`.
-- **Selector Option**: Added the selector option labelled **`Hugging Face — Llama 3.3 70B Instruct`**.
-- **Router Endpoint**: Connected to Hugging Face's OpenAI-compatible router endpoint (`https://router.huggingface.co/v1/chat/completions`).
-- **Server Proxy Dispatch**: Routed requests through `server.ts` to protect `HUGGINGFACE_API_KEY` / `HF_TOKEN`.
-- **Streaming & Recovery**: Enabled SSE token streaming and added Hugging Face to inline error retry and switch-provider actions.
-
-#### v0.1 — Initial Development Version
-- **Initial Release of Orvix**:
-  - Full-stack React 19 single-page application with Obsidian Dark aesthetic and Tailwind CSS v4.
-  - Multi-provider AI routing between Google Gemini (`@google/genai` v2.4.0), Groq, and OpenRouter.
-  - Full Server-Sent Events (SSE) streaming with token-by-token rendering and stop generating controls.
-  - Four specialized Chat Modes: General, Coding, Writing, and Learning.
-  - Cloud Firestore persistence with subcollection data structuring and security rules.
-  - Zero-setup Guest / Demo mode with local storage persistence and mode-aware simulated responses.
-  - Conversation pinning (with 5-chat limit), inline renaming, and atomic batch deletion.
-  - Web Speech voice dictation (STT) and text-to-speech audio playback (TTS).
-  - Conversation export to Markdown, JSON, and Plain Text.
-  - User customization options for themes (Dark/Light/System), response length, and beginner-friendly mode.
-  - Progressive Web App (PWA) configuration with manifest and install prompt.
+### 5. `You can pin up to 5 chats. Unpin a chat before pinning another.`
+- **Cause**: You attempted to pin a 6th conversation.
+- **Solution**: Unpin one of your currently pinned chats by clicking its gold pin icon before pinning a new one.
 
 ---
 
-## 18. License
+## 30. Security Considerations
 
-This project is maintained for personal and collaborative use. All rights reserved. Refer to the repository owner for licensing and distribution details.
+1. **Client-Side API Key Exposure Warning**: Any environment variable prefixed with `VITE_` is visible in client-side bundles. Always prefer setting server-side variables (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`) so secrets remain exclusively on the Node.js backend.
+2. **Secret Redaction**: Error handlers in `authService.js` and `geminiService.js` run regex masking over error messages to prevent Google API keys or bearer tokens from appearing in UI alerts.
+3. **Safe Markdown Rendering**: `ChatMessage.jsx` explicitly inspects markdown links to block `javascript:` URI schemes and adds `rel="noopener noreferrer"` to external links.
+4. **Firestore Rules Lockdown**: All Firestore document accesses require authenticated ownership (`request.auth.uid == userId`). Direct access to `/users/{userId}` is locked down.
+
+---
+
+## 31. Known Limitations and Incomplete Features
+
+- **No Guest-to-Account Migration**: If a user creates chats in Guest Mode and later signs up with an email account, the guest conversations are not automatically transferred to their new account.
+- **Client-Side Pin Limit**: The 5-pinned-chat constraint is validated in frontend state and client-side Firestore queries, but not at the database rule level due to Firestore rule constraints.
+- **No Automated Test Runner**: The project currently relies on `tsc --noEmit` for validation; no Jest or Vitest test suites are currently included.
+- **No Multi-Device Sync for Guests**: Guest chats exist only in the local browser's `localStorage`.
+
+---
+
+## 32. Future Improvements (Suggestions)
+
+- [ ] **Account Linking**: Provide a 1-click migration prompt allowing guest users to import local conversations when signing up.
+- [ ] **Streaming Responses (SSE)**: Implement Server-Sent Events on `/api/chat` for token-by-token streaming responses.
+- [ ] **File / Image Uploads**: Add multimodal support for uploading PDFs and images to Gemini.
+- [ ] **Search Filter**: Add an instant search bar in the sidebar to search conversation titles and message contents.
+- [ ] **Automated Test Suite**: Introduce Vitest and React Testing Library for end-to-end component testing.
+
+---
+
+## 33. Contribution Guidelines
+
+Contributions to Orvix are welcome:
+1. Fork the repository and create a feature branch (`git checkout -b feature/amazing-feature`).
+2. Run `npm run lint` to verify that there are no type errors.
+3. Commit your changes with clear, descriptive commit messages.
+4. Push your branch and open a Pull Request.
+
+---
+
+## 34. License Information
+
+No explicit software license file (`LICENSE`) is present in this repository. All rights are reserved by the original author. For licensing inquiries, please contact the repository owner.

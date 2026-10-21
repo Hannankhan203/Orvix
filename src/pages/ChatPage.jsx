@@ -666,8 +666,7 @@ export default function ChatPage() {
     historyContext,
     targetChatId,
     assistantMessageId,
-    overrideProvider = null,
-    attachmentsContext = []
+    overrideProvider = null
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
     setIsLoading(true);
@@ -841,7 +840,6 @@ export default function ChatPage() {
         mode: activeMode,
         prompt: promptText,
         history: historyContext,
-        attachments: attachmentsContext,
         username:
           username || currentUser?.displayName || null,
         preferences: {
@@ -1146,27 +1144,14 @@ export default function ChatPage() {
   };
 
   // Submit a new message.
-  const handleSubmit = async (submitData) => {
+  const handleSubmit = async () => {
     stopSpeech();
 
-    const rawContent =
-      typeof submitData === 'string'
-        ? submitData
-        : submitData?.content !== undefined
-        ? submitData.content
-        : inputValue;
-
-    const submittedAttachments = Array.isArray(submitData?.attachments)
-      ? submitData.attachments
-      : [];
-
-    const trimmed = rawContent
+    const trimmed = inputValue
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();
 
-    if ((!trimmed && submittedAttachments.length === 0) || isLoading || isSubmittingRef.current) {
-      return;
-    }
+    if (!trimmed || isLoading || isSubmittingRef.current) return;
 
     isSubmittingRef.current = true;
     setIsLoading(true);
@@ -1177,12 +1162,7 @@ export default function ChatPage() {
     try {
       // Create a conversation only when the user sends their first message.
       if (!currentChatId) {
-        const titlePrompt =
-          trimmed ||
-          (submittedAttachments.length > 0
-            ? `Files: ${submittedAttachments.map((a) => a.name).join(', ')}`
-            : 'New Chat');
-        const titleSnippet = generateChatTitle(titlePrompt);
+        const titleSnippet = generateChatTitle(trimmed);
 
         if (isCloudEnabled && currentUser?.uid) {
           try {
@@ -1255,8 +1235,7 @@ export default function ChatPage() {
           hour: '2-digit',
           minute: '2-digit'
         }),
-        content: trimmed,
-        ...(submittedAttachments.length > 0 ? { attachments: submittedAttachments } : {})
+        content: trimmed
       };
 
       const assistantMessageId =
@@ -1291,19 +1270,11 @@ export default function ChatPage() {
         void persistMessageSafe(currentChatId, userMessage);
       }
 
-      const effectivePrompt =
-        trimmed ||
-        (submittedAttachments.length > 0
-          ? `[Attached ${submittedAttachments.length} file${submittedAttachments.length > 1 ? 's' : ''}: ${submittedAttachments.map((a) => a.name).join(', ')}]`
-          : '');
-
       await executePrompt(
-        effectivePrompt,
+        trimmed,
         validHistory,
         currentChatId,
-        assistantMessageId,
-        null,
-        submittedAttachments
+        assistantMessageId
       );
     } catch (error) {
       console.error('Submission error:', error);

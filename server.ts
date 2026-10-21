@@ -2,10 +2,6 @@ import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs';
-import os from 'os';
-import crypto from 'crypto';
-import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
@@ -19,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 // Permissive CORS middleware for cross-origin and Vercel preview environments
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -577,332 +573,6 @@ ${isBeginner ? 'I will explain everything simply and step-by-step. ' : ''}I am r
 }
 
 // API Health Check (supports both standalone and Vercel sub-route paths)
-// ============================================================================
-// Secure File Attachment & Temporary Upload Infrastructure
-// ============================================================================
-
-// Configurable attachment limits
-const MAX_ATTACHMENT_SIZE_BYTES =
-  parseInt(process.env.MAX_ATTACHMENT_SIZE_BYTES || '', 10) || 10 * 1024 * 1024; // 10MB
-const MAX_ATTACHMENTS_PER_REQUEST =
-  parseInt(process.env.MAX_ATTACHMENTS_PER_REQUEST || '', 10) || 5;
-const ATTACHMENT_TTL_MS =
-  parseInt(process.env.ATTACHMENT_TTL_MS || '', 10) || 2 * 60 * 60 * 1000; // 2 hours
-
-const UPLOAD_DIR =
-  process.env.ORVIX_UPLOAD_DIR || path.join(os.tmpdir(), 'orvix-uploads');
-
-// Ensure upload directory exists with restricted permissions (0o700: user-only rwx)
-try {
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true, mode: 0o700 });
-  }
-} catch (dirErr) {
-  console.warn('Could not initialize upload directory:', dirErr);
-}
-
-const SUPPORTED_ATTACHMENT_EXTENSIONS = [
-  'pdf',
-  'docx',
-  'doc',
-  'txt',
-  'md',
-  'markdown',
-  'ppt',
-  'pptx',
-  'csv',
-  'json',
-  'xml',
-  'yaml',
-  'yml'
-];
-
-const ALLOWED_EXTENSIONS_SET = new Set(SUPPORTED_ATTACHMENT_EXTENSIONS);
-
-interface StoredAttachment {
-  id: string;
-  originalName: string;
-  storedFilename: string;
-  storedPath: string;
-  size: number;
-  mimeType: string;
-  extension: string;
-  createdAt: number;
-}
-
-// In-memory registry tracking active temporary attachments for this server process
-const attachmentRegistry = new Map<string, StoredAttachment>();
-
-/**
- * Periodically purges temporary files exceeding retention TTL (2 hours)
- * and scans the directory to eliminate orphaned disk files.
- */
-function cleanupExpiredAttachments() {
-  const now = Date.now();
-  // 1. Purge from in-memory registry
-  for (const [id, att] of attachmentRegistry.entries()) {
-    if (now - att.createdAt > ATTACHMENT_TTL_MS) {
-      attachmentRegistry.delete(id);
-      try {
-        if (fs.existsSync(att.storedPath)) {
-          fs.unlinkSync(att.storedPath);
-        }
-      } catch (_) {}
-    }
-  }
-
-  // 2. Scan disk directory for orphaned files older than TTL
-  try {
-    if (fs.existsSync(UPLOAD_DIR)) {
-      const entries = fs.readdirSync(UPLOAD_DIR);
-      for (const entry of entries) {
-        const fullPath = path.join(UPLOAD_DIR, entry);
-        try {
-          const stat = fs.statSync(fullPath);
-          if (stat.isFile() && now - stat.mtimeMs > ATTACHMENT_TTL_MS) {
-            fs.unlinkSync(fullPath);
-          }
-        } catch (_) {}
-      }
-    }
-  } catch (_) {}
-}
-
-// Execute startup sweep and schedule recurring 15-minute cleanup
-cleanupExpiredAttachments();
-setInterval(cleanupExpiredAttachments, 15 * 60 * 1000).unref();
-
-/**
- * Cleans user-supplied filename to prevent path traversal or shell injection attacks.
- */
-function sanitizeFilename(originalName: string = ''): {
-  safeName: string;
-  ext: string;
-  base: string;
-} {
-  const cleaned = path
-    .basename(String(originalName))
-    .replace(/[\0\r\n\t]/g, '')
-    .trim();
-  const lastDot = cleaned.lastIndexOf('.');
-  const rawExt = lastDot !== -1 ? cleaned.slice(lastDot + 1) : '';
-  const rawBase = lastDot !== -1 ? cleaned.slice(0, lastDot) : cleaned;
-
-  const ext = rawExt.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const base =
-    rawBase.replace(/[^a-zA-Z0-9_\-\s.]/g, '_').trim().slice(0, 80) || 'document';
-  const safeName = ext ? `${base}.${ext}` : base;
-
-  return { safeName, ext, base };
-}
-
-/**
- * Validates magic bytes / file signatures to detect disguised binaries or corrupt files.
- */
-function validateFileSignature(
-  filePath: string,
-  extension: string
-): { isValid: boolean; reason?: string } {
-  const ext = extension.toLowerCase();
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(filePath, 'r');
-    const buffer = Buffer.alloc(1024);
-    const bytesRead = fs.readSync(fd, buffer, 0, 1024, 0);
-
-    if (bytesRead === 0) {
-      return { isValid: false, reason: 'File is empty (0 bytes).' };
-    }
-
-    const slice = buffer.subarray(0, bytesRead);
-
-    // Reject dangerous executable/binary signatures unconditionally
-    // Windows PE / EXE / DLL: 'MZ' (0x4D 0x5A)
-    if (bytesRead >= 2 && slice[0] === 0x4D && slice[1] === 0x5A) {
-      return {
-        isValid: false,
-        reason: 'Executable files (.exe, .dll) are strictly prohibited.'
-      };
-    }
-    // Linux ELF: 0x7F 'E' 'L' 'F'
-    if (
-      bytesRead >= 4 &&
-      slice[0] === 0x7F &&
-      slice[1] === 0x45 &&
-      slice[2] === 0x4C &&
-      slice[3] === 0x46
-    ) {
-      return {
-        isValid: false,
-        reason: 'Binary ELF executables are strictly prohibited.'
-      };
-    }
-    // Java class: 0xCA 0xFE 0xBA 0xBE
-    if (
-      bytesRead >= 4 &&
-      slice[0] === 0xCA &&
-      slice[1] === 0xFE &&
-      slice[2] === 0xBA &&
-      slice[3] === 0xBE
-    ) {
-      return {
-        isValid: false,
-        reason: 'Java class binaries are strictly prohibited.'
-      };
-    }
-
-    // PDF format verification
-    if (ext === 'pdf') {
-      const headerStr = slice.toString('latin1');
-      if (!headerStr.includes('%PDF-')) {
-        return {
-          isValid: false,
-          reason: 'Invalid PDF file: Missing %PDF- header signature.'
-        };
-      }
-      return { isValid: true };
-    }
-
-    // DOCX / PPTX OpenXML format verification (ZIP container starting with PK)
-    if (ext === 'docx' || ext === 'pptx') {
-      if (
-        bytesRead >= 4 &&
-        slice[0] === 0x50 &&
-        slice[1] === 0x4B &&
-        (slice[2] === 0x03 || slice[2] === 0x05 || slice[2] === 0x07)
-      ) {
-        return { isValid: true };
-      }
-      return {
-        isValid: false,
-        reason: `Invalid ${ext.toUpperCase()} file: Expected valid OpenXML ZIP archive header.`
-      };
-    }
-
-    // DOC / PPT Microsoft Compound File Binary verification
-    if (ext === 'doc' || ext === 'ppt') {
-      const oleHeader = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-      let matches = bytesRead >= 8;
-      if (matches) {
-        for (let i = 0; i < 8; i++) {
-          if (slice[i] !== oleHeader[i]) {
-            matches = false;
-            break;
-          }
-        }
-      }
-      if (matches) {
-        return { isValid: true };
-      }
-      const rtfHeader = slice.subarray(0, 5).toString('ascii');
-      if (rtfHeader === '{\\rtf') {
-        return { isValid: true };
-      }
-      return {
-        isValid: false,
-        reason: `Invalid ${ext.toUpperCase()} file: Expected valid Microsoft Compound Document or RTF signature.`
-      };
-    }
-
-    // Plain text formats: txt, md, markdown, csv, json, xml, yaml, yml
-    // Must not contain null bytes (0x00), which indicate disguised binaries
-    if (
-      [
-        'txt',
-        'md',
-        'markdown',
-        'csv',
-        'json',
-        'xml',
-        'yaml',
-        'yml'
-      ].includes(ext)
-    ) {
-      for (let i = 0; i < bytesRead; i++) {
-        if (slice[i] === 0x00) {
-          return {
-            isValid: false,
-            reason: 'Invalid text file: File contains binary null bytes.'
-          };
-        }
-      }
-
-      if (ext === 'json') {
-        const textStart = slice.toString('utf8').trimStart();
-        if (
-          textStart.length > 0 &&
-          textStart[0] !== '{' &&
-          textStart[0] !== '[' &&
-          textStart[0] !== '"' &&
-          !/^[-0-9tf]/.test(textStart)
-        ) {
-          return {
-            isValid: false,
-            reason: 'Invalid JSON file: Content does not begin with valid JSON syntax.'
-          };
-        }
-      }
-
-      if (ext === 'xml') {
-        const textStart = slice.toString('utf8').trimStart();
-        if (textStart.length > 0 && textStart[0] !== '<') {
-          return {
-            isValid: false,
-            reason: 'Invalid XML file: Content does not begin with an XML tag.'
-          };
-        }
-      }
-
-      return { isValid: true };
-    }
-
-    return { isValid: true };
-  } catch (err: any) {
-    return {
-      isValid: false,
-      reason: `Error reading file signature: ${err?.message || 'Read error'}`
-    };
-  } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch (_) {}
-    }
-  }
-}
-
-// Multer storage engine streaming directly to the sandboxed upload directory
-const uploadStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, UPLOAD_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const { base, ext } = sanitizeFilename(file.originalname);
-    const tempPrefix = `raw_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-    cb(null, `${tempPrefix}_${base}${ext ? '.' + ext : ''}`);
-  }
-});
-
-const uploadMiddleware = multer({
-  storage: uploadStorage,
-  limits: {
-    fileSize: MAX_ATTACHMENT_SIZE_BYTES,
-    files: MAX_ATTACHMENTS_PER_REQUEST
-  },
-  fileFilter: (_req, file, cb) => {
-    const { ext } = sanitizeFilename(file.originalname);
-    if (!ext || !ALLOWED_EXTENSIONS_SET.has(ext)) {
-      const err: any = new Error(
-        `Unsupported file extension: .${ext || 'unknown'}. Allowed: ${SUPPORTED_ATTACHMENT_EXTENSIONS.join(', ')}`
-      );
-      err.code = 'UNSUPPORTED_TYPE';
-      return cb(err);
-    }
-    cb(null, true);
-  }
-}).any();
-
-// API Health Check (supports both standalone and Vercel sub-route paths)
 app.get(['/api/health', '/health'], (_req, res) => {
   res.json({
     status: 'ok',
@@ -916,234 +586,12 @@ app.get(['/api/config', '/config'], (_req, res) => {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
   const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
   const openrouterKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
-  const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID || '';
-  const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN || '';
 
   res.json({
     geminiConfigured: Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
     groqConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY'),
-    openrouterConfigured: Boolean(openrouterKey && openrouterKey !== 'YOUR_OPENROUTER_API_KEY'),
-    cloudflareConfigured: Boolean(
-      cloudflareAccountId &&
-      cloudflareAccountId !== 'YOUR_CLOUDFLARE_ACCOUNT_ID' &&
-      cloudflareApiToken &&
-      cloudflareApiToken !== 'YOUR_CLOUDFLARE_API_TOKEN'
-    ),
-    uploadLimits: {
-      maxFileSize: MAX_ATTACHMENT_SIZE_BYTES,
-      maxFiles: MAX_ATTACHMENTS_PER_REQUEST,
-      supportedExtensions: SUPPORTED_ATTACHMENT_EXTENSIONS
-    }
+    openrouterConfigured: Boolean(openrouterKey && openrouterKey !== 'YOUR_OPENROUTER_API_KEY')
   });
-});
-
-// Dedicated Multipart Upload Endpoint
-app.post(['/api/upload', '/upload'], (req, res) => {
-  uploadMiddleware(req, res, async (err: any) => {
-    if (err) {
-      if (err instanceof multer.MulterError) {
-        if (err.code === 'LIMIT_FILE_SIZE') {
-          return res.status(413).json({
-            success: false,
-            error: `File exceeds maximum size limit of ${Math.round(MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024))}MB.`,
-            code: 'FILE_TOO_LARGE'
-          });
-        }
-        if (err.code === 'LIMIT_FILE_COUNT') {
-          return res.status(400).json({
-            success: false,
-            error: `Too many attachments. Maximum of ${MAX_ATTACHMENTS_PER_REQUEST} files allowed per message.`,
-            code: 'TOO_MANY_FILES'
-          });
-        }
-        return res.status(400).json({
-          success: false,
-          error: `Upload constraint error: ${err.message}`,
-          code: err.code
-        });
-      }
-      return res.status(400).json({
-        success: false,
-        error: err.message || 'File upload failed.',
-        code: err?.code || 'UPLOAD_FAILED'
-      });
-    }
-
-    const files = (req.files as Express.Multer.File[]) || [];
-    if (!files || files.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'No files provided in upload request.',
-        code: 'NO_FILES'
-      });
-    }
-
-    if (files.length > MAX_ATTACHMENTS_PER_REQUEST) {
-      // Clean up uploaded files immediately
-      files.forEach((f) => {
-        try {
-          fs.unlinkSync(f.path);
-        } catch (_) {}
-      });
-      return res.status(400).json({
-        success: false,
-        error: `Maximum ${MAX_ATTACHMENTS_PER_REQUEST} attachments allowed per message. Received ${files.length}.`,
-        code: 'LIMIT_EXCEEDED'
-      });
-    }
-
-    const processedAttachments = [];
-    const validationErrors: string[] = [];
-
-    for (const file of files) {
-      const { safeName, ext } = sanitizeFilename(file.originalname);
-
-      // Validate size > 0 (Empty file check)
-      if (file.size === 0) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (_) {}
-        validationErrors.push(`File "${safeName}" is empty (0 bytes).`);
-        continue;
-      }
-
-      // Validate extension
-      if (!ALLOWED_EXTENSIONS_SET.has(ext)) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (_) {}
-        validationErrors.push(
-          `File "${safeName}" has unsupported extension .${ext}. Allowed extensions: ${SUPPORTED_ATTACHMENT_EXTENSIONS.join(', ')}.`
-        );
-        continue;
-      }
-
-      // Validate file signature / magic bytes
-      const sigCheck = validateFileSignature(file.path, ext);
-      if (!sigCheck.isValid) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (_) {}
-        validationErrors.push(
-          `File "${safeName}" validation error: ${sigCheck.reason}`
-        );
-        continue;
-      }
-
-      // Generate secure unique identifier
-      const attachmentId = `att_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-      const finalStoredFilename = `${attachmentId}_${safeName}`;
-      const finalStoredPath = path.join(UPLOAD_DIR, finalStoredFilename);
-
-      // Ensure destination path remains within UPLOAD_DIR (no directory traversal)
-      if (!path.resolve(finalStoredPath).startsWith(path.resolve(UPLOAD_DIR))) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (_) {}
-        validationErrors.push(`Security error: Invalid path for "${safeName}".`);
-        continue;
-      }
-
-      try {
-        fs.renameSync(file.path, finalStoredPath);
-      } catch (_) {
-        try {
-          fs.copyFileSync(file.path, finalStoredPath);
-          fs.unlinkSync(file.path);
-        } catch (copyErr: any) {
-          validationErrors.push(
-            `Failed to store file "${safeName}": ${copyErr?.message || 'Storage error'}`
-          );
-          continue;
-        }
-      }
-
-      const storedMeta: StoredAttachment = {
-        id: attachmentId,
-        originalName: safeName,
-        storedFilename: finalStoredFilename,
-        storedPath: finalStoredPath,
-        size: file.size,
-        mimeType: file.mimetype || 'application/octet-stream',
-        extension: ext.toUpperCase(),
-        createdAt: Date.now()
-      };
-
-      attachmentRegistry.set(attachmentId, storedMeta);
-
-      // Return structured metadata to client without exposing server paths
-      processedAttachments.push({
-        id: attachmentId,
-        name: safeName,
-        size: file.size,
-        type: file.mimetype || 'application/octet-stream',
-        extension: ext.toUpperCase(),
-        status: 'uploaded',
-        uploadedAt: storedMeta.createdAt
-      });
-    }
-
-    if (processedAttachments.length === 0 && validationErrors.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: validationErrors.join(' '),
-        code: 'VALIDATION_FAILED'
-      });
-    }
-
-    return res.json({
-      success: true,
-      attachments: processedAttachments,
-      warnings: validationErrors.length > 0 ? validationErrors : undefined
-    });
-  });
-});
-
-// Attachment Metadata Query Endpoint
-app.get(['/api/upload/:id', '/upload/:id', '/api/upload/:id/info', '/upload/:id/info'], (req, res) => {
-  const { id } = req.params;
-  const cleanId = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '');
-  const stored = attachmentRegistry.get(cleanId);
-
-  if (!stored) {
-    return res.status(404).json({
-      success: false,
-      error: 'Attachment not found or expired.',
-      code: 'NOT_FOUND'
-    });
-  }
-
-  return res.json({
-    success: true,
-    attachment: {
-      id: stored.id,
-      name: stored.originalName,
-      size: stored.size,
-      type: stored.mimeType,
-      extension: stored.extension,
-      status: 'uploaded',
-      uploadedAt: stored.createdAt
-    }
-  });
-});
-
-// Attachment Cleanup / Deletion Endpoint
-app.delete(['/api/upload/:id', '/upload/:id'], (req, res) => {
-  const { id } = req.params;
-  const cleanId = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '');
-  const stored = attachmentRegistry.get(cleanId);
-
-  if (stored) {
-    attachmentRegistry.delete(cleanId);
-    try {
-      if (fs.existsSync(stored.storedPath)) {
-        fs.unlinkSync(stored.storedPath);
-      }
-    } catch (_) {}
-    return res.json({ success: true, id: cleanId, deleted: true });
-  }
-
-  return res.json({ success: true, id: cleanId, deleted: false });
 });
 
 // Helper utilities for Server-Sent Events (SSE) streaming
@@ -1173,8 +621,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       history = [],
       username = null,
       preferences = null,
-      stream = true,
-      attachments = []
+      stream = true
     } = req.body as {
       provider?: string;
       mode?: string;
@@ -1183,25 +630,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       username?: string | null;
       preferences?: UserPreferences | null;
       stream?: boolean;
-      attachments?: Array<{
-        id: string;
-        name: string;
-        size: number;
-        type: string;
-        extension?: string;
-        status?: string;
-      }>;
     };
 
-    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
-    const effectivePrompt = (prompt && typeof prompt === 'string')
-      ? prompt
-      : hasAttachments
-      ? `[Shared ${attachments.length} attachment${attachments.length > 1 ? 's' : ''}: ${attachments.map((a) => a.name).join(', ')}]`
-      : '';
-
-    if (!effectivePrompt) {
-      return res.status(400).json({ error: 'Prompt or attachment is required.' });
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Prompt is required.' });
     }
 
     // Accurately track client response disconnection (res.on('close')), NOT request stream upload end
@@ -1227,7 +659,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       // If no API key is configured, return simulated response (with progressive reveal if streaming)
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        const text = generateSimulatedResponse(effectivePrompt, cleanUsername, preferences, mode);
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         if (!shouldStream) {
           return res.json({
             text,
@@ -1259,7 +691,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
       });
 
-      const contents = formatGeminiHistory(history, effectivePrompt);
+      const contents = formatGeminiHistory(history, prompt);
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
       // Attempt 1 & 2 try gemini-3.8-flash (primary recommended model)
       // Attempt 3 tries gemini-3.1-flash-lite (alternative fallback model)
@@ -1321,7 +753,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 model,
                 retryable: false,
                 canFallback: true,
-                suggestedProviders: ['groq', 'openrouter', 'cloudflare']
+                suggestedProviders: ['groq', 'openrouter']
               });
             }
 
@@ -1349,7 +781,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           model: 'gemini-3.8-flash',
           retryable: fallbackErr.isRetryable,
           canFallback: true,
-          suggestedProviders: ['groq', 'openrouter', 'cloudflare']
+          suggestedProviders: ['groq', 'openrouter']
         });
       } else {
         // Genuine streaming via ai.models.generateContentStream with delayed header initiation
@@ -1462,7 +894,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 model,
                 retryable: false,
                 canFallback: true,
-                suggestedProviders: ['groq', 'openrouter', 'cloudflare']
+                suggestedProviders: ['groq', 'openrouter']
               });
             }
 
@@ -1490,7 +922,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           model: 'gemini-3.8-flash',
           retryable: finalErr.isRetryable,
           canFallback: true,
-          suggestedProviders: ['groq', 'openrouter', 'cloudflare']
+          suggestedProviders: ['groq', 'openrouter']
         });
       }
     }
@@ -1536,7 +968,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           content: msg.content.trim()
         });
       }
-      messages.push({ role: 'user', content: effectivePrompt.trim() });
+      messages.push({ role: 'user', content: prompt.trim() });
 
       if (!shouldStream) {
         const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -1671,7 +1103,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           content: msg.content.trim()
         });
       }
-      messages.push({ role: 'user', content: effectivePrompt.trim() });
+      messages.push({ role: 'user', content: prompt.trim() });
 
       if (!shouldStream) {
         const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -1767,347 +1199,6 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
-    // 4. Cloudflare Workers AI Provider
-    if (normalizedProvider === 'cloudflare') {
-      const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
-      const apiToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
-      const cfModel = '@cf/meta/llama-3.1-8b-instruct';
-
-      const isConfigured = Boolean(
-        accountId &&
-        accountId !== 'YOUR_CLOUDFLARE_ACCOUNT_ID' &&
-        apiToken &&
-        apiToken !== 'YOUR_CLOUDFLARE_API_TOKEN'
-      );
-
-      // If credentials are not configured, deliver a simulated response for demo mode
-      if (!isConfigured) {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        if (!shouldStream) {
-          return res.json({
-            text,
-            modelUsed: `${cfModel} (demo)`,
-            provider: 'cloudflare'
-          });
-        }
-        initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: `${cfModel} (demo)`, provider: 'cloudflare' });
-        const tokens = text.split(/(\s+)/);
-        for (const token of tokens) {
-          if (isClientClosed || res.writableEnded) break;
-          sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: `${cfModel} (demo)`, provider: 'cloudflare' });
-          res.end();
-        }
-        return;
-      }
-
-      const cfEndpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/${cfModel}`;
-
-      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-        {
-          role: 'system',
-          content: systemInstruction
-        }
-      ];
-
-      for (const msg of history.slice(-12)) {
-        if (!msg.content) continue;
-        messages.push({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content.trim()
-        });
-      }
-      messages.push({ role: 'user', content: effectivePrompt.trim() });
-
-      if (!shouldStream) {
-        let cfRes: any;
-        try {
-          cfRes = await fetch(cfEndpoint, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              messages,
-              stream: false,
-              max_tokens: 2048,
-              temperature: 0.7
-            })
-          });
-        } catch (fetchErr: any) {
-          logAIDiagnostic({
-            provider: 'cloudflare',
-            model: cfModel,
-            phase: 'non-streaming',
-            attempt: 1,
-            maxAttempts: 1,
-            sanitizedMessage: fetchErr?.message || 'Network error reaching Cloudflare Workers AI',
-            willRetry: false
-          });
-          return res.status(502).json({
-            error: 'Network connection error while contacting Cloudflare Workers AI. Please check your network and account configuration.',
-            code: 502,
-            status: 'BAD_GATEWAY',
-            provider: 'cloudflare',
-            model: cfModel,
-            retryable: true,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        if (!cfRes.ok) {
-          const errText = await cfRes.text();
-          let parsedError = errText;
-          try {
-            const errObj = JSON.parse(errText);
-            if (Array.isArray(errObj.errors) && errObj.errors.length > 0) {
-              parsedError = errObj.errors.map((e: any) => e.message || e.code).join('; ');
-            } else if (errObj.error) {
-              parsedError = typeof errObj.error === 'string' ? errObj.error : errObj.error.message || errText;
-            } else if (Array.isArray(errObj.messages) && errObj.messages.length > 0) {
-              parsedError = errObj.messages.join('; ');
-            }
-          } catch (_) {}
-
-          logAIDiagnostic({
-            provider: 'cloudflare',
-            model: cfModel,
-            phase: 'non-streaming',
-            attempt: 1,
-            maxAttempts: 1,
-            upstreamStatus: cfRes.status,
-            sanitizedMessage: parsedError,
-            willRetry: false
-          });
-
-          let friendlyMessage = sanitizeErrorLog(parsedError);
-          let statusName = 'ERROR';
-          if (cfRes.status === 401 || cfRes.status === 403) {
-            statusName = 'UNAUTHORIZED';
-            friendlyMessage = 'Invalid or unauthorized Cloudflare API token or account ID. Please verify CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.';
-          } else if (cfRes.status === 404) {
-            statusName = 'NOT_FOUND';
-            friendlyMessage = `Cloudflare account ID or model '${cfModel}' not found. Please verify CLOUDFLARE_ACCOUNT_ID.`;
-          } else if (cfRes.status === 429) {
-            statusName = 'RATE_LIMIT';
-            friendlyMessage = 'Cloudflare Workers AI rate limit or quota exceeded. Please wait a moment before trying again.';
-          } else if (cfRes.status >= 500) {
-            statusName = 'SERVER_ERROR';
-            friendlyMessage = 'Cloudflare Workers AI service is temporarily unavailable. Please retry shortly.';
-          }
-
-          return res.status(cfRes.status).json({
-            error: friendlyMessage,
-            code: cfRes.status,
-            status: statusName,
-            provider: 'cloudflare',
-            model: cfModel,
-            retryable: cfRes.status === 429 || cfRes.status >= 500,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        const data = await cfRes.json();
-        let replyText = '';
-        if (typeof data?.result?.response === 'string') {
-          replyText = data.result.response;
-        } else if (typeof data?.response === 'string') {
-          replyText = data.response;
-        } else if (typeof data?.result === 'string') {
-          replyText = data.result;
-        } else if (Array.isArray(data?.result) && data.result[0]?.response) {
-          replyText = data.result[0].response;
-        } else if (data?.choices?.[0]?.message?.content) {
-          replyText = data.choices[0].message.content;
-        }
-
-        return res.json({
-          text: replyText,
-          modelUsed: cfModel,
-          provider: 'cloudflare'
-        });
-      } else {
-        // Genuine streaming via Cloudflare Workers AI SSE
-        let cfRes: any;
-        try {
-          cfRes = await fetch(cfEndpoint, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              messages,
-              stream: true,
-              max_tokens: 2048,
-              temperature: 0.7
-            })
-          });
-        } catch (fetchErr: any) {
-          logAIDiagnostic({
-            provider: 'cloudflare',
-            model: cfModel,
-            phase: 'pre-stream',
-            attempt: 1,
-            maxAttempts: 1,
-            sanitizedMessage: fetchErr?.message || 'Network error reaching Cloudflare Workers AI',
-            willRetry: false
-          });
-          return res.status(502).json({
-            error: 'Network connection error while contacting Cloudflare Workers AI. Please check your network and account configuration.',
-            code: 502,
-            status: 'BAD_GATEWAY',
-            provider: 'cloudflare',
-            model: cfModel,
-            retryable: true,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        if (!cfRes.ok) {
-          const errText = await cfRes.text();
-          let parsedError = errText;
-          try {
-            const errObj = JSON.parse(errText);
-            if (Array.isArray(errObj.errors) && errObj.errors.length > 0) {
-              parsedError = errObj.errors.map((e: any) => e.message || e.code).join('; ');
-            } else if (errObj.error) {
-              parsedError = typeof errObj.error === 'string' ? errObj.error : errObj.error.message || errText;
-            } else if (Array.isArray(errObj.messages) && errObj.messages.length > 0) {
-              parsedError = errObj.messages.join('; ');
-            }
-          } catch (_) {}
-
-          logAIDiagnostic({
-            provider: 'cloudflare',
-            model: cfModel,
-            phase: 'pre-stream',
-            attempt: 1,
-            maxAttempts: 1,
-            upstreamStatus: cfRes.status,
-            sanitizedMessage: parsedError,
-            willRetry: false
-          });
-
-          let friendlyMessage = sanitizeErrorLog(parsedError);
-          let statusName = 'ERROR';
-          if (cfRes.status === 401 || cfRes.status === 403) {
-            statusName = 'UNAUTHORIZED';
-            friendlyMessage = 'Invalid or unauthorized Cloudflare API token or account ID. Please verify CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.';
-          } else if (cfRes.status === 404) {
-            statusName = 'NOT_FOUND';
-            friendlyMessage = `Cloudflare account ID or model '${cfModel}' not found. Please verify CLOUDFLARE_ACCOUNT_ID.`;
-          } else if (cfRes.status === 429) {
-            statusName = 'RATE_LIMIT';
-            friendlyMessage = 'Cloudflare Workers AI rate limit or quota exceeded. Please wait a moment before trying again.';
-          } else if (cfRes.status >= 500) {
-            statusName = 'SERVER_ERROR';
-            friendlyMessage = 'Cloudflare Workers AI service is temporarily unavailable. Please retry shortly.';
-          }
-
-          return res.status(cfRes.status).json({
-            error: friendlyMessage,
-            code: cfRes.status,
-            status: statusName,
-            provider: 'cloudflare',
-            model: cfModel,
-            retryable: cfRes.status === 429 || cfRes.status >= 500,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        const contentType = cfRes.headers.get('content-type') || '';
-        if (contentType.includes('text/event-stream') && cfRes.body) {
-          initSSE(res);
-          sendSSE(res, { type: 'start', modelUsed: cfModel, provider: 'cloudflare' });
-
-          const reader = cfRes.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let fullText = '';
-
-          while (true) {
-            if (isClientClosed || res.writableEnded) break;
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data: ')) continue;
-              const dataStr = trimmed.slice(6);
-              if (dataStr === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(dataStr);
-                const delta = typeof parsed.response === 'string'
-                  ? parsed.response
-                  : parsed.choices?.[0]?.delta?.content || '';
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
-            }
-          }
-
-          if (buffer && buffer.trim().startsWith('data: ')) {
-            const dataStr = buffer.trim().slice(6);
-            if (dataStr !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(dataStr);
-                const delta = typeof parsed.response === 'string'
-                  ? parsed.response
-                  : parsed.choices?.[0]?.delta?.content || '';
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
-            }
-          }
-
-          if (!res.writableEnded) {
-            sendSSE(res, { type: 'done', text: fullText, modelUsed: cfModel, provider: 'cloudflare' });
-            res.end();
-          }
-          return;
-        } else {
-          // Streaming adaptation for non-SSE response
-          const data = await cfRes.json();
-          let singleText = '';
-          if (typeof data?.result?.response === 'string') {
-            singleText = data.result.response;
-          } else if (typeof data?.response === 'string') {
-            singleText = data.response;
-          } else if (data?.choices?.[0]?.message?.content) {
-            singleText = data.choices[0].message.content;
-          }
-
-          initSSE(res);
-          sendSSE(res, { type: 'start', modelUsed: cfModel, provider: 'cloudflare' });
-          if (singleText) {
-            sendSSE(res, { type: 'chunk', text: singleText });
-          }
-          if (!res.writableEnded) {
-            sendSSE(res, { type: 'done', text: singleText, modelUsed: cfModel, provider: 'cloudflare' });
-            res.end();
-          }
-          return;
-        }
-      }
-    }
-
     return res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (error: any) {
     console.error('API Error in /api/chat:', error);
@@ -2120,7 +1211,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         status: parsed.status,
         retryable: parsed.isRetryable,
         canFallback: true,
-        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
+        suggestedProviders: ['groq', 'openrouter']
       });
       if (!res.writableEnded) res.end();
     } else {
@@ -2130,7 +1221,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         status: parsed.status,
         retryable: parsed.isRetryable,
         canFallback: true,
-        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
+        suggestedProviders: ['groq', 'openrouter']
       });
     }
   }
