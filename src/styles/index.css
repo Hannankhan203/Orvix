@@ -3875,6 +3875,39 @@ body.theme-light .listening-text,
   opacity: 1;
 }
 
+.composer-attachment-error {
+  background-color: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.composer-attachment-error .dictation-error-icon {
+  color: #ef4444;
+}
+
+.composer-attachment-error .dictation-error-dismiss {
+  color: #fca5a5;
+}
+
+[data-theme="light"] .composer-attachment-error {
+  background-color: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+[data-theme="light"] .composer-attachment-error .dictation-error-icon {
+  color: #dc2626;
+}
+
+[data-theme="light"] .composer-attachment-error .dictation-error-dismiss {
+  color: #991b1b;
+}
+
+.composer-send-btn.uploading {
+  opacity: 0.85;
+  cursor: wait;
+}
+
 /* AI Transcript Cleanup Banner (Phase 4) */
 .transcript-cleanup-banner {
   display: flex;

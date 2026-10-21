@@ -666,7 +666,8 @@ export default function ChatPage() {
     historyContext,
     targetChatId,
     assistantMessageId,
-    overrideProvider = null
+    overrideProvider = null,
+    attachmentsContext = []
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
     setIsLoading(true);
@@ -840,6 +841,7 @@ export default function ChatPage() {
         mode: activeMode,
         prompt: promptText,
         history: historyContext,
+        attachments: attachmentsContext,
         username:
           username || currentUser?.displayName || null,
         preferences: {
@@ -1299,7 +1301,9 @@ export default function ChatPage() {
         effectivePrompt,
         validHistory,
         currentChatId,
-        assistantMessageId
+        assistantMessageId,
+        null,
+        submittedAttachments
       );
     } catch (error) {
       console.error('Submission error:', error);

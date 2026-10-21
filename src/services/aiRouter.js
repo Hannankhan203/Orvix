@@ -194,6 +194,7 @@ export async function streamAIMessage({
   history = [],
   username = null,
   preferences = null,
+  attachments = [],
   onChunk,
   onStart,
   signal
@@ -222,6 +223,7 @@ export async function streamAIMessage({
           history,
           username: username ? String(username).trim() : null,
           preferences: preferences || null,
+          attachments: Array.isArray(attachments) ? attachments : [],
           stream: true
         }),
         signal
