@@ -586,7 +586,6 @@ app.get(['/api/config', '/config'], (_req, res) => {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
   const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
   const openrouterKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
-  const huggingfaceKey = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
   const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID || '';
   const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN || '';
 
@@ -594,7 +593,6 @@ app.get(['/api/config', '/config'], (_req, res) => {
     geminiConfigured: Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
     groqConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY'),
     openrouterConfigured: Boolean(openrouterKey && openrouterKey !== 'YOUR_OPENROUTER_API_KEY'),
-    huggingfaceConfigured: Boolean(huggingfaceKey && huggingfaceKey !== 'YOUR_HUGGINGFACE_API_KEY'),
     cloudflareConfigured: Boolean(
       cloudflareAccountId &&
       cloudflareAccountId !== 'YOUR_CLOUDFLARE_ACCOUNT_ID' &&
@@ -763,7 +761,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 model,
                 retryable: false,
                 canFallback: true,
-                suggestedProviders: ['groq', 'openrouter']
+                suggestedProviders: ['groq', 'openrouter', 'cloudflare']
               });
             }
 
@@ -791,7 +789,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           model: 'gemini-3.8-flash',
           retryable: fallbackErr.isRetryable,
           canFallback: true,
-          suggestedProviders: ['groq', 'openrouter']
+          suggestedProviders: ['groq', 'openrouter', 'cloudflare']
         });
       } else {
         // Genuine streaming via ai.models.generateContentStream with delayed header initiation
@@ -904,7 +902,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 model,
                 retryable: false,
                 canFallback: true,
-                suggestedProviders: ['groq', 'openrouter']
+                suggestedProviders: ['groq', 'openrouter', 'cloudflare']
               });
             }
 
@@ -932,7 +930,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           model: 'gemini-3.8-flash',
           retryable: finalErr.isRetryable,
           canFallback: true,
-          suggestedProviders: ['groq', 'openrouter']
+          suggestedProviders: ['groq', 'openrouter', 'cloudflare']
         });
       }
     }
@@ -1209,242 +1207,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
-    // 4. Hugging Face Inference Providers
-    if (normalizedProvider === 'huggingface') {
-      const apiKey = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
-      const hfModel = 'meta-llama/Llama-3.3-70B-Instruct';
-
-      if (!apiKey || apiKey === 'YOUR_HUGGINGFACE_API_KEY') {
-        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        if (!shouldStream) {
-          return res.json({
-            text,
-            modelUsed: `${hfModel} (demo)`,
-            provider: 'huggingface'
-          });
-        }
-        initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: `${hfModel} (demo)`, provider: 'huggingface' });
-        const tokens = text.split(/(\s+)/);
-        for (const token of tokens) {
-          if (isClientClosed || res.writableEnded) break;
-          sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 20));
-        }
-        if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: `${hfModel} (demo)`, provider: 'huggingface' });
-          res.end();
-        }
-        return;
-      }
-
-      const messages = [
-        {
-          role: 'system',
-          content: systemInstruction
-        }
-      ];
-
-      for (const msg of history.slice(-12)) {
-        if (!msg.content) continue;
-        messages.push({
-          role: msg.sender === 'user' ? 'user' : 'assistant',
-          content: msg.content.trim()
-        });
-      }
-      messages.push({ role: 'user', content: prompt.trim() });
-
-      if (!shouldStream) {
-        let hfRes: any;
-        try {
-          hfRes = await fetch('https://router.huggingface.co/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: hfModel,
-              messages,
-              temperature: 0.7
-            })
-          });
-        } catch (fetchErr: any) {
-          logAIDiagnostic({
-            provider: 'huggingface',
-            model: hfModel,
-            phase: 'non-streaming',
-            attempt: 1,
-            maxAttempts: 1,
-            sanitizedMessage: fetchErr?.message || 'Network error reaching Hugging Face router',
-            willRetry: false
-          });
-          return res.status(502).json({
-            error: 'Network connection error while contacting Hugging Face Inference Providers. Please try again.',
-            code: 502,
-            status: 'BAD_GATEWAY',
-            provider: 'huggingface',
-            model: hfModel,
-            retryable: true,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        if (!hfRes.ok) {
-          const errText = await hfRes.text();
-          let parsedError = errText;
-          try {
-            const errObj = JSON.parse(errText);
-            if (errObj.error) {
-              parsedError = typeof errObj.error === 'string' ? errObj.error : errObj.error.message || errText;
-            }
-          } catch (_) {}
-
-          logAIDiagnostic({
-            provider: 'huggingface',
-            model: hfModel,
-            phase: 'non-streaming',
-            attempt: 1,
-            maxAttempts: 1,
-            upstreamStatus: hfRes.status,
-            sanitizedMessage: parsedError,
-            willRetry: false
-          });
-
-          return res.status(hfRes.status).json({
-            error: sanitizeErrorLog(parsedError),
-            code: hfRes.status,
-            status: hfRes.status === 401 ? 'UNAUTHORIZED' : hfRes.status === 429 ? 'RATE_LIMIT' : 'ERROR',
-            provider: 'huggingface',
-            model: hfModel,
-            retryable: hfRes.status === 429 || hfRes.status >= 500,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        const data = await hfRes.json();
-        return res.json({
-          text: data?.choices?.[0]?.message?.content || '',
-          modelUsed: data.model || hfModel,
-          provider: 'huggingface'
-        });
-      } else {
-        // Genuine streaming via Hugging Face OpenAI-compatible SSE
-        let hfRes: any;
-        try {
-          hfRes = await fetch('https://router.huggingface.co/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: hfModel,
-              messages,
-              temperature: 0.7,
-              stream: true
-            })
-          });
-        } catch (fetchErr: any) {
-          logAIDiagnostic({
-            provider: 'huggingface',
-            model: hfModel,
-            phase: 'pre-stream',
-            attempt: 1,
-            maxAttempts: 1,
-            sanitizedMessage: fetchErr?.message || 'Network error reaching Hugging Face router',
-            willRetry: false
-          });
-          return res.status(502).json({
-            error: 'Network connection error while contacting Hugging Face Inference Providers. Please try again.',
-            code: 502,
-            status: 'BAD_GATEWAY',
-            provider: 'huggingface',
-            model: hfModel,
-            retryable: true,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        if (!hfRes.ok) {
-          const errText = await hfRes.text();
-          let parsedError = errText;
-          try {
-            const errObj = JSON.parse(errText);
-            if (errObj.error) {
-              parsedError = typeof errObj.error === 'string' ? errObj.error : errObj.error.message || errText;
-            }
-          } catch (_) {}
-
-          logAIDiagnostic({
-            provider: 'huggingface',
-            model: hfModel,
-            phase: 'pre-stream',
-            attempt: 1,
-            maxAttempts: 1,
-            upstreamStatus: hfRes.status,
-            sanitizedMessage: parsedError,
-            willRetry: false
-          });
-
-          return res.status(hfRes.status).json({
-            error: sanitizeErrorLog(parsedError),
-            code: hfRes.status,
-            status: hfRes.status === 401 ? 'UNAUTHORIZED' : hfRes.status === 429 ? 'RATE_LIMIT' : 'ERROR',
-            provider: 'huggingface',
-            model: hfModel,
-            retryable: hfRes.status === 429 || hfRes.status >= 500,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
-          });
-        }
-
-        initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: hfModel, provider: 'huggingface' });
-
-        const reader = hfRes.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
-        let modelUsed = hfModel;
-
-        while (true) {
-          if (isClientClosed || res.writableEnded) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const dataStr = trimmed.slice(6);
-            if (dataStr === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.model) modelUsed = parsed.model;
-              const delta = parsed.choices?.[0]?.delta?.content;
-              if (delta) {
-                fullText += delta;
-                sendSSE(res, { type: 'chunk', text: delta });
-              }
-            } catch (_) {}
-          }
-        }
-
-        if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'huggingface' });
-          res.end();
-        }
-        return;
-      }
-    }
-
-    // 5. Cloudflare Workers AI Provider
+    // 4. Cloudflare Workers AI Provider
     if (normalizedProvider === 'cloudflare') {
       const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
       const apiToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
@@ -1534,7 +1297,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             model: cfModel,
             retryable: true,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter', 'huggingface']
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
           });
         }
 
@@ -1587,7 +1350,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             model: cfModel,
             retryable: cfRes.status === 429 || cfRes.status >= 500,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter', 'huggingface']
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
           });
         }
 
@@ -1645,7 +1408,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             model: cfModel,
             retryable: true,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter', 'huggingface']
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
           });
         }
 
@@ -1698,7 +1461,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             model: cfModel,
             retryable: cfRes.status === 429 || cfRes.status >= 500,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter', 'huggingface']
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
           });
         }
 
@@ -1797,7 +1560,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         status: parsed.status,
         retryable: parsed.isRetryable,
         canFallback: true,
-        suggestedProviders: ['gemini', 'groq', 'openrouter', 'huggingface', 'cloudflare']
+        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
       });
       if (!res.writableEnded) res.end();
     } else {
@@ -1807,7 +1570,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         status: parsed.status,
         retryable: parsed.isRetryable,
         canFallback: true,
-        suggestedProviders: ['gemini', 'groq', 'openrouter', 'huggingface', 'cloudflare']
+        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
       });
     }
   }

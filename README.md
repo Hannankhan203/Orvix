@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.3**
+**Version: v0.4**
 
 <p align="center">
   <strong>An Intelligent, Multi-Model AI Conversation Companion & Full-Stack Chat Application</strong>
@@ -33,14 +33,14 @@
 
 ## 1. Overview & Purpose
 
-**Orvix v0.3** is a production-grade, full-stack AI chatbot web application featuring an Obsidian Dark and Crisp Light design system, built on React 19, Tailwind CSS v4, and a secure Express backend proxy.
+**Orvix v0.4** is a production-grade, full-stack AI chatbot web application featuring an Obsidian Dark and Crisp Light design system, built on React 19, Tailwind CSS v4, and a secure Express backend proxy.
 
 ### Primary Purpose
 Orvix provides a unified interface across leading artificial intelligence models. Rather than locking users into a single model or provider, Orvix allows users to switch between providers mid-conversation while preserving full dialogue history, enabling direct comparison of reasoning, coding, writing, and analytical capabilities.
 
 ### Core Principles
-1. **Multi-Model Sovereignty**: Users select from five top-tier AI providers without losing conversation context or thread continuity.
-2. **Server-Side Security**: All model API credentials (Gemini, Groq, OpenRouter, Hugging Face, Cloudflare) remain exclusively on the server, shielded from client bundles and browser network inspectors.
+1. **Multi-Model Sovereignty**: Users select from four top-tier AI providers without losing conversation context or thread continuity.
+2. **Server-Side Security**: All model API credentials (Gemini, Groq, OpenRouter, Cloudflare) remain exclusively on the server, shielded from client bundles and browser network inspectors.
 3. **Zero-Setup Accessibility**: An instant Guest Exploration mode provides immediate offline local persistence and mode-aware simulated responses if API keys are not supplied.
 4. **Structured Persistence**: Cloud Firestore subcollections guarantee strict user isolation, atomic message deletions, and granular security rules.
 5. **Universal Accessibility**: Native Web Speech voice dictation, text-to-speech audio synthesis, responsive mobile layouts, and complete PWA installability.
@@ -49,8 +49,8 @@ Orvix provides a unified interface across leading artificial intelligence models
 
 ## 2. Current Project Status
 
-- **Current Version**: `v0.3`
-- **Application State**: Fully operational full-stack application with five integrated AI providers, Server-Sent Events (SSE) streaming, Cloud Firestore persistence, multi-mode reasoning, and guest exploration.
+- **Current Version**: `v0.4`
+- **Application State**: Fully operational full-stack application with four integrated AI providers, Server-Sent Events (SSE) streaming, Cloud Firestore persistence, multi-mode reasoning, and guest exploration.
 - **Runtime Environment**: Node.js 22 LTS, Vite 8, React 19, Express 4.
 - **Build Status**: Verified and compiling cleanly (`npm run build`, `npm run lint`).
 
@@ -59,7 +59,7 @@ Orvix provides a unified interface across leading artificial intelligence models
 ## 3. Current Implemented Features
 
 ### Conversational Experience
-- **Five-Provider Model Selector**: Switch seamlessly between Google Gemini, Groq, OpenRouter, Hugging Face, and Cloudflare Workers AI at any time.
+- **Four-Provider Model Selector**: Switch seamlessly between Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI at any time.
 - **Server-Sent Events (SSE) Streaming**: Token-by-token progressive rendering with an animated typing indicator, dynamic word chunking, and instant **Stop Generating** control.
 - **Context-Aware Multi-Turn History**: Automatically formats and passes the last 12 messages to the selected provider for coherent conversations.
 - **Simulated Response Fallback**: When API keys are not provided in the environment, the backend automatically generates rich, mode-specific simulated responses for offline testing and demo sessions.
@@ -96,14 +96,13 @@ Orvix provides a unified interface across leading artificial intelligence models
 
 ## 4. AI Providers & Selectable Models
 
-Orvix features five fully implemented AI inference providers selectable via the navigation header dropdown:
+Orvix features four fully implemented AI inference providers selectable via the navigation header dropdown:
 
 | Provider | Display Label | Model ID / Identifier | Protocol | Default Scope |
 |---|---|---|---|---|
 | **Google Gemini** | `Gemini (Gemini 3.1 Flash Lite)` | `gemini-3.8-flash` (primary)<br>`gemini-3.1-flash-lite` (fallback) | `@google/genai` TypeScript SDK (v2.4.0) | Server-side (`GEMINI_API_KEY`) |
 | **Groq** | `Groq (Llama 3.3 70B)` | `openai/gpt-oss-120b` | OpenAI-compatible SSE REST API | Server-side (`GROQ_API_KEY`) |
 | **OpenRouter** | `OpenRouter (Llama 3.3 70B (Free))` | `openrouter/free` | OpenAI-compatible SSE REST API | Server-side (`OPENROUTER_API_KEY`) |
-| **Hugging Face** | `Hugging Face — Llama 3.3 70B Instruct` | `meta-llama/Llama-3.3-70B-Instruct` | Hugging Face Router REST API | Server-side (`HUGGINGFACE_API_KEY`) |
 | **Cloudflare Workers AI** | `Cloudflare Workers AI — Llama 3.1 8B` | `@cf/meta/llama-3.1-8b-instruct` | Cloudflare Workers AI REST API | Server-side (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) |
 
 ### Provider Details & Implementations
@@ -121,11 +120,7 @@ Orvix features five fully implemented AI inference providers selectable via the 
    - Interacts with OpenRouter's multi-model gateway (`https://openrouter.ai/api/v1/chat/completions`).
    - Dynamically accesses community-available open-weights models under `openrouter/free`.
 
-4. **Hugging Face Inference Providers**:
-   - Routes through Hugging Face's OpenAI-compatible router endpoint (`https://router.huggingface.co/v1/chat/completions`).
-   - Uses `meta-llama/Llama-3.3-70B-Instruct` for deep reasoning, writing, and coding tasks.
-
-5. **Cloudflare Workers AI**:
+4. **Cloudflare Workers AI**:
    - Calls Cloudflare's official REST API endpoint: `https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct`.
    - Handles Cloudflare's native Server-Sent Events stream format (`data: {"response":"..."}` and `data: [DONE]`).
    - Implements server-side adaptation: if a non-streaming response is received, it is seamlessly transformed into standard Orvix SSE events without client interruption.
@@ -174,7 +169,6 @@ src/
 │   ├── cloudflareService.js    # Cloudflare Workers AI client helper
 │   ├── geminiService.js        # Gemini client helper
 │   ├── groqService.js          # Groq client helper
-│   ├── huggingfaceService.js   # Hugging Face client helper
 │   └── openrouterService.js    # OpenRouter client helper
 └── utils/                      # Text cleaners, syntax highlighters, exporters
 ```
@@ -202,8 +196,7 @@ server.ts
 │         ├── Provider 1: Google Gemini (@google/genai SDK v2.4.0)
 │         ├── Provider 2: Groq (OpenAI-compatible fetch)
 │         ├── Provider 3: OpenRouter (OpenAI-compatible fetch)
-│         ├── Provider 4: Hugging Face (Router fetch)
-│         ├── Provider 5: Cloudflare Workers AI (Cloudflare REST API fetch)
+│         ├── Provider 4: Cloudflare Workers AI (Cloudflare REST API fetch)
 │         └── Fallback:   Mode-aware demo simulated response
 └── Environment Modes
     ├── Development: Express mounts Vite middlewares (appType: 'spa')
@@ -211,7 +204,7 @@ server.ts
 ```
 
 ### Backend Responsibilities
-- **Credential Protection**: All API keys and tokens (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `HUGGINGFACE_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) remain exclusively on the server.
+- **Credential Protection**: All API keys and tokens (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) remain exclusively on the server.
 - **Client Disconnection Management**: Tracks client disconnections (`res.on('close')`) to cancel upstream fetch readers and backoff timers immediately.
 - **Error Sanitization**: `sanitizeErrorLog` redacts API keys, bearer tokens, and credentials from all server logs and client-facing error payloads.
 - **Diagnostic Logging**: `logAIDiagnostic` records provider, model, attempt number, phase (pre-stream, mid-stream, non-streaming), and sanitized upstream errors.
@@ -381,7 +374,6 @@ Configure these variables in your root `.env` file (or your hosting platform's e
 | `GEMINI_API_KEY` | Server | Optional | Google Gemini API key. Configured server-side for `@google/genai`. |
 | `GROQ_API_KEY` | Server | Optional | Groq API key for high-speed inference. |
 | `OPENROUTER_API_KEY` | Server | Optional | OpenRouter API key for dynamic open-weights models. |
-| `HUGGINGFACE_API_KEY`| Server | Optional | Hugging Face access token for Hugging Face Inference Providers. |
 | `CLOUDFLARE_ACCOUNT_ID` | Server | Optional | Cloudflare Account ID for Workers AI inference. |
 | `CLOUDFLARE_API_TOKEN` | Server | Optional | Cloudflare API Token with Workers AI Read permissions. |
 | `VITE_FIREBASE_API_KEY` | Client | Optional | Firebase Web API key for authentication and Firestore. |
@@ -401,7 +393,6 @@ PORT=3000
 GEMINI_API_KEY=your_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
-HUGGINGFACE_API_KEY=your_huggingface_api_key_here
 CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id_here
 CLOUDFLARE_API_TOKEN=your_cloudflare_api_token_here
 
@@ -488,6 +479,13 @@ The following capabilities are planned for upcoming releases:
 ## 17. Version History & Changelog
 
 ### Changelog
+
+#### v0.4 — Hugging Face API Deprecation & Provider Streamlining
+- **Removed Hugging Face API Integration**: Completely removed Hugging Face backend routing, error handling, and client helpers from the codebase.
+- **Provider Lineup Streamlining**: Streamlined Orvix to four dedicated, production-ready inference providers: Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI.
+- **Selector & UI Cleanup**: Removed Hugging Face options, labels, and icons from provider selectors and conversation action interfaces.
+- **Error Fallback Optimization**: Updated all server and client error recovery handlers, suggested providers lists, and switch-provider actions to exclude Hugging Face.
+- **Environment & Configuration Clean**: Removed `HUGGINGFACE_API_KEY`, `HF_TOKEN`, and `VITE_HUGGINGFACE_API_KEY` references from `.env.example`, project documentation, and build definitions.
 
 #### v0.3 — Cloudflare Workers AI Integration
 - **Added Cloudflare Workers AI Provider**: Integrated Cloudflare Workers AI as an independent, selectable AI inference provider.
