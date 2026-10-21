@@ -55,7 +55,7 @@ export default function ModelSelector({
         >
           {PROVIDER_OPTIONS.map((provider) => (
             <option key={provider.id} value={provider.id}>
-              {compact ? provider.name : (provider.label || `${provider.name} (${provider.modelTag})`)}
+              {provider.label || `${provider.name} (${provider.modelTag})`}
             </option>
           ))}
         </select>

@@ -8,12 +8,14 @@ import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './gemin
 import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
 import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
 import { sendHuggingFaceMessage, streamHuggingFaceMessage, getHuggingFaceApiKey } from './huggingfaceService.js';
+import { sendCloudflareMessage, streamCloudflareMessage } from './cloudflareService.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
   OPENROUTER: 'openrouter',
-  HUGGINGFACE: 'huggingface'
+  HUGGINGFACE: 'huggingface',
+  CLOUDFLARE: 'cloudflare'
 };
 
 export const PROVIDER_OPTIONS = [
@@ -45,6 +47,14 @@ export const PROVIDER_OPTIONS = [
     label: 'Hugging Face — Llama 3.3 70B Instruct',
     description: 'Hugging Face Inference Providers',
     envKey: 'HUGGINGFACE_API_KEY'
+  },
+  {
+    id: AI_PROVIDERS.CLOUDFLARE,
+    name: 'Cloudflare Workers AI',
+    modelTag: 'Llama 3.1 8B',
+    label: 'Cloudflare Workers AI — Llama 3.1 8B',
+    description: 'Cloudflare Workers AI serverless GPU inference',
+    envKey: 'CLOUDFLARE_API_TOKEN'
   }
 ];
 
@@ -68,6 +78,9 @@ export function isProviderConfigured(provider) {
     case AI_PROVIDERS.HUGGINGFACE: {
       const key = getHuggingFaceApiKey();
       return Boolean(key && key !== 'YOUR_HUGGINGFACE_API_KEY');
+    }
+    case AI_PROVIDERS.CLOUDFLARE: {
+      return true;
     }
     case AI_PROVIDERS.GEMINI:
     default: {
@@ -381,6 +394,14 @@ export async function streamAIMessage({
       return {
         ...result,
         provider: AI_PROVIDERS.HUGGINGFACE
+      };
+    }
+
+    case AI_PROVIDERS.CLOUDFLARE: {
+      const result = await streamCloudflareMessage({ prompt, history, mode: normalizedMode, onChunk, signal });
+      return {
+        ...result,
+        provider: AI_PROVIDERS.CLOUDFLARE
       };
     }
 
