@@ -12,13 +12,20 @@ import {
   ChevronDown,
   Sparkles,
   Loader2,
-  Globe
+  Globe,
+  Paperclip,
+  FileText
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
+import {
+  createAttachmentMetadata,
+  formatFileSize,
+  ATTACHMENT_ACCEPT_STRING
+} from '../../utils/fileAttachmentUtils.js';
 
 /**
  * ChatArea Component
@@ -70,8 +77,12 @@ export default function ChatArea({
   onDismissModeNotice
 }) {
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
   const langMenuRef = useRef(null);
   const scrollViewportRef = useRef(null);
+
+  // File attachments state (PDF, DOCX, TXT, MD, PPT, PPTX, CSV, etc.)
+  const [attachments, setAttachments] = useState([]);
 
   // Floating scroll-to-bottom button visibility
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -88,6 +99,41 @@ export default function ChatArea({
   // AI Transcript Refinement (Phase 4) state
   const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
   const [suggestedRefinement, setSuggestedRefinement] = useState(null);
+
+  // Clear pending attachments when switching conversations
+  useEffect(() => {
+    setAttachments([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [activeChatId]);
+
+  const triggerFileInput = () => {
+    if (isLoading) return;
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const newAttachments = files.map((file, idx) => createAttachmentMetadata(file, idx));
+    setAttachments((prev) => [...prev, ...newAttachments]);
+
+    // Reset input so user can re-select same file if previously removed
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const handleRemoveAttachment = (attachmentId) => {
+    setAttachments((prev) => prev.filter((item) => item.id !== attachmentId));
+  };
 
   // Computes distance from bottom and updates floating button visibility
   const updateScrollButtonVisibility = () => {
@@ -316,8 +362,9 @@ export default function ChatArea({
       }
       clearLastSessionTranscript();
       setSuggestedRefinement(null);
-      if (onSubmit && inputValue.trim() && !isLoading) {
-        onSubmit();
+      if (onSubmit && (inputValue.trim() || attachments.length > 0) && !isLoading) {
+        onSubmit({ content: inputValue, attachments });
+        setAttachments([]);
       }
     }
   };
@@ -329,8 +376,9 @@ export default function ChatArea({
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
-    if (onSubmit && inputValue.trim() && !isLoading) {
-      onSubmit();
+    if (onSubmit && (inputValue.trim() || attachments.length > 0) && !isLoading) {
+      onSubmit({ content: inputValue, attachments });
+      setAttachments([]);
     }
   };
 
@@ -383,7 +431,7 @@ Transcript:
     clearLastSessionTranscript();
   };
 
-  const hasContent = inputValue.trim().length > 0;
+  const hasContent = inputValue.trim().length > 0 || attachments.length > 0;
   const hasMessages = messages.length > 0;
   // Dictation dock is only active when actively requesting, listening, paused, or finalizing
   const isRecordingActive =
@@ -731,7 +779,65 @@ Transcript:
             </div>
           )}
 
+          {/* Selected Attachments Preview Strip */}
+          {attachments.length > 0 && (
+            <div className="composer-attachments-bar" role="region" aria-label="Selected file attachments">
+              <div className="composer-attachments-scroll">
+                {attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="attachment-preview-chip"
+                    title={`${att.name} (${formatFileSize(att.size)})`}
+                  >
+                    <div className="attachment-chip-icon">
+                      <FileText size={15} className="attachment-icon-svg" aria-hidden="true" />
+                      <span className="attachment-chip-ext">{att.extension || 'FILE'}</span>
+                    </div>
+                    <div className="attachment-chip-details">
+                      <span className="attachment-chip-name">{att.name}</span>
+                      <span className="attachment-chip-size">{formatFileSize(att.size)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="attachment-chip-remove"
+                      onClick={() => handleRemoveAttachment(att.id)}
+                      title={`Remove ${att.name}`}
+                      aria-label={`Remove ${att.name}`}
+                    >
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
+            {/* Native Hidden Multi-File Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={ATTACHMENT_ACCEPT_STRING}
+              onChange={handleFileSelect}
+              tabIndex={-1}
+              style={{ display: 'none' }}
+              aria-hidden="true"
+            />
+
+            {/* File Attachment Button */}
+            <Button
+              type="button"
+              variant={attachments.length > 0 ? 'secondary' : 'ghost'}
+              size="icon-round"
+              disabled={isLoading}
+              onClick={triggerFileInput}
+              title="Attach files (PDF, DOCX, TXT, MD, PPT, PPTX, CSV)"
+              ariaLabel="Attach files"
+              className={`composer-attach-btn ${attachments.length > 0 ? 'has-attachments' : ''}`}
+              icon={<Paperclip size={18} />}
+            />
+
             <textarea
               ref={textareaRef}
               className="composer-textarea"

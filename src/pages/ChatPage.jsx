@@ -1144,14 +1144,27 @@ export default function ChatPage() {
   };
 
   // Submit a new message.
-  const handleSubmit = async () => {
+  const handleSubmit = async (submitData) => {
     stopSpeech();
 
-    const trimmed = inputValue
+    const rawContent =
+      typeof submitData === 'string'
+        ? submitData
+        : submitData?.content !== undefined
+        ? submitData.content
+        : inputValue;
+
+    const submittedAttachments = Array.isArray(submitData?.attachments)
+      ? submitData.attachments
+      : [];
+
+    const trimmed = rawContent
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();
 
-    if (!trimmed || isLoading || isSubmittingRef.current) return;
+    if ((!trimmed && submittedAttachments.length === 0) || isLoading || isSubmittingRef.current) {
+      return;
+    }
 
     isSubmittingRef.current = true;
     setIsLoading(true);
@@ -1162,7 +1175,12 @@ export default function ChatPage() {
     try {
       // Create a conversation only when the user sends their first message.
       if (!currentChatId) {
-        const titleSnippet = generateChatTitle(trimmed);
+        const titlePrompt =
+          trimmed ||
+          (submittedAttachments.length > 0
+            ? `Files: ${submittedAttachments.map((a) => a.name).join(', ')}`
+            : 'New Chat');
+        const titleSnippet = generateChatTitle(titlePrompt);
 
         if (isCloudEnabled && currentUser?.uid) {
           try {
@@ -1235,7 +1253,8 @@ export default function ChatPage() {
           hour: '2-digit',
           minute: '2-digit'
         }),
-        content: trimmed
+        content: trimmed,
+        ...(submittedAttachments.length > 0 ? { attachments: submittedAttachments } : {})
       };
 
       const assistantMessageId =
@@ -1270,8 +1289,14 @@ export default function ChatPage() {
         void persistMessageSafe(currentChatId, userMessage);
       }
 
+      const effectivePrompt =
+        trimmed ||
+        (submittedAttachments.length > 0
+          ? `[Attached ${submittedAttachments.length} file${submittedAttachments.length > 1 ? 's' : ''}: ${submittedAttachments.map((a) => a.name).join(', ')}]`
+          : '');
+
       await executePrompt(
-        trimmed,
+        effectivePrompt,
         validHistory,
         currentChatId,
         assistantMessageId
