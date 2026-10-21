@@ -37,7 +37,7 @@ export default function ModelSelector({
   return (
     <div
       className={`model-selector-container ${compact ? 'model-selector-compact' : ''} ${className}`}
-      title={`AI Model: ${currentProvider.name} (${currentProvider.modelTag})`}
+      title={`AI Model: ${currentProvider.label || `${currentProvider.name} (${currentProvider.modelTag})`}`}
     >
       <label htmlFor={id} className="model-selector-label" title="Active AI Model">
         <Cpu size={14} className="model-selector-icon" aria-hidden="true" />
@@ -55,7 +55,7 @@ export default function ModelSelector({
         >
           {PROVIDER_OPTIONS.map((provider) => (
             <option key={provider.id} value={provider.id}>
-              {compact ? provider.name : `${provider.name} (${provider.modelTag})`}
+              {provider.label || (compact ? provider.name : `${provider.name} (${provider.modelTag})`)}
             </option>
           ))}
         </select>

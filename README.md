@@ -45,10 +45,11 @@
 
 **Orvix v0.1** is a high-performance, responsive AI chatbot web application built with a modern React 19 single-page frontend, an Obsidian Dark / Clean Light design system styled with Tailwind CSS, and a Node.js Express full-stack backend running Vite in middleware mode.
 
-Orvix provides seamless multi-model intelligence across three AI providers:
+Orvix provides seamless multi-model intelligence across four AI providers:
 - **Google Gemini** (`gemini-3.8-flash` primary with automatic `gemini-3.1-flash-lite` fallback) via the modern `@google/genai` TypeScript SDK.
 - **Groq** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) via Groq's high-speed OpenAI-compatible REST API.
 - **OpenRouter** (`openrouter/free`) dynamically routing queries across available high-capacity free community models.
+- **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing high-speed serverless inference on Cloudflare's global network via its official REST API.
 
 Orvix features full-duplex conversational interaction: users can chat via text or hands-free voice dictation (speech-to-text), listen to AI responses via browser text-to-speech (read aloud), personalize responses (length, tone, beginner-friendly explanations), export conversations to Markdown or Plain Text, and store chat history either in Firebase Cloud Firestore or locally in browser storage through a zero-friction Guest Mode.
 
@@ -135,6 +136,7 @@ Orvix unifies multiple AI providers into a normalized interface managed by `src/
 | **Google Gemini** | `gemini-3.8-flash` (fallback: `gemini-3.1-flash-lite`) | Server-side SSE Stream | `@google/genai` (^2.4.0) |
 | **Groq** | `openai/gpt-oss-120b` / `llama-3.3-70b-versatile` | Server-side SSE Stream | Native Node.js `fetch` |
 | **OpenRouter** | `openrouter/free` | Server-side SSE Stream | Native Node.js `fetch` |
+| **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | Server-side SSE Stream | Native Node.js `fetch` (REST API) |
 
 ### Server-Side Proxy & SSE Streaming
 - **Server-Sent Events (SSE)**: The frontend sets `Accept: text/event-stream`. The backend flushes chunked `data: {"type":"chunk","text":"..."}` events in real time.
@@ -166,7 +168,7 @@ When running without API keys configured (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPE
 All features below are **fully implemented and functional in Orvix v0.1**:
 
 ### Conversational & AI Capabilities
-- **Multi-Model Selection**: Switch between Google Gemini, Groq, and OpenRouter at any time via the navigation bar dropdown without clearing chat history.
+- **Multi-Model Selection**: Switch between Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI at any time via the navigation bar dropdown without clearing chat history.
 - **Real-Time Token Streaming**: Real-time response streaming via Server-Sent Events (SSE) with progressive UI rendering.
 - **Multi-Turn Context Memory**: Passes up to the last 12 messages in chronological order to maintain multi-turn context.
 - **Context Preservation across Providers**: Switch providers mid-conversation while retaining full context from previous messages.
@@ -325,6 +327,8 @@ Environment variables are defined in `.env` in the root directory. Use `.env.exa
 | `GEMINI_API_KEY` | Optional | Server | Google Gemini API key used by the backend Express proxy (`server.ts`). |
 | `GROQ_API_KEY` | Optional | Server | Groq API key used by the backend Express proxy (`server.ts`). |
 | `OPENROUTER_API_KEY` | Optional | Server | OpenRouter API key used by the backend Express proxy (`server.ts`). |
+| `CLOUDFLARE_ACCOUNT_ID` | Optional | Server | Cloudflare Account ID for Workers AI REST API requests. |
+| `CLOUDFLARE_API_TOKEN` | Optional | Server | Cloudflare API Token with Workers AI read/execute permissions. |
 | `PORT` | Optional | Server | Server port (defaults to `3000`). |
 | `NODE_ENV` | Optional | Server | Runtime environment (`development` or `production`). |
 | `VITE_FIREBASE_API_KEY` | Optional | Client | Firebase Web API key for authentication and Firestore sync. |
@@ -341,6 +345,8 @@ Environment variables are defined in `.env` in the root directory. Use `.env.exa
 GEMINI_API_KEY=your_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id_here
+CLOUDFLARE_API_TOKEN=your_cloudflare_api_token_here
 
 # Client-Side Firebase Configuration (Optional - for cloud persistence & auth)
 VITE_FIREBASE_API_KEY=your_firebase_api_key_here
@@ -482,6 +488,7 @@ The repository includes `vercel.json` and standalone function handlers in `api/`
   - Implemented Express backend (`server.ts`) with Vite middleware mode on port 3000.
   - Integrated Google Gemini via `@google/genai` with streaming Server-Sent Events (SSE) and model failover.
   - Integrated Groq and OpenRouter OpenAI-compatible streaming endpoints.
+  - Integrated Cloudflare Workers AI (`@cf/meta/llama-3.1-8b-instruct`) via its official REST API with SSE streaming.
   - Built zero-key simulated response fallback engine for instant prototype testing.
   - Added 4 conversational Chat Modes (`General`, `Coding`, `Writing`, `Learning`) with specialized instructions and starter prompts.
   - Implemented Web Speech Recognition voice dictation with verbal punctuation engine and 9 language options.

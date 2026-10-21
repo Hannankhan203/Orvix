@@ -586,11 +586,19 @@ app.get(['/api/config', '/config'], (_req, res) => {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
   const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
   const openrouterKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
+  const cfAccountId = process.env.CLOUDFLARE_ACCOUNT_ID || '';
+  const cfToken = process.env.CLOUDFLARE_API_TOKEN || '';
 
   res.json({
     geminiConfigured: Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
     groqConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY'),
-    openrouterConfigured: Boolean(openrouterKey && openrouterKey !== 'YOUR_OPENROUTER_API_KEY')
+    openrouterConfigured: Boolean(openrouterKey && openrouterKey !== 'YOUR_OPENROUTER_API_KEY'),
+    cloudflareConfigured: Boolean(
+      cfAccountId &&
+      cfAccountId !== 'YOUR_CLOUDFLARE_ACCOUNT_ID' &&
+      cfToken &&
+      cfToken !== 'YOUR_CLOUDFLARE_API_TOKEN'
+    )
   });
 });
 
@@ -1199,6 +1207,245 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
+    // 4. Cloudflare Workers AI Provider (@cf/meta/llama-3.1-8b-instruct)
+    if (normalizedProvider === 'cloudflare') {
+      const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+      const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+      const modelId = '@cf/meta/llama-3.1-8b-instruct';
+      const displayModel = 'Cloudflare Workers AI — Llama 3.1 8B';
+
+      // If credentials are not configured, return simulated response
+      if (
+        !accountId ||
+        !apiToken ||
+        accountId === 'YOUR_CLOUDFLARE_ACCOUNT_ID' ||
+        apiToken === 'YOUR_CLOUDFLARE_API_TOKEN'
+      ) {
+        const text = generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
+        const demoModel = 'Cloudflare Workers AI — Llama 3.1 8B (demo)';
+        if (!shouldStream) {
+          return res.json({
+            text,
+            modelUsed: demoModel,
+            provider: 'cloudflare'
+          });
+        }
+        initSSE(res);
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'cloudflare' });
+        const tokens = text.split(/(\s+)/);
+        for (const token of tokens) {
+          if (isClientClosed || res.writableEnded) break;
+          sendSSE(res, { type: 'chunk', text: token });
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        if (!res.writableEnded) {
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'cloudflare' });
+          res.end();
+        }
+        return;
+      }
+
+      const messages = [
+        {
+          role: 'system',
+          content: systemInstruction
+        }
+      ];
+
+      for (const msg of history.slice(-12)) {
+        if (!msg.content) continue;
+        messages.push({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content.trim()
+        });
+      }
+      messages.push({ role: 'user', content: prompt.trim() });
+
+      const cfEndpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId.trim())}/ai/run/${modelId}`;
+
+      if (!shouldStream) {
+        const cfRes = await fetch(cfEndpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiToken.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            messages,
+            stream: false
+          })
+        });
+
+        if (!cfRes.ok) {
+          let errDetail = '';
+          try {
+            const errJson = await cfRes.json();
+            if (Array.isArray(errJson?.errors) && errJson.errors.length > 0) {
+              errDetail = errJson.errors.map((e: any) => e.message || JSON.stringify(e)).join('; ');
+            } else if (errJson?.error) {
+              errDetail = typeof errJson.error === 'string' ? errJson.error : errJson.error.message;
+            }
+          } catch (_) {
+            errDetail = await cfRes.text();
+          }
+
+          let friendlyError = `Cloudflare Workers AI request failed (${cfRes.status}): ${errDetail || cfRes.statusText}`;
+          if (cfRes.status === 401 || cfRes.status === 403) {
+            friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
+          } else if (cfRes.status === 404) {
+            friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
+          } else if (cfRes.status === 429) {
+            friendlyError = 'Cloudflare Workers AI rate limit exceeded. Please wait a moment before trying again.';
+          } else if (cfRes.status === 500 || cfRes.status === 503 || cfRes.status === 504) {
+            friendlyError = 'Cloudflare Workers AI service is temporarily unavailable. Please retry shortly.';
+          }
+
+          return res.status(cfRes.status).json({
+            error: friendlyError,
+            code: cfRes.status,
+            provider: 'cloudflare',
+            model: modelId,
+            retryable: cfRes.status === 429 || cfRes.status === 503,
+            canFallback: true,
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
+          });
+        }
+
+        const data = await cfRes.json();
+        const text = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+        return res.json({
+          text,
+          modelUsed: displayModel,
+          provider: 'cloudflare'
+        });
+      } else {
+        // Genuine streaming via Cloudflare Workers AI SSE
+        const cfRes = await fetch(cfEndpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiToken.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            messages,
+            stream: true
+          })
+        });
+
+        if (!cfRes.ok) {
+          let errDetail = '';
+          try {
+            const errJson = await cfRes.json();
+            if (Array.isArray(errJson?.errors) && errJson.errors.length > 0) {
+              errDetail = errJson.errors.map((e: any) => e.message || JSON.stringify(e)).join('; ');
+            } else if (errJson?.error) {
+              errDetail = typeof errJson.error === 'string' ? errJson.error : errJson.error.message;
+            }
+          } catch (_) {
+            errDetail = await cfRes.text();
+          }
+
+          let friendlyError = `Cloudflare Workers AI request failed (${cfRes.status}): ${errDetail || cfRes.statusText}`;
+          if (cfRes.status === 401 || cfRes.status === 403) {
+            friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
+          } else if (cfRes.status === 404) {
+            friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
+          } else if (cfRes.status === 429) {
+            friendlyError = 'Cloudflare Workers AI rate limit exceeded. Please wait a moment before trying again.';
+          } else if (cfRes.status === 500 || cfRes.status === 503 || cfRes.status === 504) {
+            friendlyError = 'Cloudflare Workers AI service is temporarily unavailable. Please retry shortly.';
+          }
+
+          return res.status(cfRes.status).json({
+            error: friendlyError,
+            code: cfRes.status,
+            provider: 'cloudflare',
+            model: modelId,
+            retryable: cfRes.status === 429 || cfRes.status === 503,
+            canFallback: true,
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
+          });
+        }
+
+        const contentType = cfRes.headers.get('content-type') || '';
+
+        // If Cloudflare returns non-streaming JSON (or body is missing) despite stream: true, adapt it gracefully to SSE
+        if (contentType.includes('application/json') || !cfRes.body) {
+          const data = await cfRes.json();
+          const fullText = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+          initSSE(res);
+          sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
+          if (fullText) {
+            sendSSE(res, { type: 'chunk', text: fullText });
+          }
+          sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
+          res.end();
+          return;
+        }
+
+        initSSE(res);
+        sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
+
+        const reader = cfRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+
+        while (true) {
+          if (isClientClosed || res.writableEnded) {
+            try {
+              await reader.cancel();
+            } catch (_) {}
+            break;
+          }
+
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const dataStr = trimmed.slice(6).trim();
+            if (dataStr === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
+              if (delta) {
+                fullText += delta;
+                sendSSE(res, { type: 'chunk', text: delta });
+              }
+            } catch (_) {}
+          }
+        }
+
+        // Process any trailing line in buffer
+        if (buffer && buffer.trim().startsWith('data: ')) {
+          const dataStr = buffer.trim().slice(6).trim();
+          if (dataStr !== '[DONE]') {
+            try {
+              const parsed = JSON.parse(dataStr);
+              const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
+              if (delta) {
+                fullText += delta;
+                sendSSE(res, { type: 'chunk', text: delta });
+              }
+            } catch (_) {}
+          }
+        }
+
+        if (!res.writableEnded) {
+          sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
+          res.end();
+        }
+        return;
+      }
+    }
+
     return res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (error: any) {
     console.error('API Error in /api/chat:', error);
@@ -1211,7 +1458,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         status: parsed.status,
         retryable: parsed.isRetryable,
         canFallback: true,
-        suggestedProviders: ['groq', 'openrouter']
+        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
       });
       if (!res.writableEnded) res.end();
     } else {
@@ -1221,7 +1468,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         status: parsed.status,
         retryable: parsed.isRetryable,
         canFallback: true,
-        suggestedProviders: ['groq', 'openrouter']
+        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
       });
     }
   }

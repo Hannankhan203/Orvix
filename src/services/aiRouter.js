@@ -11,7 +11,8 @@ import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } f
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
-  OPENROUTER: 'openrouter'
+  OPENROUTER: 'openrouter',
+  CLOUDFLARE: 'cloudflare'
 };
 
 export const PROVIDER_OPTIONS = [
@@ -35,6 +36,14 @@ export const PROVIDER_OPTIONS = [
     modelTag: 'Llama 3.3 70B (Free)',
     description: 'Multi-model gateway',
     envKey: 'VITE_OPENROUTER_API_KEY'
+  },
+  {
+    id: AI_PROVIDERS.CLOUDFLARE,
+    name: 'Cloudflare Workers AI',
+    shortName: 'Cloudflare AI',
+    modelTag: 'Llama 3.1 8B',
+    description: 'Serverless inference',
+    label: 'Cloudflare Workers AI — Llama 3.1 8B'
   }
 ];
 
@@ -54,6 +63,10 @@ export function isProviderConfigured(provider) {
     case AI_PROVIDERS.OPENROUTER: {
       const key = getOpenRouterApiKey();
       return Boolean(key && key !== 'YOUR_OPENROUTER_API_KEY');
+    }
+    case AI_PROVIDERS.CLOUDFLARE: {
+      // Cloudflare credentials are kept strictly server-side
+      return false;
     }
     case AI_PROVIDERS.GEMINI:
     default: {
@@ -360,6 +373,12 @@ export async function streamAIMessage({
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
       };
+    }
+
+    case AI_PROVIDERS.CLOUDFLARE: {
+      throw new Error(
+        'Cloudflare Workers AI requires the backend server. Please verify the server is running and configured with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.'
+      );
     }
 
     case AI_PROVIDERS.GEMINI:
