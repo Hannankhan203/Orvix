@@ -7,12 +7,6 @@
       "includeFiles": "uploads/temp/**"
     }
   },
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/upload"
-    }
-  ],
   "headers": [
     {
       "source": "/manifest.webmanifest",
