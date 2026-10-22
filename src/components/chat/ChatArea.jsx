@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState } from 'react';
 import {
   ArrowUp,
   ArrowDown,
+  ArrowRight,
   Mic,
   Square,
   AlertCircle,
@@ -21,6 +22,7 @@ import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
+import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 
 // Supported image extensions whitelist
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
@@ -96,8 +98,18 @@ export default function ChatArea({
   const scrollViewportRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Selected file attachments state
+  // Selected file attachments state (strictly capped at 1 attachment per user message)
   const [attachments, setAttachments] = useState([]);
+  const [attachmentNotice, setAttachmentNotice] = useState(null);
+
+  // Auto-dismiss attachment notice after 5 seconds
+  useEffect(() => {
+    if (!attachmentNotice) return;
+    const timer = setTimeout(() => {
+      setAttachmentNotice(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [attachmentNotice]);
 
   // Revoke object URLs on component unmount to prevent memory leaks
   useEffect(() => {
@@ -113,6 +125,10 @@ export default function ChatArea({
   }, [attachments]);
 
   const handleAttachClick = () => {
+    if (attachments.length > 0) {
+      setAttachmentNotice('Only one attachment can be added per message. Remove the current attachment first to select a different one.');
+      return;
+    }
     if (fileInputRef.current) {
       fileInputRef.current.click();
     }
@@ -122,43 +138,71 @@ export default function ChatArea({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const newAttachments = Array.from(files).map((file) => {
-      const ext = file.name.includes('.')
-        ? file.name.split('.').pop().toUpperCase()
-        : 'FILE';
-      const isImage =
-        SUPPORTED_IMAGE_EXTENSIONS.has(ext) ||
-        Boolean(file.type && file.type.startsWith('image/'));
-
-      let previewUrl = null;
-      if (isImage) {
-        try {
-          previewUrl = URL.createObjectURL(file);
-        } catch (err) {
-          console.warn('Could not generate image thumbnail preview URL:', err);
-        }
+    // Strict Rule 1: If an attachment is already present, do not replace, do not upload, notify user
+    if (attachments.length > 0) {
+      setAttachmentNotice('Only one attachment can be added per message. Remove the current attachment first to select a different one.');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
+      return;
+    }
 
-      return {
-        id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-        name: file.name,
-        size: file.size,
-        formattedSize: formatFileSize(file.size),
-        type: file.type || (isImage ? `image/${ext.toLowerCase()}` : 'application/octet-stream'),
-        extension: ext,
-        isImage,
-        previewUrl,
-        file
-      };
-    });
+    // Strict Rule 2: If user selected multiple files in the file chooser, reject and notify
+    if (files.length > 1) {
+      setAttachmentNotice('Only one attachment can be added per message. Please select a single file or image.');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
 
-    setAttachments((prev) => [...prev, ...newAttachments]);
+    const file = files[0];
+    const MAX_FILE_SIZE = 25 * 1024 * 1024;
+    if (file.size > MAX_FILE_SIZE) {
+      setAttachmentNotice(`File '${file.name}' exceeds the maximum allowed size of 25MB.`);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    const ext = file.name.includes('.')
+      ? file.name.split('.').pop().toUpperCase()
+      : 'FILE';
+    const isImage =
+      SUPPORTED_IMAGE_EXTENSIONS.has(ext) ||
+      Boolean(file.type && file.type.startsWith('image/'));
+
+    let previewUrl = null;
+    if (isImage) {
+      try {
+        previewUrl = URL.createObjectURL(file);
+      } catch (err) {
+        console.warn('Could not generate image thumbnail preview URL:', err);
+      }
+    }
+
+    const singleAttachment = {
+      id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+      name: file.name,
+      size: file.size,
+      formattedSize: formatFileSize(file.size),
+      type: file.type || (isImage ? `image/${ext.toLowerCase()}` : 'application/octet-stream'),
+      extension: ext,
+      isImage,
+      previewUrl,
+      file
+    };
+
+    setAttachmentNotice(null);
+    setAttachments([singleAttachment]);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
   const handleRemoveAttachment = (idToRemove) => {
+    setAttachmentNotice(null);
     setAttachments((prev) => {
       const removed = prev.find((att) => att.id === idToRemove);
       if (removed?.previewUrl) {
@@ -166,8 +210,11 @@ export default function ChatArea({
           URL.revokeObjectURL(removed.previewUrl);
         } catch (_) {}
       }
-      return prev.filter((att) => att.id !== idToRemove);
+      return [];
     });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   // Floating scroll-to-bottom button visibility
@@ -185,6 +232,16 @@ export default function ChatArea({
   // AI Transcript Refinement (Phase 4) state
   const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
   const [suggestedRefinement, setSuggestedRefinement] = useState(null);
+
+  // Check if the most recent message ended with an invitation to continue a partitioned response
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const canContinueLastMessage =
+    !isLoading &&
+    lastMessage &&
+    lastMessage.sender === 'assistant' &&
+    !lastMessage.isError &&
+    !lastMessage.isStopped &&
+    responseHasContinuationNotice(lastMessage.content);
 
   // Computes distance from bottom and updates floating button visibility
   const updateScrollButtonVisibility = () => {
@@ -552,6 +609,26 @@ Transcript:
             </div>
           )}
 
+          {/* Quick Continue Prompt Chip if previous response was partitioned */}
+          {canContinueLastMessage && (
+            <div className="continuation-prompt-chip-container">
+              <button
+                type="button"
+                className="continuation-prompt-chip"
+                onClick={() => {
+                  if (onSubmit && !isLoading) {
+                    onSubmit([], 'Continue');
+                  }
+                }}
+                title="Continue from where the previous response left off"
+                aria-label="Continue response"
+              >
+                <ArrowRight size={13} className="continuation-chip-icon" />
+                <span>Continue response</span>
+              </button>
+            </div>
+          )}
+
           {/* Voice Dictation Error Notification */}
           {dictationError && (
             <div className="composer-dictation-error" role="alert">
@@ -564,6 +641,24 @@ Transcript:
                 className="dictation-error-dismiss"
                 onClick={clearDictationError}
                 aria-label="Dismiss error notification"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
+          {/* One Attachment Maximum Validation / Error Notification */}
+          {attachmentNotice && (
+            <div className="composer-dictation-error composer-attachment-alert" role="alert">
+              <div className="dictation-error-content">
+                <AlertCircle size={14} className="dictation-error-icon" aria-hidden="true" />
+                <span>{attachmentNotice}</span>
+              </div>
+              <button
+                type="button"
+                className="dictation-error-dismiss"
+                onClick={() => setAttachmentNotice(null)}
+                aria-label="Dismiss attachment alert"
               >
                 <X size={13} />
               </button>
@@ -833,21 +928,25 @@ Transcript:
           )}
 
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
-            {/* Native file input supporting documents and common image formats (JPG, JPEG, PNG, WEBP, GIF, BMP, HEIC, HEIF) */}
+            {/* Native file input strictly supporting one document or image at a time */}
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              multiple
+              multiple={false}
               accept=".jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/heic,image/heif,image/*,.pdf,.docx,.doc,.txt,.md,.markdown,.ppt,.pptx,.csv,.tsv,.json,.xml,.xlsx,.xls,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/csv,application/json"
               className="composer-file-input"
               tabIndex={-1}
               aria-hidden="true"
             />
 
-            {/* Selected attachments preview strip */}
+            {/* Selected attachment preview strip with explicit "One attachment maximum per message" badge */}
             {attachments.length > 0 && (
-              <div className="composer-attachments-preview" role="region" aria-label="Attached files and images">
+              <div className="composer-attachments-preview" role="region" aria-label="Attached file or image">
+                <div className="attachment-limit-banner">
+                  <Paperclip size={12} className="attachment-limit-icon" aria-hidden="true" />
+                  <span className="attachment-limit-text">One attachment maximum per message</span>
+                </div>
                 {attachments.map((att) =>
                   att.isImage ? (
                     <div
@@ -926,9 +1025,13 @@ Transcript:
                 size="icon-round"
                 disabled={isLoading}
                 onClick={handleAttachClick}
-                title="Attach documents or images (PDF, DOCX, TXT, JPG, PNG, WEBP, etc.)"
-                ariaLabel="Attach documents or images"
-                className="composer-attach-btn"
+                title={
+                  attachments.length > 0
+                    ? 'Only one attachment can be added per message. Click to view notification.'
+                    : 'Attach document or image — One attachment maximum per message (PDF, DOCX, TXT, PPTX, JPG, PNG, etc.)'
+                }
+                ariaLabel="Attach document or image (One attachment maximum per message)"
+                className={`composer-attach-btn ${attachments.length > 0 ? 'has-attachment' : ''}`}
                 icon={<Paperclip size={18} />}
               />
 

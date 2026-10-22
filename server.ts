@@ -25,6 +25,16 @@ import {
   adaptDocumentContextForProvider,
   formatOpenAIMessages
 } from './src/services/documentContextService.js';
+// @ts-ignore - Multi-part large response handling service
+import {
+  detectLargeResponseIntent,
+  isContinuationRequest,
+  resolveMultiPartContext,
+  buildMultiPartPromptAugmentation,
+  generateSimulatedMultiPartResponse,
+  responseHasContinuationNotice,
+  CONTINUATION_NOTICES
+} from './src/services/multiPartResponseService.js';
 
 export interface DocumentData {
   fileId?: string;
@@ -801,8 +811,7 @@ const UPLOAD_DIR = resolveUploadDirectory();
 // Configurable upload constraints and lifecycle bounds
 const MAX_FILE_SIZE_BYTES =
   parseInt(process.env.MAX_FILE_SIZE_BYTES || '', 10) || 25 * 1024 * 1024; // 25 MB default
-const MAX_ATTACHMENTS_PER_UPLOAD =
-  parseInt(process.env.MAX_ATTACHMENTS_PER_UPLOAD || '', 10) || 5; // Max 5 attachments per message
+const MAX_ATTACHMENTS_PER_UPLOAD = 1; // Strictly 1 attachment per user message
 const TEMP_FILE_TTL_MS =
   parseInt(process.env.TEMP_FILE_TTL_MS || '', 10) || 2 * 60 * 60 * 1000; // 2 hours retention TTL
 
@@ -1465,7 +1474,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         }
         if (err.code === 'LIMIT_FILE_COUNT') {
           return res.status(400).json({
-            error: `Maximum of ${MAX_ATTACHMENTS_PER_UPLOAD} attachments allowed per upload.`,
+            error: 'Only one attachment can be added per message.',
             code: 'TOO_MANY_FILES'
           });
         }
@@ -1487,6 +1496,13 @@ app.post(['/api/upload', '/upload'], (req, res) => {
       return res.status(400).json({
         error: 'No files provided for upload.',
         code: 'NO_FILES'
+      });
+    }
+
+    if (files.length > 1) {
+      return res.status(400).json({
+        error: 'Only one attachment can be added per message.',
+        code: 'TOO_MANY_FILES'
       });
     }
 
@@ -1714,7 +1730,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       preferences = null,
       stream = true,
       conversationId = null,
-      attachments = []
+      attachments = [],
+      isContinuation: clientIsContinuation,
+      partNumber: clientPartNumber,
+      originalPrompt: clientOriginalPrompt,
+      previousContentSummary: clientPreviousContentSummary
     } = req.body as {
       provider?: string;
       mode?: string;
@@ -1725,11 +1745,26 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       stream?: boolean;
       conversationId?: string | null;
       attachments?: any[];
+      isContinuation?: boolean;
+      partNumber?: number;
+      originalPrompt?: string | null;
+      previousContentSummary?: string | null;
     };
 
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
+
+    // Resolve multi-part response context (handles continuation phrases like 'Continue', 'Send the rest', 'Next', 'Part 2')
+    const multiPartCtx: any = resolveMultiPartContext(history, prompt);
+    const isContinuation =
+      typeof clientIsContinuation === 'boolean'
+        ? clientIsContinuation
+        : multiPartCtx.isContinuation;
+    const partNumber = clientPartNumber || multiPartCtx.partNumber || 1;
+    const originalPrompt = clientOriginalPrompt || multiPartCtx.originalPrompt || prompt;
+    const previousContentSummary =
+      clientPreviousContentSummary || multiPartCtx.previousContentSummary || '';
 
     // Accurately track client response disconnection (res.on('close')), NOT request stream upload end
     let isClientClosed = false;
@@ -1872,10 +1907,44 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
-    // Prepare document context for the prompt
-    const prepDoc: PreparedDocumentContext = prepareDocumentContext(prompt, availableDocs) as PreparedDocumentContext;
+    // 4. Attachments referenced in the multi-part sequence (preserves attachment across Part 1 -> Continue -> Part 2)
+    if (isContinuation && Array.isArray(multiPartCtx.referencedAttachments)) {
+      for (const rAtt of multiPartCtx.referencedAttachments) {
+        if (!rAtt?.id) continue;
+        const record = fileRegistry.get(rAtt.id);
+        if (record?.extraction) {
+          addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+        } else if (rAtt.extraction) {
+          addDocIfValid(rAtt.extraction as DocumentData, conversationId || undefined);
+        }
+      }
+    }
+
+    // Prepare document context for the prompt (using originalPrompt when continuing)
+    const effectiveDocPrompt = isContinuation && originalPrompt ? originalPrompt : prompt;
+    const prepDoc: PreparedDocumentContext = prepareDocumentContext(effectiveDocPrompt, availableDocs) as PreparedDocumentContext;
     const normalizedProvider = String(provider).toLowerCase();
     const shouldStream = stream !== false;
+
+    // Detect if this inquiry is likely to exceed safe response output size
+    const largeDetection = detectLargeResponseIntent({
+      prompt: effectiveDocPrompt,
+      docs: availableDocs,
+      preferences,
+      mode,
+      history
+    });
+    const isLikelyLarge = largeDetection.isLikelyLarge || isContinuation;
+
+    // Multi-part prompt augmentation
+    const multiPartAugmentation = buildMultiPartPromptAugmentation({
+      isLikelyLarge,
+      isContinuation,
+      partNumber,
+      originalPrompt: originalPrompt || prompt,
+      previousContentSummary,
+      provider: normalizedProvider
+    });
 
     // If an immediate direct answer is determined (e.g. unreadable scanned file, empty doc, page out of bounds)
     if (prepDoc.directAnswer) {
@@ -1900,12 +1969,15 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         : null;
 
     const baseSystemInstruction = buildSystemInstruction(cleanUsername, preferences, mode);
+    const fullSystemInstruction = multiPartAugmentation
+      ? `${baseSystemInstruction}\n\n${multiPartAugmentation}`
+      : baseSystemInstruction;
 
     // Shared Provider-Independent Document Context Adaptation (Requirements 2, 3, 5, 7, 8)
     const adapted: any = adaptDocumentContextForProvider({
       provider: normalizedProvider,
       prompt,
-      baseSystemInstruction,
+      baseSystemInstruction: fullSystemInstruction,
       preparedContext: prepDoc
     });
 
@@ -1918,7 +1990,18 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       // If no API key is configured, return simulated response (with progressive reveal if streaming)
       if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-        const text = availableDocs.length > 0
+        const text = (isLikelyLarge || isContinuation)
+          ? generateSimulatedMultiPartResponse({
+              prompt,
+              docs: availableDocs,
+              username: cleanUsername,
+              preferences,
+              mode,
+              isContinuation,
+              partNumber,
+              originalPrompt
+            })
+          : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.1-flash-lite (demo)';
@@ -2020,8 +2103,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             });
 
             if (response && response.text) {
+              let finalText = response.text;
+              if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+                finalText += CONTINUATION_NOTICES.PART_1;
+              }
               return res.json({
-                text: response.text,
+                text: finalText,
                 modelUsed: model,
                 provider: 'gemini'
               });
@@ -2133,6 +2220,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               }
 
               if (!res.writableEnded) {
+                if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+                  sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+                  fullText += CONTINUATION_NOTICES.PART_1;
+                }
                 sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
                 res.end();
               }
@@ -2232,7 +2323,18 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'groq') {
       const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
       if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
-        const text = availableDocs.length > 0
+        const text = (isLikelyLarge || isContinuation)
+          ? generateSimulatedMultiPartResponse({
+              prompt,
+              docs: availableDocs,
+              username: cleanUsername,
+              preferences,
+              mode,
+              isContinuation,
+              partNumber,
+              originalPrompt
+            })
+          : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'Llama 3.3 70B (demo)';
@@ -2295,8 +2397,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         const data = await groqRes.json();
+        let finalText = data?.choices?.[0]?.message?.content || '';
+        if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+          finalText += CONTINUATION_NOTICES.PART_1;
+        }
         return res.json({
-          text: data?.choices?.[0]?.message?.content || '',
+          text: finalText,
           modelUsed: data.model || 'openai/gpt-oss-120b',
           provider: 'groq'
         });
@@ -2367,6 +2473,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         if (!res.writableEnded) {
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+            fullText += CONTINUATION_NOTICES.PART_1;
+          }
           sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'groq' });
           res.end();
         }
@@ -2378,7 +2488,18 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'openrouter') {
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
       if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-        const text = availableDocs.length > 0
+        const text = (isLikelyLarge || isContinuation)
+          ? generateSimulatedMultiPartResponse({
+              prompt,
+              docs: availableDocs,
+              username: cleanUsername,
+              preferences,
+              mode,
+              isContinuation,
+              partNumber,
+              originalPrompt
+            })
+          : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'openrouter/free (demo)';
@@ -2442,8 +2563,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         const data = await orRes.json();
+        let finalText = data?.choices?.[0]?.message?.content || '';
+        if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+          finalText += CONTINUATION_NOTICES.PART_1;
+        }
         return res.json({
-          text: data?.choices?.[0]?.message?.content || '',
+          text: finalText,
           modelUsed: data.model || 'openrouter/free',
           provider: 'openrouter'
         });
@@ -2515,6 +2640,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         if (!res.writableEnded) {
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+            fullText += CONTINUATION_NOTICES.PART_1;
+          }
           sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'openrouter' });
           res.end();
         }
@@ -2536,7 +2665,18 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         accountId === 'YOUR_CLOUDFLARE_ACCOUNT_ID' ||
         apiToken === 'YOUR_CLOUDFLARE_API_TOKEN'
       ) {
-        const text = availableDocs.length > 0
+        const text = (isLikelyLarge || isContinuation)
+          ? generateSimulatedMultiPartResponse({
+              prompt,
+              docs: availableDocs,
+              username: cleanUsername,
+              preferences,
+              mode,
+              isContinuation,
+              partNumber,
+              originalPrompt
+            })
+          : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
         const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'Cloudflare Workers AI — Llama 3.1 8B (demo)';
@@ -2619,7 +2759,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         const data = await cfRes.json();
-        const text = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+        let text = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+        if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(text)) {
+          text += CONTINUATION_NOTICES.PART_1;
+        }
         return res.json({
           text,
           modelUsed: displayModel,
@@ -2679,7 +2822,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         // If Cloudflare returns non-streaming JSON (or body is missing) despite stream: true, adapt it gracefully to SSE
         if (contentType.includes('application/json') || !cfRes.body) {
           const data = await cfRes.json();
-          const fullText = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+          let fullText = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+            fullText += CONTINUATION_NOTICES.PART_1;
+          }
           initSSE(res);
           sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
           if (fullText) {
@@ -2746,6 +2892,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         if (!res.writableEnded) {
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+            fullText += CONTINUATION_NOTICES.PART_1;
+          }
           sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
           res.end();
         }

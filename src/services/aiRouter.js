@@ -198,7 +198,11 @@ export async function streamAIMessage({
   onStart,
   signal,
   conversationId = null,
-  attachments = []
+  attachments = [],
+  isContinuation = false,
+  partNumber = 1,
+  originalPrompt = null,
+  previousContentSummary = null
 }) {
   const normalizedProvider = provider.toLowerCase();
   const normalizedMode = (mode || 'general').toLowerCase();
@@ -226,7 +230,11 @@ export async function streamAIMessage({
           preferences: preferences || null,
           stream: true,
           conversationId: conversationId || null,
-          attachments: Array.isArray(attachments) ? attachments : []
+          attachments: Array.isArray(attachments) ? attachments : [],
+          isContinuation: Boolean(isContinuation),
+          partNumber: partNumber || 1,
+          originalPrompt: originalPrompt || null,
+          previousContentSummary: previousContentSummary || null
         }),
         signal
       });

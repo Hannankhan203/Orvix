@@ -23,6 +23,11 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
 import { saveAttachmentBlob } from '../services/attachmentStorageService.js';
+import {
+  isContinuationRequest,
+  resolveMultiPartContext,
+  responseHasContinuationNotice
+} from '../services/multiPartResponseService.js';
 import { AlertCircle, X, Check } from 'lucide-react';
 
 export default function ChatPage() {
@@ -668,7 +673,8 @@ export default function ChatPage() {
     targetChatId,
     assistantMessageId,
     overrideProvider = null,
-    currentAttachments = []
+    currentAttachments = [],
+    multiPartParams = {}
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
     setIsLoading(true);
@@ -859,6 +865,10 @@ export default function ChatPage() {
         signal: abortController.signal,
         conversationId: targetChatId,
         attachments: currentAttachments,
+        isContinuation: multiPartParams.isContinuation,
+        partNumber: multiPartParams.partNumber,
+        originalPrompt: multiPartParams.originalPrompt,
+        previousContentSummary: multiPartParams.previousContentSummary,
 
         onStart: ({ modelUsed, provider: reportedProvider } = {}) => {
           if (modelUsed) activeModel = modelUsed;
@@ -1184,14 +1194,21 @@ export default function ChatPage() {
   };
 
   // Submit a new message.
-  const handleSubmit = async (attachments = []) => {
+  const handleSubmit = async (attachments = [], promptOverride = null) => {
     stopSpeech();
 
-    const trimmed = inputValue
+    const rawText = promptOverride !== null ? promptOverride : inputValue;
+    const trimmed = rawText
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();
 
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+
+    // Strictly enforce maximum 1 attachment per user message
+    if (Array.isArray(attachments) && attachments.length > 1) {
+      setPersistenceError('Only one attachment can be added per message. Remove the current attachment first to select a different one.');
+      return false;
+    }
 
     if ((!trimmed && !hasAttachments) || isLoading || isSubmittingRef.current) return false;
 
@@ -1451,10 +1468,18 @@ export default function ChatPage() {
         attachments: processedAttachments
       };
 
+      // Detect if user sent a continuation request (e.g., 'Continue', 'Send the rest', 'Next', 'Part 2')
+      const isContinuation = isContinuationRequest(trimmed);
+      const multiPartContext = isContinuation
+        ? resolveMultiPartContext(messages, trimmed)
+        : { isContinuation: false, partNumber: 1, originalPrompt: trimmed, previousContentSummary: '', referencedAttachments: [] };
+
       // Check if current message has attachments, or if we should carry forward attachments from the conversation
-      // so follow-up questions about the document maintain context and referenced attachments
+      // or from the multi-part sequence so follow-up questions and continuations maintain context
       let activeAttachments = processedAttachments;
-      if ((!activeAttachments || activeAttachments.length === 0) && messages.length > 0) {
+      if ((!activeAttachments || activeAttachments.length === 0) && isContinuation && Array.isArray(multiPartContext.referencedAttachments) && multiPartContext.referencedAttachments.length > 0) {
+        activeAttachments = multiPartContext.referencedAttachments;
+      } else if ((!activeAttachments || activeAttachments.length === 0) && messages.length > 0) {
         const found = [];
         const seenIds = new Set();
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -1507,7 +1532,9 @@ export default function ChatPage() {
         initialAssistantMessage
       ]);
 
-      setInputValue('');
+      if (promptOverride === null) {
+        setInputValue('');
+      }
 
       if (currentChatId) {
         void persistMessageSafe(currentChatId, userMessage);
@@ -1525,7 +1552,8 @@ export default function ChatPage() {
         currentChatId,
         assistantMessageId,
         null,
-        activeAttachments
+        activeAttachments,
+        multiPartContext
       );
       return true;
     } catch (error) {
@@ -1603,9 +1631,10 @@ export default function ChatPage() {
       initialAssistantMessage
     ]);
 
-    const validHistory = updatedMessages.filter(
-      (message) => !message.isError && !message.isInterrupted
-    );
+    const isRetryContinuation = isContinuationRequest(failedMessage.failedPrompt);
+    const retryMultiPart = isRetryContinuation
+      ? resolveMultiPartContext(validHistory, failedMessage.failedPrompt)
+      : { isContinuation: false, partNumber: 1, originalPrompt: failedMessage.failedPrompt, previousContentSummary: '' };
 
     void executePrompt(
       failedMessage.failedPrompt,
@@ -1613,7 +1642,8 @@ export default function ChatPage() {
       currentChatId,
       assistantMessageId,
       providerToUse,
-      retryAttachments
+      retryAttachments,
+      retryMultiPart
     );
   };
 
@@ -1689,13 +1719,19 @@ export default function ChatPage() {
       (message) => !message.isError && !message.isInterrupted
     );
 
+    const isSwitchContinuation = isContinuationRequest(failedMessage.failedPrompt);
+    const switchMultiPart = isSwitchContinuation
+      ? resolveMultiPartContext(validHistory, failedMessage.failedPrompt)
+      : { isContinuation: false, partNumber: 1, originalPrompt: failedMessage.failedPrompt, previousContentSummary: '' };
+
     void executePrompt(
       failedMessage.failedPrompt,
       validHistory,
       currentChatId,
       assistantMessageId,
       newProviderId,
-      switchAttachments
+      switchAttachments,
+      switchMultiPart
     );
   };
 

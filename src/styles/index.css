@@ -3966,6 +3966,41 @@ html, body {
   width: 100%;
 }
 
+.attachment-limit-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+  padding: 2px 2px 4px 2px;
+}
+
+.attachment-limit-icon {
+  color: #3b82f6;
+  flex-shrink: 0;
+}
+
+.attachment-limit-text {
+  color: var(--text-secondary);
+}
+
+.composer-attachment-alert {
+  background-color: rgba(239, 68, 68, 0.12) !important;
+  border-color: rgba(239, 68, 68, 0.35) !important;
+  color: #fca5a5 !important;
+}
+
+.composer-attachment-alert .dictation-error-icon {
+  color: #ef4444 !important;
+}
+
+.composer-attachment-alert .dictation-error-dismiss {
+  color: #fca5a5 !important;
+}
+
 .composer-attachment-chip {
   display: inline-flex;
   align-items: center;
@@ -6582,5 +6617,66 @@ body.theme-light .listening-text,
   color: #6d28d9;
   border-color: #7c3aed;
 }
+
+/* Controlled Multi-Part Continuation Quick Action Chip */
+.continuation-prompt-chip-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 8px;
+  animation: fadeInSlideUp 0.25s ease-out;
+}
+
+.continuation-prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background-color: var(--card-bg, #1e293b);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  color: #60a5fa;
+  font-size: 0.825rem;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: all 0.18s ease;
+}
+
+.continuation-prompt-chip:hover {
+  background-color: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+  transform: translateY(-1px);
+}
+
+.continuation-prompt-chip:active {
+  transform: translateY(0);
+}
+
+.continuation-chip-icon {
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+}
+
+.continuation-prompt-chip:hover .continuation-chip-icon {
+  transform: translateX(2px);
+}
+
+[data-theme="light"] .continuation-prompt-chip {
+  background-color: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .continuation-prompt-chip:hover {
+  background-color: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+}
+
 
 
