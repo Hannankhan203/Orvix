@@ -24,7 +24,7 @@ import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 
-// Supported image extensions whitelist
+// Whitelist of supported image extensions
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   'JPG',
   'JPEG',
@@ -35,6 +35,84 @@ const SUPPORTED_IMAGE_EXTENSIONS = new Set([
   'HEIC',
   'HEIF'
 ]);
+
+// Whitelist of all supported file extensions (consistent with server upload whitelists)
+const SUPPORTED_EXTENSIONS = new Set([
+  'PDF',
+  'DOCX',
+  'DOC',
+  'PPTX',
+  'PPT',
+  'XLSX',
+  'XLS',
+  'TXT',
+  'MD',
+  'MARKDOWN',
+  'CSV',
+  'TSV',
+  'JSON',
+  'XML',
+  'JPG',
+  'JPEG',
+  'PNG',
+  'WEBP',
+  'GIF',
+  'BMP',
+  'HEIC',
+  'HEIF'
+]);
+
+// Helper to determine the standard extension from MIME type
+function getExtensionFromMime(mimeType) {
+  if (!mimeType) return null;
+  const mime = mimeType.toLowerCase();
+  if (mime.includes('png')) return 'PNG';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'JPG';
+  if (mime.includes('webp')) return 'WEBP';
+  if (mime.includes('gif')) return 'GIF';
+  if (mime.includes('bmp')) return 'BMP';
+  if (mime.includes('heic')) return 'HEIC';
+  if (mime.includes('heif')) return 'HEIF';
+  if (mime.includes('pdf')) return 'PDF';
+  if (mime.includes('wordprocessingml') || mime.includes('docx')) return 'DOCX';
+  if (mime.includes('msword')) return 'DOC';
+  if (mime.includes('presentationml') || mime.includes('pptx')) return 'PPTX';
+  if (mime.includes('ms-powerpoint')) return 'PPT';
+  if (mime.includes('spreadsheetml') || mime.includes('xlsx')) return 'XLSX';
+  if (mime.includes('ms-excel')) return 'XLS';
+  if (mime.includes('json')) return 'JSON';
+  if (mime.includes('csv')) return 'CSV';
+  if (mime.includes('markdown')) return 'MD';
+  if (mime.includes('plain')) return 'TXT';
+  if (mime.includes('xml')) return 'XML';
+  return null;
+}
+
+// Helper to resolve a sensible filename for clipboard pasted files where browser doesn't provide one
+function resolvePastedFileName(rawFile) {
+  const mimeType = (rawFile.type || '').toLowerCase();
+  const rawName = (rawFile.name || '').trim();
+
+  // If the browser provided a specific, non-generic filename with an extension, preserve it
+  const hasSpecificName =
+    rawName &&
+    rawName !== 'image.png' &&
+    rawName !== 'blob' &&
+    rawName !== 'file' &&
+    rawName.includes('.');
+
+  if (hasSpecificName) {
+    return rawName;
+  }
+
+  // Derive extension from mime type
+  const mimeExt = getExtensionFromMime(mimeType);
+  let ext = (mimeExt || 'png').toLowerCase();
+
+  const isImage = mimeType.startsWith('image/') || SUPPORTED_IMAGE_EXTENSIONS.has(ext.toUpperCase());
+  const prefix = isImage ? 'pasted-image' : 'pasted-file';
+  return `${prefix}.${ext}`;
+}
 
 function formatFileSize(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
@@ -134,44 +212,76 @@ export default function ChatArea({
     }
   };
 
-  const handleFileChange = (e) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  /**
+   * Unified attachment processor shared by both upload file dialog and clipboard paste.
+   * Enforces 1-attachment limit, 25MB size restriction, format whitelist, and image preview generation.
+   */
+  const processAttachment = (rawFile, { isPaste = false } = {}) => {
+    if (!rawFile) return;
 
-    // Strict Rule 1: If an attachment is already present, do not replace, do not upload, notify user
+    // Strict Rule 1: One-attachment limit check
     if (attachments.length > 0) {
-      setAttachmentNotice('Only one attachment can be added per message. Remove the current attachment first to select a different one.');
+      setAttachmentNotice(
+        isPaste
+          ? 'Only one attachment can be added per message. Remove the current attachment before pasting another file.'
+          : 'Only one attachment can be added per message. Remove the current attachment first to select a different one.'
+      );
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
       return;
     }
 
-    // Strict Rule 2: If user selected multiple files in the file chooser, reject and notify
-    if (files.length > 1) {
-      setAttachmentNotice('Only one attachment can be added per message. Please select a single file or image.');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-      return;
-    }
+    // Determine final filename (preserving original where available, generating sensible name for pasted data)
+    const resolvedName = isPaste ? resolvePastedFileName(rawFile) : rawFile.name;
 
-    const file = files[0];
+    // Enforce 25MB maximum size limit
     const MAX_FILE_SIZE = 25 * 1024 * 1024;
-    if (file.size > MAX_FILE_SIZE) {
-      setAttachmentNotice(`File '${file.name}' exceeds the maximum allowed size of 25MB.`);
+    if (rawFile.size > MAX_FILE_SIZE) {
+      setAttachmentNotice(`File '${resolvedName}' exceeds the maximum allowed size of 25MB.`);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
       return;
     }
 
-    const ext = file.name.includes('.')
-      ? file.name.split('.').pop().toUpperCase()
-      : 'FILE';
+    // Determine extension
+    let ext = resolvedName.includes('.')
+      ? resolvedName.split('.').pop().toUpperCase()
+      : (getExtensionFromMime(rawFile.type) || 'FILE');
+
     const isImage =
       SUPPORTED_IMAGE_EXTENSIONS.has(ext) ||
-      Boolean(file.type && file.type.startsWith('image/'));
+      Boolean(rawFile.type && rawFile.type.startsWith('image/'));
+
+    // Validate against supported formats
+    const isSupported =
+      SUPPORTED_EXTENSIONS.has(ext) ||
+      (isImage && SUPPORTED_IMAGE_EXTENSIONS.has(ext)) ||
+      Boolean(getExtensionFromMime(rawFile.type));
+
+    if (!isSupported) {
+      setAttachmentNotice(
+        `File '${resolvedName}' has an unsupported file format. Supported formats include PNG, JPG, WEBP, GIF, PDF, DOCX, TXT, PPTX, XLSX, CSV, JSON, and MD.`
+      );
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    // Reconstruct File object if filename or type needs normalization (e.g. pasted screenshots)
+    let file = rawFile;
+    if (isPaste && rawFile.name !== resolvedName) {
+      try {
+        file = new File([rawFile], resolvedName, {
+          type: rawFile.type || (isImage ? `image/${ext.toLowerCase()}` : 'application/octet-stream'),
+          lastModified: rawFile.lastModified || Date.now()
+        });
+      } catch (_) {
+        file = rawFile;
+      }
+    }
 
     let previewUrl = null;
     if (isImage) {
@@ -184,7 +294,7 @@ export default function ChatArea({
 
     const singleAttachment = {
       id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
-      name: file.name,
+      name: resolvedName,
       size: file.size,
       formattedSize: formatFileSize(file.size),
       type: file.type || (isImage ? `image/${ext.toLowerCase()}` : 'application/octet-stream'),
@@ -199,6 +309,93 @@ export default function ChatArea({
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+
+    // Keep textarea focused so user can type prompt immediately after pasting
+    if (isPaste && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    if (attachments.length > 0) {
+      setAttachmentNotice('Only one attachment can be added per message. Remove the current attachment first to select a different one.');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    if (files.length > 1) {
+      setAttachmentNotice('Only one attachment can be added per message. Please select a single file or image.');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    processAttachment(files[0], { isPaste: false });
+  };
+
+  /**
+   * Clipboard paste handler for the chat composer.
+   * Detects copied images or supported files pasted via Ctrl + V and converts them
+   * into attachments, while allowing normal text paste to proceed unhindered.
+   */
+  const handlePaste = (e) => {
+    const clipboardData = e.clipboardData || window.clipboardData;
+    if (!clipboardData) return;
+
+    const items = clipboardData.items;
+    const files = clipboardData.files;
+
+    // Detect if clipboard has any file/image items
+    const candidateFiles = [];
+
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        candidateFiles.push(files[i]);
+      }
+    } else if (items && items.length > 0) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            candidateFiles.push(file);
+          }
+        }
+      }
+    }
+
+    // CRITICAL: If no file/image data is in clipboard (plain text, URL, code, etc.),
+    // DO NOT prevent default! Allow normal text paste into textarea.
+    if (candidateFiles.length === 0) {
+      return;
+    }
+
+    // An image or file was pasted: intercept the paste event so raw paths/data aren't typed
+    e.preventDefault();
+
+    // Enforce one-attachment limit
+    if (attachments.length > 0) {
+      setAttachmentNotice(
+        'Only one attachment can be added per message. Remove the current attachment before pasting another file.'
+      );
+      return;
+    }
+
+    // Reject multiple files pasted at once
+    if (candidateFiles.length > 1) {
+      setAttachmentNotice(
+        'Only one attachment can be added per message. Please paste a single file or image.'
+      );
+      return;
+    }
+
+    processAttachment(candidateFiles[0], { isPaste: true });
   };
 
   const handleRemoveAttachment = (idToRemove) => {
@@ -927,7 +1124,7 @@ Transcript:
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
+          <form onSubmit={handleSubmit} onPaste={handlePaste} className="composer-form" aria-label="Message composer">
             {/* Native file input strictly supporting one document or image at a time */}
             <input
               type="file"
@@ -1059,6 +1256,7 @@ Transcript:
                 rows={1}
                 onChange={(e) => onInputChange && onInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 aria-label="Message input text"
               />
 
