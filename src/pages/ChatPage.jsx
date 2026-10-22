@@ -1205,6 +1205,28 @@ export default function ChatPage() {
     if (hasAttachments) {
       const filesToUpload = attachments.filter((att) => att.file);
       if (filesToUpload.length > 0) {
+        // Enforce maximum single file size client-side before network transmission
+        const MAX_PER_FILE_BYTES = 25 * 1024 * 1024;
+        const oversized = filesToUpload.find((f) => f.file && f.file.size > MAX_PER_FILE_BYTES);
+        if (oversized) {
+          setPersistenceError(`File '${oversized.name}' exceeds the maximum allowed size of 25MB.`);
+          setIsLoading(false);
+          isSubmittingRef.current = false;
+          return false;
+        }
+
+        const uploadController = new AbortController();
+        const UPLOAD_TIMEOUT_MS = 60000;
+        let isTimeout = false;
+        const uploadTimeoutId = setTimeout(() => {
+          isTimeout = true;
+          try {
+            uploadController.abort(new DOMException('Upload timed out after 60 seconds.', 'TimeoutError'));
+          } catch (_) {
+            uploadController.abort();
+          }
+        }, UPLOAD_TIMEOUT_MS);
+
         try {
           const formData = new FormData();
           if (activeChatIdRef.current) {
@@ -1214,8 +1236,6 @@ export default function ChatPage() {
             formData.append('files', att.file, att.name);
           });
 
-          const uploadController = new AbortController();
-          const uploadTimeoutId = setTimeout(() => uploadController.abort(), 30000);
           let uploadRes;
           try {
             uploadRes = await fetch('/api/upload', {
@@ -1276,12 +1296,42 @@ export default function ChatPage() {
                 isImage: Boolean(attItem.isImage),
                 conversationId: activeChatIdRef.current || null
               }).catch((e) => console.warn('Could not cache blob in IndexedDB:', e));
+
+              // Attach base64 data for images under 3MB so stateless serverless environments have direct multimodal access
+              if (attItem.isImage && attItem.file.size <= 3 * 1024 * 1024) {
+                try {
+                  const b64 = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => resolve(null);
+                    reader.readAsDataURL(attItem.file);
+                  });
+                  if (b64) {
+                    proc.base64 = b64;
+                  }
+                } catch (_) {}
+              }
             }
           }
         } catch (uploadErr) {
           console.error('File upload network error:', uploadErr);
+          let userMsg = uploadErr?.message || 'Network request failed';
+          if (isTimeout || uploadErr?.name === 'TimeoutError') {
+            userMsg = 'Attachment upload timed out. The file may be too large or the server is busy. Please try uploading a smaller image or retry.';
+          } else if (uploadErr?.name === 'AbortError' || uploadController.signal.aborted) {
+            const reason = uploadController.signal.reason;
+            const reasonMsg = reason?.message || (typeof reason === 'string' ? reason : null);
+            if (reasonMsg && !reasonMsg.includes('without reason')) {
+              userMsg = reasonMsg;
+            } else {
+              userMsg = 'Attachment upload was cancelled or timed out. Please try again.';
+            }
+          } else if (userMsg.toLowerCase().includes('failed to fetch') || userMsg.toLowerCase().includes('networkerror')) {
+            userMsg = 'Network error while connecting to upload server. Please verify your internet connection.';
+          }
+
           setPersistenceError(
-            `Failed to upload attachments: ${uploadErr?.message || 'Network request failed'}`
+            `Failed to upload attachments: ${userMsg}`
           );
           setIsLoading(false);
           isSubmittingRef.current = false;

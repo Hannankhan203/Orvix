@@ -927,23 +927,34 @@ function parseImageDimensions(
 /**
  * Validates binary file headers and content signatures (magic numbers)
  * to prevent executable binaries or corrupted files from being accepted under false extensions.
+ * Supports both direct in-memory Buffers and disk file paths.
  */
 async function verifyFileSignature(
-  filePath: string,
+  filePathOrBuffer: string | Buffer,
   ext: string
 ): Promise<{ valid: boolean; reason?: string; dimensions?: { width: number; height: number } }> {
   let fd: number | null = null;
   try {
-    const stats = await fs.promises.stat(filePath);
-    if (stats.size === 0) {
-      return { valid: false, reason: 'File is empty (0 bytes).' };
+    let buffer: Buffer;
+    let size = 0;
+
+    if (Buffer.isBuffer(filePathOrBuffer)) {
+      buffer = filePathOrBuffer;
+      size = buffer.length;
+    } else {
+      const stats = await fs.promises.stat(filePathOrBuffer);
+      size = stats.size;
+      const readBuf = Buffer.alloc(Math.min(4096, size));
+      fd = fs.openSync(filePathOrBuffer, 'r');
+      fs.readSync(fd, readBuf, 0, readBuf.length, 0);
+      fs.closeSync(fd);
+      fd = null;
+      buffer = readBuf;
     }
 
-    const buffer = Buffer.alloc(Math.min(4096, stats.size));
-    fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buffer, 0, buffer.length, 0);
-    fs.closeSync(fd);
-    fd = null;
+    if (size === 0) {
+      return { valid: false, reason: 'File is empty (0 bytes).' };
+    }
 
     // Reject executable binary formats regardless of declared extension
     // Linux ELF binary
@@ -1118,18 +1129,9 @@ async function verifyFileSignature(
   }
 }
 
-// Multer storage engine writing to controlled uploads/temp directory with secure UUIDs
-const uploadStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, UPLOAD_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const fileId = crypto.randomUUID();
-    // Safe filename prevents path traversal
-    cb(null, `${fileId}${ext}`);
-  }
-});
+// Multer in-memory storage engine: eliminates ephemeral disk write failures on Vercel
+// Localhost asynchronous replication is performed in the upload handler if disk is writable
+const uploadStorage = multer.memoryStorage();
 
 // Multer pre-upload file filter
 const uploadFilter = (
@@ -1484,20 +1486,17 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         .trim()
         .slice(0, 150) || 'attachment';
 
-      if (file.size === 0) {
+      const fileBuffer = file.buffer;
+      const fileSize = fileBuffer ? fileBuffer.length : file.size;
+
+      if (!fileBuffer || fileSize === 0) {
         validationErrors.push(`File '${safeBaseName}' is empty (0 bytes).`);
-        try {
-          await fs.promises.unlink(file.path);
-        } catch (_) {}
         continue;
       }
 
-      const sigResult = await verifyFileSignature(file.path, ext);
+      const sigResult = await verifyFileSignature(fileBuffer, ext);
       if (!sigResult.valid) {
         validationErrors.push(`File '${safeBaseName}': ${sigResult.reason}`);
-        try {
-          await fs.promises.unlink(file.path);
-        } catch (_) {}
         continue;
       }
 
@@ -1505,22 +1504,24 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
         (file.mimetype || '').toLowerCase().startsWith('image/');
 
-      const fileId = path.basename(file.filename, ext);
+      const fileId = crypto.randomUUID();
+      const diskFilename = `${fileId}${ext}`;
       const nowIso = new Date().toISOString();
 
-      let fileBuffer: Buffer | undefined = undefined;
+      // Persist to local disk asynchronously when writable without blocking or failing on read-only serverless filesystems
       try {
-        fileBuffer = await fs.promises.readFile(file.path);
+        const fullDiskPath = path.join(UPLOAD_DIR, diskFilename);
+        fs.writeFile(fullDiskPath, fileBuffer, () => {});
       } catch (_) {}
 
       const record: UploadedFileRecord = {
         id: fileId,
         originalName: safeBaseName,
-        diskFilename: file.filename,
+        diskFilename,
         mimeType: file.mimetype || (isImg ? `image/${ext.replace('.', '')}` : 'application/octet-stream'),
         extension: ext.replace('.', '').toUpperCase(),
-        size: file.size,
-        formattedSize: formatBytes(file.size),
+        size: fileSize,
+        formattedSize: formatBytes(fileSize),
         status: isImg ? 'ready' : 'uploaded',
         uploadedAt: nowIso,
         expiresAt: Date.now() + TEMP_FILE_TTL_MS,
@@ -1942,6 +1943,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 if (fs.existsSync(fullDiskPath)) {
                   buf = fs.readFileSync(fullDiskPath);
                 }
+              } catch (_) {}
+            }
+            // Allow client-provided base64 image data across stateless serverless invocations
+            if (!buf && (att?.base64 || att?.data || att?.dataUrl)) {
+              const rawB64 = String(att.base64 || att.data || att.dataUrl).replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+              try {
+                buf = Buffer.from(rawB64, 'base64');
               } catch (_) {}
             }
             if (buf && buf.length <= 10 * 1024 * 1024) {
