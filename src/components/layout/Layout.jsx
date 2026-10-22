@@ -88,6 +88,112 @@ export default function Layout({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [sidebarOpen]);
 
+  // Mobile/Tablet left-edge swipe-right gesture to open previous chat list
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const EDGE_ZONE_PX = 40; // Gesture must start within 40px of left screen edge
+    const MIN_SWIPE_PX = 50;  // Must swipe at least 50px horizontally to the right
+    let startX = null;
+    let startY = null;
+    let isEdgeSwipe = false;
+    let isHorizontalGesture = false;
+
+    const handleTouchStart = (e) => {
+      // Gesture only applies when sidebar is closed and on mobile/tablet screen sizes
+      if (sidebarOpen || window.innerWidth >= 1024) return;
+      if (!e.touches || e.touches.length !== 1) return;
+
+      const touch = e.touches[0];
+      // Only initiate if touch begins within the left edge zone
+      if (touch.clientX > EDGE_ZONE_PX) return;
+
+      // Do not interfere if user tapped an interactive form input or element
+      const target = e.target;
+      if (target && target.closest && target.closest('input, textarea, [contenteditable="true"], select')) {
+        return;
+      }
+
+      startX = touch.clientX;
+      startY = touch.clientY;
+      isEdgeSwipe = true;
+      isHorizontalGesture = false;
+    };
+
+    const handleTouchMove = (e) => {
+      if (!isEdgeSwipe || startX === null || startY === null) return;
+      if (!e.touches || e.touches.length !== 1) return;
+
+      const touch = e.touches[0];
+      const deltaX = touch.clientX - startX;
+      const deltaY = touch.clientY - startY;
+
+      // Determine gesture direction once a small movement threshold is crossed
+      if (!isHorizontalGesture) {
+        if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
+          // If vertical movement dominates, user is scrolling - cancel edge swipe immediately
+          if (Math.abs(deltaY) >= Math.abs(deltaX)) {
+            isEdgeSwipe = false;
+            return;
+          }
+          // If swiping rightward from edge, lock as valid horizontal swipe
+          if (deltaX > 10) {
+            isHorizontalGesture = true;
+          } else {
+            // Swiped leftwards off-screen
+            isEdgeSwipe = false;
+            return;
+          }
+        }
+      }
+    };
+
+    const handleTouchEnd = (e) => {
+      if (!isEdgeSwipe || !isHorizontalGesture || startX === null || startY === null) {
+        isEdgeSwipe = false;
+        startX = null;
+        startY = null;
+        isHorizontalGesture = false;
+        return;
+      }
+
+      const touch = e.changedTouches && e.changedTouches[0];
+      if (touch) {
+        const deltaX = touch.clientX - startX;
+        const deltaY = touch.clientY - startY;
+
+        // If swipe distance is sufficient and movement was predominantly horizontal
+        if (deltaX >= MIN_SWIPE_PX && deltaX > Math.abs(deltaY) * 1.2) {
+          setSidebarOpen(true);
+        }
+      }
+
+      isEdgeSwipe = false;
+      startX = null;
+      startY = null;
+      isHorizontalGesture = false;
+    };
+
+    const handleTouchCancel = () => {
+      isEdgeSwipe = false;
+      startX = null;
+      startY = null;
+      isHorizontalGesture = false;
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    window.addEventListener('touchend', handleTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', handleTouchCancel, { passive: true });
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchCancel);
+    };
+  }, [sidebarOpen]);
+
   const toggleSidebar = () => {
     setSidebarOpen((prev) => !prev);
   };
