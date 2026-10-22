@@ -2988,6 +2988,33 @@ html, body {
   color: #334155;
 }
 
+.response-time-badge.live {
+  color: var(--accent-primary);
+  background: var(--accent-subtle);
+  border-color: rgba(37, 99, 235, 0.3);
+  font-weight: 500;
+}
+
+.response-time-badge.live .response-time-icon {
+  color: var(--accent-primary);
+  animation: timerPulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+[data-theme="light"] .response-time-badge.live {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.28);
+}
+
+@keyframes timerPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .assistant-wrapper .message-content {
   width: 100%;
   color: var(--text-primary);

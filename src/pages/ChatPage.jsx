@@ -697,7 +697,10 @@ export default function ChatPage() {
     const abortController = new AbortController();
     activeAbortControllerRef.current = abortController;
 
-    let requestStartTime = performance.now();
+    let requestStartTime =
+      typeof customStartTime === 'number' && customStartTime > 0
+        ? customStartTime
+        : performance.now();
     let measuredResponseTimeMs = null;
 
     let targetText = '';
@@ -862,7 +865,21 @@ export default function ChatPage() {
       timerId = setTimeout(pumpAnimation, 10);
     };
 
-    requestStartTime = performance.now();
+    if (!requestStartTime) {
+      requestStartTime =
+        typeof customStartTime === 'number' && customStartTime > 0
+          ? customStartTime
+          : performance.now();
+    }
+    if (activeChatIdRef.current === targetChatId) {
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, requestStartTime, isStreaming: true }
+            : message
+        )
+      );
+    }
     try {
       const result = await streamAIMessage({
         provider: providerToUse,
@@ -930,6 +947,23 @@ export default function ChatPage() {
       if (result?.provider) finalProvider = result.provider;
 
       isStreamDone = true;
+
+      // Immediately set responseTimeMs on the active message so the live timer
+      // stops and the final response time is displayed at the exact stream completion point
+      if (activeChatIdRef.current === targetChatId) {
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantMessageId
+              ? {
+                  ...message,
+                  responseTimeMs: measuredResponseTimeMs,
+                  modelUsed: activeModel || message.modelUsed,
+                  provider: finalProvider || message.provider
+                }
+              : message
+          )
+        );
+      }
 
       // If the user has switched chats, persist this answer in the
       // original conversation without touching the currently visible chat.
@@ -1525,6 +1559,7 @@ export default function ChatPage() {
       const assistantMessageId =
         `${selectedProvider}-${now}-assistant`;
 
+      const requestStartTime = performance.now();
       const initialAssistantMessage = {
         id: assistantMessageId,
         sender: 'assistant',
@@ -1536,6 +1571,7 @@ export default function ChatPage() {
         }),
         content: '',
         isStreaming: true,
+        requestStartTime,
         referencedAttachments:
           activeAttachments && activeAttachments.length > 0
             ? activeAttachments
@@ -1573,7 +1609,8 @@ export default function ChatPage() {
         assistantMessageId,
         null,
         activeAttachments,
-        multiPartContext
+        multiPartContext,
+        requestStartTime
       );
       return true;
     } catch (error) {
@@ -1642,6 +1679,7 @@ export default function ChatPage() {
       }),
       content: '',
       isStreaming: true,
+      requestStartTime,
       referencedAttachments:
         retryAttachments && retryAttachments.length > 0
           ? retryAttachments
@@ -1729,6 +1767,7 @@ export default function ChatPage() {
       }),
       content: '',
       isStreaming: true,
+      requestStartTime,
       referencedAttachments:
         switchAttachments && switchAttachments.length > 0
           ? switchAttachments
@@ -1835,6 +1874,7 @@ export default function ChatPage() {
               modelUsed: null,
               provider: selectedProvider,
               responseTimeMs: null,
+              requestStartTime,
               timestamp: new Date().toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit'
@@ -1997,6 +2037,7 @@ export default function ChatPage() {
       }),
       content: '',
       isStreaming: true,
+      requestStartTime,
       referencedAttachments:
         updatedUserMessage.attachments && updatedUserMessage.attachments.length > 0
           ? updatedUserMessage.attachments
