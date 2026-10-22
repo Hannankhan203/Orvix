@@ -114,6 +114,18 @@ function resolvePastedFileName(rawFile) {
   return `${prefix}.${ext}`;
 }
 
+// Helper to detect if a drag event involves external files (and not dragged text/elements)
+function isFileDragEvent(e) {
+  if (!e.dataTransfer || !e.dataTransfer.types) return false;
+  const types = e.dataTransfer.types;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === 'Files') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function formatFileSize(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -180,6 +192,10 @@ export default function ChatArea({
   const [attachments, setAttachments] = useState([]);
   const [attachmentNotice, setAttachmentNotice] = useState(null);
 
+  // Drag-and-drop file attachment state
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const dragDepthRef = useRef(0);
+
   // Auto-dismiss attachment notice after 5 seconds
   useEffect(() => {
     if (!attachmentNotice) return;
@@ -213,19 +229,20 @@ export default function ChatArea({
   };
 
   /**
-   * Unified attachment processor shared by both upload file dialog and clipboard paste.
+   * Unified attachment processor shared by upload button, clipboard paste, and drag & drop.
    * Enforces 1-attachment limit, 25MB size restriction, format whitelist, and image preview generation.
    */
-  const processAttachment = (rawFile, { isPaste = false } = {}) => {
+  const processAttachment = (rawFile, { isPaste = false, isDrop = false } = {}) => {
     if (!rawFile) return;
 
     // Strict Rule 1: One-attachment limit check
     if (attachments.length > 0) {
-      setAttachmentNotice(
-        isPaste
-          ? 'Only one attachment can be added per message. Remove the current attachment before pasting another file.'
-          : 'Only one attachment can be added per message. Remove the current attachment first to select a different one.'
-      );
+      const notice = isDrop
+        ? 'Only one attachment can be added per message. Remove the current attachment before adding another file.'
+        : isPaste
+        ? 'Only one attachment can be added per message. Remove the current attachment before pasting another file.'
+        : 'Only one attachment can be added per message. Remove the current attachment first to select a different one.';
+      setAttachmentNotice(notice);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -233,7 +250,7 @@ export default function ChatArea({
     }
 
     // Determine final filename (preserving original where available, generating sensible name for pasted data)
-    const resolvedName = isPaste ? resolvePastedFileName(rawFile) : rawFile.name;
+    const resolvedName = (isPaste || isDrop) ? resolvePastedFileName(rawFile) : rawFile.name;
 
     // Enforce 25MB maximum size limit
     const MAX_FILE_SIZE = 25 * 1024 * 1024;
@@ -272,7 +289,7 @@ export default function ChatArea({
 
     // Reconstruct File object if filename or type needs normalization (e.g. pasted screenshots)
     let file = rawFile;
-    if (isPaste && rawFile.name !== resolvedName) {
+    if ((isPaste || isDrop) && rawFile.name !== resolvedName) {
       try {
         file = new File([rawFile], resolvedName, {
           type: rawFile.type || (isImage ? `image/${ext.toLowerCase()}` : 'application/octet-stream'),
@@ -310,8 +327,8 @@ export default function ChatArea({
       fileInputRef.current.value = '';
     }
 
-    // Keep textarea focused so user can type prompt immediately after pasting
-    if (isPaste && textareaRef.current) {
+    // Keep textarea focused so user can type prompt immediately after attaching
+    if ((isPaste || isDrop) && textareaRef.current) {
       textareaRef.current.focus();
     }
   };
@@ -336,7 +353,7 @@ export default function ChatArea({
       return;
     }
 
-    processAttachment(files[0], { isPaste: false });
+    processAttachment(files[0], { isPaste: false, isDrop: false });
   };
 
   /**
@@ -395,8 +412,113 @@ export default function ChatArea({
       return;
     }
 
-    processAttachment(candidateFiles[0], { isPaste: true });
+    processAttachment(candidateFiles[0], { isPaste: true, isDrop: false });
   };
+
+  /**
+   * Drag & Drop event handlers.
+   * Allows dragging and dropping an image or supported file directly into the chatbot.
+   */
+  const handleDragEnter = (e) => {
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDraggingOver(true);
+  };
+
+  const handleDragOver = (e) => {
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
+    if (!isDraggingOver) {
+      setIsDraggingOver(true);
+    }
+  };
+
+  const handleDragLeave = (e) => {
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current <= 0) {
+      dragDepthRef.current = 0;
+      setIsDraggingOver(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    if (!isFileDragEvent(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDraggingOver(false);
+
+    const dt = e.dataTransfer;
+    if (!dt) return;
+
+    const candidateFiles = [];
+    if (dt.files && dt.files.length > 0) {
+      for (let i = 0; i < dt.files.length; i++) {
+        candidateFiles.push(dt.files[i]);
+      }
+    } else if (dt.items && dt.items.length > 0) {
+      for (let i = 0; i < dt.items.length; i++) {
+        const item = dt.items[i];
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            candidateFiles.push(file);
+          }
+        }
+      }
+    }
+
+    if (candidateFiles.length === 0) {
+      return;
+    }
+
+    // Strict Rule 1: One-attachment limit check for drop
+    if (attachments.length > 0) {
+      setAttachmentNotice(
+        'Only one attachment can be added per message. Remove the current attachment before adding another file.'
+      );
+      return;
+    }
+
+    // Strict Rule 2: Multi-file drop rejection
+    if (candidateFiles.length > 1) {
+      setAttachmentNotice(
+        'Only one attachment can be added per message. Please drop one file at a time.'
+      );
+      return;
+    }
+
+    processAttachment(candidateFiles[0], { isPaste: false, isDrop: true });
+  };
+
+  // Prevent browser default file open behavior when dragged or dropped anywhere on window
+  useEffect(() => {
+    const handleWindowDragOver = (e) => {
+      if (isFileDragEvent(e)) {
+        e.preventDefault();
+      }
+    };
+    const handleWindowDrop = (e) => {
+      if (isFileDragEvent(e)) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, []);
 
   const handleRemoveAttachment = (idToRemove) => {
     setAttachmentNotice(null);
@@ -748,7 +870,14 @@ Transcript:
     recordingState === 'finalizing';
 
   return (
-    <main className="chat-area-container" role="main">
+    <main
+      className={`chat-area-container ${isDraggingOver ? 'is-drag-over' : ''}`}
+      role="main"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Scrollable Viewport */}
       <div
         ref={scrollViewportRef}
@@ -1124,7 +1253,22 @@ Transcript:
             </div>
           )}
 
-          <form onSubmit={handleSubmit} onPaste={handlePaste} className="composer-form" aria-label="Message composer">
+          {/* Drag and Drop Visual Feedback Indicator */}
+          {isDraggingOver && (
+            <div className="composer-drop-banner" role="status" aria-live="polite">
+              <div className="composer-drop-content">
+                <Paperclip size={15} className="composer-drop-icon" aria-hidden="true" />
+                <span className="composer-drop-text">Drop file to attach</span>
+              </div>
+            </div>
+          )}
+
+          <form
+            onSubmit={handleSubmit}
+            onPaste={handlePaste}
+            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''}`}
+            aria-label="Message composer"
+          >
             {/* Native file input strictly supporting one document or image at a time */}
             <input
               type="file"
