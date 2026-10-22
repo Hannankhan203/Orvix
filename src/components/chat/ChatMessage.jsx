@@ -15,7 +15,11 @@ import {
   Pause,
   Play,
   Paperclip,
-  Timer
+  Timer,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -26,6 +30,7 @@ import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { formatResponseTime } from '../../utils/formatResponseTime.js';
+import { getAlternativeMetrics } from '../../services/alternativeResponseService.js';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -216,6 +221,8 @@ export default function ChatMessage({
   onSwitchProvider,
   onRestorePrompt,
   onRegenerate,
+  onGenerateAlternative,
+  onSwitchAlternative,
   onStopGenerating,
   isLoading = false,
   isEditing = false,
@@ -230,6 +237,33 @@ export default function ChatMessage({
   const isStreaming = Boolean(message?.isStreaming);
   const isStopped = Boolean(message?.isStopped);
   const hasContent = Boolean(message?.content && message.content.length > 0);
+
+  const [showAltMenu, setShowAltMenu] = useState(false);
+  const altMenuRef = useRef(null);
+
+  const altMetrics = useMemo(() => getAlternativeMetrics(message), [message]);
+
+  useEffect(() => {
+    if (!showAltMenu) return;
+    const handleClickOutside = (e) => {
+      if (altMenuRef.current && !altMenuRef.current.contains(e.target)) {
+        setShowAltMenu(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setShowAltMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showAltMenu]);
 
   const {
     isSupported: isSpeechSupported,
@@ -294,13 +328,37 @@ export default function ChatMessage({
     };
   }, [isSpeakingThis, pauseSpeech]);
 
-  const currentProviderId = message.failedProvider || message.provider || selectedProvider;
+  const activeAlt = useMemo(() => {
+    if (!message) return null;
+    const activeId = message.activeAlternativeId;
+    if (Array.isArray(message.alternatives)) {
+      return message.alternatives.find((a) => a.id === activeId) || message.alternatives[0] || null;
+    }
+    return null;
+  }, [message]);
+
+  const currentProviderId = message.failedProvider || activeAlt?.provider || message.provider || selectedProvider;
   const currentProviderObj =
     PROVIDER_OPTIONS.find((p) => p.id === currentProviderId) || {
       id: currentProviderId,
       name: currentProviderId.charAt(0).toUpperCase() + currentProviderId.slice(1)
     };
   const fallbackProviders = PROVIDER_OPTIONS.filter((p) => p.id !== currentProviderId);
+
+  // Available models for "Regenerate with another AI Model" (derives from supported providers, excluding cloudflare which has no chat endpoint)
+  const availableAlternativeModels = useMemo(() => {
+    return PROVIDER_OPTIONS.filter((p) => p.id !== 'cloudflare');
+  }, []);
+
+  const activeAlternativeModelName = useMemo(() => {
+    if (activeAlt?.modelUsed) return activeAlt.modelUsed;
+    if (message?.modelUsed) return message.modelUsed;
+    return currentProviderObj?.name || 'AI Model';
+  }, [activeAlt, message?.modelUsed, currentProviderObj]);
+
+  const selectableModels = useMemo(() => {
+    return availableAlternativeModels.filter((p) => p.id !== currentProviderId);
+  }, [availableAlternativeModels, currentProviderId]);
 
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
@@ -967,6 +1025,123 @@ export default function ChatMessage({
                   >
                     Regenerate
                   </Button>
+                )}
+
+                {/* Alternative Responses Navigation (< 1 of 3 >) */}
+                {altMetrics.total > 1 && (
+                  <div className="alternative-nav-wrapper" role="group" aria-label="Response alternatives">
+                    <button
+                      type="button"
+                      className="alternative-nav-btn prev"
+                      disabled={isLoading || !altMetrics.canGoPrevious}
+                      onClick={() => {
+                        if (onSwitchAlternative && altMetrics.canGoPrevious) {
+                          const prevAlt = altMetrics.alternatives[altMetrics.currentIndex - 1];
+                          if (prevAlt) onSwitchAlternative(message.id, prevAlt.id);
+                        }
+                      }}
+                      title="Previous alternative response"
+                      aria-label="Previous alternative response"
+                    >
+                      <ChevronLeft size={13} />
+                    </button>
+                    <span
+                      className="alternative-nav-counter"
+                      title={`Alternative ${altMetrics.currentIndex + 1} of ${altMetrics.total}`}
+                    >
+                      {altMetrics.currentIndex + 1} of {altMetrics.total}
+                    </span>
+                    <span
+                      className="alternative-nav-model-badge"
+                      title={`Currently viewing response generated by ${activeAlternativeModelName}`}
+                    >
+                      {activeAlternativeModelName}
+                    </span>
+                    <button
+                      type="button"
+                      className="alternative-nav-btn next"
+                      disabled={isLoading || !altMetrics.canGoNext}
+                      onClick={() => {
+                        if (onSwitchAlternative && altMetrics.canGoNext) {
+                          const nextAlt = altMetrics.alternatives[altMetrics.currentIndex + 1];
+                          if (nextAlt) onSwitchAlternative(message.id, nextAlt.id);
+                        }
+                      }}
+                      title="Next alternative response"
+                      aria-label="Next alternative response"
+                    >
+                      <ChevronRight size={13} />
+                    </button>
+                  </div>
+                )}
+
+                {/* Regenerate with another AI Model Action & Selection Menu */}
+                {onGenerateAlternative && (
+                  <div className="alternative-generate-menu-wrapper" ref={altMenuRef}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowAltMenu((prev) => !prev)}
+                      disabled={isLoading}
+                      className={`message-action-btn alternative-trigger-btn ${showAltMenu ? 'active' : ''}`}
+                      title={isLoading ? 'Generation in progress...' : 'Regenerate with another AI Model'}
+                      ariaLabel="Regenerate with another AI Model"
+                      aria-haspopup="true"
+                      aria-expanded={showAltMenu}
+                      aria-controls={`alt-menu-${message?.id || 'dropdown'}`}
+                      icon={<Sparkles size={13} />}
+                    >
+                      <span className="action-label-full">Regenerate with another AI Model</span>
+                      <span className="action-label-compact">Another Model</span>
+                    </Button>
+
+                    {showAltMenu && (
+                      <div
+                        id={`alt-menu-${message?.id || 'dropdown'}`}
+                        className="alternative-provider-dropdown"
+                        role="menu"
+                        aria-label="Select AI model for alternative response"
+                      >
+                        <div className="alternative-dropdown-header">
+                          <span>Regenerate with another model:</span>
+                        </div>
+                        <div className="alternative-provider-list">
+                          {selectableModels.length > 0 ? (
+                            selectableModels.map((provider) => {
+                              const hasExistingAlt = (message.alternatives || []).some((a) => a.provider === provider.id);
+                              return (
+                                <button
+                                  key={provider.id}
+                                  type="button"
+                                  className="alternative-provider-option"
+                                  onClick={() => {
+                                    setShowAltMenu(false);
+                                    onGenerateAlternative(message, provider.id);
+                                  }}
+                                  disabled={isLoading}
+                                  role="menuitem"
+                                >
+                                  <div className="alt-provider-info">
+                                    <span className="alt-provider-name">{provider.name}</span>
+                                    <span className="alt-provider-model">{provider.modelTag}</span>
+                                  </div>
+                                  {hasExistingAlt ? (
+                                    <span className="alt-provider-existing-tag" title="An alternative with this model was generated">
+                                      Generated
+                                    </span>
+                                  ) : (
+                                    <span className="alt-provider-ready-tag">Generate</span>
+                                  )}
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <div className="alt-empty-note">No other models available</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
               </>
             )}

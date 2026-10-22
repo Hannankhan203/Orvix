@@ -50,7 +50,7 @@ service cloud.firestore {
 
         allow create: if isOwner(userId)
                       && request.resource.data.keys().hasAll(['id', 'title', 'userId', 'createdAt', 'updatedAt'])
-                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt'])
+                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt'])
                       && request.resource.data.userId == userId
                       && request.resource.data.id == chatId
                       && request.resource.data.title is string
@@ -59,7 +59,7 @@ service cloud.firestore {
                       && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool);
 
         allow update: if isOwner(userId)
-                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt'])
+                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt'])
                       && request.resource.data.userId == resource.data.userId
                       && request.resource.data.id == resource.data.id
                       && request.resource.data.title is string
@@ -73,7 +73,7 @@ service cloud.firestore {
 
           allow create: if isOwner(userId)
                         && request.resource.data.keys().hasAll(['id', 'sender', 'content', 'createdAt', 'clientTimestamp'])
-                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'createdAt', 'clientTimestamp'])
+                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'provider', 'responseTimeMs', 'parentMessageId', 'activeAlternativeId', 'alternatives', 'attachments', 'referencedAttachments', 'createdAt', 'clientTimestamp'])
                         && request.resource.data.id == messageId
                         && request.resource.data.sender in ['user', 'assistant']
                         && request.resource.data.content is string
@@ -81,7 +81,7 @@ service cloud.firestore {
                         && request.resource.data.content.size() <= 100000;
 
           allow update: if isOwner(userId)
-                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'createdAt', 'clientTimestamp'])
+                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'provider', 'responseTimeMs', 'parentMessageId', 'activeAlternativeId', 'alternatives', 'attachments', 'referencedAttachments', 'createdAt', 'clientTimestamp'])
                         && request.resource.data.id == resource.data.id
                         && request.resource.data.sender == resource.data.sender
                         && request.resource.data.content is string

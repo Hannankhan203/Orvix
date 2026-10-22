@@ -28,6 +28,14 @@ import {
   resolveMultiPartContext,
   responseHasContinuationNotice
 } from '../services/multiPartResponseService.js';
+import {
+  normalizeAssistantMessage,
+  addAlternativeToAssistantMessage,
+  switchActiveAlternativeInMessage,
+  updateActiveAlternativeInMessage,
+  ensureConversationAlternatives,
+  createAlternativeRecord
+} from '../services/alternativeResponseService.js';
 import { AlertCircle, X, Check } from 'lucide-react';
 
 export default function ChatPage() {
@@ -290,7 +298,7 @@ export default function ChatPage() {
     );
 
     if (sample) {
-      setMessages([...sample.messages]);
+      setMessages(ensureConversationAlternatives(sample.messages));
       setActiveMode(sample.mode || 'general');
       setMessagesLoading(false);
       return undefined;
@@ -306,7 +314,7 @@ export default function ChatPage() {
       guestChat &&
       Array.isArray(guestChat.messages)
     ) {
-      setMessages([...guestChat.messages]);
+      setMessages(ensureConversationAlternatives(guestChat.messages));
       setMessagesLoading(false);
       return undefined;
     }
@@ -328,7 +336,7 @@ export default function ChatPage() {
           }
 
           const safeMessages = Array.isArray(loadedMessages)
-            ? loadedMessages
+            ? ensureConversationAlternatives(loadedMessages)
             : [];
 
           setMessages(safeMessages);
@@ -609,23 +617,30 @@ export default function ChatPage() {
     }
   };
 
-  // Persist messages without duplicate writes.
-  const persistMessageSafe = async (chatId, message) => {
+  // Persist messages without duplicate writes (unless forced update).
+  const persistMessageSafe = async (chatId, message, force = false) => {
     if (!chatId || !message?.id) return;
 
-    if (persistedMessageIdsRef.current.has(message.id)) {
+    if (force) {
+      persistedMessageIdsRef.current.delete(message.id);
+    } else if (persistedMessageIdsRef.current.has(message.id)) {
       return;
     }
 
     // Reserve the ID before starting the asynchronous write.
     persistedMessageIdsRef.current.add(message.id);
 
+    const normalizedMessage =
+      message.sender === 'assistant'
+        ? normalizeAssistantMessage(message)
+        : message;
+
     if (isCloudEnabled && currentUser?.uid) {
       try {
         await saveChatMessage(
           currentUser.uid,
           chatId,
-          message
+          normalizedMessage
         );
       } catch (error) {
         // Allow a future retry if this write failed.
@@ -645,12 +660,12 @@ export default function ChatPage() {
         if (chat.id !== chatId) return chat;
 
         const hasExisting = (chat.messages || []).some(
-          (item) => item.id === message.id
+          (item) => item.id === normalizedMessage.id
         );
 
         const updatedMessages = hasExisting
-          ? (chat.messages || []).map((item) => (item.id === message.id ? message : item))
-          : [...(chat.messages || []), message];
+          ? (chat.messages || []).map((item) => (item.id === normalizedMessage.id ? normalizedMessage : item))
+          : [...(chat.messages || []), normalizedMessage];
 
         return {
           ...chat,
@@ -745,37 +760,54 @@ export default function ChatPage() {
         ? (responseTime ?? measuredResponseTimeMs)
         : null;
 
-      const completedMessage = {
-        id: assistantMessageId,
-        sender: 'assistant',
-        provider: providerToFinalize || finalProvider || providerToUse,
-        modelUsed: modelToUse || activeModel,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
-        }),
-        content: contentToSave,
-        isStreaming: false,
-        isStopped: Boolean(isStopped),
-        responseTimeMs: typeof finalResponseTime === 'number' ? finalResponseTime : undefined,
-        referencedAttachments:
-          currentAttachments && currentAttachments.length > 0
-            ? currentAttachments
-            : undefined
-      };
+      let completedMessage = null;
 
       if (activeChatIdRef.current === targetChatId) {
-        setMessages((previous) =>
-          previous.map((message) =>
-            message.id === assistantMessageId
-              ? completedMessage
-              : message
-          )
-        );
+        setMessages((previous) => {
+          return previous.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            const normalized = normalizeAssistantMessage(message);
+            const finalized = updateActiveAlternativeInMessage(normalized, {
+              content: contentToSave,
+              modelUsed: modelToUse || activeModel || normalized.modelUsed,
+              provider: providerToFinalize || finalProvider || providerToUse || normalized.provider,
+              responseTimeMs: typeof finalResponseTime === 'number' ? finalResponseTime : normalized.responseTimeMs,
+              isStreaming: false,
+              isStopped: Boolean(isStopped),
+              referencedAttachments:
+                currentAttachments && currentAttachments.length > 0
+                  ? currentAttachments
+                  : normalized.referencedAttachments
+            });
+            completedMessage = finalized;
+            return finalized;
+          });
+        });
+      }
+
+      if (!completedMessage) {
+        completedMessage = normalizeAssistantMessage({
+          id: assistantMessageId,
+          sender: 'assistant',
+          provider: providerToFinalize || finalProvider || providerToUse,
+          modelUsed: modelToUse || activeModel,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          content: contentToSave,
+          isStreaming: false,
+          isStopped: Boolean(isStopped),
+          responseTimeMs: typeof finalResponseTime === 'number' ? finalResponseTime : undefined,
+          referencedAttachments:
+            currentAttachments && currentAttachments.length > 0
+              ? currentAttachments
+              : undefined
+        });
       }
 
       if (targetChatId) {
-        await persistMessageSafe(targetChatId, completedMessage);
+        await persistMessageSafe(targetChatId, completedMessage, true);
       }
 
       if (activeAnimationRef.current === cancelCurrentAnimation) {
@@ -827,21 +859,20 @@ export default function ChatPage() {
         }
 
         setMessages((previous) =>
-          previous.map((message) =>
-            message.id === assistantMessageId
-              ? {
-                  ...message,
-                  content: displayedText,
-                  modelUsed: activeModel || message.modelUsed,
-                  provider: finalProvider || message.provider,
-                  isStreaming: true,
-                  referencedAttachments:
-                    currentAttachments && currentAttachments.length > 0
-                      ? currentAttachments
-                      : message.referencedAttachments
-                }
-              : message
-          )
+          previous.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            const normalized = normalizeAssistantMessage(message);
+            return updateActiveAlternativeInMessage(normalized, {
+              content: displayedText,
+              modelUsed: activeModel || message.modelUsed,
+              provider: finalProvider || message.provider,
+              isStreaming: true,
+              referencedAttachments:
+                currentAttachments && currentAttachments.length > 0
+                  ? currentAttachments
+                  : message.referencedAttachments
+            });
+          })
         );
 
         timerId = setTimeout(pumpAnimation, 18);
@@ -906,19 +937,18 @@ export default function ChatPage() {
 
           if (activeChatIdRef.current === targetChatId) {
             setMessages((previous) =>
-              previous.map((message) =>
-                message.id === assistantMessageId
-                  ? {
-                      ...message,
-                      modelUsed: activeModel,
-                      provider: finalProvider,
-                      referencedAttachments:
-                        currentAttachments && currentAttachments.length > 0
-                          ? currentAttachments
-                          : message.referencedAttachments
-                    }
-                  : message
-              )
+              previous.map((message) => {
+                if (message.id !== assistantMessageId) return message;
+                const normalized = normalizeAssistantMessage(message);
+                return updateActiveAlternativeInMessage(normalized, {
+                  modelUsed: activeModel,
+                  provider: finalProvider,
+                  referencedAttachments:
+                    currentAttachments && currentAttachments.length > 0
+                      ? currentAttachments
+                      : message.referencedAttachments
+                });
+              })
             );
           }
         },
@@ -952,16 +982,15 @@ export default function ChatPage() {
       // stops and the final response time is displayed at the exact stream completion point
       if (activeChatIdRef.current === targetChatId) {
         setMessages((previous) =>
-          previous.map((message) =>
-            message.id === assistantMessageId
-              ? {
-                  ...message,
-                  responseTimeMs: measuredResponseTimeMs,
-                  modelUsed: activeModel || message.modelUsed,
-                  provider: finalProvider || message.provider
-                }
-              : message
-          )
+          previous.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            const normalized = normalizeAssistantMessage(message);
+            return updateActiveAlternativeInMessage(normalized, {
+              responseTimeMs: measuredResponseTimeMs,
+              modelUsed: activeModel || message.modelUsed,
+              provider: finalProvider || message.provider
+            });
+          })
         );
       }
 
@@ -970,26 +999,35 @@ export default function ChatPage() {
       if (activeChatIdRef.current !== targetChatId) {
         cancelCurrentAnimation();
 
-        const completedMessage = {
+        let existingTargetMsg = null;
+        setUserChats((chats) => {
+          const chat = chats.find((c) => c.id === targetChatId);
+          existingTargetMsg = chat?.messages?.find((m) => m.id === assistantMessageId);
+          return chats;
+        });
+
+        const normalized = normalizeAssistantMessage(existingTargetMsg || {
           id: assistantMessageId,
           sender: 'assistant',
           provider: finalProvider || providerToUse,
           modelUsed: activeModel,
-          timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          }),
+          content: resolvedText
+        });
+
+        const completedMessage = updateActiveAlternativeInMessage(normalized, {
           content: resolvedText,
+          modelUsed: activeModel,
+          provider: finalProvider || providerToUse,
           isStreaming: false,
           responseTimeMs: measuredResponseTimeMs,
           referencedAttachments:
             currentAttachments && currentAttachments.length > 0
               ? currentAttachments
               : undefined
-        };
+        });
 
         if (targetChatId) {
-          await persistMessageSafe(targetChatId, completedMessage);
+          await persistMessageSafe(targetChatId, completedMessage, true);
         }
 
         setIsLoading(false);
@@ -1009,25 +1047,6 @@ export default function ChatPage() {
         }
 
         displayedText = targetText;
-
-        setMessages((previous) =>
-          previous.map((message) =>
-            message.id === assistantMessageId
-              ? {
-                  ...message,
-                  content: targetText,
-                  modelUsed: activeModel || message.modelUsed,
-                  provider: finalProvider || message.provider,
-                  isStreaming: false,
-                  responseTimeMs: measuredResponseTimeMs,
-                  referencedAttachments:
-                    currentAttachments && currentAttachments.length > 0
-                      ? currentAttachments
-                      : message.referencedAttachments
-                }
-              : message
-          )
-        );
 
         await finalizeAssistantMessage(
           targetText,
@@ -1060,36 +1079,32 @@ export default function ChatPage() {
         const stoppedText =
           targetText.trim().length > 0 ? targetText : 'Response generation stopped.';
 
-        const stoppedMessage = {
-          id: assistantMessageId,
-          sender: 'assistant',
-          provider: finalProvider || providerToUse,
-          modelUsed: activeModel,
-          timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          }),
-          content: stoppedText,
-          isStreaming: false,
-          isStopped: true,
-          referencedAttachments:
-            currentAttachments && currentAttachments.length > 0
-              ? currentAttachments
-              : undefined
-        };
+        let stoppedMessage = null;
 
         if (activeChatIdRef.current === targetChatId) {
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === assistantMessageId
-                ? stoppedMessage
-                : message
-            )
-          );
+          setMessages((previous) => {
+            return previous.map((message) => {
+              if (message.id !== assistantMessageId) return message;
+              const normalized = normalizeAssistantMessage(message);
+              const finalized = updateActiveAlternativeInMessage(normalized, {
+                content: stoppedText,
+                modelUsed: activeModel,
+                provider: finalProvider || providerToUse,
+                isStreaming: false,
+                isStopped: true,
+                referencedAttachments:
+                  currentAttachments && currentAttachments.length > 0
+                    ? currentAttachments
+                    : undefined
+              });
+              stoppedMessage = finalized;
+              return finalized;
+            });
+          });
         }
 
-        if (targetChatId) {
-          await persistMessageSafe(targetChatId, stoppedMessage);
+        if (targetChatId && stoppedMessage) {
+          await persistMessageSafe(targetChatId, stoppedMessage, true);
         }
 
         setIsLoading(false);
@@ -1191,31 +1206,67 @@ export default function ChatPage() {
             await persistMessageSafe(targetChatId, partialMessage);
           }
         } else {
-          const errorMessage = {
-            id: `error-${Date.now()}`,
-            sender: 'assistant',
-            isError: true,
-            failedPrompt: promptText,
-            failedProvider: finalProvider || providerToUse,
-            canSwitchProvider: true,
-            timestamp: new Date().toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit'
-            }),
-            content: friendlyMsg,
-            referencedAttachments:
-              currentAttachments && currentAttachments.length > 0
-                ? currentAttachments
-                : undefined
-          };
+          // Empty failure before any content could stream
+          let preservedExistingAlternative = false;
 
           setMessages((previous) =>
-            previous.map((message) =>
-              message.id === assistantMessageId
-                ? errorMessage
-                : message
-            )
+            previous.map((message) => {
+              if (message.id !== assistantMessageId) return message;
+              const normalized = normalizeAssistantMessage(message);
+              const altList = Array.isArray(normalized.alternatives) ? normalized.alternatives : [];
+
+              // If there are multiple alternatives (e.g. newly requested alternative failed),
+              // remove the empty failed alternative and safely restore the previous successful response
+              if (altList.length > 1) {
+                preservedExistingAlternative = true;
+                const remainingAlts = altList.filter(
+                  (a) => a.id !== normalized.activeAlternativeId || (a.content && a.content.trim().length > 0)
+                );
+                const restoredAlts = remainingAlts.length > 0 ? remainingAlts : altList;
+                const activeAlt = restoredAlts[restoredAlts.length - 1];
+                return {
+                  ...normalized,
+                  alternatives: restoredAlts,
+                  activeAlternativeId: activeAlt?.id || normalized.activeAlternativeId,
+                  content: activeAlt?.content || normalized.content,
+                  provider: activeAlt?.provider || normalized.provider,
+                  modelUsed: activeAlt?.modelUsed || normalized.modelUsed,
+                  isStreaming: false,
+                  isError: false
+                };
+              }
+
+              // If single alternative that already had content (e.g. regenerating in place failed)
+              if (normalized.content && normalized.content.trim().length > 0) {
+                preservedExistingAlternative = true;
+                return {
+                  ...normalized,
+                  isStreaming: false
+                };
+              }
+
+              const errorMessage = {
+                id: `error-${Date.now()}`,
+                sender: 'assistant',
+                isError: true,
+                failedPrompt: promptText,
+                failedProvider: finalProvider || providerToUse,
+                canSwitchProvider: true,
+                timestamp: new Date().toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit'
+                }),
+                content: friendlyMsg,
+                referencedAttachments:
+                  currentAttachments && currentAttachments.length > 0
+                    ? currentAttachments
+                    : undefined
+              };
+              return errorMessage;
+            })
           );
+
+          setPersistenceError(friendlyMsg);
         }
       } else if (targetChatId && targetText.trim().length > 0) {
         const partialMessage = {
@@ -1560,23 +1611,27 @@ export default function ChatPage() {
         `${selectedProvider}-${now}-assistant`;
 
       const requestStartTime = performance.now();
-      const initialAssistantMessage = {
-        id: assistantMessageId,
-        sender: 'assistant',
-        provider: selectedProvider,
-        modelUsed: null,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
-        }),
-        content: '',
-        isStreaming: true,
-        requestStartTime,
-        referencedAttachments:
-          activeAttachments && activeAttachments.length > 0
-            ? activeAttachments
-            : undefined
-      };
+      const initialAssistantMessage = normalizeAssistantMessage(
+        {
+          id: assistantMessageId,
+          sender: 'assistant',
+          parentMessageId: userMessage.id,
+          provider: selectedProvider,
+          modelUsed: null,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          content: '',
+          isStreaming: true,
+          requestStartTime,
+          referencedAttachments:
+            activeAttachments && activeAttachments.length > 0
+              ? activeAttachments
+              : undefined
+        },
+        userMessage
+      );
 
       const validHistory = messages.filter(
         (message) => !message.isError
@@ -1811,7 +1866,7 @@ export default function ChatPage() {
     );
   };
 
-  // Regenerate an assistant response in-place using current model & preserved conversation context
+  // Regenerate an assistant response in-place using the model of the response currently being viewed
   const handleRegenerate = async (assistantMessage) => {
     stopSpeech();
 
@@ -1822,18 +1877,27 @@ export default function ChatPage() {
     if (msgIndex === -1) return;
 
     // Find the user prompt preceding this assistant message
-    const precedingUserMessage = [...messages.slice(0, msgIndex)]
-      .reverse()
-      .find((m) => m.sender === 'user');
+    const precedingUserMessage = assistantMessage.parentMessageId
+      ? messages.find((m) => m.id === assistantMessage.parentMessageId)
+      : [...messages.slice(0, msgIndex)].reverse().find((m) => m.sender === 'user');
 
-    if (!precedingUserMessage || !precedingUserMessage.content) {
+    if (!precedingUserMessage || (!precedingUserMessage.content && (!precedingUserMessage.attachments || precedingUserMessage.attachments.length === 0))) {
       console.warn('Cannot regenerate: preceding user prompt not found.');
       return;
     }
 
-    const userPromptText = precedingUserMessage.content;
+    const userPromptText =
+      precedingUserMessage.content ||
+      (Array.isArray(precedingUserMessage.attachments) && precedingUserMessage.attachments.length > 0
+        ? `[User attached ${precedingUserMessage.attachments.length} file: ${precedingUserMessage.attachments.map((a) => a.name || a.originalName).join(', ')}]`
+        : '');
     const userMsgIndex = messages.findIndex((m) => m.id === precedingUserMessage.id);
     const validHistory = messages.slice(0, userMsgIndex).filter((m) => !m.isError);
+
+    // Identify the provider/model of the response currently being viewed
+    const normalizedTarget = normalizeAssistantMessage(assistantMessage, precedingUserMessage);
+    const activeAlt = getActiveAlternative(normalizedTarget);
+    const providerToUse = activeAlt?.provider || assistantMessage.provider || selectedProvider;
 
     const requestStartTime = performance.now();
 
@@ -1864,31 +1928,33 @@ export default function ChatPage() {
       }
     }
 
-    // Update in-place to streaming state without creating duplicate messages
+    // Update active alternative in-place to streaming state using its own provider without replacing other alternatives
     setMessages((previous) =>
-      previous.map((m) =>
-        m.id === targetAssistantId
-          ? {
-              ...m,
-              content: '',
-              modelUsed: null,
-              provider: selectedProvider,
-              responseTimeMs: null,
-              requestStartTime,
-              timestamp: new Date().toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit'
-              }),
-              isStreaming: true,
-              isError: false,
-              isStopped: false,
-              referencedAttachments:
-                precedingAttachments.length > 0
-                  ? precedingAttachments
-                  : m.referencedAttachments
-            }
-          : m
-      )
+      previous.map((m) => {
+        if (m.id !== targetAssistantId) return m;
+        const normalized = normalizeAssistantMessage(m, precedingUserMessage);
+        const updated = updateActiveAlternativeInMessage(normalized, {
+          content: '',
+          modelUsed: null,
+          provider: providerToUse,
+          responseTimeMs: null,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          isStreaming: true,
+          isError: false,
+          isStopped: false,
+          referencedAttachments:
+            precedingAttachments.length > 0
+              ? precedingAttachments
+              : m.referencedAttachments
+        });
+        return {
+          ...updated,
+          requestStartTime
+        };
+      })
     );
 
     await executePrompt(
@@ -1896,11 +1962,128 @@ export default function ChatPage() {
       validHistory,
       currentChatId,
       targetAssistantId,
-      null,
+      providerToUse,
       precedingAttachments,
       {},
       requestStartTime
     );
+  };
+
+  // Generate an alternative response for an existing assistant message using another provider/model
+  const handleGenerateAlternative = async (assistantMessage, targetProvider) => {
+    stopSpeech();
+
+    if (isLoading || isSubmittingRef.current || !assistantMessage?.id || !targetProvider) return;
+
+    const currentChatId = activeChatIdRef.current;
+    const msgIndex = messages.findIndex((m) => m.id === assistantMessage.id);
+    if (msgIndex === -1) return;
+
+    const precedingUserMessage = assistantMessage.parentMessageId
+      ? messages.find((m) => m.id === assistantMessage.parentMessageId)
+      : [...messages.slice(0, msgIndex)].reverse().find((m) => m.sender === 'user');
+
+    if (!precedingUserMessage || (!precedingUserMessage.content && (!precedingUserMessage.attachments || precedingUserMessage.attachments.length === 0))) {
+      console.warn('Cannot generate alternative: preceding user prompt not found.');
+      return;
+    }
+
+    const userPromptText =
+      precedingUserMessage.content ||
+      (Array.isArray(precedingUserMessage.attachments) && precedingUserMessage.attachments.length > 0
+        ? `[User attached ${precedingUserMessage.attachments.length} file: ${precedingUserMessage.attachments.map((a) => a.name || a.originalName).join(', ')}]`
+        : '');
+    const userMsgIndex = messages.findIndex((m) => m.id === precedingUserMessage.id);
+    const validHistory = messages.slice(0, userMsgIndex).filter((m) => !m.isError);
+
+    const chosenProvider = targetProvider;
+    const targetAssistantId = assistantMessage.id;
+    const requestStartTime = performance.now();
+
+    isSubmittingRef.current = true;
+    setIsLoading(true);
+    setPersistenceError(null);
+
+    // Allow cache/Firestore overwrite for this message ID
+    persistedMessageIdsRef.current.delete(targetAssistantId);
+
+    let precedingAttachments =
+      assistantMessage.referencedAttachments ||
+      precedingUserMessage?.attachments ||
+      [];
+    if ((!precedingAttachments || precedingAttachments.length === 0) && messages.length > 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (Array.isArray(m.attachments) && m.attachments.length > 0) {
+          precedingAttachments = m.attachments;
+          break;
+        }
+        if (Array.isArray(m.referencedAttachments) && m.referencedAttachments.length > 0) {
+          precedingAttachments = m.referencedAttachments;
+          break;
+        }
+      }
+    }
+
+    const newAlternative = createAlternativeRecord({
+      parentMessageId: precedingUserMessage.id,
+      provider: chosenProvider,
+      modelUsed: null,
+      content: '',
+      isStreaming: true,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      referencedAttachments: precedingAttachments
+    });
+
+    setMessages((previous) =>
+      previous.map((m) => {
+        if (m.id !== targetAssistantId) return m;
+        const normalized = normalizeAssistantMessage(m, precedingUserMessage);
+        const updated = addAlternativeToAssistantMessage(normalized, newAlternative);
+        return {
+          ...updated,
+          requestStartTime,
+          isStreaming: true,
+          isError: false,
+          isStopped: false
+        };
+      })
+    );
+
+    await executePrompt(
+      userPromptText,
+      validHistory,
+      currentChatId,
+      targetAssistantId,
+      chosenProvider,
+      precedingAttachments,
+      {},
+      requestStartTime
+    );
+  };
+
+  // Switch the active alternative response for an assistant message
+  const handleSwitchAlternative = (assistantMessageId, targetAlternativeId) => {
+    stopSpeech();
+
+    if (isLoading || isSubmittingRef.current) return;
+
+    setMessages((previous) => {
+      const next = previous.map((m) => {
+        if (m.id !== assistantMessageId) return m;
+        return switchActiveAlternativeInMessage(m, targetAlternativeId);
+      });
+
+      const updatedMsg = next.find((m) => m.id === assistantMessageId);
+      if (updatedMsg && activeChatIdRef.current) {
+        void persistMessageSafe(activeChatIdRef.current, updatedMsg, true);
+      }
+
+      return next;
+    });
   };
 
   // Stop active AI response generation
@@ -2026,23 +2209,27 @@ export default function ChatPage() {
     // 5. Create fresh assistant response placeholder
     const now = Date.now();
     const assistantMessageId = `${selectedProvider}-${now}-assistant`;
-    const initialAssistantMessage = {
-      id: assistantMessageId,
-      sender: 'assistant',
-      provider: selectedProvider,
-      modelUsed: null,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      }),
-      content: '',
-      isStreaming: true,
-      requestStartTime,
-      referencedAttachments:
-        updatedUserMessage.attachments && updatedUserMessage.attachments.length > 0
-          ? updatedUserMessage.attachments
-          : undefined
-    };
+    const initialAssistantMessage = normalizeAssistantMessage(
+      {
+        id: assistantMessageId,
+        sender: 'assistant',
+        parentMessageId: updatedUserMessage.id,
+        provider: selectedProvider,
+        modelUsed: null,
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
+        content: '',
+        isStreaming: true,
+        requestStartTime,
+        referencedAttachments:
+          updatedUserMessage.attachments && updatedUserMessage.attachments.length > 0
+            ? updatedUserMessage.attachments
+            : undefined
+      },
+      updatedUserMessage
+    );
 
     // 6. Truncate conversation state to: earlier + updatedUserMessage + initialAssistantMessage
     const nextMessages = [
@@ -2247,6 +2434,8 @@ export default function ChatPage() {
         onSwitchProvider={handleSwitchProviderAndRetry}
         onRestorePrompt={handleRestorePrompt}
         onRegenerate={handleRegenerate}
+        onGenerateAlternative={handleGenerateAlternative}
+        onSwitchAlternative={handleSwitchAlternative}
         onStopGenerating={handleStopGenerating}
         onEditResend={handleEditResend}
         editingMessageId={editingMessageId}

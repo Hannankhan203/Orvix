@@ -19,7 +19,7 @@ export const PROVIDER_OPTIONS = [
   {
     id: AI_PROVIDERS.GEMINI,
     name: 'Gemini',
-    modelTag: 'Gemini 3.1 Flash Lite',
+    modelTag: 'Gemini 3.8 Flash',
     description: 'Google Gemini',
     envKey: 'VITE_GEMINI_API_KEY'
   },

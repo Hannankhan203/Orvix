@@ -170,6 +170,8 @@ export default function ChatArea({
   onSwitchProvider,
   onRestorePrompt,
   onRegenerate,
+  onGenerateAlternative,
+  onSwitchAlternative,
   onStopGenerating,
   onEditResend,
   editingMessageId = null,
@@ -1013,6 +1015,8 @@ Transcript:
               onSwitchProvider={onSwitchProvider}
               onRestorePrompt={onRestorePrompt}
               onRegenerate={onRegenerate}
+              onGenerateAlternative={onGenerateAlternative}
+              onSwitchAlternative={onSwitchAlternative}
               onStopGenerating={onStopGenerating}
               onEditResend={onEditResend}
               editingMessageId={editingMessageId}

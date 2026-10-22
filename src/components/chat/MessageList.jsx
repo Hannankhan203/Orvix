@@ -22,6 +22,8 @@ export default function MessageList({
   onSwitchProvider,
   onRestorePrompt,
   onRegenerate,
+  onGenerateAlternative,
+  onSwitchAlternative,
   onStopGenerating,
   onEditResend,
   editingMessageId = null,
@@ -44,6 +46,8 @@ export default function MessageList({
           onSwitchProvider={onSwitchProvider}
           onRestorePrompt={onRestorePrompt}
           onRegenerate={onRegenerate}
+          onGenerateAlternative={onGenerateAlternative}
+          onSwitchAlternative={onSwitchAlternative}
           onStopGenerating={onStopGenerating}
           isLoading={isLoading}
           isEditing={editingMessageId === msg.id}
