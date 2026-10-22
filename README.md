@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.4.0**
+**Current Version: Orvix v0.5.0**
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model AI Conversation Companion with Deep Document Understanding and Image Optical Character Recognition (OCR)</strong>
+  <strong>An Intelligent, Multi-Model AI Conversation Companion with Deep Document Understanding, Image Optical Character Recognition (OCR), and Serverless Production Resilience</strong>
 </p>
 
 ---
@@ -15,7 +15,7 @@
 3. [Architecture & Technology Stack](#architecture--technology-stack)
    - [Frontend Architecture](#frontend-architecture)
    - [Backend Architecture](#backend-architecture)
-   - [File, Document & Image Upload Pipeline](#file-document--image-upload-pipeline)
+   - [Production Serverless & File Upload Pipeline](#production-serverless--file-upload-pipeline)
    - [Database & Authentication Architecture](#database--authentication-architecture)
 4. [AI Providers & Selectable Models](#ai-providers--selectable-models)
    - [Fully Implemented Providers](#fully-implemented-providers)
@@ -45,7 +45,7 @@
    - [Important Clarification: OCR vs Native Visual Reasoning](#important-clarification-ocr-vs-native-visual-reasoning)
 8. [Storage & Persistence Architecture](#storage--persistence-architecture)
    - [Client-Side IndexedDB Storage](#client-side-indexeddb-storage)
-   - [Server-Side Temporary Staging & Lifecycle](#server-side-temporary-staging--lifecycle)
+   - [Serverless-Resilient In-Memory Staging](#serverless-resilient-in-memory-staging)
    - [Cloud Firestore Message History](#cloud-firestore-message-history)
    - [Guest Mode Storage](#guest-mode-storage)
 9. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
@@ -62,7 +62,7 @@
     - [Building for Production](#building-for-production)
     - [Running the Production Server](#running-the-production-server)
     - [Type Checking & Linting](#type-checking--linting)
-    - [Executing Test Suites](#executing-test-suites)
+    - [Code Quality, Verification & Health Checks](#code-quality-verification--health-checks)
 13. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
 14. [Deployment Information](#deployment-information)
 15. [Security Architecture](#security-architecture)
@@ -74,15 +74,15 @@
 
 ## Project Overview
 
-**Orvix** is an intelligent, multi-model conversational AI web application designed for high-performance text conversation, surgical document comprehension, and image Optical Character Recognition (OCR). Built as a full-stack Node.js 22 application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete data ownership.
+**Orvix** is an intelligent, multi-model conversational AI web application designed for high-performance text conversation, surgical document comprehension, image Optical Character Recognition (OCR), and production-grade serverless reliability. Built as a full-stack Node.js application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides seamless access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete user privacy.
 
 Orvix integrates four selectable AI providers:
 - **Google Gemini** (`gemini-3.8-flash` primary, with automatic failover to `gemini-3.1-flash-lite`) via the modern `@google/genai` TypeScript SDK.
 - **Groq** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) via high-speed OpenAI-compatible REST completions.
 - **OpenRouter** (`openrouter/free`) routing across high-capacity free community models.
-- **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing serverless inference on Cloudflare's global network.
+- **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing serverless inference on Cloudflare's global edge network.
 
-With **version v0.4.0**, Orvix expands beyond text and office documents to incorporate a complete **Image Attachment and OCR Text Extraction Engine**. Users can attach photos, screenshots, receipts, invoices, and handwritten diagrams (JPG, PNG, WebP, GIF, BMP, HEIC), view image previews in the message composer, inspect thumbnails in chat messages, open an accessible preview modal to examine extracted text, and query the text contained in images across all four AI providers with real-time streaming answers.
+With **version v0.5.0**, Orvix hardens its **Production Attachment & Serverless Architecture**. It eliminates upload failures (`signal is aborted without reason`) and 404 file errors on serverless platforms such as Vercel. By migrating from ephemeral disk writes to high-performance in-memory processing (`multer.memoryStorage()`), introducing serverless-aware query rewrites, and strengthening client-side `AbortController` timeout handling, Orvix delivers dependable document and image uploads across both localhost and hosted production environments.
 
 ---
 
@@ -94,12 +94,13 @@ Orvix was engineered to deliver an accessible, flexible, and privacy-conscious A
 2. **Deep Document & Image Text Understanding**: Extract and analyze text from complex multi-page PDFs, Word documents, PowerPoint presentations, spreadsheets, data files, and images (OCR) with precise page/slide/section boundary citations.
 3. **Frictionless Onboarding**: Explore the complete application immediately via Guest Mode without requiring API keys, cloud subscriptions, or account creation.
 4. **Secure Server-Side Proxying**: Route all AI completions, uploads, and OCR through a protected Express server (`/api/chat`, `/api/upload`), ensuring API keys, file system paths, and raw payloads are never exposed to the client.
-5. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
-6. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
+5. **Production Serverless Resilience**: Process uploads in-memory on serverless deployments where filesystems are strictly read-only, while preserving disk-backed workflows in local development.
+6. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
+7. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
 
 ### Current Status
-- **Current Version**: `v0.4.0` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
-- **Build Status**: Verified on Node.js 22 LTS. All TypeScript checks (`npm run lint`), Vite builds (`npm run build`), and 6 automated test suites pass with 100% test coverage.
+- **Current Version**: `v0.5.0` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
+- **Build Status**: Verified on Node.js 22 LTS. All TypeScript checks (`npm run lint`), Vite builds (`npm run build`), and test suites pass with zero errors.
 
 ---
 
@@ -126,10 +127,12 @@ Orvix was engineered to deliver an accessible, flexible, and privacy-conscious A
   - `GET /api/upload/config`: Returns upload bounds (25 MB max file size, 5 attachments per message).
   - `GET /api/upload/:id`: Returns attachment metadata, MIME type, dimensions, and parsing status.
   - `GET /api/upload/:id/extraction`: Returns structured OCR text or document section boundaries.
-  - `GET /api/upload/:id/file` (or `/download`): Serves raw file data with inline or attachment headers.
+  - `GET /api/upload/:id/file` (or `/download`): Serves raw file data from memory buffer or disk with inline/attachment headers.
   - `DELETE /api/upload/:id`: Removes staged attachments prior to message submission.
 
-### File, Document & Image Upload Pipeline
+### Production Serverless & File Upload Pipeline
+
+To ensure rock-solid operation in both standard environments and ephemeral serverless platforms (e.g. Vercel, AWS Lambda), the upload lifecycle avoids fragile disk writes:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -137,27 +140,30 @@ Orvix was engineered to deliver an accessible, flexible, and privacy-conscious A
 │                                                                        │
 │  [File / Image Input] ──────► [IndexedDB Blob Cache] (Local Store)     │
 │       │                              │                                 │
-│       │ FormData (Multipart)         │ Blob Fallback for Preview       │
+│       │ 1. FormData (Multipart)      │ Local Blob Preview Fallback     │
+│       │    (90s AbortController)     │                                 │
 │       ▼                              ▼                                 │
 │  POST /api/upload              GET /api/upload/:id/file                │
 └───────┬──────────────────────────────┬─────────────────────────────────┘
         │                              │
         ▼                              ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        EXPRESS SERVER (server.ts)                      │
+│               EXPRESS & SERVERLESS BACKEND (server.ts / api/)          │
 │                                                                        │
-│  1. Multer Engine: writes to uploads/temp/{uuid}.{ext}                 │
+│  1. In-Memory Staging: multer.memoryStorage() buffers incoming file    │
 │  2. Magic Number & Signature Verification:                             │
 │     - Validates JPEG (FF D8 FF), PNG, WebP (RIFF/WEBP), GIF, BMP, HEIC │
-│     - Rejects binary executables (ELF, Windows PE/MZ, Mach-O)          │
+│     - Rejects disguised executables (ELF, Windows PE/MZ, Mach-O)       │
 │  3. Extraction Dispatch:                                               │
 │     ├─ Documents (documentExtractor.js): PDF, DOCX, PPTX, CSV, TXT     │
-│     └─ Images (imageOcrService.js): Tesseract.js OCR text extraction    │
-│  4. Automated TTL Cleanup: sweeps expired files every 15 minutes       │
-│  5. Context Preparation (documentContextService.js):                   │
+│     └─ Images (imageOcrService.js): Tesseract.js OCR text extraction   │
+│  4. Serverless-Aware Serving:                                          │
+│     - Returns file directly from record.buffer in-memory               │
+│     - Falls back gracefully if invocation recycled                     │
+│  5. Vercel Subpath Rewriter: maps /api/upload/:subpath* correctly      │
+│  6. Context Preparation (documentContextService.js):                   │
 │     - Bounds extracted text to provider token limits                   │
-│     - Detects "No readable text detected in this image." condition     │
-│     - Injects structured OCR/document context into AI prompt           │
+│     - Injects structured OCR / document text into prompt context       │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -250,7 +256,7 @@ If an uploaded PDF contains only scanned raster images without a text layer, Orv
 
 ## Image Attachments & Optical Character Recognition (OCR)
 
-Orvix v0.4.0 introduces an image attachment and text extraction pipeline powered by server-side Tesseract.js.
+Orvix features a complete image attachment and text extraction pipeline powered by server-side Tesseract.js.
 
 ### Image Upload & Verification Pipeline
 1. **User Selection**: Select one or more images using the composer paperclip button or system file picker.
@@ -288,7 +294,7 @@ Orvix v0.4.0 introduces an image attachment and text extraction pipeline powered
 
 ### Handling Images with No Readable Text
 When an uploaded image contains no readable text (e.g., abstract artwork, solid graphics, blank canvases, or photography without text):
-- The OCR engine marks `status: 'NO_TEXT_DETECTED'` and `hasText: false`.
+- The OCR engine marks `status: 'ready'`, `hasText: false`, and `text: ''`.
 - When the user asks a question about the image, Orvix does not send fabricated text to the AI model. Instead, the user immediately receives the exact honest diagnostic:
   > **"No readable text detected in this image."**
 - This response is delivered identically across all four AI providers in both streaming SSE and non-streaming modes.
@@ -317,7 +323,7 @@ Each image's filename and extracted text are isolated and identified in the cont
 ### Important Clarification: OCR vs Native Visual Reasoning
 > **Technical Scope Distinction**:  
 > Orvix's image capability is an **Optical Character Recognition (OCR)** text extraction pipeline. It is designed to extract readable, typographic, and printed text from images (such as receipts, menus, document photos, code screenshots, signs, and labels) and provide that text to the conversational models.  
-> Orvix does **not** perform native computer vision, spatial visual reasoning, object detection, or pixel-level art description beyond its extracted text. When an image contains no readable text, Orvix honestly reports *"No readable text detected in this image."* rather than attempting to guess visual contents.
+> Orvix does **not** claim to perform spatial computer vision, dense object detection, or artistic scene critique beyond its extracted text. When an image contains no readable text, Orvix honestly reports *"No readable text detected in this image."* rather than attempting to guess visual contents.
 
 ---
 
@@ -328,9 +334,10 @@ Each image's filename and extracted text are isolated and identified in the cont
 - When a user attaches any document or image, the client concurrently stores the raw `File`/`Blob` in browser `IndexedDB`.
 - When reopening conversations from sidebar history or refreshing the browser, attachments load their thumbnails and file data directly from IndexedDB. This ensures images and documents remain viewable and downloadable offline indefinitely on that device.
 
-### Server-Side Temporary Staging & Lifecycle
-- Uploaded files are written to `/uploads/temp/{uuid}.{ext}` with secure random UUIDs.
-- An automated background sweep runs every 15 minutes to delete temporary files exceeding `TEMP_FILE_TTL_MS` (default: 2 hours).
+### Serverless-Resilient In-Memory Staging
+- In serverless environments, file uploads are processed entirely in memory via `multer.memoryStorage()`.
+- File records retain raw buffers (`record.buffer`) so endpoints like `/api/upload/:id/file` can serve content without requiring disk writes to read-only filesystems like `/var/task/`.
+- On localhost and persistent environments, uploads are also asynchronously saved to `/uploads/temp/` for local cache persistence.
 
 ### Cloud Firestore Message History
 - Signed-in users have their conversation metadata stored in `/users/{userId}/chats/{chatId}` and messages in `/users/{userId}/chats/{chatId}/messages/{messageId}`.
@@ -343,11 +350,11 @@ Each image's filename and extracted text are isolated and identified in the cont
 
 ## Resilient Error UI & Recovery Architecture
 
-When upstream provider requests encounter errors (rate limits, 503 high demand, authentication errors), Orvix renders a dedicated error card:
-- **Diagnostic Header**: Contextual title (*"Rate Limit or Quota Exceeded"*, *"Service Temporarily Busy"*, *"AI Provider Service Error"*).
+When upload or upstream provider requests encounter errors (rate limits, 503 high demand, timeouts, aborts), Orvix renders a dedicated error card:
+- **Diagnostic Header**: Contextual title (*"Rate Limit or Quota Exceeded"*, *"Service Temporarily Busy"*, *"File Upload Failed"*, *"AI Provider Service Error"*).
 - **Referenced Attachment Retention**: Attached documents and images remain visible in the error card so the user retains file context.
-- **Responsive Multi-Line Action Wrapping**: Recovery buttons (`Retry with [Model]`, `Try with Gemini`, `Try with Groq`, `Try with OpenRouter`, `Edit prompt`) wrap cleanly across viewports (`display: flex; flex-wrap: wrap; gap: 8px; width: 100%;`).
-- **No Overflow**: Word-break prevention stops long error strings or token IDs from breaking container bounds.
+- **Responsive Multi-Line Action Wrapping**: Recovery buttons (`Retry with [Model]`, `Try with Gemini`, `Try with Groq`, `Try with OpenRouter`, `Edit prompt`) wrap cleanly across viewports.
+- **Never Stuck**: Every failure path terminates cleanly, preventing the UI from hanging indefinitely on "Thinking...".
 
 ---
 
@@ -361,16 +368,16 @@ Orvix/
 ├── .gitignore                         # Git ignore specifications
 ├── README.md                          # Comprehensive project documentation
 ├── api/                               # Serverless function handlers for Vercel
-│   ├── chat.ts                        # /api/chat handler wrapper
-│   ├── config.ts                      # /api/config handler wrapper
-│   ├── health.ts                      # /api/health handler wrapper
-│   └── upload.ts                      # /api/upload handler wrapper
+│   ├── chat.ts                        # /api/chat serverless wrapper
+│   ├── config.ts                      # /api/config serverless wrapper
+│   ├── health.ts                      # /api/health serverless wrapper
+│   └── upload.ts                      # /api/upload serverless wrapper with subpath routing
 ├── eng.traineddata                    # Tesseract English OCR trained data
 ├── firebase-blueprint.json            # Database schema blueprint
 ├── firestore.rules                    # Production Firestore security rules
 ├── index.html                         # SPA HTML entry point
 ├── metadata.json                      # AI Studio metadata & capabilities
-├── package.json                       # Dependencies, scripts, and version (v0.4.0)
+├── package.json                       # Dependencies, scripts, and version (v0.5.0)
 ├── public/                            # Static public assets, icons, and PWA manifest
 │   ├── apple-touch-icon.png           # iOS home screen icon
 │   ├── favicon.ico                    # Browser favicon
@@ -398,29 +405,23 @@ Orvix/
 │   │                                  # documentContextService, attachmentStorageService, etc.
 │   ├── styles/                        # Obsidian Dark & Clean Light design system CSS
 │   └── utils/                         # exportConversation, speechTextCleaner, syntaxHighlighter
-├── test_all_providers_documents.js    # Document multi-provider test suite
-├── test_all_providers_image_ocr.js    # Image OCR multi-provider context test suite
-├── test_document_handling.js          # Document extraction & page boundary test suite
-├── test_full_image_verification.js    # 23-test end-to-end image verification test suite
-├── test_image_ocr_extraction.js       # Image text extraction unit test suite
-├── test_image_upload_handling.js      # Image upload & signature security test suite
-├── test_server_all_providers_image.js # E2E HTTP image chat test suite across all 4 providers
 ├── tsconfig.json                      # TypeScript configuration
-├── uploads/                           # Temporary file staging directory (auto-cleaned)
-│   └── temp/                          # Staging files with UUID filenames
-├── vercel.json                        # Vercel deployment configuration
+├── uploads/                           # Local temporary file staging directory
+│   └── temp/                          # Staging files with UUID filenames (local dev)
+├── vercel.json                        # Vercel deployment configuration & API rewrites
 └── vite.config.ts                     # Vite bundler, plugin, and server configuration
 ```
 
 ### Important Files & Modules
-- **`server.ts`**: Express backend server handling `/api/chat` SSE streaming, `/api/upload` multipart file handling with magic-number validation, Tesseract OCR dispatch, and Vite middleware.
+- **`server.ts`**: Express backend server handling `/api/chat` SSE streaming, `/api/upload` multipart file handling with in-memory buffers and magic-number validation, Tesseract OCR dispatch, and Vite middleware.
+- **`api/upload.ts`**: Vercel serverless function entry point for upload endpoints, mapping dynamic rewrite subpaths (`__subpath`) to `/api/upload/:id/*`.
 - **`src/services/imageOcrService.js`**: Managed Tesseract.js OCR worker queue, word count, confidence scoring, text normalization, and noise rejection.
 - **`src/services/documentExtractor.js`**: Document parser utilizing `unpdf` for PDF, `mammoth` for DOCX, `jszip` for PPTX, and delimiter parsers for CSV/TSV/JSON/XML.
 - **`src/services/documentContextService.js`**: Analyzes prompts for document and image queries, formats OCR text, and bounds context sizes per provider.
 - **`src/services/attachmentStorageService.js`**: Browser IndexedDB database manager (`orvix_attachments_db`) caching raw file and image blobs locally.
 - **`src/components/chat/ImageAttachmentCard.jsx`**: Responsive visual thumbnail card rendered inside chat messages with hover overlay, metadata badges, and click-to-preview.
 - **`src/components/chat/DocumentPreviewModal.jsx`**: Accessible modal with dual "Image" and "Extracted Text" tabs for viewing original images or inspecting OCR text.
-- **`src/pages/ChatPage.jsx`**: Coordinates active chat state, attachments staging, streaming response tokens, and Firestore/local persistence.
+- **`src/pages/ChatPage.jsx`**: Coordinates active chat state, attachments staging, streaming response tokens, upload lifecycle with timeouts, and Firestore/local persistence.
 
 ---
 
@@ -526,25 +527,22 @@ npm run lint
 ```
 Runs `tsc --noEmit` to validate all TypeScript code with zero errors.
 
-### Executing Test Suites
+### Code Quality, Verification & Health Checks
 ```bash
-# 1. Full Image Attachment & OCR Verification Suite (23 end-to-end tests)
-node test_full_image_verification.js
+# 1. TypeScript validation and type checking
+npm run lint
 
-# 2. Image Upload & Magic-Number Security Suite (10 tests)
-node test_image_upload_handling.js
+# 2. Production build verification
+npm run build
 
-# 3. Server-Side Image Chat E2E Suite Across All 4 Providers
-node test_server_all_providers_image.js
+# 3. Clean temporary build artifacts
+npm run clean
 
-# 4. Multi-Provider Image Context Bounding Suite (7 tests)
-node test_all_providers_image_ocr.js
+# 4. Check system health and provider status (when server is running)
+curl http://localhost:3000/api/health
 
-# 5. Multi-Provider Document Integration Suite (8 tests)
-node test_all_providers_documents.js
-
-# 6. Document Extraction & Page-Boundary Suite (9 tests)
-node test_document_handling.js
+# 5. Check upload limits and supported formats
+curl http://localhost:3000/api/upload/config
 ```
 
 ---
@@ -563,7 +561,7 @@ To enable cloud authentication and real-time database sync:
 ## Deployment Information
 
 - **Node.js Container / Cloud Run / VPS**: Run `npm install && npm run build && npm start`. The server binds to `0.0.0.0:3000`.
-- **Vercel**: Deploy directly. The root `vercel.json` and handlers in `api/` route requests to `/api/chat`, `/api/upload`, `/api/health`, and `/api/config`.
+- **Vercel**: Deploy directly. The root `vercel.json` rewrites `/api/upload/:subpath*` to `/api/upload?__subpath=:subpath*` and handlers in `api/` route requests cleanly to `/api/chat`, `/api/upload`, `/api/health`, and `/api/config`. Serverless functions are allocated 1024 MB memory and a 60-second execution window.
 
 ---
 
@@ -584,17 +582,31 @@ To enable cloud authentication and real-time database sync:
 1. **OCR vs Visual Understanding**: Orvix extracts readable printed/typographic text from images using OCR. It does not perform native visual understanding, object detection, or artistic description beyond its extracted text.
 2. **Binary Storage Longevity**:
    - Message metadata and extracted OCR text are permanently persisted (to Firestore for authenticated users or `localStorage` for guests).
-   - Original binary files are stored client-side in browser **IndexedDB** (`orvix_attachments_db`) for local image reload and preview. On the server, raw binary files are stored in `/uploads/temp` with a 2-hour retention TTL (`TEMP_FILE_TTL_MS`).
+   - Original binary files are stored client-side in browser **IndexedDB** (`orvix_attachments_db`) for local image reload and preview. On the server, raw binary files are stored in `/uploads/temp` with a 2-hour retention TTL (`TEMP_FILE_TTL_MS`), while serverless invocations rely on in-memory buffers and client IndexedDB.
    - If a conversation is opened on a different browser device after the temporary server TTL has expired, the conversation history and extracted text remain visible, but the raw binary file cannot be redownloaded from the server disk.
 3. **HEIC Browser Native Rendering**: Standard web browsers cannot decode HEIC/HEIF images natively in `<img>` tags without client-side wasm transcoders; the UI displays a clean fallback card with direct download and modal inspection.
-4. **Scanned PDFs Without OCR**: PDFs containing exclusively rasterized scans without a text layer require image extraction.
+4. **Scanned PDFs Without OCR**: PDFs containing exclusively rasterized scans without an embedded text layer require image extraction.
 5. **Legacy PowerPoint Binary Format (`.ppt`)**: Direct binary text extraction is supported for modern OpenXML `.pptx` presentations; legacy `.ppt` files trigger a conversion recommendation.
 
 ---
 
 ## Version History & Changelog
 
-### v0.4.0 — Image Attachment & Optical Character Recognition (OCR) Integration *(Current Release)*
+### v0.5.0 — Production Vercel Serverless Upload Architecture & Attachment Resilience *(Current Release)*
+- **Serverless Production Upload Architecture**:
+  - Migrated upload buffering to `multer.memoryStorage()`, resolving `EROFS: read-only file system` errors on `/var/task/uploads/temp/` in Vercel serverless environments.
+  - Implemented dual-mode serving: files are served directly from in-memory buffers (`record.buffer`) with asynchronous local disk persistence when running locally.
+  - Fixed 404 attachment errors on Vercel by adding dynamic subpath rewrite rules in `vercel.json` (`/api/upload/:subpath*` -> `/api/upload?__subpath=:subpath*`) and request URL reconstruction in `api/upload.ts`.
+- **Client Upload & Abort Resilience**:
+  - Replaced abrupt client cancellations with a robust `AbortController` supporting an extended 90-second upload window for large files and OCR processing.
+  - Resolved `Failed to upload attachments: signal is aborted without reason` errors with descriptive user-facing network error reporting.
+  - Ensured every upload and chat failure terminates cleanly, preventing the UI from getting permanently stuck on "Thinking...".
+- **Enhanced Image OCR & Document Stability**:
+  - Validated full JPG, JPEG, and PNG extraction workflows on both local and serverless deployments.
+  - Ensured zero-text images consistently report `"No readable text detected in this image."` across all four AI providers without hallucinations.
+  - Maintained complete backward compatibility with existing PDF, DOCX, PPTX, and TXT extraction.
+
+### v0.4.0 — Image Attachment & Optical Character Recognition (OCR) Integration
 - **Image Attachment & Upload Pipeline**:
   - Added support for attaching image formats: JPEG, JPG, PNG, WebP, GIF, BMP, and HEIC/HEIF.
   - Implemented client-side image preview in the composer dock before sending with instant thumbnail generation, format pill, file size, and remove action.
