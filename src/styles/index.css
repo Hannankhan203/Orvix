@@ -3285,43 +3285,57 @@ html, body {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
+  --code-font-size: 0.8125rem;
+  --code-line-height: 22px;
 }
 
 .code-line-numbers {
   display: flex;
   flex-direction: column;
-  padding: 12px 6px 12px 10px;
+  padding: 12px 10px 12px 12px;
   user-select: none;
   pointer-events: none;
   text-align: right;
   font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.6;
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
   color: #475569;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
+  box-sizing: border-box;
+  margin: 0;
 }
 
 .line-number {
-  min-width: 1.8em;
+  display: block;
+  height: var(--code-line-height);
+  line-height: var(--code-line-height);
+  min-width: 2.25rem;
+  text-align: right;
   opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  flex-shrink: 0;
 }
 
 .code-content {
   flex: 1;
   min-width: 0;
-  padding: 12px 14px;
+  padding: 12px 16px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   color: #e2e8f0;
   font-family: var(--font-mono);
-  font-size: 0.825rem;
-  line-height: 1.6;
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
   white-space: pre;
   word-break: normal;
   tab-size: 2;
   margin: 0;
   outline: none;
+  box-sizing: border-box;
 }
 
 .code-content:focus-visible {
@@ -3331,7 +3345,15 @@ html, body {
 .code-syntax {
   font-family: inherit;
   font-size: inherit;
+  line-height: inherit;
   white-space: inherit;
+}
+
+.code-syntax .token {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  vertical-align: baseline;
 }
 
 /* Custom Scrollbar for Code Content */
