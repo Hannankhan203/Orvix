@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import Tesseract from 'tesseract.js';
 
 // Reasonable processing limits
@@ -13,6 +14,8 @@ let ocrQueue = Promise.resolve();
 
 /**
  * Initializes and returns a shared, managed Tesseract worker instance.
+ * In serverless environments (e.g. Vercel / AWS Lambda), the root filesystem is read-only,
+ * so cachePath must point to os.tmpdir() to prevent EROFS errors.
  */
 async function getWorker() {
   if (workerInstance) {
@@ -25,7 +28,15 @@ async function getWorker() {
 
   initializingPromise = (async () => {
     try {
+      const tessCacheDir = path.join(os.tmpdir(), 'tess_cache');
+      try {
+        if (!fs.existsSync(tessCacheDir)) {
+          fs.mkdirSync(tessCacheDir, { recursive: true });
+        }
+      } catch (_) {}
+
       const worker = await Tesseract.createWorker('eng', 1, {
+        cachePath: tessCacheDir,
         errorHandler: (err) => {
           console.warn('[Image OCR Worker Warning]', err?.message || err);
         }
@@ -153,14 +164,18 @@ export function detectReadableText(text, confidence = 0) {
  * @returns {Promise<Object>}
  */
 export async function extractImageText(
-  filePath,
+  filePathOrBuffer,
   originalName,
   ext = '',
   mimeType = 'image/jpeg',
   fileId = '',
   dimensions = undefined
 ) {
-  const normalizedExt = (ext || path.extname(filePath || '')).toLowerCase();
+  const isBuf = Buffer.isBuffer(filePathOrBuffer);
+  const displayFilename = isBuf
+    ? originalName || 'image'
+    : path.basename(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : 'image');
+  const normalizedExt = (ext || (isBuf ? '' : path.extname(String(filePathOrBuffer || '')))).toLowerCase();
   const formatName = normalizedExt.replace('.', '').toUpperCase() || 'IMAGE';
   const nowIso = new Date().toISOString();
 
@@ -168,7 +183,7 @@ export async function extractImageText(
   if (normalizedExt === '.heic' || normalizedExt === '.heif' || mimeType.includes('heic') || mimeType.includes('heif')) {
     return {
       fileId,
-      filename: path.basename(filePath),
+      filename: displayFilename,
       originalName,
       format: formatName,
       mimeType,
@@ -186,33 +201,66 @@ export async function extractImageText(
   }
 
   // 2. Validate file existence and size
-  let fileStats;
-  try {
-    fileStats = await fs.promises.stat(filePath);
-  } catch (err) {
-    return {
-      fileId,
-      filename: path.basename(filePath),
-      originalName,
-      format: formatName,
-      mimeType,
-      dimensions,
-      status: 'error',
-      success: false,
-      isImage: true,
-      hasText: false,
-      text: '',
-      totalCharacters: 0,
-      totalWords: 0,
-      error: `Failed to access image file on disk: ${err?.message || 'File not found'}`,
-      extractedAt: nowIso
-    };
+  let imageBuffer;
+  let imageSize = 0;
+
+  if (isBuf) {
+    imageBuffer = filePathOrBuffer;
+    imageSize = imageBuffer.length;
+  } else {
+    const filePath = String(filePathOrBuffer || '');
+    let fileStats;
+    try {
+      fileStats = await fs.promises.stat(filePath);
+      imageSize = fileStats.size;
+    } catch (err) {
+      return {
+        fileId,
+        filename: displayFilename,
+        originalName,
+        format: formatName,
+        mimeType,
+        dimensions,
+        status: 'error',
+        success: false,
+        isImage: true,
+        hasText: false,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        error: `Failed to access image file on disk: ${err?.message || 'File not found'}`,
+        extractedAt: nowIso
+      };
+    }
+
+    try {
+      imageBuffer = await fs.promises.readFile(filePath);
+    } catch (err) {
+      return {
+        fileId,
+        filename: displayFilename,
+        originalName,
+        format: formatName,
+        mimeType,
+        sizeBytes: imageSize,
+        dimensions,
+        status: 'error',
+        success: false,
+        isImage: true,
+        hasText: false,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        error: `Failed to read image bytes: ${err?.message}`,
+        extractedAt: nowIso
+      };
+    }
   }
 
-  if (fileStats.size === 0) {
+  if (imageSize === 0) {
     return {
       fileId,
-      filename: path.basename(filePath),
+      filename: displayFilename,
       originalName,
       format: formatName,
       mimeType,
@@ -230,14 +278,14 @@ export async function extractImageText(
     };
   }
 
-  if (fileStats.size > MAX_IMAGE_FILE_SIZE) {
+  if (imageSize > MAX_IMAGE_FILE_SIZE) {
     return {
       fileId,
-      filename: path.basename(filePath),
+      filename: displayFilename,
       originalName,
       format: formatName,
       mimeType,
-      sizeBytes: fileStats.size,
+      sizeBytes: imageSize,
       dimensions,
       status: 'error',
       success: false,
@@ -247,31 +295,6 @@ export async function extractImageText(
       totalCharacters: 0,
       totalWords: 0,
       error: `Image exceeds maximum allowed size of ${Math.round(MAX_IMAGE_FILE_SIZE / (1024 * 1024))}MB for OCR extraction.`,
-      extractedAt: nowIso
-    };
-  }
-
-  // Read image buffer from disk
-  let imageBuffer;
-  try {
-    imageBuffer = await fs.promises.readFile(filePath);
-  } catch (err) {
-    return {
-      fileId,
-      filename: path.basename(filePath),
-      originalName,
-      format: formatName,
-      mimeType,
-      sizeBytes: fileStats.size,
-      dimensions,
-      status: 'error',
-      success: false,
-      isImage: true,
-      hasText: false,
-      text: '',
-      totalCharacters: 0,
-      totalWords: 0,
-      error: `Failed to read image bytes: ${err?.message}`,
       extractedAt: nowIso
     };
   }
@@ -309,11 +332,11 @@ export async function extractImageText(
           // Requirement 10: Do not fabricate text.
           return resolve({
             fileId,
-            filename: path.basename(filePath),
+            filename: displayFilename,
             originalName,
             format: formatName,
             mimeType,
-            sizeBytes: fileStats.size,
+            sizeBytes: imageSize,
             dimensions,
             status: 'NO_TEXT_DETECTED',
             success: true,
@@ -338,11 +361,11 @@ export async function extractImageText(
 
         return resolve({
           fileId,
-          filename: path.basename(filePath),
+          filename: displayFilename,
           originalName,
           format: formatName,
           mimeType,
-          sizeBytes: fileStats.size,
+          sizeBytes: imageSize,
           dimensions,
           status: 'ready',
           success: true,

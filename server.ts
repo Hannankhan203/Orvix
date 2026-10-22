@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
 import crypto from 'crypto';
 import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
@@ -705,10 +706,77 @@ app.get(['/api/config', '/config'], (_req, res) => {
    Controlled Temporary File Upload & Storage Management Architecture
    ========================================================================== */
 
-const UPLOAD_DIR = path.resolve(__dirname, 'uploads', 'temp');
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+// Detect if running in a serverless cloud environment (e.g. Vercel, AWS Lambda)
+// where the application bundle root is strictly read-only (EROFS).
+export const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.LAMBDA_TASK_ROOT ||
+  process.env.SERVERLESS
+);
+
+/**
+ * Resolves the upload directory according to runtime environment:
+ * - Vercel / AWS Lambda (serverless): Uses os.tmpdir() (/tmp), the only writable filesystem location.
+ * - Local development: Preserves project-local uploads/temp directory.
+ * - Graceful fallback: If local directory is un-writable or throws EROFS, falls back to os.tmpdir().
+ */
+export function resolveUploadDirectory(): string {
+  // 1. Explicit override via environment variable
+  if (process.env.UPLOAD_DIR) {
+    try {
+      const resolved = path.resolve(process.env.UPLOAD_DIR);
+      if (!fs.existsSync(resolved)) {
+        fs.mkdirSync(resolved, { recursive: true });
+      }
+      return resolved;
+    } catch (err) {
+      console.warn('[Storage] Configured UPLOAD_DIR is not writable, falling back to temp:', err);
+    }
+  }
+
+  // 2. Serverless / Vercel cloud environment:
+  // Root /var/task is strictly read-only; os.tmpdir() (/tmp) is the allocated writable directory.
+  if (isServerless) {
+    const serverlessTmp = path.join(os.tmpdir(), 'orvix_uploads');
+    try {
+      if (!fs.existsSync(serverlessTmp)) {
+        fs.mkdirSync(serverlessTmp, { recursive: true });
+      }
+      return serverlessTmp;
+    } catch (err) {
+      console.warn('[Storage] Error ensuring serverless tmp dir, falling back to os.tmpdir():', err);
+      return os.tmpdir();
+    }
+  }
+
+  // 3. Localhost development environment:
+  // Default to project-local uploads/temp directory
+  const localDir = path.resolve(__dirname, 'uploads', 'temp');
+  try {
+    if (!fs.existsSync(localDir)) {
+      fs.mkdirSync(localDir, { recursive: true });
+    }
+    return localDir;
+  } catch (err: any) {
+    // Defensive fallback: if local directory throws EROFS or EACCES, seamlessly fall back to os.tmpdir()
+    if (err?.code === 'EROFS' || err?.code === 'EACCES') {
+      console.warn(`[Storage] Local upload directory is read-only (${err.code}), falling back to os.tmpdir()`);
+      const fallbackTmp = path.join(os.tmpdir(), 'orvix_uploads');
+      try {
+        if (!fs.existsSync(fallbackTmp)) {
+          fs.mkdirSync(fallbackTmp, { recursive: true });
+        }
+        return fallbackTmp;
+      } catch (_) {
+        return os.tmpdir();
+      }
+    }
+    throw err;
+  }
 }
+
+const UPLOAD_DIR = resolveUploadDirectory();
 
 // Configurable upload constraints and lifecycle bounds
 const MAX_FILE_SIZE_BYTES =
@@ -1100,6 +1168,7 @@ interface UploadedFileRecord {
   isImage?: boolean;
   dimensions?: { width: number; height: number };
   extraction?: any;
+  buffer?: Buffer;
 }
 
 // In-memory registry tracking uploaded temporary files and their lifecycle
@@ -1144,7 +1213,7 @@ const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const cleanupTimer = setInterval(cleanupExpiredUploads, CLEANUP_INTERVAL_MS);
 if (cleanupTimer.unref) cleanupTimer.unref();
 
-// Upload Configuration Endpoint (returns limits and supported formats)
+// Upload Configuration Endpoint (returns limits, supported formats, and active storage strategy)
 app.get(['/api/upload/config', '/upload/config'], (_req, res) => {
   res.json({
     maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
@@ -1153,7 +1222,9 @@ app.get(['/api/upload/config', '/upload/config'], (_req, res) => {
     allowedExtensions: Object.keys(ALLOWED_EXTENSIONS_MAP).map((e) =>
       e.replace('.', '').toUpperCase()
     ),
-    ttlMinutes: Math.round(TEMP_FILE_TTL_MS / (60 * 1000))
+    ttlMinutes: Math.round(TEMP_FILE_TTL_MS / (60 * 1000)),
+    storageMode: isServerless ? 'serverless-temp' : 'local-disk',
+    isServerless
   });
 });
 
@@ -1214,10 +1285,15 @@ app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, re
     record.mimeType.startsWith('image/');
 
   const filePath = path.join(UPLOAD_DIR, path.basename(record.diskFilename));
+  const inputSource = record.buffer || (fs.existsSync(filePath) ? filePath : null);
+
+  if (!inputSource) {
+    return res.status(404).json({ error: 'Attachment file not found or has expired.' });
+  }
 
   if (isImg) {
     const imgExtraction = await extractImageText(
-      filePath,
+      inputSource,
       record.originalName,
       ext,
       record.mimeType,
@@ -1229,7 +1305,7 @@ app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, re
   }
 
   const extraction = (await extractDocumentContent(
-    filePath,
+    inputSource,
     record.originalName,
     ext,
     record.mimeType,
@@ -1253,6 +1329,26 @@ app.get(
     let originalName = record?.originalName || 'document';
     let mimeType = record?.mimeType || 'application/octet-stream';
 
+    const forceDownload = req.query.download === 'true' || req.path.includes('/download');
+    const isInline =
+      !forceDownload &&
+      (mimeType === 'application/pdf' ||
+        mimeType.startsWith('text/') ||
+        mimeType.startsWith('image/'));
+
+    const safeFilename = path.basename(originalName).replace(/[/\\?%*:|"<>]/g, '_');
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
+    );
+
+    // 1. Direct in-memory buffer serving (serverless-friendly, eliminates disk dependencies)
+    if (record?.buffer) {
+      return res.send(record.buffer);
+    }
+
+    // 2. Disk-based fallback (localhost persistent uploads)
     if (!diskFilename) {
       try {
         const files = await fs.promises.readdir(UPLOAD_DIR);
@@ -1261,6 +1357,7 @@ app.get(
           diskFilename = match;
           const ext = path.extname(match).toLowerCase();
           mimeType = (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) || 'application/octet-stream';
+          res.setHeader('Content-Type', mimeType);
         }
       } catch (_) {}
     }
@@ -1279,20 +1376,6 @@ app.get(
     if (!fs.existsSync(resolvedFilePath)) {
       return res.status(404).json({ error: 'Attachment file not found or has expired.' });
     }
-
-    const forceDownload = req.query.download === 'true' || req.path.includes('/download');
-    const isInline =
-      !forceDownload &&
-      (mimeType === 'application/pdf' ||
-        mimeType.startsWith('text/') ||
-        mimeType.startsWith('image/'));
-
-    const safeFilename = path.basename(originalName).replace(/[/\\?%*:|"<>]/g, '_');
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader(
-      'Content-Disposition',
-      `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
-    );
 
     return res.sendFile(resolvedFilePath);
   }
@@ -1402,6 +1485,12 @@ app.post(['/api/upload', '/upload'], (req, res) => {
 
       const fileId = path.basename(file.filename, ext);
       const nowIso = new Date().toISOString();
+
+      let fileBuffer: Buffer | undefined = undefined;
+      try {
+        fileBuffer = await fs.promises.readFile(file.path);
+      } catch (_) {}
+
       const record: UploadedFileRecord = {
         id: fileId,
         originalName: safeBaseName,
@@ -1415,7 +1504,8 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         expiresAt: Date.now() + TEMP_FILE_TTL_MS,
         conversationId,
         isImage: isImg,
-        dimensions: sigResult.dimensions
+        dimensions: sigResult.dimensions,
+        buffer: fileBuffer
       };
 
       fileRegistry.set(fileId, record);
@@ -1456,10 +1546,12 @@ app.post(['/api/upload', '/upload'], (req, res) => {
           ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
           rec.mimeType.startsWith('image/');
 
+        const inputSource = rec.buffer || fullDiskPath;
+
         if (isImg) {
           rec.isImage = true;
           const imgExtraction = (await extractImageText(
-            fullDiskPath,
+            inputSource,
             rec.originalName,
             ext,
             rec.mimeType,
@@ -1470,7 +1562,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
           rec.status = 'ready';
         } else {
           const extraction = (await extractDocumentContent(
-            fullDiskPath,
+            inputSource,
             rec.originalName,
             ext,
             rec.mimeType,
@@ -1655,10 +1747,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
               record.mimeType.startsWith('image/');
             const fullDiskPath = path.join(UPLOAD_DIR, record.diskFilename);
-            if (fs.existsSync(fullDiskPath)) {
+            const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
+            if (inputSource) {
               if (isImg) {
                 record.extraction = (await extractImageText(
-                  fullDiskPath,
+                  inputSource,
                   record.originalName,
                   ext,
                   record.mimeType,
@@ -1668,7 +1761,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 record.status = 'ready';
               } else {
                 record.extraction = (await extractDocumentContent(
-                  fullDiskPath,
+                  inputSource,
                   record.originalName,
                   ext,
                   record.mimeType,
@@ -2620,7 +2713,7 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && !process.env.TESTING) {
   startServer();
 }
 

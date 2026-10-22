@@ -599,36 +599,88 @@ function extractXmlDocument(buffer) {
  * @param {string} fileId System-generated UUID
  * @returns {Promise<Object>}
  */
-export async function extractDocumentContent(filePath, originalName, ext, mimeType, fileId) {
-  const normalizedExt = ext.toLowerCase();
+export async function extractDocumentContent(filePathOrBuffer, originalName, ext, mimeType, fileId) {
+  const isBuf = Buffer.isBuffer(filePathOrBuffer);
+  const displayFilename = isBuf
+    ? originalName || 'document'
+    : path.basename(typeof filePathOrBuffer === 'string' ? filePathOrBuffer : 'document');
+  const normalizedExt = (ext || (isBuf ? '' : path.extname(String(filePathOrBuffer || '')))).toLowerCase();
   const formatName = normalizedExt.replace('.', '').toUpperCase();
   const nowIso = new Date().toISOString();
 
-  let fileStats;
-  try {
-    fileStats = await fs.promises.stat(filePath);
-  } catch (err) {
-    return {
-      fileId,
-      filename: path.basename(filePath),
-      originalName,
-      format: formatName,
-      mimeType,
-      sizeBytes: 0,
-      status: 'error',
-      success: false,
-      text: '',
-      totalCharacters: 0,
-      totalWords: 0,
-      error: `File access error: ${err?.message || 'File not found on server.'}`,
-      extractedAt: nowIso
-    };
+  let buffer;
+  let fileSizeBytes = 0;
+
+  if (isBuf) {
+    buffer = filePathOrBuffer;
+    fileSizeBytes = buffer.length;
+  } else {
+    const filePath = String(filePathOrBuffer || '');
+    let fileStats;
+    try {
+      fileStats = await fs.promises.stat(filePath);
+      fileSizeBytes = fileStats.size;
+    } catch (err) {
+      return {
+        fileId,
+        filename: displayFilename,
+        originalName,
+        format: formatName,
+        mimeType,
+        sizeBytes: 0,
+        status: 'error',
+        success: false,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        error: `File access error: ${err?.message || 'File not found on server.'}`,
+        extractedAt: nowIso
+      };
+    }
+
+    if (fileSizeBytes === 0) {
+      return {
+        fileId,
+        filename: displayFilename,
+        originalName,
+        format: formatName,
+        mimeType,
+        sizeBytes: 0,
+        status: 'empty',
+        success: false,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        warning: 'File is empty (0 bytes).',
+        extractedAt: nowIso
+      };
+    }
+
+    try {
+      buffer = await fs.promises.readFile(filePath);
+    } catch (err) {
+      return {
+        fileId,
+        filename: displayFilename,
+        originalName,
+        format: formatName,
+        mimeType,
+        sizeBytes: fileSizeBytes,
+        status: 'error',
+        success: false,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        error: `Failed to read file from disk: ${err?.message}`,
+        extractedAt: nowIso
+      };
+    }
   }
 
-  if (fileStats.size === 0) {
+  if (fileSizeBytes === 0) {
     return {
       fileId,
-      filename: path.basename(filePath),
+      filename: displayFilename,
       originalName,
       format: formatName,
       mimeType,
@@ -639,27 +691,6 @@ export async function extractDocumentContent(filePath, originalName, ext, mimeTy
       totalCharacters: 0,
       totalWords: 0,
       warning: 'File is empty (0 bytes).',
-      extractedAt: nowIso
-    };
-  }
-
-  let buffer;
-  try {
-    buffer = await fs.promises.readFile(filePath);
-  } catch (err) {
-    return {
-      fileId,
-      filename: path.basename(filePath),
-      originalName,
-      format: formatName,
-      mimeType,
-      sizeBytes: fileStats.size,
-      status: 'error',
-      success: false,
-      text: '',
-      totalCharacters: 0,
-      totalWords: 0,
-      error: `Failed to read file from disk: ${err?.message}`,
       extractedAt: nowIso
     };
   }
@@ -731,11 +762,11 @@ export async function extractDocumentContent(filePath, originalName, ext, mimeTy
 
   return {
     fileId,
-    filename: path.basename(filePath),
+    filename: displayFilename,
     originalName,
     format: formatName,
     mimeType,
-    sizeBytes: fileStats.size,
+    sizeBytes: fileSizeBytes,
     status: partialResult.status || (partialResult.success ? 'ready' : 'error'),
     success: Boolean(partialResult.success),
     text: safeText,
