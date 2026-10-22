@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './Sidebar.jsx';
 import Header from './Header.jsx';
 
@@ -88,142 +88,172 @@ export default function Layout({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [sidebarOpen]);
 
+  // Keep a ref to sidebarOpen to avoid tearing down and re-binding gesture listeners on state updates
+  const sidebarOpenRef = useRef(sidebarOpen);
+  useEffect(() => {
+    sidebarOpenRef.current = sidebarOpen;
+  }, [sidebarOpen]);
+
   // Mobile/Tablet left-edge swipe-right gesture to open previous chat list/sidebar
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Edge activation zone: gesture must start within 36px from left screen edge
-    const EDGE_ZONE_PX = 36;
-    // Minimum horizontal distance required to trigger opening the sidebar
-    const MIN_SWIPE_PX = 45;
-    // Minimum displacement before determining horizontal vs vertical intent
+    // Edge activation zone: gesture must start within ~40px from the left screen edge
+    const EDGE_ZONE_PX = 40;
+    // Minimum horizontal movement distance required to trigger opening the sidebar
+    const MIN_SWIPE_PX = 40;
+    // Initial movement threshold before determining horizontal vs vertical intent
     const INTENT_THRESHOLD_PX = 8;
 
-    let startX = null;
-    let startY = null;
-    let currentX = null;
-    let currentY = null;
-    let isTracking = false;
-    let isHorizontalSwipe = false;
+    // --- Isolated Touch State ---
+    let touchStartX = null;
+    let touchStartY = null;
+    let touchCurrentX = null;
+    let touchCurrentY = null;
+    let touchStartTime = 0;
+    let isTrackingTouch = false;
+    let isHorizontalTouchSwipe = false;
+
+    const resetTouchGesture = () => {
+      touchStartX = null;
+      touchStartY = null;
+      touchCurrentX = null;
+      touchCurrentY = null;
+      touchStartTime = 0;
+      isTrackingTouch = false;
+      isHorizontalTouchSwipe = false;
+    };
+
+    // --- Isolated Pointer State (for pointer devices / synthetic test dispatchers) ---
+    let pointerStartX = null;
+    let pointerStartY = null;
+    let pointerCurrentX = null;
+    let pointerCurrentY = null;
+    let pointerStartTime = 0;
+    let isTrackingPointer = false;
+    let isHorizontalPointerSwipe = false;
     let activePointerId = null;
 
-    const resetGesture = () => {
-      startX = null;
-      startY = null;
-      currentX = null;
-      currentY = null;
-      isTracking = false;
-      isHorizontalSwipe = false;
+    const resetPointerGesture = () => {
+      pointerStartX = null;
+      pointerStartY = null;
+      pointerCurrentX = null;
+      pointerCurrentY = null;
+      pointerStartTime = 0;
+      isTrackingPointer = false;
+      isHorizontalPointerSwipe = false;
       activePointerId = null;
     };
 
     const isInteractiveElement = (target) => {
       if (!target || !target.closest) return false;
       return Boolean(
-        target.closest('input, textarea, select, button, a, [contenteditable="true"]')
+        target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="dialog"]')
       );
     };
 
-    // --- Touch Events Handler ---
+    // --- Native Touch Event Handlers ---
     const handleTouchStart = (e) => {
-      // Gesture only applies when sidebar is closed and on mobile/tablet screen sizes (< 1024px)
-      if (sidebarOpen || window.innerWidth >= 1024) return;
+      // Gesture only applies when sidebar is closed and on mobile/tablet screens (width <= 1024px)
+      if (sidebarOpenRef.current || window.innerWidth > 1024) return;
       if (!e.touches || e.touches.length !== 1) return;
 
       const touch = e.touches[0];
       const clientX = touch.clientX;
       const clientY = touch.clientY;
 
-      // Must start near the left edge (within EDGE_ZONE_PX)
+      // Must start near the left edge (0 to 40px)
       if (clientX < 0 || clientX > EDGE_ZONE_PX) return;
-
-      // Do not capture if touch starts on form inputs or interactive elements
+      // Do not capture if touch starts on form inputs or interactive controls
       if (isInteractiveElement(e.target)) return;
 
-      startX = clientX;
-      startY = clientY;
-      currentX = clientX;
-      currentY = clientY;
-      isTracking = true;
-      isHorizontalSwipe = false;
+      touchStartX = clientX;
+      touchStartY = clientY;
+      touchCurrentX = clientX;
+      touchCurrentY = clientY;
+      touchStartTime = Date.now();
+      isTrackingTouch = true;
+      isHorizontalTouchSwipe = false;
+
+      // Silence any lingering pointer gesture tracking
+      resetPointerGesture();
     };
 
     const handleTouchMove = (e) => {
-      if (!isTracking || startX === null || startY === null) return;
+      if (!isTrackingTouch || touchStartX === null || touchStartY === null) return;
       if (!e.touches || e.touches.length !== 1) return;
 
       const touch = e.touches[0];
-      currentX = touch.clientX;
-      currentY = touch.clientY;
+      touchCurrentX = touch.clientX;
+      touchCurrentY = touch.clientY;
 
-      const deltaX = currentX - startX;
-      const deltaY = currentY - startY;
+      const deltaX = touchCurrentX - touchStartX;
+      const deltaY = touchCurrentY - touchStartY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
 
-      // Determine gesture direction once past initial movement threshold
-      if (!isHorizontalSwipe) {
+      if (!isHorizontalTouchSwipe) {
         if (absX >= INTENT_THRESHOLD_PX || absY >= INTENT_THRESHOLD_PX) {
-          // If swiping rightward and horizontal displacement exceeds vertical
-          if (deltaX > 0 && absX > absY * 1.1) {
-            isHorizontalSwipe = true;
-          } else if (absY > absX * 1.2 || deltaX < -5) {
-            // Clearly vertical scroll or leftward movement: cancel tracking
-            // and let browser continue normal smooth vertical scrolling
-            resetGesture();
+          // If predominantly moving rightward
+          if (deltaX > 0 && absX > absY) {
+            isHorizontalTouchSwipe = true;
+          } else {
+            // Predominantly vertical scrolling or leftward movement:
+            // Release tracking immediately to allow seamless vertical scrolling
+            resetTouchGesture();
             return;
           }
         }
       }
 
-      // If locked into horizontal swipe from the edge, prevent default to stop
-      // the browser from firing touchcancel or page navigation
-      if (isHorizontalSwipe && e.cancelable) {
+      // Once confirmed horizontal swipe from the edge, prevent default scroll contention
+      if (isHorizontalTouchSwipe && e.cancelable) {
         e.preventDefault();
       }
     };
 
     const handleTouchEnd = (e) => {
-      if (!isTracking || startX === null || startY === null) {
-        resetGesture();
+      if (!isTrackingTouch || touchStartX === null || touchStartY === null) {
+        resetTouchGesture();
         return;
       }
 
       const touch = (e.changedTouches && e.changedTouches[0]) || (e.touches && e.touches[0]);
-      const endX = touch ? touch.clientX : (currentX ?? startX);
-      const endY = touch ? touch.clientY : (currentY ?? startY);
+      const endX = touch ? touch.clientX : (touchCurrentX ?? touchStartX);
+      const endY = touch ? touch.clientY : (touchCurrentY ?? touchStartY);
 
-      const deltaX = endX - startX;
-      const deltaY = endY - startY;
+      const deltaX = endX - touchStartX;
+      const deltaY = endY - touchStartY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
+      const duration = Math.max(Date.now() - touchStartTime, 1);
+      const velocityX = deltaX / duration;
 
-      // Trigger sidebar open if horizontal swipe crossed threshold and is predominantly rightward
-      if (deltaX >= MIN_SWIPE_PX && absX > absY * 1.1) {
+      // Open sidebar if horizontal swipe crossed threshold or was a fast rightward flick
+      if ((deltaX >= MIN_SWIPE_PX || (deltaX >= 25 && velocityX > 0.3)) && absX > absY) {
         setSidebarOpen(true);
       }
 
-      resetGesture();
+      resetTouchGesture();
     };
 
     const handleTouchCancel = () => {
-      // If a strong horizontal swipe already crossed the distance threshold before cancel,
-      // still honor the swipe open
-      if (isTracking && isHorizontalSwipe && startX !== null && currentX !== null) {
-        const deltaX = currentX - startX;
-        const deltaY = (currentY ?? startY) - startY;
-        if (deltaX >= MIN_SWIPE_PX && deltaX > Math.abs(deltaY) * 1.1) {
+      if (isTrackingTouch && isHorizontalTouchSwipe && touchStartX !== null && touchCurrentX !== null) {
+        const deltaX = touchCurrentX - touchStartX;
+        const deltaY = (touchCurrentY ?? touchStartY) - touchStartY;
+        if (deltaX >= MIN_SWIPE_PX && deltaX > Math.abs(deltaY)) {
           setSidebarOpen(true);
         }
       }
-      resetGesture();
+      resetTouchGesture();
     };
 
-    // --- Pointer Events Handler (for touch pointer support) ---
+    // --- Pointer Event Handlers (for environments dispatching PointerEvents) ---
     const handlePointerDown = (e) => {
-      if (e.pointerType !== 'touch') return;
-      if (sidebarOpen || window.innerWidth >= 1024) return;
-      if (isTracking) return;
+      // If a native touch gesture is already tracking, ignore pointer events completely
+      if (isTrackingTouch) return;
+      if (sidebarOpenRef.current || window.innerWidth > 1024) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
 
       const clientX = e.clientX;
       const clientY = e.clientY;
@@ -231,68 +261,101 @@ export default function Layout({
       if (clientX < 0 || clientX > EDGE_ZONE_PX) return;
       if (isInteractiveElement(e.target)) return;
 
-      startX = clientX;
-      startY = clientY;
-      currentX = clientX;
-      currentY = clientY;
-      isTracking = true;
-      isHorizontalSwipe = false;
+      pointerStartX = clientX;
+      pointerStartY = clientY;
+      pointerCurrentX = clientX;
+      pointerCurrentY = clientY;
+      pointerStartTime = Date.now();
+      isTrackingPointer = true;
+      isHorizontalPointerSwipe = false;
       activePointerId = e.pointerId;
     };
 
     const handlePointerMove = (e) => {
-      if (e.pointerType !== 'touch' || !isTracking || e.pointerId !== activePointerId) return;
-      currentX = e.clientX;
-      currentY = e.clientY;
+      if (isTrackingTouch) {
+        resetPointerGesture();
+        return;
+      }
+      if (!isTrackingPointer || e.pointerId !== activePointerId || pointerStartX === null || pointerStartY === null) return;
 
-      const deltaX = currentX - startX;
-      const deltaY = currentY - startY;
+      pointerCurrentX = e.clientX;
+      pointerCurrentY = e.clientY;
+
+      const deltaX = pointerCurrentX - pointerStartX;
+      const deltaY = pointerCurrentY - pointerStartY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
 
-      if (!isHorizontalSwipe) {
+      if (!isHorizontalPointerSwipe) {
         if (absX >= INTENT_THRESHOLD_PX || absY >= INTENT_THRESHOLD_PX) {
-          if (deltaX > 0 && absX > absY * 1.1) {
-            isHorizontalSwipe = true;
-          } else if (absY > absX * 1.2 || deltaX < -5) {
-            resetGesture();
+          if (deltaX > 0 && absX > absY) {
+            isHorizontalPointerSwipe = true;
+          } else {
+            resetPointerGesture();
             return;
           }
         }
       }
+
+      if (isHorizontalPointerSwipe && e.cancelable) {
+        e.preventDefault();
+      }
     };
 
     const handlePointerUp = (e) => {
-      if (e.pointerType !== 'touch' || !isTracking || e.pointerId !== activePointerId) return;
+      if (isTrackingTouch) {
+        resetPointerGesture();
+        return;
+      }
+      if (!isTrackingPointer || e.pointerId !== activePointerId || pointerStartX === null || pointerStartY === null) {
+        resetPointerGesture();
+        return;
+      }
 
-      const deltaX = e.clientX - startX;
-      const deltaY = e.clientY - startY;
+      const deltaX = e.clientX - pointerStartX;
+      const deltaY = e.clientY - pointerStartY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
+      const duration = Math.max(Date.now() - pointerStartTime, 1);
+      const velocityX = deltaX / duration;
 
-      if (deltaX >= MIN_SWIPE_PX && absX > absY * 1.1) {
+      if ((deltaX >= MIN_SWIPE_PX || (deltaX >= 25 && velocityX > 0.3)) && absX > absY) {
         setSidebarOpen(true);
       }
 
-      resetGesture();
+      resetPointerGesture();
     };
 
     const handlePointerCancel = (e) => {
-      if (e.pointerType !== 'touch' || e.pointerId !== activePointerId) return;
-      handleTouchCancel();
+      if (e.pointerId !== activePointerId) return;
+      // Only process pointer cancel if native touch is not handling it
+      if (!isTrackingTouch && isTrackingPointer && isHorizontalPointerSwipe && pointerStartX !== null && pointerCurrentX !== null) {
+        const deltaX = pointerCurrentX - pointerStartX;
+        const deltaY = (pointerCurrentY ?? pointerStartY) - pointerStartY;
+        if (deltaX >= MIN_SWIPE_PX && deltaX > Math.abs(deltaY)) {
+          setSidebarOpen(true);
+        }
+      }
+      resetPointerGesture();
+    };
+
+    const handleWindowBlur = () => {
+      resetTouchGesture();
+      resetPointerGesture();
     };
 
     // Register event listeners
-    // touchmove requires { passive: false } to allow e.preventDefault() during active horizontal swipe
     window.addEventListener('touchstart', handleTouchStart, { capture: true, passive: true });
     window.addEventListener('touchmove', handleTouchMove, { capture: true, passive: false });
     window.addEventListener('touchend', handleTouchEnd, { capture: true, passive: true });
     window.addEventListener('touchcancel', handleTouchCancel, { capture: true, passive: true });
 
     window.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: true });
-    window.addEventListener('pointermove', handlePointerMove, { capture: true, passive: true });
+    window.addEventListener('pointermove', handlePointerMove, { capture: true, passive: false });
     window.addEventListener('pointerup', handlePointerUp, { capture: true, passive: true });
     window.addEventListener('pointercancel', handlePointerCancel, { capture: true, passive: true });
+
+    window.addEventListener('blur', handleWindowBlur);
 
     return () => {
       window.removeEventListener('touchstart', handleTouchStart, { capture: true });
@@ -304,8 +367,10 @@ export default function Layout({
       window.removeEventListener('pointermove', handlePointerMove, { capture: true });
       window.removeEventListener('pointerup', handlePointerUp, { capture: true });
       window.removeEventListener('pointercancel', handlePointerCancel, { capture: true });
+
+      window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [sidebarOpen]);
+  }, []);
 
   const toggleSidebar = () => {
     setSidebarOpen((prev) => !prev);
