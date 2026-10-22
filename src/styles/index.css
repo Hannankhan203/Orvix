@@ -2948,6 +2948,46 @@ html, body {
   font-family: var(--font-mono);
 }
 
+.response-time-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--font-sans);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+.response-time-badge:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-medium);
+}
+
+.response-time-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+[data-theme="light"] .response-time-badge {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.09);
+  color: #64748b;
+}
+
+[data-theme="light"] .response-time-badge:hover {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.16);
+  color: #334155;
+}
+
 .assistant-wrapper .message-content {
   width: 100%;
   color: var(--text-primary);
@@ -6737,6 +6777,3 @@ body.theme-light .listening-text,
   border-color: #2563eb;
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
 }
-
-
-

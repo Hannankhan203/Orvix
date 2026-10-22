@@ -11,6 +11,8 @@
  * - Purely client-side via Blob and URL.createObjectURL; never uploads data externally.
  */
 
+import { formatResponseTime } from './formatResponseTime.js';
+
 /**
  * Sanitizes a conversation title into a safe, cross-platform filename.
  * Strips invalid filesystem characters: \ / : * ? " < > | and ASCII control characters.
@@ -169,6 +171,12 @@ export function formatConversationMarkdown(title, messages = [], options = {}) {
     if (!isUser && msg.modelUsed) {
       metaParts.push(msg.modelUsed);
     }
+    if (!isUser && typeof msg.responseTimeMs === 'number' && msg.responseTimeMs > 0) {
+      const formatted = formatResponseTime(msg.responseTimeMs);
+      if (formatted) {
+        metaParts.push(`Response time: ${formatted}`);
+      }
+    }
 
     const metaLine = metaParts.length > 0 ? `_${metaParts.join(' • ')}_` : '';
 
@@ -231,6 +239,12 @@ export function formatConversationPlainText(title, messages = [], options = {}) 
     }
     if (!isUser && msg.modelUsed) {
       metaParts.push(`Model: ${msg.modelUsed}`);
+    }
+    if (!isUser && typeof msg.responseTimeMs === 'number' && msg.responseTimeMs > 0) {
+      const formatted = formatResponseTime(msg.responseTimeMs);
+      if (formatted) {
+        metaParts.push(`Response time: ${formatted}`);
+      }
     }
 
     const header = metaParts.length > 0

@@ -14,7 +14,8 @@ import {
   Cpu,
   Pause,
   Play,
-  Paperclip
+  Paperclip,
+  Timer
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -24,6 +25,7 @@ import ImageAttachmentCard from './ImageAttachmentCard.jsx';
 import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
+import { formatResponseTime } from '../../utils/formatResponseTime.js';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -265,6 +267,14 @@ export default function ChatMessage({
     [isStreaming]
   );
 
+  const formattedResponseTime = useMemo(
+    () =>
+      !isUser && !isStreaming && !isError && !isStopped && !message?.isInterrupted
+        ? formatResponseTime(message?.responseTimeMs)
+        : null,
+    [isUser, isStreaming, isError, isStopped, message?.isInterrupted, message?.responseTimeMs]
+  );
+
   // Sync draftContent whenever isEditing is toggled or message content changes
   useEffect(() => {
     if (isEditing) {
@@ -439,6 +449,17 @@ export default function ChatMessage({
             >
               {message.provider ? `${message.provider.charAt(0).toUpperCase() + message.provider.slice(1)}: ` : ''}
               {message.modelUsed}
+            </span>
+          )}
+
+          {formattedResponseTime && (
+            <span
+              className="response-time-badge"
+              title={`Response time: ${formattedResponseTime}`}
+              aria-label={`Response time: ${formattedResponseTime}`}
+            >
+              <Timer size={11} className="response-time-icon" aria-hidden="true" />
+              <span>Response time: {formattedResponseTime}</span>
             </span>
           )}
 

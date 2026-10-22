@@ -153,6 +153,7 @@ export async function saveChatMessage(userId, chatId, message) {
     content: message.content,
     modelUsed: message.modelUsed || null,
     provider: message.provider || null,
+    responseTimeMs: typeof message.responseTimeMs === 'number' ? message.responseTimeMs : null,
     attachments: Array.isArray(message.attachments)
       ? message.attachments.map((att) => ({
           id: att.id,
@@ -406,6 +407,7 @@ export async function loadConversationMessages(userId, chatId) {
       content: data.content,
       modelUsed: data.modelUsed || null,
       provider: data.provider || null,
+      responseTimeMs: typeof data.responseTimeMs === 'number' ? data.responseTimeMs : null,
       attachments: Array.isArray(data.attachments) ? data.attachments : [],
       referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments : [],
       timestamp: data.clientTimestamp || (data.createdAt?.toDate ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
