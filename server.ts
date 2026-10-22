@@ -696,7 +696,13 @@ app.get(['/api/config', '/config'], (_req, res) => {
    Controlled Temporary File Upload & Storage Management Architecture
    ========================================================================== */
 
-const UPLOAD_DIR = path.resolve(__dirname, 'uploads', 'temp');
+// Vercel's deployed filesystem is read-only except for /tmp.
+// Keep the existing persistent-looking directory locally,
+// but use Vercel's writable temporary filesystem in production.
+const UPLOAD_DIR = process.env.VERCEL
+  ? path.join('/tmp', 'orvix-uploads')
+  : path.resolve(__dirname, 'uploads', 'temp');
+
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
@@ -1271,23 +1277,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         formattedSize: r.formattedSize,
         status: r.status,
         uploadedAt: r.uploadedAt,
-        extraction: r.extraction
-          ? {
-              status: r.extraction.status,
-              success: r.extraction.success,
-              format: r.extraction.format,
-              totalCharacters: r.extraction.totalCharacters,
-              totalWords: r.extraction.totalWords,
-              summaryText: r.extraction.summaryText,
-              pageCount: r.extraction.pageCount,
-              slideCount: r.extraction.slideCount,
-              sectionCount: r.extraction.sectionCount,
-              isScanned: r.extraction.isScanned,
-              isTruncated: r.extraction.isTruncated,
-              warning: r.extraction.warning,
-              error: r.extraction.error
-            }
-          : undefined
+        extraction: r.extraction || undefined
       }))
     });
   });
