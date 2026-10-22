@@ -1,21 +1,45 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import Tesseract from 'tesseract.js';
 
 // Reasonable processing limits
-const OCR_TIMEOUT_MS = 25000; // 25 seconds safety timeout
+const OCR_TIMEOUT_MS = 15000; // 15 seconds safety timeout
 const MAX_PREVIEW_LENGTH = 350;
 const MAX_IMAGE_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let workerInstance = null;
 let initializingPromise = null;
 let ocrQueue = Promise.resolve();
 
 /**
+ * Resolves the directory where local eng.traineddata is stored.
+ * Checks project root, parent directories, and common container paths.
+ */
+function findLocalTrainedDataDir() {
+  const possiblePaths = [
+    path.resolve(process.cwd(), 'eng.traineddata'),
+    path.resolve(__dirname, '../../eng.traineddata'),
+    path.resolve(__dirname, '../eng.traineddata'),
+    '/eng.traineddata'
+  ];
+  for (const p of possiblePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        return path.dirname(p);
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
  * Initializes and returns a shared, managed Tesseract worker instance.
- * In serverless environments (e.g. Vercel / AWS Lambda), the root filesystem is read-only,
- * so cachePath must point to os.tmpdir() to prevent EROFS errors.
+ * Points to local eng.traineddata if present to avoid remote network downloads.
  */
 async function getWorker() {
   if (workerInstance) {
@@ -35,7 +59,22 @@ async function getWorker() {
         }
       } catch (_) {}
 
+      const localDir = findLocalTrainedDataDir();
+      const localFile = localDir ? path.join(localDir, 'eng.traineddata') : null;
+      const targetInCache = path.join(tessCacheDir, 'eng.traineddata');
+
+      if (localFile && fs.existsSync(localFile) && !fs.existsSync(targetInCache)) {
+        try {
+          fs.copyFileSync(localFile, targetInCache);
+        } catch (_) {}
+      }
+
+      const langPath = fs.existsSync(targetInCache)
+        ? tessCacheDir
+        : (localDir || undefined);
+
       const worker = await Tesseract.createWorker('eng', 1, {
+        langPath,
         cachePath: tessCacheDir,
         errorHandler: (err) => {
           console.warn('[Image OCR Worker Warning]', err?.message || err);
@@ -43,6 +82,9 @@ async function getWorker() {
       });
       workerInstance = worker;
       return workerInstance;
+    } catch (workerErr) {
+      console.warn('[Image OCR Worker Init Error]:', workerErr?.message || workerErr);
+      throw workerErr;
     } finally {
       initializingPromise = null;
     }
@@ -121,7 +163,7 @@ export function normalizeOcrText(rawText) {
  * rather than sparse noise, lone punctuation artifacts, or speckles.
  *
  * @param {string} text - Normalized text
- * @param {number} [confidence=0] - Tesseract confidence score (0-100)
+ * @param {number} [confidence=0] - Confidence score (0-100)
  * @returns {boolean}
  */
 export function detectReadableText(text, confidence = 0) {
@@ -146,7 +188,76 @@ export function detectReadableText(text, confidence = 0) {
 }
 
 /**
- * Executes server-side OCR on an image file.
+ * Vision-capable AI fallback for extracting text from images using Gemini Vision.
+ * Used when OCR fails, times out, or when running in serverless environments where
+ * native Tesseract workers cannot spawn.
+ *
+ * @param {Buffer} imageBuffer
+ * @param {string} mimeType
+ * @param {string|null} [apiKey]
+ * @returns {Promise<{ hasText: boolean, text: string } | null>}
+ */
+export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = 'image/jpeg', apiKey = null) {
+  const key = apiKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  if (!key || key === 'MY_GEMINI_API_KEY') {
+    return null;
+  }
+
+  try {
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
+
+    const base64Data = imageBuffer.toString('base64');
+    const cleanMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-flash-latest',
+      contents: [
+        {
+          parts: [
+            {
+              inlineData: {
+                mimeType: cleanMime,
+                data: base64Data
+              }
+            },
+            {
+              text: 'Transcribe and extract all readable text, words, and numbers from this image exactly as written. Preserve line breaks. If there is no readable text or words in this image, reply with ONLY: NO_READABLE_TEXT'
+            }
+          ]
+        }
+      ]
+    });
+
+    const rawOutput = response?.text || '';
+    if (!rawOutput || rawOutput.trim() === 'NO_READABLE_TEXT' || rawOutput.includes('NO_READABLE_TEXT')) {
+      return {
+        hasText: false,
+        text: ''
+      };
+    }
+
+    const normalized = normalizeOcrText(rawOutput);
+    const hasText = detectReadableText(normalized, 95);
+    return {
+      hasText,
+      text: normalized
+    };
+  } catch (err) {
+    console.warn('[Gemini Vision Extraction Error]:', err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Executes server-side OCR on an image file with automatic Vision fallback.
  *
  * Returns a structured ImageOcrResult:
  * - status: 'ready' (text detected) | 'NO_TEXT_DETECTED' (success, no text) | 'unsupported_format' | 'error'
@@ -155,12 +266,13 @@ export function detectReadableText(text, confidence = 0) {
  * - text: normalized readable text (or empty string)
  * - message: user-facing message when no readable text is detected
  *
- * @param {string} filePath - Absolute path to the image on disk
+ * @param {string|Buffer} filePathOrBuffer - Absolute path or Buffer of image bytes
  * @param {string} originalName - Original filename for metadata
  * @param {string} ext - Extension including dot (e.g. '.png')
  * @param {string} mimeType - Declared MIME type
  * @param {string} [fileId] - Unique attachment ID
  * @param {{ width?: number, height?: number }} [dimensions] - Pre-parsed dimensions
+ * @param {string|null} [apiKey] - Optional Gemini API key for vision fallback
  * @returns {Promise<Object>}
  */
 export async function extractImageText(
@@ -169,7 +281,8 @@ export async function extractImageText(
   ext = '',
   mimeType = 'image/jpeg',
   fileId = '',
-  dimensions = undefined
+  dimensions = undefined,
+  apiKey = null
 ) {
   const isBuf = Buffer.isBuffer(filePathOrBuffer);
   const displayFilename = isBuf
@@ -201,18 +314,17 @@ export async function extractImageText(
   }
 
   // 2. Validate file existence and size
-  let imageBuffer;
+  let imageBuffer = null;
   let imageSize = 0;
 
   if (isBuf) {
     imageBuffer = filePathOrBuffer;
     imageSize = imageBuffer.length;
   } else {
-    const filePath = String(filePathOrBuffer || '');
-    let fileStats;
+    const diskPath = String(filePathOrBuffer || '');
     try {
-      fileStats = await fs.promises.stat(filePath);
-      imageSize = fileStats.size;
+      const stats = await fs.promises.stat(diskPath);
+      imageSize = stats.size;
     } catch (err) {
       return {
         fileId,
@@ -234,7 +346,7 @@ export async function extractImageText(
     }
 
     try {
-      imageBuffer = await fs.promises.readFile(filePath);
+      imageBuffer = await fs.promises.readFile(diskPath);
     } catch (err) {
       return {
         fileId,
@@ -257,7 +369,7 @@ export async function extractImageText(
     }
   }
 
-  if (imageSize === 0) {
+  if (!imageBuffer || imageSize === 0) {
     return {
       fileId,
       filename: displayFilename,
@@ -294,42 +406,96 @@ export async function extractImageText(
       text: '',
       totalCharacters: 0,
       totalWords: 0,
-      error: `Image exceeds maximum allowed size of ${Math.round(MAX_IMAGE_FILE_SIZE / (1024 * 1024))}MB for OCR extraction.`,
+      error: `Image exceeds maximum allowed size of ${Math.round(MAX_IMAGE_FILE_SIZE / (1024 * 1024))}MB for text extraction.`,
       extractedAt: nowIso
     };
   }
 
-  // 3. Queue OCR execution to prevent runaway concurrency and CPU saturation
+  // 3. Queue execution to prevent runaway concurrency, with catch handler to guarantee chain never blocks
   return new Promise((resolve) => {
-    ocrQueue = ocrQueue.then(async () => {
-      let timeoutId = null;
-      let timedOut = false;
+    ocrQueue = ocrQueue
+      .catch(() => {})
+      .then(async () => {
+        let timeoutId = null;
+        let timedOut = false;
+        let ocrFailed = false;
+        let ocrErrorMsg = '';
 
-      try {
-        const worker = await getWorker();
+        try {
+          const worker = await getWorker();
 
-        const timeoutPromise = new Promise((_, reject) => {
-          timeoutId = setTimeout(() => {
-            timedOut = true;
-            reject(new Error(`OCR processing timed out after ${OCR_TIMEOUT_MS / 1000} seconds.`));
-          }, OCR_TIMEOUT_MS);
-        });
+          const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`OCR processing timed out after ${OCR_TIMEOUT_MS / 1000} seconds.`));
+            }, OCR_TIMEOUT_MS);
+          });
 
-        const recognitionPromise = worker.recognize(imageBuffer);
-        const ocrResult = await Promise.race([recognitionPromise, timeoutPromise]);
+          const recognitionPromise = worker.recognize(imageBuffer);
+          const ocrResult = await Promise.race([recognitionPromise, timeoutPromise]);
 
-        if (timeoutId) clearTimeout(timeoutId);
+          if (timeoutId) clearTimeout(timeoutId);
 
-        const rawText = ocrResult?.data?.text || '';
-        const confidence = Math.round(ocrResult?.data?.confidence || 0);
-        const normalizedText = normalizeOcrText(rawText);
-        const hasText = detectReadableText(normalizedText, confidence);
+          const rawText = ocrResult?.data?.text || '';
+          const confidence = Math.round(ocrResult?.data?.confidence || 0);
+          const normalizedText = normalizeOcrText(rawText);
+          const hasText = detectReadableText(normalizedText, confidence);
 
-        if (!hasText) {
-          // Requirement 7 & 8: No readable text is NOT an error.
-          // Return a successful result with status 'NO_TEXT_DETECTED'.
-          // Requirement 9: Tell the user clearly "No readable text detected in this image."
-          // Requirement 10: Do not fabricate text.
+          if (hasText) {
+            const totalCharacters = normalizedText.length;
+            const totalWords = countWords(normalizedText);
+            const lineCount = normalizedText.split('\n').filter((l) => l.trim().length > 0).length;
+            const summaryText = generateSummaryPreview(normalizedText);
+
+            return resolve({
+              fileId,
+              filename: displayFilename,
+              originalName,
+              format: formatName,
+              mimeType,
+              sizeBytes: imageSize,
+              dimensions,
+              status: 'ready',
+              success: true,
+              isImage: true,
+              hasText: true,
+              text: normalizedText,
+              summaryText,
+              totalCharacters,
+              totalWords,
+              lineCount,
+              confidence,
+              extractedAt: nowIso
+            });
+          }
+
+          // If Tesseract found no text, try Gemini Vision fallback if available
+          const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, apiKey);
+          if (visionResult && visionResult.hasText) {
+            const vText = visionResult.text;
+            return resolve({
+              fileId,
+              filename: displayFilename,
+              originalName,
+              format: formatName,
+              mimeType,
+              sizeBytes: imageSize,
+              dimensions,
+              status: 'ready',
+              success: true,
+              isImage: true,
+              hasText: true,
+              text: vText,
+              summaryText: generateSummaryPreview(vText),
+              totalCharacters: vText.length,
+              totalWords: countWords(vText),
+              lineCount: vText.split('\n').filter((l) => l.trim().length > 0).length,
+              confidence: 95,
+              extractedAt: nowIso
+            });
+          }
+
+          // Confirmed no text in image
           return resolve({
             fileId,
             filename: displayFilename,
@@ -351,14 +517,69 @@ export async function extractImageText(
             message: 'No readable text detected in this image.',
             extractedAt: nowIso
           });
+        } catch (err) {
+          if (timeoutId) clearTimeout(timeoutId);
+          await discardOcrWorker();
+          ocrFailed = true;
+          ocrErrorMsg = err?.message || 'OCR processing failure';
         }
 
-        // Readable text detected
-        const totalCharacters = normalizedText.length;
-        const totalWords = countWords(normalizedText);
-        const lineCount = normalizedText.split('\n').filter((l) => l.trim().length > 0).length;
-        const summaryText = generateSummaryPreview(normalizedText);
+        // 4. If Tesseract worker failed or timed out, attempt Gemini Vision fallback
+        try {
+          const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, apiKey);
+          if (visionResult) {
+            if (visionResult.hasText) {
+              const vText = visionResult.text;
+              return resolve({
+                fileId,
+                filename: displayFilename,
+                originalName,
+                format: formatName,
+                mimeType,
+                sizeBytes: imageSize,
+                dimensions,
+                status: 'ready',
+                success: true,
+                isImage: true,
+                hasText: true,
+                text: vText,
+                summaryText: generateSummaryPreview(vText),
+                totalCharacters: vText.length,
+                totalWords: countWords(vText),
+                lineCount: vText.split('\n').filter((l) => l.trim().length > 0).length,
+                confidence: 95,
+                extractedAt: nowIso
+              });
+            } else {
+              return resolve({
+                fileId,
+                filename: displayFilename,
+                originalName,
+                format: formatName,
+                mimeType,
+                sizeBytes: imageSize,
+                dimensions,
+                status: 'NO_TEXT_DETECTED',
+                success: true,
+                isImage: true,
+                hasText: false,
+                text: '',
+                summaryText: '',
+                totalCharacters: 0,
+                totalWords: 0,
+                lineCount: 0,
+                confidence: 0,
+                message: 'No readable text detected in this image.',
+                extractedAt: nowIso
+              });
+            }
+          }
+        } catch (visionErr) {
+          console.warn('[Vision Fallback Error]:', visionErr);
+        }
 
+        // 5. Both OCR and Vision failed or unavailable: return a clean structured response (never hang!)
+        const isTimeout = timedOut || ocrErrorMsg.includes('timed out');
         return resolve({
           fileId,
           filename: displayFilename,
@@ -366,34 +587,6 @@ export async function extractImageText(
           format: formatName,
           mimeType,
           sizeBytes: imageSize,
-          dimensions,
-          status: 'ready',
-          success: true,
-          isImage: true,
-          hasText: true,
-          text: normalizedText,
-          summaryText,
-          totalCharacters,
-          totalWords,
-          lineCount,
-          confidence,
-          extractedAt: nowIso
-        });
-      } catch (err) {
-        if (timeoutId) clearTimeout(timeoutId);
-
-        // Discard worker on crash/timeout to ensure next operation starts cleanly
-        await discardOcrWorker();
-
-        // Important Behavior: corrupted or unprocessable images return an actual processing error
-        const isTimeout = timedOut || (err?.message || '').includes('timed out');
-        return resolve({
-          fileId,
-          filename: path.basename(filePath),
-          originalName,
-          format: formatName,
-          mimeType,
-          sizeBytes: fileStats.size,
           dimensions,
           status: 'error',
           success: false,
@@ -404,10 +597,9 @@ export async function extractImageText(
           totalWords: 0,
           error: isTimeout
             ? 'Image OCR processing timed out. The image may be too large or complex.'
-            : `Failed to process image: ${err?.message || 'invalid or corrupt image data.'}`,
+            : `Failed to process image: ${ocrErrorMsg || 'invalid or corrupt image data.'}`,
           extractedAt: nowIso
         });
-      }
-    });
+      });
   });
 }

@@ -1214,10 +1214,18 @@ export default function ChatPage() {
             formData.append('files', att.file, att.name);
           });
 
-          const uploadRes = await fetch('/api/upload', {
-            method: 'POST',
-            body: formData
-          });
+          const uploadController = new AbortController();
+          const uploadTimeoutId = setTimeout(() => uploadController.abort(), 30000);
+          let uploadRes;
+          try {
+            uploadRes = await fetch('/api/upload', {
+              method: 'POST',
+              body: formData,
+              signal: uploadController.signal
+            });
+          } finally {
+            clearTimeout(uploadTimeoutId);
+          }
 
           if (!uploadRes.ok) {
             let errorMsg = `Upload failed (${uploadRes.status})`;

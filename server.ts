@@ -6,6 +6,13 @@ import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
 import multer from 'multer';
+import dns from 'dns';
+
+// Ensure IPv4 is prioritized for outbound external API connections (Gemini, Groq, OpenRouter)
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (_) {}
+
 import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from './src/services/documentExtractor.js';
@@ -110,7 +117,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const portArgIndex = process.argv.indexOf('--port');
 const portFromArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
-const PORT = Number(portFromArg) || (process.env.PORT && process.env.PORT !== '8080' ? Number(process.env.PORT) : 3000);
+const PORT = Number(portFromArg) || 3000;
 
 // Permissive CORS middleware for cross-origin and Vercel preview environments
 app.use((req, res, next) => {
@@ -319,13 +326,14 @@ export function parseGeminiError(err: any): {
   };
 }
 
-// Helper to format conversation history for Gemini with alternating roles
+// Helper to format conversation history for Gemini with alternating roles and optional image parts
 function formatGeminiHistory(
   messages: Array<{ sender?: string; content?: string }> = [],
   currentPrompt = '',
-  maxContext = 12
+  maxContext = 12,
+  imageParts: Array<{ mimeType: string; data: string }> = []
 ) {
-  const rawContents: Array<{ role: 'user' | 'model'; text: string }> = [];
+  const rawContents: Array<{ role: 'user' | 'model'; parts: any[] }> = [];
   const recent = messages.slice(-maxContext);
 
   for (const msg of recent) {
@@ -333,14 +341,28 @@ function formatGeminiHistory(
     const role = msg.sender === 'user' ? 'user' : 'model';
     rawContents.push({
       role,
-      text: msg.content.trim()
+      parts: [{ text: msg.content.trim() }]
     });
   }
 
   if (currentPrompt && currentPrompt.trim()) {
+    const userParts: any[] = [];
+    if (Array.isArray(imageParts) && imageParts.length > 0) {
+      for (const img of imageParts) {
+        if (img?.data && img?.mimeType) {
+          userParts.push({
+            inlineData: {
+              mimeType: img.mimeType,
+              data: img.data
+            }
+          });
+        }
+      }
+    }
+    userParts.push({ text: currentPrompt.trim() });
     rawContents.push({
       role: 'user',
-      text: currentPrompt.trim()
+      parts: userParts
     });
   }
 
@@ -350,19 +372,19 @@ function formatGeminiHistory(
   }
 
   if (rawContents.length === 0 && currentPrompt.trim()) {
-    rawContents.push({ role: 'user', text: currentPrompt.trim() });
+    rawContents.push({ role: 'user', parts: [{ text: currentPrompt.trim() }] });
   }
 
   // Merge consecutive turns of identical role so roles strictly alternate user -> model -> user
-  const mergedContents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  const mergedContents: Array<{ role: 'user' | 'model'; parts: any[] }> = [];
   for (const item of rawContents) {
     const last = mergedContents[mergedContents.length - 1];
     if (last && last.role === item.role) {
-      last.parts.push({ text: item.text });
+      last.parts.push(...item.parts);
     } else {
       mergedContents.push({
         role: item.role,
-        parts: [{ text: item.text }]
+        parts: [...item.parts]
       });
     }
   }
@@ -1550,13 +1572,15 @@ app.post(['/api/upload', '/upload'], (req, res) => {
 
         if (isImg) {
           rec.isImage = true;
+          const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
           const imgExtraction = (await extractImageText(
             inputSource,
             rec.originalName,
             ext,
             rec.mimeType,
             rec.id,
-            rec.dimensions
+            rec.dimensions,
+            geminiKey
           )) as any;
           rec.extraction = imgExtraction;
           rec.status = 'ready';
@@ -1750,13 +1774,15 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
             if (inputSource) {
               if (isImg) {
+                const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
                 record.extraction = (await extractImageText(
                   inputSource,
                   record.originalName,
                   ext,
                   record.mimeType,
                   record.id,
-                  record.dimensions
+                  record.dimensions,
+                  geminiKey
                 )) as any;
                 record.status = 'ready';
               } else {
@@ -1898,14 +1924,45 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
       });
 
-      const contents = formatGeminiHistory(history, effectivePrompt);
+      // Collect attached images for Gemini multimodal processing
+      const imageParts: Array<{ mimeType: string; data: string }> = [];
+      if (Array.isArray(attachments)) {
+        for (const att of attachments) {
+          if (!att?.id) continue;
+          const rec = fileRegistry.get(att.id);
+          const ext = path.extname(rec?.diskFilename || att.name || '').toLowerCase();
+          const isImg =
+            ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext) ||
+            (rec?.mimeType || att.type || '').startsWith('image/');
+          if (isImg) {
+            let buf = rec?.buffer;
+            if (!buf && rec?.diskFilename) {
+              const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
+              try {
+                if (fs.existsSync(fullDiskPath)) {
+                  buf = fs.readFileSync(fullDiskPath);
+                }
+              } catch (_) {}
+            }
+            if (buf && buf.length <= 10 * 1024 * 1024) {
+              const mime = rec?.mimeType || att.type || `image/${ext.replace('.', '')}`;
+              imageParts.push({
+                mimeType: mime,
+                data: buf.toString('base64')
+              });
+            }
+          }
+        }
+      }
+
+      const contents = formatGeminiHistory(history, effectivePrompt, 12, imageParts);
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
-      // Attempt 1 tries gemini-3.8-flash (primary recommended model)
-      // Attempt 2 tries gemini-3-flash-preview (fast reliable fallback preview model)
+      // Attempt 1 tries gemini-flash-latest (fastest and highest availability in all tiers)
+      // Attempt 2 tries gemini-3.8-flash (primary recommended model)
       // Attempt 3 tries gemini-3.1-flash-lite (alternative lite model)
       const attemptPlan = [
-        { model: 'gemini-3.8-flash', attemptNum: 1 },
-        { model: 'gemini-3-flash-preview', attemptNum: 2 },
+        { model: 'gemini-flash-latest', attemptNum: 1 },
+        { model: 'gemini-3.8-flash', attemptNum: 2 },
         { model: 'gemini-3.1-flash-lite', attemptNum: 3 }
       ];
       const maxAttempts = attemptPlan.length;
@@ -2693,19 +2750,19 @@ async function startServer() {
   const publicPath = path.resolve(__dirname, 'public');
   app.use(express.static(publicPath));
 
-  if (process.env.NODE_ENV !== 'production') {
+  const distPath = path.resolve(__dirname, 'dist');
+  if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.resolve(distPath, 'index.html'));
+    });
+  } else {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
-    });
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
