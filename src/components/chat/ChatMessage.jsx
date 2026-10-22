@@ -20,6 +20,8 @@ import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import CodeBlock from './CodeBlock.jsx';
 import AttachmentCard from './AttachmentCard.jsx';
+import ImageAttachmentCard from './ImageAttachmentCard.jsx';
+import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 
@@ -468,7 +470,7 @@ export default function ChatMessage({
                 <div className="assistant-referenced-attachments error-referenced-attachments" aria-label="Referenced files">
                   <div className="referenced-attachments-header">
                     <Paperclip size={11} className="referenced-icon" />
-                    <span>Referenced document{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
+                    <span>Referenced file{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
                   </div>
                   <div className="referenced-attachments-list">
                     {message.referencedAttachments.map((att, idx) => (
@@ -567,15 +569,36 @@ export default function ChatMessage({
                 </div>
               </div>
             ) : (
-              /* Render user messages safely as plain text and attachment chips */
+              /* Render user messages safely as plain text, visible image thumbnails, and document chips */
               <div className="user-message-content-wrapper">
-                {message.attachments && message.attachments.length > 0 && (
-                  <div className="message-attachments-list" role="region" aria-label="Attached files">
-                    {message.attachments.map((att, idx) => (
-                      <AttachmentCard key={att.id || idx} attachment={att} />
-                    ))}
-                  </div>
-                )}
+                {(() => {
+                  const allAtts = Array.isArray(message.attachments) ? message.attachments : [];
+                  const imageAtts = allAtts.filter(isImageAttachment);
+                  const docAtts = allAtts.filter((a) => !isImageAttachment(a));
+
+                  return (
+                    <>
+                      {imageAtts.length > 0 && (
+                        <div
+                          className={`message-image-attachments-grid ${imageAtts.length > 1 ? 'is-multi' : 'is-single'}`}
+                          role="group"
+                          aria-label="Attached images"
+                        >
+                          {imageAtts.map((att, idx) => (
+                            <ImageAttachmentCard key={att.id || idx} attachment={att} />
+                          ))}
+                        </div>
+                      )}
+                      {docAtts.length > 0 && (
+                        <div className="message-attachments-list" role="region" aria-label="Attached documents">
+                          {docAtts.map((att, idx) => (
+                            <AttachmentCard key={att.id || idx} attachment={att} />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {message.content ? (
                   <p className="user-text-content">{message.content}</p>
                 ) : null}
@@ -588,7 +611,7 @@ export default function ChatMessage({
                 <div className="assistant-referenced-attachments" aria-label="Referenced files">
                   <div className="referenced-attachments-header">
                     <Paperclip size={11} className="referenced-icon" />
-                    <span>Referenced document{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
+                    <span>Referenced file{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
                   </div>
                   <div className="referenced-attachments-list">
                     {message.referencedAttachments.map((att, idx) => (

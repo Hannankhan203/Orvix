@@ -30,6 +30,22 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // OpenRouter free model
 const DEFAULT_MODEL = 'openrouter/free';
 
+function normalizeAttachments(attachments = []) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments
+    .filter((a) => a && (a.extraction || a.extractedText || a.text))
+    .map((a) => {
+      const ext = a.extraction || a;
+      return {
+        ...ext,
+        id: ext.id || a.id || a.fileId,
+        originalName: ext.originalName || a.originalName || a.name || a.filename || 'attachment',
+        filename: ext.filename || a.filename || a.name || 'attachment',
+        isImage: Boolean(ext.isImage ?? a.isImage ?? false)
+      };
+    });
+}
+
 /**
  * Formats conversation history into OpenAI-compatible format expected by OpenRouter,
  * integrating document context adaptation when attachments are provided.
@@ -51,9 +67,7 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
   let effectivePrompt = prompt;
 
   if (Array.isArray(attachments) && attachments.length > 0) {
-    const docs = attachments
-      .filter((a) => a?.extraction)
-      .map((a) => a.extraction);
+    const docs = normalizeAttachments(attachments);
 
     if (docs.length > 0) {
       const prepDoc = prepareDocumentContext(prompt, docs);
@@ -103,6 +117,19 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
 export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general', attachments = [] }) {
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const docs = normalizeAttachments(attachments);
+    if (docs.length > 0) {
+      const prepDoc = prepareDocumentContext(prompt, docs);
+      if (prepDoc?.directAnswer) {
+        return {
+          text: prepDoc.directAnswer,
+          modelUsed: 'Document Analyzer'
+        };
+      }
+    }
+  }
+
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
@@ -178,6 +205,20 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
 export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [] }) {
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const docs = normalizeAttachments(attachments);
+    if (docs.length > 0) {
+      const prepDoc = prepareDocumentContext(prompt, docs);
+      if (prepDoc?.directAnswer) {
+        onChunk?.(prepDoc.directAnswer, prepDoc.directAnswer);
+        return {
+          text: prepDoc.directAnswer,
+          modelUsed: 'Document Analyzer'
+        };
+      }
+    }
+  }
+
   const apiKey = getOpenRouterApiKey();
 
   if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {

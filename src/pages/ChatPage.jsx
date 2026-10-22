@@ -1236,7 +1236,17 @@ export default function ChatPage() {
 
           const uploadData = await uploadRes.json();
           processedAttachments = Array.isArray(uploadData?.attachments)
-            ? uploadData.attachments
+            ? uploadData.attachments.map((proc, idx) => {
+                const orig =
+                  filesToUpload[idx] ||
+                  filesToUpload.find(
+                    (f) => f.name === (proc.originalName || proc.name)
+                  );
+                return {
+                  ...proc,
+                  isImage: Boolean(proc.isImage || orig?.isImage)
+                };
+              })
             : [];
 
           // Persist file blobs into IndexedDB for robust local preview/download across reloads
@@ -1255,6 +1265,7 @@ export default function ChatPage() {
                 size: proc.size || attItem.file.size,
                 formattedSize: proc.formattedSize || attItem.formattedSize,
                 extension: proc.extension || attItem.extension,
+                isImage: Boolean(attItem.isImage),
                 conversationId: activeChatIdRef.current || null
               }).catch((e) => console.warn('Could not cache blob in IndexedDB:', e));
             }
@@ -1277,6 +1288,7 @@ export default function ChatPage() {
           formattedSize: att.formattedSize,
           type: att.type || att.mimeType,
           extension: att.extension,
+          isImage: Boolean(att.isImage),
           status: att.status || 'uploaded',
           extraction: att.extraction
         }));

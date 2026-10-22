@@ -13,13 +13,26 @@ import {
   Sparkles,
   Loader2,
   Globe,
-  Paperclip
+  Paperclip,
+  FileImage
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
+
+// Supported image extensions whitelist
+const SUPPORTED_IMAGE_EXTENSIONS = new Set([
+  'JPG',
+  'JPEG',
+  'PNG',
+  'WEBP',
+  'GIF',
+  'BMP',
+  'HEIC',
+  'HEIF'
+]);
 
 function formatFileSize(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
@@ -86,6 +99,19 @@ export default function ChatArea({
   // Selected file attachments state
   const [attachments, setAttachments] = useState([]);
 
+  // Revoke object URLs on component unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      attachments.forEach((att) => {
+        if (att.previewUrl) {
+          try {
+            URL.revokeObjectURL(att.previewUrl);
+          } catch (_) {}
+        }
+      });
+    };
+  }, [attachments]);
+
   const handleAttachClick = () => {
     if (fileInputRef.current) {
       fileInputRef.current.click();
@@ -100,13 +126,28 @@ export default function ChatArea({
       const ext = file.name.includes('.')
         ? file.name.split('.').pop().toUpperCase()
         : 'FILE';
+      const isImage =
+        SUPPORTED_IMAGE_EXTENSIONS.has(ext) ||
+        Boolean(file.type && file.type.startsWith('image/'));
+
+      let previewUrl = null;
+      if (isImage) {
+        try {
+          previewUrl = URL.createObjectURL(file);
+        } catch (err) {
+          console.warn('Could not generate image thumbnail preview URL:', err);
+        }
+      }
+
       return {
         id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
         name: file.name,
         size: file.size,
         formattedSize: formatFileSize(file.size),
-        type: file.type || 'application/octet-stream',
+        type: file.type || (isImage ? `image/${ext.toLowerCase()}` : 'application/octet-stream'),
         extension: ext,
+        isImage,
+        previewUrl,
         file
       };
     });
@@ -118,7 +159,15 @@ export default function ChatArea({
   };
 
   const handleRemoveAttachment = (idToRemove) => {
-    setAttachments((prev) => prev.filter((att) => att.id !== idToRemove));
+    setAttachments((prev) => {
+      const removed = prev.find((att) => att.id === idToRemove);
+      if (removed?.previewUrl) {
+        try {
+          URL.revokeObjectURL(removed.previewUrl);
+        } catch (_) {}
+      }
+      return prev.filter((att) => att.id !== idToRemove);
+    });
   };
 
   // Floating scroll-to-bottom button visibility
@@ -784,13 +833,13 @@ Transcript:
           )}
 
           <form onSubmit={handleSubmit} className="composer-form" aria-label="Message composer">
-            {/* Native file input supporting PDF, DOCX, TXT, MD, PPT, PPTX, CSV, etc. */}
+            {/* Native file input supporting documents and common image formats (JPG, JPEG, PNG, WEBP, GIF, BMP, HEIC, HEIF) */}
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
               multiple
-              accept=".pdf,.docx,.doc,.txt,.md,.markdown,.ppt,.pptx,.csv,.tsv,.json,.xml,.xlsx,.xls,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/csv,application/json"
+              accept=".jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/heic,image/heif,image/*,.pdf,.docx,.doc,.txt,.md,.markdown,.ppt,.pptx,.csv,.tsv,.json,.xml,.xlsx,.xls,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/csv,application/json"
               className="composer-file-input"
               tabIndex={-1}
               aria-hidden="true"
@@ -798,27 +847,74 @@ Transcript:
 
             {/* Selected attachments preview strip */}
             {attachments.length > 0 && (
-              <div className="composer-attachments-preview" role="region" aria-label="Attached files">
-                {attachments.map((att) => (
-                  <div
-                    key={att.id}
-                    className="composer-attachment-chip"
-                    title={`${att.name} (${att.formattedSize})`}
-                  >
-                    <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
-                    <span className="attachment-chip-name">{att.name}</span>
-                    <span className="attachment-chip-size">{att.formattedSize}</span>
-                    <button
-                      type="button"
-                      className="attachment-chip-remove"
-                      onClick={() => handleRemoveAttachment(att.id)}
-                      title={`Remove ${att.name}`}
-                      aria-label={`Remove ${att.name}`}
+              <div className="composer-attachments-preview" role="region" aria-label="Attached files and images">
+                {attachments.map((att) =>
+                  att.isImage ? (
+                    <div
+                      key={att.id}
+                      className="composer-attachment-chip composer-image-chip"
+                      title={`${att.name} (${att.formattedSize})`}
                     >
-                      <X size={12} />
-                    </button>
-                  </div>
-                ))}
+                      <div className="composer-image-thumb-wrap">
+                        {att.previewUrl ? (
+                          <img
+                            src={att.previewUrl}
+                            alt={att.name}
+                            className="composer-image-thumb"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              const fallback = e.currentTarget.parentElement?.querySelector(
+                                '.composer-image-fallback-icon'
+                              );
+                              if (fallback) fallback.style.display = 'flex';
+                            }}
+                          />
+                        ) : null}
+                        <div
+                          className="composer-image-fallback-icon"
+                          style={{ display: att.previewUrl ? 'none' : 'flex' }}
+                          aria-hidden="true"
+                        >
+                          <FileImage size={16} />
+                        </div>
+                      </div>
+                      <div className="composer-image-meta">
+                        <span className="attachment-chip-name" title={att.name}>
+                          {att.name}
+                        </span>
+                        <span className="attachment-chip-size">{att.formattedSize}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="attachment-chip-remove"
+                        onClick={() => handleRemoveAttachment(att.id)}
+                        title={`Remove ${att.name}`}
+                        aria-label={`Remove ${att.name}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      key={att.id}
+                      className="composer-attachment-chip"
+                      title={`${att.name} (${att.formattedSize})`}
+                    >
+                      <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
+                      <span className="attachment-chip-name">{att.name}</span>
+                      <span className="attachment-chip-size">{att.formattedSize}</span>
+                      <button
+                        type="button"
+                        className="attachment-chip-remove"
+                        onClick={() => handleRemoveAttachment(att.id)}
+                        title={`Remove ${att.name}`}
+                        aria-label={`Remove ${att.name}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )
+                )}
               </div>
             )}
 
@@ -830,8 +926,8 @@ Transcript:
                 size="icon-round"
                 disabled={isLoading}
                 onClick={handleAttachClick}
-                title="Attach files (PDF, DOCX, TXT, MD, PPT, CSV, etc.)"
-                ariaLabel="Attach files"
+                title="Attach documents or images (PDF, DOCX, TXT, JPG, PNG, WEBP, etc.)"
+                ariaLabel="Attach documents or images"
                 className="composer-attach-btn"
                 icon={<Paperclip size={18} />}
               />

@@ -47,6 +47,10 @@ function getFormatIcon(ext = '') {
     case 'jpg':
     case 'jpeg':
     case 'webp':
+    case 'gif':
+    case 'bmp':
+    case 'heic':
+    case 'heif':
     case 'svg':
       return FileImage;
     default:
@@ -79,6 +83,16 @@ function getFormatBadgeClass(ext = '') {
     case 'json':
     case 'xml':
       return 'format-text';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'webp':
+    case 'gif':
+    case 'bmp':
+    case 'heic':
+    case 'heif':
+    case 'svg':
+      return 'format-image';
     default:
       return 'format-default';
   }

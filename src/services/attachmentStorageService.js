@@ -169,7 +169,7 @@ export function isFormatPreviewable(extension = '', mimeType = '') {
   const ext = (extension || '').replace('.', '').toLowerCase();
   const mime = (mimeType || '').toLowerCase();
 
-  const previewableExts = ['pdf', 'txt', 'md', 'markdown', 'json', 'xml', 'csv', 'tsv', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'];
+  const previewableExts = ['pdf', 'txt', 'md', 'markdown', 'json', 'xml', 'csv', 'tsv', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'heic', 'heif', 'svg'];
   if (previewableExts.includes(ext)) return true;
 
   if (

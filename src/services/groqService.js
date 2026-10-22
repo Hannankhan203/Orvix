@@ -29,6 +29,22 @@ export function getGroqApiKey() {
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
+function normalizeAttachments(attachments = []) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments
+    .filter((a) => a && (a.extraction || a.extractedText || a.text))
+    .map((a) => {
+      const ext = a.extraction || a;
+      return {
+        ...ext,
+        id: ext.id || a.id || a.fileId,
+        originalName: ext.originalName || a.originalName || a.name || a.filename || 'attachment',
+        filename: ext.filename || a.filename || a.name || 'attachment',
+        isImage: Boolean(ext.isImage ?? a.isImage ?? false)
+      };
+    });
+}
+
 /**
  * Formats conversation history into OpenAI-compatible format expected by Groq,
  * integrating document context adaptation when attachments are provided.
@@ -50,9 +66,7 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
   let effectivePrompt = prompt;
 
   if (Array.isArray(attachments) && attachments.length > 0) {
-    const docs = attachments
-      .filter((a) => a?.extraction)
-      .map((a) => a.extraction);
+    const docs = normalizeAttachments(attachments);
 
     if (docs.length > 0) {
       const prepDoc = prepareDocumentContext(prompt, docs);
@@ -102,6 +116,19 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
 export async function sendGroqMessage({ prompt, history = [], mode = 'general', attachments = [] }) {
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const docs = normalizeAttachments(attachments);
+    if (docs.length > 0) {
+      const prepDoc = prepareDocumentContext(prompt, docs);
+      if (prepDoc?.directAnswer) {
+        return {
+          text: prepDoc.directAnswer,
+          modelUsed: 'Document Analyzer'
+        };
+      }
+    }
+  }
+
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
@@ -175,6 +202,20 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general', 
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
 export async function streamGroqMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [] }) {
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const docs = normalizeAttachments(attachments);
+    if (docs.length > 0) {
+      const prepDoc = prepareDocumentContext(prompt, docs);
+      if (prepDoc?.directAnswer) {
+        onChunk?.(prepDoc.directAnswer, prepDoc.directAnswer);
+        return {
+          text: prepDoc.directAnswer,
+          modelUsed: 'Document Analyzer'
+        };
+      }
+    }
+  }
+
   const apiKey = getGroqApiKey();
 
   if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {

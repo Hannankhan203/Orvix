@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.3**
+**Current Version: Orvix v0.4.0**
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model AI Conversation Companion with Deep Document Understanding</strong>
+  <strong>An Intelligent, Multi-Model AI Conversation Companion with Deep Document Understanding and Image Optical Character Recognition (OCR)</strong>
 </p>
 
 ---
@@ -15,343 +15,339 @@
 3. [Architecture & Technology Stack](#architecture--technology-stack)
    - [Frontend Architecture](#frontend-architecture)
    - [Backend Architecture](#backend-architecture)
-   - [File Attachment & Upload Architecture](#file-attachment--upload-architecture)
+   - [File, Document & Image Upload Pipeline](#file-document--image-upload-pipeline)
    - [Database & Authentication Architecture](#database--authentication-architecture)
 4. [AI Providers & Selectable Models](#ai-providers--selectable-models)
    - [Fully Implemented Providers](#fully-implemented-providers)
-   - [Provider Document Context Capacities](#provider-document-context-capacities)
-   - [In Progress Providers](#in-progress-providers)
-   - [Planned Providers](#planned-providers)
+   - [Provider Context Capacities](#provider-context-capacities)
    - [AI Provider Routing, Streaming & Fallbacks](#ai-provider-routing-streaming--fallbacks)
    - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
-5. [File Attachment & Document Understanding](#file-attachment--document-understanding)
-   - [Key Capabilities](#key-capabilities)
-   - [Supported File Formats](#supported-file-formats)
-   - [Document Questioning & Page/Slide Targeting](#document-questioning--pageslide-targeting)
-   - [Attachment Viewing & Downloading](#attachment-viewing--downloading)
-   - [Browser-Local IndexedDB & Server Storage Lifecycle](#browser-local-indexeddb--server-storage-lifecycle)
-   - [Document Processing Limitations](#document-processing-limitations)
-6. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
-7. [Current Features (v0.3)](#current-features-v03)
-   - [Implemented Features](#implemented-features)
-   - [In Progress Features](#in-progress-features)
-   - [Planned & Future Features](#planned--future-features)
-8. [Project Structure & Important Files](#project-structure--important-files)
-   - [Directory Tree](#directory-tree)
-   - [Important Files & Modules](#important-files--modules)
-9. [Environment Variables & Configuration](#environment-variables--configuration)
-   - [Configuration Reference Table](#configuration-reference-table)
-   - [Configuration Template (`.env.example`)](#configuration-template-envexample)
-10. [Prerequisites & Setup Instructions](#prerequisites--setup-instructions)
+5. [Conversational & Text Chat Features](#conversational--text-chat-features)
+   - [Multi-Turn Memory & Context Retention](#multi-turn-memory--context-retention)
+   - [Chat Modes & Persona Directives](#chat-modes--persona-directives)
+   - [Personalization & Response Length Controls](#personalization--response-length-controls)
+   - [Voice Dictation & Verbal Punctuation Engine](#voice-dictation--verbal-punctuation-engine)
+   - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
+   - [Conversation Management & Client-Side Export](#conversation-management--client-side-export)
+6. [Document Understanding & Analysis](#document-understanding--analysis)
+   - [Supported Document Formats](#supported-document-formats)
+   - [Targeted Questioning (Pages, Ranges, Slides)](#targeted-questioning-pages-ranges-slides)
+   - [Presenter Notes Extraction](#presenter-notes-extraction)
+   - [Scanned & Rasterized PDF Diagnostics](#scanned--rasterized-pdf-diagnostics)
+7. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
+   - [Image Upload & Verification Pipeline](#image-upload--verification-pipeline)
+   - [Supported Image Formats](#supported-image-formats)
+   - [Server-Side OCR Extraction Engine](#server-side-ocr-extraction-engine)
+   - [Handling Images with No Readable Text](#handling-images-with-no-readable-text)
+   - [Image Thumbnail Cards & User Message Display](#image-thumbnail-cards--user-message-display)
+   - [Image Preview Modal & OCR Text Inspection](#image-preview-modal--ocr-text-inspection)
+   - [Multi-Image & Mixed Document Questions](#multi-image--mixed-document-questions)
+   - [Important Clarification: OCR vs Native Visual Reasoning](#important-clarification-ocr-vs-native-visual-reasoning)
+8. [Storage & Persistence Architecture](#storage--persistence-architecture)
+   - [Client-Side IndexedDB Storage](#client-side-indexeddb-storage)
+   - [Server-Side Temporary Staging & Lifecycle](#server-side-temporary-staging--lifecycle)
+   - [Cloud Firestore Message History](#cloud-firestore-message-history)
+   - [Guest Mode Storage](#guest-mode-storage)
+9. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
+10. [Project Structure & Important Files](#project-structure--important-files)
+    - [Directory Tree](#directory-tree)
+    - [Important Files & Modules](#important-files--modules)
+11. [Environment Variables & Configuration](#environment-variables--configuration)
+    - [Configuration Reference Table](#configuration-reference-table)
+    - [Configuration Template (`.env.example`)](#configuration-template-envexample)
+12. [Prerequisites & Setup Instructions](#prerequisites--setup-instructions)
     - [Prerequisites](#prerequisites)
     - [Installation](#installation)
     - [Running in Development](#running-in-development)
     - [Building for Production](#building-for-production)
     - [Running the Production Server](#running-the-production-server)
     - [Type Checking & Linting](#type-checking--linting)
-    - [Running the Document Test Suites](#running-the-document-test-suites)
-11. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
-12. [Deployment Information](#deployment-information)
-13. [Current Limitations](#current-limitations)
-14. [Version History & Changelog](#version-history--changelog)
+    - [Executing Test Suites](#executing-test-suites)
+13. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
+14. [Deployment Information](#deployment-information)
+15. [Security Architecture](#security-architecture)
+16. [Known Limitations](#known-limitations)
+17. [Version History & Changelog](#version-history--changelog)
+18. [Future Improvements](#future-improvements)
 
 ---
 
 ## Project Overview
 
-**Orvix v0.3** is a high-performance, full-stack conversational AI web application featuring deep multi-modal document understanding. Built with a responsive React 19 single-page frontend, an Obsidian Dark / Clean Light design system styled with Tailwind CSS, and a Node.js Express full-stack backend running Vite in middleware mode, Orvix enables users to converse with leading AI models and analyze complex documents with surgical precision.
+**Orvix** is an intelligent, multi-model conversational AI web application designed for high-performance text conversation, surgical document comprehension, and image Optical Character Recognition (OCR). Built as a full-stack Node.js 22 application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete data ownership.
 
-Orvix provides seamless multi-model intelligence across four independently selectable AI providers:
-- **Google Gemini** (`gemini-3.8-flash` primary with automatic `gemini-3.1-flash-lite` fallback) via the modern `@google/genai` TypeScript SDK.
-- **Groq** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) via Groq's high-speed OpenAI-compatible REST API.
-- **OpenRouter** (`openrouter/free`) dynamically routing queries across available high-capacity free community models.
-- **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing high-speed serverless inference on Cloudflare's global edge network via its official REST API.
+Orvix integrates four selectable AI providers:
+- **Google Gemini** (`gemini-3.8-flash` primary, with automatic failover to `gemini-3.1-flash-lite`) via the modern `@google/genai` TypeScript SDK.
+- **Groq** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) via high-speed OpenAI-compatible REST completions.
+- **OpenRouter** (`openrouter/free`) routing across high-capacity free community models.
+- **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing serverless inference on Cloudflare's global network.
 
-With **release v0.3**, Orvix introduces a complete, secure file attachment and document extraction pipeline. Users can attach PDFs, Word documents, PowerPoint presentations, tabular data, and code files to their chat messages, inspect their contents, open or download the original files, and ask questions targeting whole documents, individual PDF pages, page ranges, or PowerPoint slides—all with streaming answers across all supported AI providers.
+With **version v0.4.0**, Orvix expands beyond text and office documents to incorporate a complete **Image Attachment and OCR Text Extraction Engine**. Users can attach photos, screenshots, receipts, invoices, and handwritten diagrams (JPG, PNG, WebP, GIF, BMP, HEIC), view image previews in the message composer, inspect thumbnails in chat messages, open an accessible preview modal to examine extracted text, and query the text contained in images across all four AI providers with real-time streaming answers.
 
 ---
 
 ## Project Purpose & Current Status
 
 ### Purpose
-The primary purpose of Orvix is to deliver an accessible, multi-model conversational assistant that balances privacy, flexibility, speed, and real-world utility:
-1. **Multi-Model Intelligence**: Compare outputs across leading providers (Google Gemini, Groq, OpenRouter, Cloudflare Workers AI) inside the same conversation thread without losing context or attached files.
-2. **Deep Document Understanding**: Upload real-world documents (PDF, DOCX, PPTX, CSV, Markdown, TXT) and ask precise, targeted questions with boundary detection and page/slide citations.
-3. **True Zero-Friction Access**: Allow users to explore the application instantly via Guest Mode with simulated AI responses, local storage, and IndexedDB attachment persistence without requiring API keys or mandatory account registration.
-4. **Secure Full-Stack Proxying**: Route sensitive AI completions and document extraction through a backend Express proxy (`/api/chat`, `/api/upload`) with Server-Sent Events (SSE) streaming so credentials and private paths remain protected on the server.
-5. **Accessible Multimodal Speech**: Provide built-in voice input with verbal punctuation formatting and browser-synthesized audio read-aloud with voice and speed controls.
-6. **Robust Data Ownership**: Offer complete cloud persistence via Firebase Cloud Firestore alongside instant client-side export to standard `.md` and `.txt` files.
+Orvix was engineered to deliver an accessible, flexible, and privacy-conscious AI workspace:
+1. **Multi-Model Flexibility**: Switch models on the fly (Gemini, Groq, OpenRouter, Cloudflare Workers AI) within the same conversation without losing message history or attached file contexts.
+2. **Deep Document & Image Text Understanding**: Extract and analyze text from complex multi-page PDFs, Word documents, PowerPoint presentations, spreadsheets, data files, and images (OCR) with precise page/slide/section boundary citations.
+3. **Frictionless Onboarding**: Explore the complete application immediately via Guest Mode without requiring API keys, cloud subscriptions, or account creation.
+4. **Secure Server-Side Proxying**: Route all AI completions, uploads, and OCR through a protected Express server (`/api/chat`, `/api/upload`), ensuring API keys, file system paths, and raw payloads are never exposed to the client.
+5. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
+6. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
 
 ### Current Status
-- **Current Version**: `v0.3` (Feature release: File Attachment & Document Understanding Integration + Error UI overhaul).
-- **Core Status**: Fully functional, production-ready full-stack web application. The frontend, backend proxy, streaming SSE pipeline, multipart upload pipeline, document extraction engine, IndexedDB offline cache, authentication, Firestore storage, local fallback storage, speech synthesis, voice dictation, and personalization settings are all implemented and verified on Node.js 22 and port 3000.
+- **Current Version**: `v0.4.0` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
+- **Build Status**: Verified on Node.js 22 LTS. All TypeScript checks (`npm run lint`), Vite builds (`npm run build`), and 6 automated test suites pass with 100% test coverage.
 
 ---
 
 ## Architecture & Technology Stack
 
 ### Frontend Architecture
-- **Framework**: React 19 (`react` ^19.0.1, `react-dom` ^19.0.1) as a Single Page Application (SPA).
+- **Framework**: React 19 (`react` ^19.0.1, `react-dom` ^19.0.1) Single Page Application.
 - **Build Tool**: Vite (`vite` ^8.3.0) with `@vitejs/plugin-react` (^6.1.1).
-- **Styling & Design System**: Tailwind CSS v4 (`tailwindcss` ^4.3.3, `@tailwindcss/vite` ^4.3.3) paired with an Obsidian Dark and Clean Light CSS custom-property design system (`src/styles/index.css`).
+- **Styling**: Tailwind CSS v4 (`tailwindcss` ^4.3.3, `@tailwindcss/vite` ^4.3.3) paired with an Obsidian Dark and Clean Light CSS custom-property design system (`src/styles/index.css`).
 - **Icons**: Lucide React (`lucide-react` ^0.546.0).
-- **Motion & Transitions**: Motion (`motion` ^12.23.24) and CSS hardware-accelerated transitions.
-- **Markdown & Code Highlighting**: `react-markdown` (^10.1.0) and `remark-gfm` (^4.0.1), featuring custom code block rendering with language detection, line numbers, and one-click clipboard copying.
-- **Client Document Persistence**: IndexedDB (`src/services/attachmentStorageService.js`) using database `orvix_attachments_db` to persist raw file blobs in the browser across page reloads and network reconnects.
-- **State Management**: React Context architecture:
-  - `AuthContext`: Tracks user session, login, signup, logout, and guest identity.
-  - `SettingsContext`: Synchronizes user preferences (theme, response length, beginner mode, chat mode, timestamps, enter-to-send) between Firestore and local storage.
-  - `SpeechContext`: Controls Web Speech Synthesis playback, voice selection, speech rate, and read-aloud state.
+- **Markdown & Code**: `react-markdown` (^10.1.0) and `remark-gfm` (^4.0.1) with syntax-highlighted code blocks and one-click clipboard copying.
+- **Client Cache**: Browser `IndexedDB` (`src/services/attachmentStorageService.js`) using database `orvix_attachments_db` for persisting raw file and image blobs locally.
+- **State Management**: React Context providers (`AuthContext`, `SettingsContext`, `SpeechContext`).
 
 ### Backend Architecture
 - **Server**: Express (`express` ^4.22.3) written in TypeScript (`server.ts`).
-- **Development Execution**: `tsx` (^4.21.0) executes `server.ts` directly, mounting Vite in middleware mode (`appType: 'spa'`) for rapid hot module execution on a single port (3000).
-- **Production Execution**: Serves compiled static frontend assets from `dist/` with wildcard SPA routing fallback to `index.html`.
+- **Development Runtime**: `tsx` (^4.21.0) executing `server.ts` with Vite mounted in middleware mode (`appType: 'spa'`) on port 3000 (`0.0.0.0`).
+- **Production Server**: Serves pre-built assets from `dist/` with SPA routing fallback to `index.html`.
 - **API Endpoints**:
-  - `GET /api/health`: System uptime and health verification.
-  - `GET /api/config`: Returns provider configuration booleans (`geminiConfigured`, `groqConfigured`, `openrouterConfigured`, `cloudflareConfigured`) without exposing secrets.
-  - `POST /api/chat`: Central AI dispatch supporting both Server-Sent Events (SSE) streaming and atomic JSON responses.
-  - `POST /api/upload`: Multipart file upload handler accepting up to 5 attachments per message (up to 25 MB each).
-  - `GET /api/upload/config`: Returns upload limits, allowed file extensions, and file retention TTL.
-  - `GET /api/upload/:id`: Returns attachment metadata and parsing status.
-  - `GET /api/upload/:id/extraction`: Returns structured text extraction with page/slide boundaries.
-  - `GET /api/upload/:id/file` (or `/download`): Serves original file with inline or attachment disposition.
-  - `DELETE /api/upload/:id`: Deletes staged file before message dispatch.
-- **Vercel Serverless Compatibility**: Lightweight handler wrappers in `api/chat.ts`, `api/config.ts`, `api/health.ts`, and `api/upload.ts` enable deployment on Vercel Functions.
+  - `GET /api/health`: Uptime and system status check.
+  - `GET /api/config`: Provider configuration status without leaking keys.
+  - `POST /api/chat`: Multi-provider AI router supporting Server-Sent Events (SSE) streaming and atomic JSON.
+  - `POST /api/upload`: Multipart upload handling with file signature validation, document parsing, and OCR text extraction.
+  - `GET /api/upload/config`: Returns upload bounds (25 MB max file size, 5 attachments per message).
+  - `GET /api/upload/:id`: Returns attachment metadata, MIME type, dimensions, and parsing status.
+  - `GET /api/upload/:id/extraction`: Returns structured OCR text or document section boundaries.
+  - `GET /api/upload/:id/file` (or `/download`): Serves raw file data with inline or attachment headers.
+  - `DELETE /api/upload/:id`: Removes staged attachments prior to message submission.
 
-### File Attachment & Upload Architecture
+### File, Document & Image Upload Pipeline
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │                              CLIENT BROWSER                            │
 │                                                                        │
-│  [File Input] ──────► [IndexedDB Blob Cache] (Local Persistence)       │
-│       │                      │                                         │
-│       │ FormData             │ Blob Fallback for Download / Preview    │
-│       ▼                      ▼                                         │
-│  POST /api/upload      GET /api/upload/:id/file                        │
-└───────┬──────────────────────┬─────────────────────────────────────────┘
-        │                      │
-        ▼                      ▼
+│  [File / Image Input] ──────► [IndexedDB Blob Cache] (Local Store)     │
+│       │                              │                                 │
+│       │ FormData (Multipart)         │ Blob Fallback for Preview       │
+│       ▼                              ▼                                 │
+│  POST /api/upload              GET /api/upload/:id/file                │
+└───────┬──────────────────────────────┬─────────────────────────────────┘
+        │                              │
+        ▼                              ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        EXPRESS SERVER (server.ts)                      │
 │                                                                        │
-│  1. Multer Storage: writes to uploads/temp/{uuid}.{ext}                │
-│  2. Magic Number & Signature Verification: prevents masquerading files │
-│  3. Document Extractor (src/services/documentExtractor.js):            │
-│     - PDF (unpdf): page count, per-page text & boundaries              │
-│     - DOCX (mammoth): headings, paragraphs, formatted tables           │
-│     - PPTX (jszip): slide count, per-slide text & presenter notes      │
-│     - Tabular (CSV/TSV): structured tables & markdown grid             │
-│     - Text/MD/JSON/XML: clean text, sections & hierarchical trees      │
-│  4. Automated TTL Cleanup: sweeps expired uploads every 15 minutes     │
-│  5. Context Injection (src/services/documentContextService.js):        │
-│     - Targets specific page/slide or whole document                    │
-│     - Bounds context size to provider limits (Gemini, Groq, etc.)      │
-│     - Appends document system prompt & user query                      │
+│  1. Multer Engine: writes to uploads/temp/{uuid}.{ext}                 │
+│  2. Magic Number & Signature Verification:                             │
+│     - Validates JPEG (FF D8 FF), PNG, WebP (RIFF/WEBP), GIF, BMP, HEIC │
+│     - Rejects binary executables (ELF, Windows PE/MZ, Mach-O)          │
+│  3. Extraction Dispatch:                                               │
+│     ├─ Documents (documentExtractor.js): PDF, DOCX, PPTX, CSV, TXT     │
+│     └─ Images (imageOcrService.js): Tesseract.js OCR text extraction    │
+│  4. Automated TTL Cleanup: sweeps expired files every 15 minutes       │
+│  5. Context Preparation (documentContextService.js):                   │
+│     - Bounds extracted text to provider token limits                   │
+│     - Detects "No readable text detected in this image." condition     │
+│     - Injects structured OCR/document context into AI prompt           │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Database & Authentication Architecture
 - **Firebase SDK**: Firebase Web SDK (`firebase` ^11.4.0).
-- **Authentication**: Firebase Authentication with Email and Password provider. Includes session persistence, automated auth state synchronization, and friendly error normalization.
-- **Cloud Database**: Cloud Firestore using a subcollection hierarchy:
-  - Top-level user chat document: `/users/{userId}/chats/{chatId}`
-  - Nested chronological message subcollection: `/users/{userId}/chats/{chatId}/messages/{messageId}`
-- **Security Rules**: `firestore.rules` enforces user isolation (`request.auth.uid == userId`), message content validation (up to 100,000 characters), and title constraints.
-- **Local Fallback Storage**: If Firebase is not configured or if the user chooses **Guest Mode**, chat threads, message histories, pinned statuses, and settings persist safely in browser `localStorage` and `sessionStorage`, while file attachments persist in browser `IndexedDB`.
+- **Authentication**: Firebase Authentication with Email and Password provider.
+- **Cloud Database**: Cloud Firestore using subcollections:
+  - Chat metadata: `/users/{userId}/chats/{chatId}`
+  - Message subcollection: `/users/{userId}/chats/{chatId}/messages/{messageId}`
+- **Security Rules**: `firestore.rules` enforces user isolation (`request.auth.uid == userId`) and payload validation.
+- **Guest Fallback**: `localStorage` and `sessionStorage` persist chat threads, message histories, and preferences when Firebase is unconfigured or in Guest Mode.
 
 ---
 
 ## AI Providers & Selectable Models
 
-Orvix implements a multi-model architecture where models are selectable via the top navigation dropdown (`ModelSelector.jsx`). Switching models retains the entire ongoing conversation history and any attached document context.
+Orvix features an interchangeable AI provider architecture. Users can toggle models at any point via the top navigation dropdown. Switching models preserves active conversation history and attached document/image context.
 
 ### Fully Implemented Providers
 
-| Provider Name | Exact Model ID | Dropdown Label in UI | Streaming Support | Transport / Implementation |
+| Provider Name | Model Identifier | UI Selector Label | Streaming | Integration Details |
 |---|---|---|---|---|
-| **Google Gemini** | `gemini-3.8-flash` (fallback: `gemini-3.1-flash-lite`) | `Gemini (Gemini 3.1 Flash Lite)` | Yes (SSE) | Server-side `@google/genai` TypeScript SDK with automatic jitter retries and model failover. |
-| **Groq** | `llama-3.3-70b-versatile` / `openai/gpt-oss-120b` | `Groq (Llama 3.3 70B)` | Yes (SSE) | Server-side native `fetch` calling Groq's OpenAI-compatible completions endpoint. |
-| **OpenRouter** | `openrouter/free` | `OpenRouter (Llama 3.3 70B (Free))` | Yes (SSE) | Server-side native `fetch` dynamically routing to available high-capacity free community models. |
-| **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | `Cloudflare Workers AI — Llama 3.1 8B` | Yes (SSE) | Server-side native `fetch` calling Cloudflare Workers AI REST API with streaming and JSON adaptation. |
+| **Google Gemini** | `gemini-3.8-flash` (failover: `gemini-3.1-flash-lite`) | `Gemini (Gemini 3.1 Flash Lite)` | Yes (SSE) | Server-side `@google/genai` TypeScript SDK with automated backoff and model failover. |
+| **Groq** | `llama-3.3-70b-versatile` / `openai/gpt-oss-120b` | `Groq (Llama 3.3 70B)` | Yes (SSE) | High-speed OpenAI-compatible completions endpoint. |
+| **OpenRouter** | `openrouter/free` | `OpenRouter (Llama 3.3 70B (Free))` | Yes (SSE) | Multi-model gateway routing to high-capacity free community models. |
+| **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | `Cloudflare Workers AI — Llama 3.1 8B` | Yes (SSE) | Cloudflare REST API with server-side SSE event formatting and JSON stream adaptation. |
 
-### Provider Document Context Capacities
+### Provider Context Capacities
 
-Because AI models possess differing prompt window sizes and token quotas, Orvix implements provider-aware document context bounding (`src/services/documentContextService.js`):
+Because models possess different token contexts, Orvix dynamically bounds extracted text (`src/services/documentContextService.js`):
 
-| Provider Name | Maximum Injected Context | Behavior on Large Documents |
+| Provider Name | Injected Text Context Limit | Large Document / Image Behavior |
 |---|---|---|
-| **Google Gemini** | **120,000 characters** (~30,000 words) | Full document ingested into broad Gemini context window. |
-| **Groq** | **24,000 characters** (~6,000 words) | Safely bounded with transparent notice if content is truncated. |
-| **OpenRouter** | **16,000 characters** (~4,000 words) | Safely bounded to prevent free gateway rate/token limits. |
-| **Cloudflare Workers AI** | **16,000 characters** (~4,000 words) | Safely bounded to stay within edge worker context constraints. |
-
-### In Progress Providers
-- *(None currently in progress; all four listed providers are fully integrated and verified).*
-
-### Planned Providers
-- **Cerebras Inference** *(Planned)*: Ultra-high speed Llama inference.
-- **Mistral AI** *(Planned)*: Native integration with Mistral Large and Codestral models.
-
----
+| **Google Gemini** | **120,000 characters** (~30,000 words) | Full document/OCR text ingested into Gemini's broad context window. |
+| **Groq** | **24,000 characters** (~6,000 words) | Bounded with an explicit notice to prevent context limit errors. |
+| **OpenRouter** | **16,000 characters** (~4,000 words) | Bounded to safeguard against free tier request token caps. |
+| **Cloudflare Workers AI** | **16,000 characters** (~4,000 words) | Bounded to respect edge worker payload constraints. |
 
 ### AI Provider Routing, Streaming & Fallbacks
-
-- **Server-Sent Events (SSE)**: When the client requests streaming (`stream: true`), the server sends standard SSE chunks (`data: {"type":"chunk","text":"..."}`) and a completion marker (`data: {"type":"done", ...}`).
-- **Pre-Stream Demand Check**: For Google Gemini, the server checks the initial token before sending HTTP 200 headers. If Google Gemini returns HTTP 503 high demand, the server retries with exponential backoff or fails over to `gemini-3.1-flash-lite`.
-- **Cloudflare Streaming Adapter**: If Cloudflare responds with non-streaming JSON, `server.ts` automatically converts the JSON response into compliant SSE events (`start`, `chunk`, `done`), preserving the client streaming contract without failure.
-- **Client Disconnection Safeguard**: When the user navigates away or stops generating, `res.on('close')` fires, immediately cancelling upstream fetch streams and saving API quota.
-- **Context Retention Across Switching**: Switching between Gemini, Groq, OpenRouter, and Cloudflare Workers AI preserves all prior messages. Up to the last 12 messages and all active document references are formatted into the active provider's expected schema.
+- **Server-Sent Events (SSE)**: Streaming responses are delivered token-by-token using standard SSE chunks (`data: {"type":"chunk","text":"..."}`) and completed with a done marker (`data: {"type":"done", ...}`).
+- **Pre-Stream Demand Check**: For Google Gemini, the server checks the initial token before transmitting HTTP 200 headers. If Gemini returns HTTP 503 (high demand), the server retries with jitter or fails over cleanly.
+- **Client Disconnection Safeguard**: When the user navigates away or stops generating, `res.on('close')` fires, aborting upstream requests to preserve API quotas.
 
 ### Zero-Key Simulation Mode
-If API keys or credentials (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) are missing or unconfigured:
-- The server produces rich, context-aware simulated responses matching the selected Chat Mode, personalization settings, and uploaded document contents.
-- When streaming, simulated responses are delivered token-by-token over SSE to test UI rendering, animations, and voice synthesis without friction.
+If API keys (`GEMINI_API_KEY`, `GROQ_API_KEY`, etc.) are not configured, Orvix automatically runs in simulated demonstration mode:
+- Produces context-aware simulated answers matching the selected Chat Mode and uploaded document/OCR text.
+- Streams responses progressively over SSE to test UI animations, syntax highlighting, and voice synthesis without external network dependencies.
 
 ---
 
-## File Attachment & Document Understanding
+## Conversational & Text Chat Features
 
-Orvix features a complete, secure file attachment and document analysis pipeline that allows users to ask questions about uploaded files directly inside chat threads.
+- **Multi-Turn Memory**: Chronologically tracks up to the last 12 messages in conversation history.
+- **4 Chat Modes**:
+  - `General`: Well-balanced, versatile assistant.
+  - `Coding`: Technical software engineering focus with clean, syntax-highlighted code blocks.
+  - `Writing`: Tone-focused drafting, copy-editing, and prose refinement.
+  - `Learning`: Educational breakdowns with plain-language analogies and comprehension checks.
+- **Personalization**: Configure response length (`Concise`, `Balanced`, `Detailed`) and toggle `Beginner-Friendly Explanations` in Settings.
+- **Voice Dictation (Speech-to-Text)**: Built on Web Speech Recognition. Includes a live waveform animation, pause/resume, and verbal punctuation conversion (e.g., saying "comma", "period", "new line" formats punctuation automatically). Supports 9 languages.
+- **Text-to-Speech (Read Aloud)**: Click the speaker button on any assistant message to listen via Web Speech Synthesis, with voice and speed controls (0.75x to 2.0x).
+- **Conversation Management**: Pin up to 5 priority chats, rename threads inline, and export conversations to **Markdown (`.md`)** or **Plain Text (`.txt`)**.
 
-### Key Capabilities
+---
 
-1. **Multi-File Attachment**: Attach up to **5 files per message** via the paperclip button in the composer dock.
-2. **Pre-Send Verification**: Preview attached files before sending, showing file name, file size badge, and format pill, with one-click staging removal.
-3. **Sent Attachment Display**: Render sent attachments inside or directly alongside user messages with original filenames, format badges, and formatted sizes.
-4. **Referenced Attachment Context**: Assistant messages visually display which documents were referenced to formulate the answer, maintaining clear provenance.
-5. **Original File Viewing & Downloading**: Click any attachment card to open it inline in a new browser tab (for PDFs, text, and images) or download the original file with its exact original name.
-6. **Persistence Across Reloads**: Original file blobs are cached in browser `IndexedDB`. If the user refreshes the page or reopens an old chat, attachments remain clickable and downloadable even if the server temporary cache has expired.
-7. **Graceful Unavailable State**: If an attachment is no longer available locally or remotely, Orvix renders a clear unavailable-file badge rather than a broken link.
-8. **Multi-Turn Document Memory**: Follow-up questions continue to reference the uploaded document without requiring re-uploading.
+## Document Understanding & Analysis
 
-### Supported File Formats
+### Supported Document Formats
+- **PDF Documents (`.pdf`)**: Parsed via `unpdf`. Extracts page text, detects total pages, and maps page boundaries.
+- **Word Documents (`.docx`)**: Parsed via `mammoth`. Extracts structured headings, paragraphs, lists, and tables.
+- **PowerPoint Presentations (`.pptx`)**: Parsed via `jszip`. Extracts per-slide text, slide counts, and presenter notes (`ppt/notesSlides/`).
+- **Legacy PowerPoint (`.ppt`)**: Binary detector identifies legacy binary presentation format and suggests saving as `.pptx` or `.pdf`.
+- **Tabular Data (`.csv`, `.tsv`)**: Delimiter parser generates structured Markdown tables for AI reasoning.
+- **Plain Text & Code (`.txt`, `.md`, `.json`, `.xml`)**: Extracts full hierarchy, formatted code, and schema trees.
 
-| Format | Extension(s) | Parsing Engine | Capabilities & Notes |
-|---|---|---|---|
-| **PDF Document** | `.pdf` | `unpdf` | Page-level text extraction, page boundary tagging, total page counting, out-of-bounds page detection. |
-| **Word Document** | `.docx` | `mammoth` | Structured markdown headings, paragraphs, lists, tables. Formats without rigid page boundaries are structured by section headings. |
-| **PowerPoint** | `.pptx` | `jszip` | Per-slide text extraction, slide count detection, presenter speaker notes extraction (`ppt/notesSlides/`). |
-| **Legacy PowerPoint** | `.ppt` | Binary detector | Detects legacy binary `.ppt` format and provides a helpful advisory to save as `.pptx` or `.pdf`. |
-| **Plain Text & Markdown** | `.txt`, `.md`, `.markdown` | UTF-8 parser | Full text extraction, heading hierarchy detection, character/word counting. |
-| **Tabular Data** | `.csv`, `.tsv` | Custom parser | Parses delimiters, generates formatted Markdown tables for AI reasoning, preserves raw rows. |
-| **JSON Data** | `.json` | Native parser | Validates syntax, formats JSON tree, extracts top-level schema keys for AI context. |
-| **XML Data** | `.xml` | Regex text parser | Strips tags for clean text content while retaining structural code snippet representation. |
+### Targeted Questioning (Pages, Ranges, Slides)
+Users can ask surgical questions targeting specific document sections:
+- *"Explain page 3 of this document"*
+- *"Summarize pages 2 to 4"*
+- *"What does slide 4 say about revenue?"*
+- *(If a user requests page 15 on a 6-page document, Orvix detects the boundary and explains that page 15 does not exist instead of hallucinating).*
 
-### Document Questioning & Page/Slide Targeting
+### Presenter Notes Extraction
+When PowerPoint presentations are uploaded, Orvix reads the embedded XML speaker notes (`ppt/notesSlides/`), enabling questions such as: *"Are there any speaker notes on slide 3?"*
 
-Users can query uploaded files in several ways:
+### Scanned & Rasterized PDF Diagnostics
+If an uploaded PDF contains only scanned raster images without a text layer, Orvix detects this and honestly notifies the user that the document is image-only rather than fabricating a summary.
 
-- **Whole-File Summaries**:
-  - *"Summarize this document"*
-  - *"What are the main findings in this quarterly report?"*
-  - *"Give me a bulleted executive overview of the attached PDF"*
-- **Page-Specific PDF Inquiries**:
-  - *"Explain page 3 of this document"*
-  - *"What does page 5 say about revenue growth?"*
-  - *(If a user requests page 12 on an 8-page document, Orvix detects the boundary and honestly explains that page 12 does not exist, rather than hallucinating).*
-- **Page-Range Inquiries**:
-  - *"Summarize pages 2 to 4"*
-  - *"What topics are covered across pages 6 through 9?"*
-- **Slide-Specific PowerPoint Inquiries**:
-  - *"Explain slide 4"*
-  - *"What does slide 2 show, and are there any presenter notes on it?"*
-- **Multi-Document Synthesis**:
-  - Attach multiple files (e.g., a PDF and a CSV) and ask: *"Compare the projected revenue in the report with the figures in the CSV."*
+---
 
-### Attachment Viewing & Downloading
+## Image Attachments & Optical Character Recognition (OCR)
 
-- **Inline Preview**: For formats supported by modern browsers (PDF, TXT, images), clicking the attachment card opens the file in a new tab using a safe Blob URL or server stream.
-- **Direct Download**: For presentations, documents, or spreadsheets, clicking **Download** retrieves the original binary file with its exact original filename preserved.
-- **Copy Filename**: Users can copy the original filename with one click from the attachment action bar.
+Orvix v0.4.0 introduces an image attachment and text extraction pipeline powered by server-side Tesseract.js.
 
-### Browser-Local IndexedDB & Server Storage Lifecycle
+### Image Upload & Verification Pipeline
+1. **User Selection**: Select one or more images using the composer paperclip button or system file picker.
+2. **Pre-Send Preview**: Selected images immediately appear in the composer staging dock with an instant visual thumbnail, filename, format badge, file size, and remove button (`ChatArea.jsx`).
+3. **Multipart Upload & Validation**: Images are uploaded to `POST /api/upload` where they undergo strict binary signature validation:
+   - Validates magic numbers: JPEG (`\xFF\xD8\xFF`), PNG (`\x89PNG`), WebP (`RIFF`...`WEBP`), GIF (`GIF87a`/`GIF89a`), BMP (`BM`), and HEIC/HEIF (`ftyp` ISOBMFF).
+   - Rejects binary executables (ELF, Windows PE, Mach-O) disguised under image file extensions.
+   - Enforces the 25 MB file size limit and 5-attachment limit.
+4. **Server-Side OCR Extraction**: `imageOcrService.js` processes the image using Tesseract.js to extract readable alphanumeric text.
+5. **AI Context Feeding**: If readable text is detected, the OCR text and image metadata are supplied to the selected AI provider.
+6. **Chat Message Rendering**: Sent images appear inside the user message bubble as responsive thumbnail cards (`ImageAttachmentCard.jsx`).
+7. **Interactive Preview Modal**: Clicking any image thumbnail opens `DocumentPreviewModal.jsx` to view the original image or inspect the extracted OCR text.
 
-To provide resilient persistence without introducing expensive paid cloud storage:
-- **Server Lifecycle**: Uploaded files are staged in `uploads/temp/` with secure UUIDs. An automated background sweep runs every 15 minutes to delete files older than `TEMP_FILE_TTL_MS` (default: 2 hours).
-- **Client IndexedDB**: When a user selects a file, the raw `File`/`Blob` object is concurrently stored in browser `IndexedDB` under store `attachments`. When opening or downloading an attachment from chat history, Orvix checks IndexedDB first. This means attachments remain viewable and downloadable indefinitely on the user's device across browser sessions.
-- **Security & Path Traversal Prevention**: Files are strictly stored using random UUIDs and whitelisted extensions. Server paths are never exposed to the client.
+### Supported Image Formats
 
-### Document Processing Limitations
+| Format | Extension(s) | MIME Type | OCR Support | In-Browser Visual Display |
+|---|---|---|---|---|
+| **JPEG / JPG** | `.jpg`, `.jpeg` | `image/jpeg` | Yes (Tesseract.js) | Full native browser rendering |
+| **PNG** | `.png` | `image/png` | Yes (Tesseract.js) | Full native browser rendering |
+| **WebP** | `.webp` | `image/webp` | Yes (Tesseract.js) | Full native browser rendering |
+| **GIF** | `.gif` | `image/gif` | Yes (Tesseract.js) | Full native browser rendering |
+| **BMP** | `.bmp` | `image/bmp` | Yes (Tesseract.js) | Full native browser rendering |
+| **HEIC / HEIF** | `.heic`, `.heif` | `image/heic` | Unsupported format (no native HEVC in container) | Fallback card with direct open & download |
 
-- **Scanned / Rasterized PDFs**: PDFs that contain only scanned images without an embedded text layer cannot be parsed by text extraction. Orvix honestly identifies this condition and advises the user that OCR is required, rather than fabricating content.
-- **Maximum File Size**: Default 25 MB per file (`MAX_FILE_SIZE_BYTES`).
-- **Maximum Attachments**: Default 5 files per message (`MAX_ATTACHMENTS_PER_UPLOAD`).
-- **Maximum Extraction Length**: Document text is capped at 500,000 characters (~100,000 words) to prevent runaway server memory usage.
-- **Context Limits per Provider**: While Gemini ingests up to 120,000 characters, smaller providers (Groq, OpenRouter, Cloudflare) bound document context between 16,000 and 24,000 characters.
+### Server-Side OCR Extraction Engine
+- **Engine**: Tesseract.js (`tesseract.js` ^7.0.0) running in a managed server-side worker queue.
+- **Safety Limits**: 25-second timeout safeguard (`OCR_TIMEOUT_MS`) prevents hanging on pathological inputs.
+- **Extracted Metadata**:
+  - `text`: Normalized, cleaned readable text.
+  - `hasText`: Boolean indicator confirming meaningful alphanumeric characters.
+  - `confidence`: Tesseract confidence percentage (0-100%).
+  - `totalCharacters` & `totalWords`: Accurate character and word counts.
+  - `lineCount`: Segmented line count.
+  - `status`: `'ready'` (text detected) | `'NO_TEXT_DETECTED'` | `'unsupported_format'` | `'error'`.
+
+### Handling Images with No Readable Text
+When an uploaded image contains no readable text (e.g., abstract artwork, solid graphics, blank canvases, or photography without text):
+- The OCR engine marks `status: 'NO_TEXT_DETECTED'` and `hasText: false`.
+- When the user asks a question about the image, Orvix does not send fabricated text to the AI model. Instead, the user immediately receives the exact honest diagnostic:
+  > **"No readable text detected in this image."**
+- This response is delivered identically across all four AI providers in both streaming SSE and non-streaming modes.
+
+### Image Thumbnail Cards & User Message Display
+Uploaded images are rendered inside user message bubbles via `ImageAttachmentCard.jsx`:
+- **Responsive Grid**: Automatically arranges single or multiple images into a clean, responsive layout.
+- **Visual Thumbnail**: Displays a scaled visual thumbnail with hover overlay (*"View Larger"*).
+- **Metadata Badge**: Displays original filename, format badge (e.g., `PNG`, `JPG`), and formatted file size.
+- **Direct Actions**: Quick-action buttons to open preview or download original file.
+
+### Image Preview Modal & OCR Text Inspection
+Clicking any image card opens `DocumentPreviewModal.jsx`:
+- **Dual View Switcher**:
+  - **Image Tab**: View the full-size original image with zoom and fit controls.
+  - **Extracted Text Tab**: Inspect the exact text extracted by the OCR engine in a monospace, copyable viewer with word count, character count, and confidence rating.
+- **Direct Actions**: **Copy Text** button to copy extracted text to clipboard and **Download** button to retrieve the original file.
+- **Graceful No-Text Display**: If no text was detected, the modal shows a clean notice explaining that no readable text was detected.
+
+### Multi-Image & Mixed Document Questions
+Users can combine multiple images or mix images with documents in the same prompt:
+- *"Compare the receipt in this image with the expense report PDF"*
+- *"Summarize the text from both of these images"*
+Each image's filename and extracted text are isolated and identified in the context fed to the AI model.
+
+### Important Clarification: OCR vs Native Visual Reasoning
+> **Technical Scope Distinction**:  
+> Orvix's image capability is an **Optical Character Recognition (OCR)** text extraction pipeline. It is designed to extract readable, typographic, and printed text from images (such as receipts, menus, document photos, code screenshots, signs, and labels) and provide that text to the conversational models.  
+> Orvix does **not** perform native computer vision, spatial visual reasoning, object detection, or pixel-level art description beyond its extracted text. When an image contains no readable text, Orvix honestly reports *"No readable text detected in this image."* rather than attempting to guess visual contents.
+
+---
+
+## Storage & Persistence Architecture
+
+### Client-Side IndexedDB Storage
+- **Database**: `orvix_attachments_db` (Store: `attachments`).
+- When a user attaches any document or image, the client concurrently stores the raw `File`/`Blob` in browser `IndexedDB`.
+- When reopening conversations from sidebar history or refreshing the browser, attachments load their thumbnails and file data directly from IndexedDB. This ensures images and documents remain viewable and downloadable offline indefinitely on that device.
+
+### Server-Side Temporary Staging & Lifecycle
+- Uploaded files are written to `/uploads/temp/{uuid}.{ext}` with secure random UUIDs.
+- An automated background sweep runs every 15 minutes to delete temporary files exceeding `TEMP_FILE_TTL_MS` (default: 2 hours).
+
+### Cloud Firestore Message History
+- Signed-in users have their conversation metadata stored in `/users/{userId}/chats/{chatId}` and messages in `/users/{userId}/chats/{chatId}/messages/{messageId}`.
+- Attachment metadata (UUID, filename, format, size, OCR text, and extraction status) is stored directly on the message document, ensuring conversation history retains complete text context across devices.
+
+### Guest Mode Storage
+- For guest sessions, conversation metadata and message histories are persisted in browser `localStorage` (`orvix_guest_chats`), active sessions in `sessionStorage`, and binary files in `IndexedDB`.
 
 ---
 
 ## Resilient Error UI & Recovery Architecture
 
-When an upstream AI request fails (e.g. rate limit / quota exceeded, 503 high demand, network interruption), Orvix renders a dedicated, polished error card:
-
-- **Contextual Diagnostics Header**: Displays a high-contrast icon badge, clear header (*"Rate Limit or Quota Exceeded"*, *"Service Temporarily Busy"*, *"AI Provider Service Error"*), and a model tag indicating which provider encountered the error.
-- **Referenced Attachment Retention**: If an error occurs during document analysis, the attached document card remains visible inside the error container so the user knows which file was being analyzed.
-- **Responsive Multi-Line Button Wrapping**: Recovery actions (`Retry with [Current]`, `Try with Gemini`, `Try with Groq`, `Try with OpenRouter`, `Edit prompt`) cleanly wrap across multiple lines on desktop, tablet, and mobile viewports (`display: flex; flex-wrap: wrap; gap: 8px; width: 100%;`).
-- **Overflow Prevention**: Strict box-sizing, `max-width: 100%`, and `word-break: break-word` prevent long URLs, token IDs, or provider messages from overflowing outside the chat container.
-- **Obsidian Dark & Clean Light Themes**: Custom styling with deep red/amber tints in dark mode and clean `#fff5f5` cards with dark crimson `#7f1d1d` text in light mode.
-
----
-
-## Current Features (v0.3)
-
-### Implemented Features
-
-#### Document Understanding & Attachments (New in v0.3)
-- **Multi-File Attachment**: Attach up to 5 files per message via the composer paperclip button.
-- **Text & Structure Extraction**: Built-in parsers for PDF (`unpdf`), DOCX (`mammoth`), PPTX (`jszip`), CSV/TSV, TXT, MD, JSON, and XML.
-- **Page & Slide Targeting**: Surgical question answering for specific PDF pages, page ranges, and PowerPoint slides.
-- **Presenter Notes Extraction**: Extracts speaker notes associated with PowerPoint presentation slides.
-- **Original File Download & Inline Preview**: Open PDFs and text inline in the browser or download original files.
-- **IndexedDB Local Storage**: Client-side storage of attachment blobs in IndexedDB for persistent reloads.
-- **Server Lifecycle Cleanup**: Automatic 15-minute sweep unlinking temporary files older than the configured TTL.
-- **Provider Context Bounding**: Dynamic context truncation tailored to Gemini, Groq, OpenRouter, and Cloudflare.
-- **Honest Scanned-PDF Detection**: Identifies image-only PDFs and requests OCR instead of hallucinating.
-
-#### Conversational & AI Capabilities
-- **Multi-Model Selection**: Seamlessly switch between Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI.
-- **Real-Time Token Streaming**: Server-Sent Events (SSE) streaming with progressive token reveal.
-- **Multi-Turn Context Memory**: Passes up to the last 12 messages in chronological order to maintain multi-turn context.
-- **Context Preservation across Providers**: Switch providers mid-conversation while retaining full context and attachments.
-- **Simulated Demo AI**: Fully responsive in-memory response generator for local testing when API keys are absent.
-- **Chat Modes**: Select from 4 modes (`General`, `Coding`, `Writing`, `Learning`) with specialized starter prompts and model instructions.
-- **Starter Prompt Suggestions**: Category-tagged starter prompts on the welcome screen.
-- **Message Retry & Edit-Resend**: One-click **Retry** for failed requests, or **Edit prompt** to load previous user text back into the composer.
-
-#### Speech & Audio
-- **Voice Dictation (Speech-to-Text)**: Speak directly into the message composer via browser Web Speech Recognition. Includes live recording indicator, audio wave animation, and pause/resume.
-- **Verbal Punctuation Engine**: Automatically converts spoken verbal cues ("comma", "period", "question mark", "new line") into typography, with phonetic tech corrections (e.g. "Orvix", "JavaScript", "API").
-- **Multilingual Dictation**: Supports 9 spoken language options (English US/UK/PK, Urdu, Spanish, French, German, Arabic, Hindi).
-- **Text-to-Speech (Read Aloud)**: Click the speaker icon on any assistant message to read it aloud using Web Speech Synthesis.
-- **Speech Controls**: Pause, resume, stop, adjust playback speed (0.75x to 2.0x), and select system voices in Settings.
-
-#### Persistence & Conversation Management
-- **Cloud Firestore Storage**: Automatically syncs chats and messages for authenticated users with real-time updates (`onSnapshot`).
-- **Subcollection Message Architecture**: Messages are stored in subcollections to eliminate 1MB single-document limits.
-- **Atomic Batch Deletion**: Safely purges message subcollections in batches before removing the parent chat document.
-- **Guest / Demo Mode**: Instant access with no credentials needed. Conversations persist across browser refreshes via `localStorage` and `sessionStorage`, while file attachments persist in `IndexedDB`.
-- **Conversation Pinning (5-Chat Limit)**: Pin up to 5 priority chats to the top of the sidebar.
-- **Inline Renaming**: Rename any conversation directly from the sidebar item.
-- **Auto-Generated Titles**: Automatically derives concise titles from the user's initial prompt.
-
-#### UI, Personalization & Export
-- **Obsidian Dark & Clean Light Themes**: Instant theme switching (`Dark`, `Light`, `System`) with zero-flash early initialization.
-- **Personalization Settings**: Modal to configure theme, response length (`Concise`, `Balanced`, `Detailed`), beginner-friendly explanation toggle, default chat mode, Enter-to-send toggle, and timestamps.
-- **Client-Side Export**: Export the active conversation to **Markdown (`.md`)** or **Plain Text (`.txt`)** directly in the browser with sanitized filenames.
-- **Responsive Layout**: Collapsible sidebar navigation, mobile drawer overlay, auto-resizing composer textarea, and custom scrollbars.
-- **PWA Ready**: Web App Manifest (`manifest.webmanifest`), home screen icons, theme color, and install prompt integration.
-
-### In Progress Features
-- *(All core features scheduled for v0.3 are fully implemented and verified)*.
-
-### Planned & Future Features
-- **Optical Character Recognition (OCR)** *(Planned)*: Extract text from scanned/image-only PDFs via Tesseract or Google Cloud Vision.
-- **Guest-to-Account History Migration** *(Planned)*: Transfer locally cached guest conversations and IndexedDB attachments into a new user account upon registration.
-- **Image Generation & Visual Modalities** *(Planned)*: Support image generation and image analysis via Gemini 2.5 Flash Image.
-- **Global Message Search** *(Planned)*: Full-text search across all saved conversation titles and message contents in the sidebar.
-- **Custom System Instructions Editor** *(Planned)*: Allow users to specify arbitrary custom prompt directives beyond the predefined chat modes.
+When upstream provider requests encounter errors (rate limits, 503 high demand, authentication errors), Orvix renders a dedicated error card:
+- **Diagnostic Header**: Contextual title (*"Rate Limit or Quota Exceeded"*, *"Service Temporarily Busy"*, *"AI Provider Service Error"*).
+- **Referenced Attachment Retention**: Attached documents and images remain visible in the error card so the user retains file context.
+- **Responsive Multi-Line Action Wrapping**: Recovery buttons (`Retry with [Model]`, `Try with Gemini`, `Try with Groq`, `Try with OpenRouter`, `Edit prompt`) wrap cleanly across viewports (`display: flex; flex-wrap: wrap; gap: 8px; width: 100%;`).
+- **No Overflow**: Word-break prevention stops long error strings or token IDs from breaking container bounds.
 
 ---
 
@@ -361,120 +357,80 @@ When an upstream AI request fails (e.g. rate limit / quota exceeded, 503 high de
 
 ```text
 Orvix/
-├── .env.example                       # Environment variable reference template
+├── .env.example                       # Environment variable template
 ├── .gitignore                         # Git ignore specifications
 ├── README.md                          # Comprehensive project documentation
-├── api/                               # Serverless entry points for Vercel deployment
+├── api/                               # Serverless function handlers for Vercel
 │   ├── chat.ts                        # /api/chat handler wrapper
 │   ├── config.ts                      # /api/config handler wrapper
 │   ├── health.ts                      # /api/health handler wrapper
 │   └── upload.ts                      # /api/upload handler wrapper
-├── firebase-blueprint.json            # Blueprint database schema definition
-├── firestore.rules                    # Production Firestore database security rules
-├── index.html                         # SPA HTML entry point with theme bootstrap
-├── metadata.json                      # AI Studio applet capabilities and metadata
-├── package.json                       # NPM dependencies, scripts, and package metadata
+├── eng.traineddata                    # Tesseract English OCR trained data
+├── firebase-blueprint.json            # Database schema blueprint
+├── firestore.rules                    # Production Firestore security rules
+├── index.html                         # SPA HTML entry point
+├── metadata.json                      # AI Studio metadata & capabilities
+├── package.json                       # Dependencies, scripts, and version (v0.4.0)
 ├── public/                            # Static public assets, icons, and PWA manifest
 │   ├── apple-touch-icon.png           # iOS home screen icon
 │   ├── favicon.ico                    # Browser favicon
-│   ├── favicon.svg                    # SVG vector favicon
+│   ├── favicon.svg                    # Vector favicon
 │   ├── icon-192.png                   # 192x192 PWA manifest icon
 │   ├── icon-512.png                   # 512x512 PWA manifest icon
 │   └── manifest.webmanifest           # Progressive Web App manifest
 ├── server.ts                          # Express server, Vite middleware, upload & AI proxy
-├── src/                               # React 19 client application source code
+├── src/                               # React 19 client source code
 │   ├── App.jsx                        # Root application container & auth router
 │   ├── index.css                      # Global CSS entry loading Tailwind and styles
-│   ├── main.jsx                       # Application entry point mounting to DOM
+│   ├── main.jsx                       # Application DOM mounting entry point
 │   ├── components/                    # Modular UI components
-│   │   ├── auth/
-│   │   │   └── AuthScreen.jsx         # Email/password authentication & guest mode launcher
-│   │   ├── chat/
-│   │   │   ├── AttachmentCard.jsx     # Interactive attachment card (view, download, copy)
-│   │   │   ├── ChatArea.jsx           # Message viewport, composer dock & file staging
-│   │   │   ├── ChatMessage.jsx        # Message bubble, error card, markdown, speech & copy
-│   │   │   ├── CodeBlock.jsx          # Syntax-highlighted code block with copy action
-│   │   │   ├── ExportChatMenu.jsx     # Export dropdown for Markdown and Plain Text
-│   │   │   ├── MessageList.jsx        # Virtualized message list with auto-scroll pinning
-│   │   │   ├── ModeSelector.jsx       # Chat mode switcher (General, Coding, Writing, Learning)
-│   │   │   ├── ModelSelector.jsx      # AI provider switcher (Gemini, Groq, OpenRouter, Cloudflare)
-│   │   │   ├── PromptSuggestions.jsx  # Welcome screen starter prompt cards
-│   │   │   ├── TypingIndicator.jsx    # Pulsing three-dot thinking indicator
-│   │   │   └── WelcomeScreen.jsx      # Empty conversation welcome state
-│   │   ├── layout/
-│   │   │   ├── Header.jsx             # Navigation bar, model selector, title & actions
-│   │   │   ├── Layout.jsx             # Responsive shell managing sidebar and backdrop
-│   │   │   ├── Sidebar.jsx            # Conversations drawer, pinned list & user profile
-│   │   │   └── SidebarChatItem.jsx    # Chat item with pin, inline rename & delete
-│   │   ├── settings/
-│   │   │   └── SettingsModal.jsx      # Personalization settings dialog
-│   │   └── ui/
-│   │       ├── Button.jsx             # Reusable button primitive with variants
-│   │       └── OrvixLogo.jsx          # Orvix branding logo component
-│   ├── config/                        # Static configuration and constants
-│   │   ├── appConfig.js               # App metadata, defaults, and starter prompt templates
-│   │   ├── chatModes.js               # Chat mode definitions, icons, and instructions
-│   │   ├── firebaseConfig.js          # Firebase SDK initialization and validation
-│   │   └── sampleData.js              # Offline mock conversation demonstration data
-│   ├── context/                       # React Context state providers
-│   │   ├── AuthContext.jsx            # Authentication state, login, signup, and guest mode
-│   │   ├── SettingsContext.jsx        # Theme, response preferences, and composer settings
-│   │   └── SpeechContext.jsx          # Web Speech synthesis, voices, and read-aloud state
-│   ├── hooks/                         # Reusable React hooks
-│   │   ├── usePWAInstall.js           # PWA install prompt handler
-│   │   └── useVoiceDictation.js       # Web Speech recognition and verbal punctuation hook
-│   ├── pages/
-│   │   └── ChatPage.jsx               # Primary chat screen orchestrating state & attachments
-│   ├── services/                      # Business logic and external API integrations
-│   │   ├── aiRouter.js                # Central AI dispatch, streaming, and error parsing
-│   │   ├── attachmentStorageService.js# Browser IndexedDB attachment blob persistence
-│   │   ├── authService.js             # Firebase Auth wrapper with error normalization
-│   │   ├── chatStorageService.js      # Firestore CRUD, batch deletion, and pinning logic
-│   │   ├── documentContextService.js  # Targeted document formatting & context bounding
-│   │   ├── documentExtractor.js       # Server-side text & structure extraction engine
-│   │   ├── geminiService.js           # Google Gemini client fallback integration
-│   │   ├── groqService.js             # Groq client fallback integration
-│   │   ├── index.js                   # Service module index
-│   │   ├── mockChatService.js         # Local simulated response generator
-│   │   ├── openrouterService.js       # OpenRouter client fallback integration
-│   │   ├── userProfileService.js      # Firestore user profile read/write
-│   │   └── userSettingsService.js     # User settings persistence in Firestore & localStorage
-│   ├── styles/
-│   │   └── index.css                  # Comprehensive Obsidian & Light theme design system
-│   └── utils/                         # Helper utilities
-│       ├── exportConversation.js      # Markdown and Plain Text file generation & download
-│       ├── speechTextCleaner.js       # Cleans markdown for natural voice synthesis
-│       └── syntaxHighlighter.js       # Keyword syntax highlighter for code blocks
-├── test_all_providers_documents.js    # Multi-provider document context test suite
-├── test_document_handling.js          # Document extraction & page-boundary test suite
-├── tsconfig.json                      # TypeScript compiler configuration
+│   │   ├── auth/                      # Authentication & guest entry screens
+│   │   ├── chat/                      # ChatArea, ChatMessage, CodeBlock, AttachmentCard,
+│   │   │                              # ImageAttachmentCard, DocumentPreviewModal, etc.
+│   │   ├── layout/                    # Header, Sidebar, Layout shell, SidebarChatItem
+│   │   ├── settings/                  # SettingsModal dialog
+│   │   └── ui/                        # Reusable primitives (Button, OrvixLogo)
+│   ├── config/                        # Static app constants, chat modes, Firebase config
+│   ├── context/                       # AuthContext, SettingsContext, SpeechContext
+│   ├── hooks/                         # useVoiceDictation, usePWAInstall
+│   ├── pages/                         # ChatPage main conversational view
+│   ├── services/                      # aiRouter, imageOcrService, documentExtractor,
+│   │                                  # documentContextService, attachmentStorageService, etc.
+│   ├── styles/                        # Obsidian Dark & Clean Light design system CSS
+│   └── utils/                         # exportConversation, speechTextCleaner, syntaxHighlighter
+├── test_all_providers_documents.js    # Document multi-provider test suite
+├── test_all_providers_image_ocr.js    # Image OCR multi-provider context test suite
+├── test_document_handling.js          # Document extraction & page boundary test suite
+├── test_full_image_verification.js    # 23-test end-to-end image verification test suite
+├── test_image_ocr_extraction.js       # Image text extraction unit test suite
+├── test_image_upload_handling.js      # Image upload & signature security test suite
+├── test_server_all_providers_image.js # E2E HTTP image chat test suite across all 4 providers
+├── tsconfig.json                      # TypeScript configuration
 ├── uploads/                           # Temporary file staging directory (auto-cleaned)
 │   └── temp/                          # Staging files with UUID filenames
 ├── vercel.json                        # Vercel deployment configuration
-└── vite.config.ts                     # Vite bundler, plugin, and dev server configuration
+└── vite.config.ts                     # Vite bundler, plugin, and server configuration
 ```
 
 ### Important Files & Modules
-
-- **`server.ts`**: The backend server. Handles `/api/chat` SSE streaming, `/api/upload` multipart file handling with magic number validation, temporary file lifecycle management, and mounts Vite in development.
-- **`src/services/documentExtractor.js`**: Core document parser utilizing `unpdf` for PDF, `mammoth` for DOCX, `jszip` for PPTX, and dedicated parsers for CSV, TSV, JSON, XML, and Markdown.
-- **`src/services/documentContextService.js`**: Analyzes user prompts for page/slide targets, formats extracted text, and bounds context sizes to fit specific provider token limits.
-- **`src/services/attachmentStorageService.js`**: Browser IndexedDB database manager (`orvix_attachments_db`) ensuring attached files remain viewable and downloadable offline across reloads.
-- **`src/components/chat/AttachmentCard.jsx`**: User-facing attachment badge displaying original filename, format pill, size indicator, and actions (Open, Download, Copy filename).
-- **`src/components/chat/ChatMessage.jsx`**: Message bubble rendering, referenced document chips, Markdown formatting, and responsive multi-line error recovery cards.
-- **`src/pages/ChatPage.jsx`**: Coordinates active conversation state, staged attachments, streaming response tokens, Firestore/local persistence, and provider failover.
+- **`server.ts`**: Express backend server handling `/api/chat` SSE streaming, `/api/upload` multipart file handling with magic-number validation, Tesseract OCR dispatch, and Vite middleware.
+- **`src/services/imageOcrService.js`**: Managed Tesseract.js OCR worker queue, word count, confidence scoring, text normalization, and noise rejection.
+- **`src/services/documentExtractor.js`**: Document parser utilizing `unpdf` for PDF, `mammoth` for DOCX, `jszip` for PPTX, and delimiter parsers for CSV/TSV/JSON/XML.
+- **`src/services/documentContextService.js`**: Analyzes prompts for document and image queries, formats OCR text, and bounds context sizes per provider.
+- **`src/services/attachmentStorageService.js`**: Browser IndexedDB database manager (`orvix_attachments_db`) caching raw file and image blobs locally.
+- **`src/components/chat/ImageAttachmentCard.jsx`**: Responsive visual thumbnail card rendered inside chat messages with hover overlay, metadata badges, and click-to-preview.
+- **`src/components/chat/DocumentPreviewModal.jsx`**: Accessible modal with dual "Image" and "Extracted Text" tabs for viewing original images or inspecting OCR text.
+- **`src/pages/ChatPage.jsx`**: Coordinates active chat state, attachments staging, streaming response tokens, and Firestore/local persistence.
 
 ---
 
 ## Environment Variables & Configuration
 
-Environment variables are defined in `.env` in the root directory. Use `.env.example` as a template.
-
-> **Security Note**: Never commit actual API keys or credentials to version control. Variables prefixed with `VITE_` are exposed to the client bundle. AI provider keys (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`) belong exclusively in the server-side environment to protect secrets.
+Environment variables are configured in `.env` in the root directory. Use `.env.example` as a template.
 
 ### Configuration Reference Table
 
-| Variable Name | Required? | Environment Scope | Description |
+| Variable Name | Required? | Scope | Description |
 |---|---|---|---|
 | `GEMINI_API_KEY` | Optional | Server-side | Google Gemini API key used by the backend Express proxy (`server.ts`). |
 | `GROQ_API_KEY` | Optional | Server-side | Groq API key used by the backend Express proxy (`server.ts`). |
@@ -483,7 +439,7 @@ Environment variables are defined in `.env` in the root directory. Use `.env.exa
 | `CLOUDFLARE_API_TOKEN` | Optional | Server-side | Cloudflare API Token with Workers AI read/execute permissions. |
 | `MAX_FILE_SIZE_BYTES` | Optional | Server-side | Maximum upload file size in bytes (defaults to `26214400` = 25 MB). |
 | `MAX_ATTACHMENTS_PER_UPLOAD` | Optional | Server-side | Maximum files allowed per upload (defaults to `5`). |
-| `TEMP_FILE_TTL_MS` | Optional | Server-side | Retention time for temporary server files in milliseconds (defaults to `7200000` = 2 hours). |
+| `TEMP_FILE_TTL_MS` | Optional | Server-side | Retention time for temporary server files in ms (defaults to `7200000` = 2 hours). |
 | `PORT` | Optional | Server-side | Server port (defaults to `3000`). |
 | `NODE_ENV` | Optional | Server-side | Runtime environment (`development` or `production`). |
 | `VITE_FIREBASE_API_KEY` | Optional | Client-side | Firebase Web API key for authentication and Firestore sync. |
@@ -496,12 +452,12 @@ Environment variables are defined in `.env` in the root directory. Use `.env.exa
 ### Configuration Template (`.env.example`)
 
 ```ini
-# Server-Side AI API Keys (Recommended for security)
-GEMINI_API_KEY=your_gemini_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id_here
-CLOUDFLARE_API_TOKEN=your_cloudflare_api_token_here
+# Server-Side AI API Keys (Kept strictly on backend)
+GEMINI_API_KEY=
+GROQ_API_KEY=
+OPENROUTER_API_KEY=
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
 
 # File Upload & Attachment Lifecycle Configuration
 MAX_FILE_SIZE_BYTES=26214400
@@ -509,12 +465,12 @@ MAX_ATTACHMENTS_PER_UPLOAD=5
 TEMP_FILE_TTL_MS=7200000
 
 # Client-Side Firebase Configuration (Optional - for cloud persistence & auth)
-VITE_FIREBASE_API_KEY=your_firebase_api_key_here
-VITE_FIREBASE_AUTH_DOMAIN=your-app.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your-app-id
-VITE_FIREBASE_STORAGE_BUCKET=your-app.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
-VITE_FIREBASE_APP_ID=your_firebase_app_id
+VITE_FIREBASE_API_KEY=
+VITE_FIREBASE_AUTH_DOMAIN=
+VITE_FIREBASE_PROJECT_ID=
+VITE_FIREBASE_STORAGE_BUCKET=
+VITE_FIREBASE_MESSAGING_SENDER_ID=
+VITE_FIREBASE_APP_ID=
 
 # Server Runtime Configuration
 PORT=3000
@@ -528,185 +484,191 @@ NODE_ENV=development
 ### Prerequisites
 - **Node.js**: Version `20.x` or `22.x` LTS (`node -v`).
 - **NPM**: Version `10.x` or higher (`npm -v`).
-- **Web Browser**: Modern browser with IndexedDB, Web Speech API, and JavaScript enabled (Chrome, Edge, Safari, Firefox).
+- **Modern Browser**: Chrome, Edge, Safari, or Firefox with IndexedDB enabled.
 
 ### Installation
-
-1. **Clone the repository**:
+1. Clone the repository:
    ```bash
    git clone https://github.com/Hannankhan203/AI-Studio.git
    cd AI-Studio
    ```
-
-2. **Install dependencies**:
+2. Install dependencies:
    ```bash
    npm install
    ```
-
-3. **Set up environment variables**:
+3. Set up environment variables:
    ```bash
    cp .env.example .env
    ```
-   Add your API keys to `.env` if available. If no keys are provided, Orvix automatically operates in **Guest / Demo Mode** with simulated responses.
+   Add any available API keys to `.env`. If no keys are provided, Orvix automatically operates in **Guest / Demo Mode** with simulated responses.
 
 ### Running in Development
-
-To start the full-stack development server:
-
 ```bash
 npm run dev
 ```
-
-- Runs `tsx server.ts`.
-- Binds Express to `http://0.0.0.0:3000`.
-- Mounts Vite in middleware mode for hot client reloads while serving live `/api/chat` and `/api/upload` endpoints.
-- Open your browser to `http://localhost:3000`.
+Starts `server.ts` with Vite middleware mode on `http://0.0.0.0:3000`.
 
 ### Building for Production
-
-To create a production build of the frontend:
-
 ```bash
 npm run build
 ```
-
-This compiles client assets into the `dist/` directory.
+Compiles client assets into `dist/`.
 
 ### Running the Production Server
-
-To run the full-stack application in production mode:
-
 ```bash
 npm start
 ```
-
-This runs `node server.ts`, which serves the compiled static files from `dist/` and handles API requests on port 3000.
+Starts `node server.ts` serving static files from `dist/` on port 3000.
 
 ### Type Checking & Linting
-
-To run static type checking across the codebase:
-
 ```bash
 npm run lint
 ```
+Runs `tsc --noEmit` to validate all TypeScript code with zero errors.
 
-This executes `tsc --noEmit` to validate all TypeScript files without generating output files.
-
-### Running the Document Test Suites
-
-To verify document extraction, page boundary detection, and multi-provider compatibility:
-
+### Executing Test Suites
 ```bash
-# Test document handling and page/slide boundary logic (9 test suites)
-node test_document_handling.js
+# 1. Full Image Attachment & OCR Verification Suite (23 end-to-end tests)
+node test_full_image_verification.js
 
-# Test multi-provider context bounding and live /api/chat integration (8 test suites)
+# 2. Image Upload & Magic-Number Security Suite (10 tests)
+node test_image_upload_handling.js
+
+# 3. Server-Side Image Chat E2E Suite Across All 4 Providers
+node test_server_all_providers_image.js
+
+# 4. Multi-Provider Image Context Bounding Suite (7 tests)
+node test_all_providers_image_ocr.js
+
+# 5. Multi-Provider Document Integration Suite (8 tests)
 node test_all_providers_documents.js
+
+# 6. Document Extraction & Page-Boundary Suite (9 tests)
+node test_document_handling.js
 ```
 
 ---
 
 ## Firebase Setup & Security Rules
 
-To enable cloud authentication and persistent synchronization across devices:
-
-1. Create a Firebase project in the [Firebase Console](https://console.firebase.google.com/).
-2. Enable **Authentication** and activate the **Email/Password** provider.
+To enable cloud authentication and real-time database sync:
+1. Create a project in the [Firebase Console](https://console.firebase.google.com/).
+2. Enable **Authentication** with the **Email/Password** provider.
 3. Enable **Cloud Firestore Database** in production mode.
-4. Copy the web app configuration parameters into your `.env` file under `VITE_FIREBASE_*`.
-5. Deploy the provided `firestore.rules`:
-   - Can be pasted directly in the Firebase Console under **Firestore Database > Rules**.
-   - Ensures users can only read, write, and delete their own `/users/{userId}/chats/*` records.
-
-*Note: If Firebase credentials are not provided, Orvix automatically activates Guest Mode with local storage and IndexedDB persistence.*
+4. Copy the web credentials into `.env` under `VITE_FIREBASE_*`.
+5. Deploy `firestore.rules` via the Firebase Console to enforce per-user document isolation.
 
 ---
 
 ## Deployment Information
 
-Orvix is structured for flexible deployment across various platforms:
-
-### 1. Node.js Container / Cloud Run / VPS
-Because Orvix includes a self-contained Express server (`server.ts`), it can be deployed directly on any Node.js container or server:
-```bash
-npm install
-npm run build
-export NODE_ENV=production
-export PORT=3000
-npm start
-```
-
-### 2. Vercel
-The repository includes `vercel.json` and standalone function handlers in `api/`:
-- `api/chat.ts` routes chat completions to the AI proxy.
-- `api/upload.ts` routes multipart file uploads.
-- `api/health.ts` and `api/config.ts` provide serverless utility endpoints.
-- Vite build output is configured to `dist/`.
+- **Node.js Container / Cloud Run / VPS**: Run `npm install && npm run build && npm start`. The server binds to `0.0.0.0:3000`.
+- **Vercel**: Deploy directly. The root `vercel.json` and handlers in `api/` route requests to `/api/chat`, `/api/upload`, `/api/health`, and `/api/config`.
 
 ---
 
-## Current Limitations
+## Security Architecture
 
-- **Scanned PDFs Without OCR**: PDFs containing exclusively rasterized images cannot be parsed without an OCR engine. Orvix returns a transparent diagnostic indicating OCR is required.
-- **Legacy PowerPoint Binary Format (`.ppt`)**: Direct binary text extraction is only supported for modern OpenXML `.pptx` presentations. For `.ppt` files, Orvix advises saving as `.pptx` or `.pdf`.
-- **Guest-to-Account Migration**: Conversations created in Guest Mode reside in local browser storage; registering an account does not currently migrate guest chats or IndexedDB files into Firestore.
-- **Client-Side Pin Limit Enforcement**: The 5-pinned-chat constraint is enforced in client application state and Firestore query logic, but not in database security rules due to Firestore rule constraints on aggregate counts.
-- **Speech Synthesis Browser Variance**: Voices available for Read Aloud depend on the host operating system and browser synthesizer capabilities.
+- **Path Traversal Containment**: Uploaded files receive cryptographically random UUID names. File serving routes validate UUID formats (`/^[0-9a-fA-F-]{36}$/`) and strictly check that resolved paths remain within `UPLOAD_DIR`.
+- **Executable Binary Disguise Prevention**: Inspects binary magic numbers before processing. Explicitly rejects executable binaries (Linux ELF, Windows PE/MZ, Mach-O) even if uploaded with an image extension.
+- **MIME & Magic Number Validation**: Validates image headers (JPEG `FF D8 FF`, PNG `89 50 4E 47`, GIF `GIF89a`, WebP `RIFF`/`WEBP`, BMP `BM`, HEIC `ftyp`).
+- **Cross-Conversation Isolation**: Documents and images are mapped to specific conversation IDs in memory and database records, preventing cross-conversation data leakage.
+- **OCR Timeout Limit**: Server-side OCR is bounded by a 25-second timeout (`OCR_TIMEOUT_MS`) to protect server threads.
+- **Credential Redaction**: Internal diagnostic logs scrub API keys, Bearer tokens, and user queries.
+- **Private Path Concealment**: Upload responses return only public metadata and file IDs; server-internal filesystem paths are never sent to the client.
+
+---
+
+## Known Limitations
+
+1. **OCR vs Visual Understanding**: Orvix extracts readable printed/typographic text from images using OCR. It does not perform native visual understanding, object detection, or artistic description beyond its extracted text.
+2. **Binary Storage Longevity**:
+   - Message metadata and extracted OCR text are permanently persisted (to Firestore for authenticated users or `localStorage` for guests).
+   - Original binary files are stored client-side in browser **IndexedDB** (`orvix_attachments_db`) for local image reload and preview. On the server, raw binary files are stored in `/uploads/temp` with a 2-hour retention TTL (`TEMP_FILE_TTL_MS`).
+   - If a conversation is opened on a different browser device after the temporary server TTL has expired, the conversation history and extracted text remain visible, but the raw binary file cannot be redownloaded from the server disk.
+3. **HEIC Browser Native Rendering**: Standard web browsers cannot decode HEIC/HEIF images natively in `<img>` tags without client-side wasm transcoders; the UI displays a clean fallback card with direct download and modal inspection.
+4. **Scanned PDFs Without OCR**: PDFs containing exclusively rasterized scans without a text layer require image extraction.
+5. **Legacy PowerPoint Binary Format (`.ppt`)**: Direct binary text extraction is supported for modern OpenXML `.pptx` presentations; legacy `.ppt` files trigger a conversion recommendation.
 
 ---
 
 ## Version History & Changelog
 
-### v0.3 — File Attachment & Document Understanding Integration
-- **File Attachment & Multipart Upload Pipeline**:
-  - Implemented secure multipart file upload endpoint (`POST /api/upload`) using `multer` with configurable limits (`MAX_FILE_SIZE_BYTES=25MB`, `MAX_ATTACHMENTS_PER_UPLOAD=5`).
-  - Added binary magic number and file signature verification to prevent file masquerading or malicious execution.
-  - Implemented secure server-side file isolation with UUID-based disk names in `uploads/temp/` to prevent path traversal attacks.
-  - Added automated background cleanup task running every 15 minutes to unlink temporary files exceeding the configurable TTL (default: 2 hours).
-- **Document Text & Structure Extraction**:
-  - Integrated `unpdf` for PDF documents, supporting per-page text extraction, page boundary tagging, and total page counting.
-  - Integrated `mammoth` for Word documents (`.docx`), extracting structured headings, paragraphs, and formatted tables.
-  - Integrated `jszip` for PowerPoint presentations (`.pptx`), parsing slide-by-slide text, slide counts, and presenter speaker notes (`ppt/notesSlides/`).
-  - Added structured parsing for Tabular Data (`.csv`, `.tsv`), JSON data, XML, and Markdown/Plain Text.
-  - Implemented honest detection for scanned/image-only PDFs and legacy `.ppt` files with actionable diagnostics.
-- **Targeted Document Questioning**:
-  - Built `documentContextService.js` to parse user queries for targeted pages (*"Explain page 3"*), page ranges (*"Summarize pages 2 to 4"*), and slides (*"Explain slide 2"*).
-  - Added boundary validation to honestly notify users if a requested page or slide exceeds the document's bounds.
-  - Implemented provider-aware context bounding, providing up to 120,000 characters for Google Gemini and safely bounding Groq, OpenRouter, and Cloudflare.
-- **Attachment Display, Viewing & Downloading**:
-  - Created interactive `AttachmentCard.jsx` displaying original filename, format badge, and formatted size.
-  - Enabled inline viewing for supported formats (PDF, text) and one-click downloading for original files with preserved filenames.
-  - Added `src/services/attachmentStorageService.js` using browser `IndexedDB` (`orvix_attachments_db`) to cache raw file blobs locally, ensuring attachments persist across page reloads and browser sessions.
-  - Added referenced document chips on assistant messages to maintain visual provenance while models explain files.
-- **Error UI & Recovery Redesign**:
-  - Completely overhauled `error-message-box` into a responsive card with contextual header (*"Rate Limit or Quota Exceeded"*, *"Service Temporarily Busy"*), provider badge, and referenced attachments.
-  - Added responsive multi-line wrapping (`flex-wrap: wrap`) for all recovery buttons (`Retry with [Model]`, `Try with Gemini`, `Try with Groq`, `Try with OpenRouter`, `Edit prompt`), preventing horizontal overflow across desktop, tablet, and mobile screens.
-  - Added first-class Light Theme support with dark crimson `#7f1d1d` text and clean card borders.
+### v0.4.0 — Image Attachment & Optical Character Recognition (OCR) Integration *(Current Release)*
+- **Image Attachment & Upload Pipeline**:
+  - Added support for attaching image formats: JPEG, JPG, PNG, WebP, GIF, BMP, and HEIC/HEIF.
+  - Implemented client-side image preview in the composer dock before sending with instant thumbnail generation, format pill, file size, and remove action.
+  - Extended `/api/upload` with binary header and magic number verification for JPEG (`\xFF\xD8\xFF`), PNG (`\x89PNG`), WebP (`RIFF`/`WEBP`), GIF (`GIF87a`/`GIF89a`), BMP (`BM`), and HEIC (`ftyp`).
+  - Added security protection against executable binaries (Linux ELF, Windows PE, Mach-O) disguised as image files.
+- **Server-Side OCR Text Extraction Engine**:
+  - Integrated `tesseract.js` (^7.0.0) with managed worker queue and a 25-second safety timeout.
+  - Extracts normalized readable text, confidence percentage (0-100%), word count, character count, and line segmentation.
+  - Generates structured OCR metadata accessible via `GET /api/upload/:id/extraction`.
+- **Honest No-Readable-Text Handling**:
+  - Gracefully detects images containing no readable text (solid graphics, blank canvas, noisy photos).
+  - Categorizes status as `NO_TEXT_DETECTED` and immediately returns the exact honest message:
+    > **"No readable text detected in this image."**
+  - Bypasses unnecessary model hallucinations in both streaming SSE and non-streaming modes across all providers.
+- **Image Message Display & Preview Modal**:
+  - Implemented `ImageAttachmentCard.jsx` rendering responsive visual thumbnails directly inside user messages.
+  - Implemented `DocumentPreviewModal.jsx` with a dual view switcher:
+    - **Image Tab**: View full-size original image with fit and zoom.
+    - **Extracted Text Tab**: Monospace viewer displaying OCR text, word/character metrics, confidence rating, and one-click **Copy Text**.
+  - Added direct file download preserving original filenames and fallback cards for non-browser-native formats (HEIC).
+- **Multi-Model Image Text Integration**:
+  - Verified image question-answering across all 4 AI providers: Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI.
+  - Verified real-time SSE streaming for image questions.
+  - Verified multi-image attachments and mixed image + document queries.
+- **Regression Testing & Fixes**:
+  - Established 23 automated tests in `test_full_image_verification.js`.
+  - Fixed server port binding to strictly honor `--port` and port `3000` (`0.0.0.0`).
+  - Cleaned up duplicated nested folder structures (`src/src/`, `src/package.json`, `src/server.ts`) from previous repository migration.
 
-### v0.2 — Cloudflare Workers AI Integration
-- **Single AI Model Addition**:
-  - Integrated **Cloudflare Workers AI — Llama 3.1 8B** (`@cf/meta/llama-3.1-8b-instruct`) as an independently selectable AI provider.
-  - Connected via Cloudflare's official REST API endpoint: `https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct`.
-  - Implemented Server-Sent Events (SSE) streaming support and server-side JSON fallback adaptation in `server.ts`.
-  - Added multi-turn conversation history conversion and dynamic persona/mode system instructions.
-  - Created selectable dropdown option labeled `Cloudflare Workers AI — Llama 3.1 8B` in `ModelSelector.jsx`.
-  - Added server-side environment variables `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` to `.env.example` and documentation.
-  - Added simulated fallback responses for zero-friction testing when Cloudflare credentials are unconfigured.
-  - Added `cloudflareConfigured` status property to the `/api/config` endpoint.
+### v0.3.0 — File Attachment & Document Understanding Integration + Error UI Overhaul
+- **Document Extraction Pipeline**:
+  - Integrated `unpdf` for PDF documents with per-page extraction and page boundary detection.
+  - Integrated `mammoth` for Word documents (`.docx`), structuring headings and tables into Markdown.
+  - Integrated `jszip` for PowerPoint presentations (`.pptx`), parsing slides and presenter speaker notes.
+  - Added structured parsers for Tabular Data (CSV, TSV), JSON, XML, and Plain Text / Markdown.
+- **Targeted Document Inquiries**:
+  - Added query intent detection for page-specific (*"Explain page 3"*), page-range (*"Summarize pages 2 to 4"*), and slide-specific (*"Explain slide 4"*) questions.
+  - Implemented boundary validation detecting out-of-bounds page and slide requests without hallucinating.
+  - Implemented provider-aware document context bounding (Gemini: 120k chars, Groq: 24k chars, OpenRouter/Cloudflare: 16k chars).
+- **Attachment Display & IndexedDB Caching**:
+  - Implemented `AttachmentCard.jsx` with inline opening and original file download.
+  - Added `attachmentStorageService.js` using browser `IndexedDB` (`orvix_attachments_db`) to cache raw blobs locally for reload persistence.
+  - Added referenced document chips on assistant messages to track file provenance.
+- **Error UI Redesign**:
+  - Overhauled error presentation into responsive diagnostic cards with contextual titles.
+  - Added responsive multi-line wrapping for recovery buttons, preventing overflow across viewports.
 
-### v0.1 — Initial Development Version
-- **Initial Release**:
-  - Implemented React 19 SPA frontend with Obsidian Dark and Clean Light themes.
-  - Implemented Express backend (`server.ts`) with Vite middleware mode on port 3000.
-  - Integrated Google Gemini (`gemini-3.8-flash` / `gemini-3.1-flash-lite`) via `@google/genai` with streaming SSE and model failover.
-  - Integrated Groq (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) via OpenAI-compatible REST endpoint.
-  - Integrated OpenRouter (`openrouter/free`) via OpenAI-compatible REST endpoint.
-  - Built zero-key simulated response fallback engine for instant prototype testing.
-  - Added 4 conversational Chat Modes (`General`, `Coding`, `Writing`, `Learning`) with specialized instructions and starter prompts.
-  - Implemented Web Speech Recognition voice dictation with verbal punctuation engine and 9 language options.
-  - Implemented Web Speech Synthesis read-aloud with voice selection, rate adjustments, and markdown cleaning.
-  - Implemented Cloud Firestore persistence with subcollections, real-time sync, and batch deletions.
-  - Implemented Guest / Demo Mode with `localStorage` and `sessionStorage` fallback.
-  - Added conversation pinning with a 5-chat limit and inline title editing.
-  - Added client-side Markdown (`.md`) and Plain Text (`.txt`) conversation export.
-  - Configured Progressive Web App manifest and install hooks.
+### v0.2.0 — Cloudflare Workers AI Integration
+- **Cloudflare Edge Model Addition**:
+  - Integrated **Cloudflare Workers AI — Llama 3.1 8B** (`@cf/meta/llama-3.1-8b-instruct`) as a selectable provider.
+  - Connected via Cloudflare's REST API with Server-Sent Events (SSE) streaming and JSON stream adaptation.
+  - Added `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` to server configuration.
+
+### v0.1.0 — Initial Development Release
+- **Foundational Architecture**:
+  - React 19 SPA frontend with Tailwind CSS v4 and Obsidian Dark / Clean Light design system.
+  - Express backend (`server.ts`) with Vite middleware mode on port 3000.
+  - Integrated Google Gemini, Groq, and OpenRouter with streaming SSE.
+  - Zero-key simulated response fallback mode.
+  - 4 conversational Chat Modes (General, Coding, Writing, Learning).
+  - Web Speech voice dictation with verbal punctuation conversion and 9 language options.
+  - Web Speech synthesis read-aloud with playback speed adjustments.
+  - Cloud Firestore subcollection persistence and Guest Mode local storage.
+  - Conversation pinning (5-chat limit) and Markdown/Text client-side export.
+  - Progressive Web App manifest and install support.
+
+---
+
+## Future Improvements
+
+*(The following capabilities are planned for future releases and are clearly separated from currently implemented features)*:
+
+1. **Native Multimodal Visual Reasoning**: Connect to vision-capable models (such as `gemini-3.1-flash-lite-image` or native multimodal vision endpoints) for spatial visual reasoning, artwork description, and object segmentation beyond text extraction.
+2. **Client-Side HEIC/HEIF Decoding**: Integrate a lightweight WASM/libheif decoder to render HEIC/HEIF images natively in the browser without server transcoding.
+3. **Guest-to-Account History Migration**: Automatically transfer local guest conversations and IndexedDB attachment blobs into a newly registered Cloud Firestore account.
+4. **Permanent Cloud Binary Object Storage**: Integrate Firebase Cloud Storage or Google Cloud Storage buckets for long-term multi-device raw binary persistence beyond the local device's IndexedDB cache.
+5. **Full-Text Message Search**: Implement client-side indexing across all saved conversation titles, message contents, and extracted attachment text.

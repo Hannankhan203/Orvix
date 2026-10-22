@@ -8,6 +8,8 @@ import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from './src/services/documentExtractor.js';
+// @ts-ignore - Image OCR extraction JavaScript service
+import { extractImageText } from './src/services/imageOcrService.js';
 // @ts-ignore - Document context JavaScript service
 import {
   prepareDocumentContext,
@@ -46,6 +48,11 @@ export interface DocumentData {
   };
   isScanned?: boolean;
   isTruncated?: boolean;
+  isImage?: boolean;
+  hasText?: boolean;
+  lineCount?: number;
+  confidence?: number;
+  message?: string;
   warning?: string;
   error?: string;
 }
@@ -100,7 +107,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const portArgIndex = process.argv.indexOf('--port');
+const portFromArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
+const PORT = Number(portFromArg) || (process.env.PORT && process.env.PORT !== '8080' ? Number(process.env.PORT) : 3000);
 
 // Permissive CORS middleware for cross-origin and Vercel preview environments
 app.use((req, res, next) => {
@@ -744,8 +753,86 @@ const ALLOWED_EXTENSIONS_MAP: Record<string, string[]> = {
   '.csv': ['text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel', 'application/octet-stream'],
   '.tsv': ['text/tab-separated-values', 'text/plain', 'application/octet-stream'],
   '.json': ['application/json', 'text/json', 'text/plain', 'application/octet-stream'],
-  '.xml': ['application/xml', 'text/xml', 'text/plain', 'application/octet-stream']
+  '.xml': ['application/xml', 'text/xml', 'text/plain', 'application/octet-stream'],
+  // Common image formats (JPG, JPEG, PNG, WEBP, GIF, BMP, HEIC, HEIF)
+  '.jpg': ['image/jpeg', 'image/pjpeg', 'image/jpg', 'application/octet-stream'],
+  '.jpeg': ['image/jpeg', 'image/pjpeg', 'image/jpg', 'application/octet-stream'],
+  '.png': ['image/png', 'image/x-png', 'application/octet-stream'],
+  '.webp': ['image/webp', 'application/octet-stream'],
+  '.gif': ['image/gif', 'application/octet-stream'],
+  '.bmp': ['image/bmp', 'image/x-ms-bmp', 'image/x-bmp', 'application/octet-stream'],
+  '.heic': ['image/heic', 'image/heif', 'application/octet-stream'],
+  '.heif': ['image/heif', 'image/heic', 'application/octet-stream']
 };
+
+/**
+ * Safely extracts image dimensions (width, height) from image binary headers
+ * without requiring native binary dependencies.
+ */
+function parseImageDimensions(
+  buffer: Buffer,
+  ext: string
+): { width: number; height: number } | undefined {
+  try {
+    if (ext === '.png' && buffer.length >= 24) {
+      const width = buffer.readUInt32BE(16);
+      const height = buffer.readUInt32BE(20);
+      if (width > 0 && height > 0) return { width, height };
+    }
+    if (ext === '.gif' && buffer.length >= 10) {
+      const width = buffer.readUInt16LE(6);
+      const height = buffer.readUInt16LE(8);
+      if (width > 0 && height > 0) return { width, height };
+    }
+    if (ext === '.bmp' && buffer.length >= 26) {
+      const width = Math.abs(buffer.readInt32LE(18));
+      const height = Math.abs(buffer.readInt32LE(22));
+      if (width > 0 && height > 0) return { width, height };
+    }
+    if (ext === '.webp' && buffer.length >= 30) {
+      const tag = buffer.toString('ascii', 12, 16);
+      if (tag === 'VP8 ' && buffer.length >= 30) {
+        const width = buffer.readUInt16LE(26) & 0x3fff;
+        const height = buffer.readUInt16LE(28) & 0x3fff;
+        if (width > 0 && height > 0) return { width, height };
+      } else if (tag === 'VP8L' && buffer.length >= 25) {
+        const b1 = buffer[21];
+        const b2 = buffer[22];
+        const b3 = buffer[23];
+        const b4 = buffer[24];
+        const width = 1 + (((b2 & 0x3f) << 8) | b1);
+        const height = 1 + (((b4 & 0x0f) << 10) | (b3 << 2) | ((b2 & 0xc0) >> 6));
+        if (width > 0 && height > 0) return { width, height };
+      } else if (tag === 'VP8X' && buffer.length >= 30) {
+        const width = 1 + buffer.readUIntLE(24, 3);
+        const height = 1 + buffer.readUIntLE(27, 3);
+        if (width > 0 && height > 0) return { width, height };
+      }
+    }
+    if ((ext === '.jpg' || ext === '.jpeg') && buffer.length >= 4) {
+      let offset = 2;
+      while (offset < buffer.length - 8) {
+        if (buffer[offset] !== 0xff) break;
+        const marker = buffer[offset + 1];
+        // Standard SOF markers (SOF0 to SOF3, SOF5 to SOF7, SOF9 to SOF11, SOF13 to SOF15)
+        if (
+          (marker >= 0xc0 && marker <= 0xc3) ||
+          (marker >= 0xc5 && marker <= 0xc7) ||
+          (marker >= 0xc9 && marker <= 0xcb) ||
+          (marker >= 0xcd && marker <= 0xcf)
+        ) {
+          const height = buffer.readUInt16BE(offset + 5);
+          const width = buffer.readUInt16BE(offset + 7);
+          if (width > 0 && height > 0) return { width, height };
+          break;
+        }
+        const blockLength = buffer.readUInt16BE(offset + 2);
+        offset += 2 + blockLength;
+      }
+    }
+  } catch (_) {}
+  return undefined;
+}
 
 /**
  * Validates binary file headers and content signatures (magic numbers)
@@ -754,7 +841,7 @@ const ALLOWED_EXTENSIONS_MAP: Record<string, string[]> = {
 async function verifyFileSignature(
   filePath: string,
   ext: string
-): Promise<{ valid: boolean; reason?: string }> {
+): Promise<{ valid: boolean; reason?: string; dimensions?: { width: number; height: number } }> {
   let fd: number | null = null;
   try {
     const stats = await fs.promises.stat(filePath);
@@ -762,7 +849,7 @@ async function verifyFileSignature(
       return { valid: false, reason: 'File is empty (0 bytes).' };
     }
 
-    const buffer = Buffer.alloc(Math.min(512, stats.size));
+    const buffer = Buffer.alloc(Math.min(4096, stats.size));
     fd = fs.openSync(filePath, 'r');
     fs.readSync(fd, buffer, 0, buffer.length, 0);
     fs.closeSync(fd);
@@ -855,6 +942,81 @@ async function verifyFileSignature(
       return { valid: true };
     }
 
+    // Image format verification (JPEG, PNG, GIF, WebP, BMP, HEIC/HEIF)
+    if (ext === '.jpg' || ext === '.jpeg') {
+      if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+        return { valid: true, dimensions: parseImageDimensions(buffer, ext) };
+      }
+      return { valid: false, reason: 'Invalid JPEG format: missing standard JPEG SOI signature.' };
+    }
+
+    if (ext === '.png') {
+      if (
+        buffer.length >= 8 &&
+        buffer[0] === 0x89 &&
+        buffer[1] === 0x50 &&
+        buffer[2] === 0x4e &&
+        buffer[3] === 0x47 &&
+        buffer[4] === 0x0d &&
+        buffer[5] === 0x0a &&
+        buffer[6] === 0x1a &&
+        buffer[7] === 0x0a
+      ) {
+        return { valid: true, dimensions: parseImageDimensions(buffer, ext) };
+      }
+      return { valid: false, reason: 'Invalid PNG format: missing standard PNG signature.' };
+    }
+
+    if (ext === '.gif') {
+      if (
+        buffer.length >= 6 &&
+        buffer[0] === 0x47 &&
+        buffer[1] === 0x49 &&
+        buffer[2] === 0x46 &&
+        buffer[3] === 0x38 &&
+        (buffer[4] === 0x37 || buffer[4] === 0x39) &&
+        buffer[5] === 0x61
+      ) {
+        return { valid: true, dimensions: parseImageDimensions(buffer, ext) };
+      }
+      return { valid: false, reason: 'Invalid GIF format: missing standard GIF87a/GIF89a signature.' };
+    }
+
+    if (ext === '.webp') {
+      if (
+        buffer.length >= 12 &&
+        buffer.toString('ascii', 0, 4) === 'RIFF' &&
+        buffer.toString('ascii', 8, 12) === 'WEBP'
+      ) {
+        return { valid: true, dimensions: parseImageDimensions(buffer, ext) };
+      }
+      return { valid: false, reason: 'Invalid WebP format: missing standard RIFF/WEBP signature.' };
+    }
+
+    if (ext === '.bmp') {
+      if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) {
+        return { valid: true, dimensions: parseImageDimensions(buffer, ext) };
+      }
+      return { valid: false, reason: 'Invalid BMP format: missing standard BM signature.' };
+    }
+
+    if (ext === '.heic' || ext === '.heif') {
+      if (buffer.length < 12) {
+        return { valid: false, reason: 'Invalid HEIC/HEIF format: file is too small for an ISOBMFF container.' };
+      }
+      const ftypBox = buffer.toString('ascii', 4, 8);
+      if (ftypBox !== 'ftyp') {
+        return { valid: false, reason: 'Invalid HEIC/HEIF format: missing standard ftyp container signature.' };
+      }
+      const compatibleSlice = buffer.toString('ascii', 8, Math.min(64, buffer.length)).toLowerCase();
+      const validBrands = ['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'];
+      const hasValidBrand = validBrands.some((b) => compatibleSlice.includes(b));
+      if (!hasValidBrand) {
+        return { valid: false, reason: 'Invalid HEIC/HEIF format: unrecognized ISOBMFF image brand.' };
+      }
+      return { valid: true };
+    }
+
     return { valid: true };
   } catch (err: any) {
     if (fd !== null) {
@@ -892,7 +1054,7 @@ const uploadFilter = (
   if (!ext || !ALLOWED_EXTENSIONS_MAP[ext]) {
     return cb(
       new Error(
-        `Unsupported file extension: '${ext || 'none'}'. Supported: PDF, DOCX, DOC, TXT, MD, PPT, PPTX, CSV, TSV, JSON, XML, XLSX, XLS.`
+        `Unsupported file extension: '${ext || 'none'}'. Supported: PDF, DOCX, DOC, TXT, MD, PPT, PPTX, CSV, TSV, JSON, XML, XLSX, XLS, and Images (JPG, JPEG, PNG, WEBP, GIF, BMP, HEIC, HEIF).`
       )
     );
   }
@@ -931,11 +1093,13 @@ interface UploadedFileRecord {
   extension: string;
   size: number;
   formattedSize: string;
-  status: 'uploaded' | 'ready';
+  status: 'uploaded' | 'ready' | 'error';
   uploadedAt: string;
   expiresAt: number;
   conversationId?: string;
-  extraction?: DocumentExtractionResult;
+  isImage?: boolean;
+  dimensions?: { width: number; height: number };
+  extraction?: any;
 }
 
 // In-memory registry tracking uploaded temporary files and their lifecycle
@@ -1005,6 +1169,11 @@ app.get(['/api/upload/:id', '/upload/:id'], (req, res) => {
     return res.status(404).json({ error: 'Attachment not found or has expired.' });
   }
 
+  const ext = path.extname(record.diskFilename).toLowerCase();
+  const isImg =
+    ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+    record.mimeType.startsWith('image/');
+
   return res.json({
     id: record.id,
     name: record.originalName,
@@ -1015,6 +1184,8 @@ app.get(['/api/upload/:id', '/upload/:id'], (req, res) => {
     size: record.size,
     formattedSize: record.formattedSize,
     status: record.status,
+    isImage: isImg,
+    dimensions: record.dimensions,
     uploadedAt: record.uploadedAt,
     expiresAt: record.expiresAt,
     extraction: record.extraction
@@ -1037,8 +1208,26 @@ app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, re
     return res.json(record.extraction);
   }
 
-  const filePath = path.join(UPLOAD_DIR, record.diskFilename);
-  const ext = path.extname(record.diskFilename);
+  const ext = path.extname(record.diskFilename).toLowerCase();
+  const isImg =
+    ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+    record.mimeType.startsWith('image/');
+
+  const filePath = path.join(UPLOAD_DIR, path.basename(record.diskFilename));
+
+  if (isImg) {
+    const imgExtraction = await extractImageText(
+      filePath,
+      record.originalName,
+      ext,
+      record.mimeType,
+      record.id,
+      record.dimensions
+    );
+    record.extraction = imgExtraction;
+    return res.json(imgExtraction);
+  }
+
   const extraction = (await extractDocumentContent(
     filePath,
     record.originalName,
@@ -1080,8 +1269,14 @@ app.get(
       return res.status(404).json({ error: 'Attachment file not found or has expired.' });
     }
 
-    const filePath = path.join(UPLOAD_DIR, diskFilename);
-    if (!fs.existsSync(filePath)) {
+    // Path traversal containment check: strictly verify resolved path is within UPLOAD_DIR
+    const resolvedUploadDir = path.resolve(UPLOAD_DIR);
+    const resolvedFilePath = path.resolve(UPLOAD_DIR, path.basename(diskFilename));
+    if (!resolvedFilePath.startsWith(resolvedUploadDir + path.sep)) {
+      return res.status(403).json({ error: 'Access denied: invalid file path.' });
+    }
+
+    if (!fs.existsSync(resolvedFilePath)) {
       return res.status(404).json({ error: 'Attachment file not found or has expired.' });
     }
 
@@ -1092,14 +1287,14 @@ app.get(
         mimeType.startsWith('text/') ||
         mimeType.startsWith('image/'));
 
-    const safeFilename = path.basename(originalName).replace(/["\r\n]/g, '_');
+    const safeFilename = path.basename(originalName).replace(/[/\\?%*:|"<>]/g, '_');
     res.setHeader('Content-Type', mimeType);
     res.setHeader(
       'Content-Disposition',
       `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
     );
 
-    return res.sendFile(filePath);
+    return res.sendFile(resolvedFilePath);
   }
 );
 
@@ -1120,7 +1315,10 @@ app.delete(['/api/upload/:id', '/upload/:id'], async (req, res) => {
     const files = await fs.promises.readdir(UPLOAD_DIR);
     for (const fname of files) {
       if (fname.startsWith(fileId)) {
-        await fs.promises.unlink(path.join(UPLOAD_DIR, fname));
+        const safePath = path.resolve(UPLOAD_DIR, path.basename(fname));
+        if (safePath.startsWith(path.resolve(UPLOAD_DIR) + path.sep)) {
+          await fs.promises.unlink(safePath);
+        }
       }
     }
   } catch (_) {}
@@ -1173,7 +1371,13 @@ app.post(['/api/upload', '/upload'], (req, res) => {
     // Inspect each uploaded file for size and binary signature integrity
     for (const file of files) {
       const ext = path.extname(file.originalname).toLowerCase();
-      const safeBaseName = path.basename(file.originalname).replace(/[\r\n\t]/g, ' ').slice(0, 150);
+      // Strict filename sanitization preventing directory traversal, injection, and invalid characters
+      const rawBase = path.basename(file.originalname || 'attachment');
+      const safeBaseName = rawBase
+        .replace(/[\0\r\n\t]/g, '')
+        .replace(/[/\\?%*:|"<>]/g, '_')
+        .trim()
+        .slice(0, 150) || 'attachment';
 
       if (file.size === 0) {
         validationErrors.push(`File '${safeBaseName}' is empty (0 bytes).`);
@@ -1192,20 +1396,26 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         continue;
       }
 
+      const isImg =
+        ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+        (file.mimetype || '').toLowerCase().startsWith('image/');
+
       const fileId = path.basename(file.filename, ext);
       const nowIso = new Date().toISOString();
       const record: UploadedFileRecord = {
         id: fileId,
         originalName: safeBaseName,
         diskFilename: file.filename,
-        mimeType: file.mimetype || 'application/octet-stream',
+        mimeType: file.mimetype || (isImg ? `image/${ext.replace('.', '')}` : 'application/octet-stream'),
         extension: ext.replace('.', '').toUpperCase(),
         size: file.size,
         formattedSize: formatBytes(file.size),
-        status: 'uploaded',
+        status: isImg ? 'ready' : 'uploaded',
         uploadedAt: nowIso,
         expiresAt: Date.now() + TEMP_FILE_TTL_MS,
-        conversationId
+        conversationId,
+        isImage: isImg,
+        dimensions: sigResult.dimensions
       };
 
       fileRegistry.set(fileId, record);
@@ -1237,20 +1447,38 @@ app.post(['/api/upload', '/upload'], (req, res) => {
       });
     }
 
-    // Execute server-side text and structure extraction for each uploaded file
+    // Execute server-side text and structure extraction for documents, or prepare image metadata
     for (const rec of uploadedResults) {
       try {
         const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
-        const ext = path.extname(rec.diskFilename);
-        const extraction = (await extractDocumentContent(
-          fullDiskPath,
-          rec.originalName,
-          ext,
-          rec.mimeType,
-          rec.id
-        )) as DocumentExtractionResult;
-        rec.extraction = extraction;
-        rec.status = extraction.success || extraction.status === 'scanned_or_image_only' ? 'ready' : 'uploaded';
+        const ext = path.extname(rec.diskFilename).toLowerCase();
+        const isImg =
+          ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+          rec.mimeType.startsWith('image/');
+
+        if (isImg) {
+          rec.isImage = true;
+          const imgExtraction = (await extractImageText(
+            fullDiskPath,
+            rec.originalName,
+            ext,
+            rec.mimeType,
+            rec.id,
+            rec.dimensions
+          )) as any;
+          rec.extraction = imgExtraction;
+          rec.status = 'ready';
+        } else {
+          const extraction = (await extractDocumentContent(
+            fullDiskPath,
+            rec.originalName,
+            ext,
+            rec.mimeType,
+            rec.id
+          )) as DocumentExtractionResult;
+          rec.extraction = extraction;
+          rec.status = extraction.success || extraction.status === 'scanned_or_image_only' ? 'ready' : 'uploaded';
+        }
       } catch (err: any) {
         console.warn(`[Document Extraction] Extraction error for ${rec.originalName}:`, err);
       }
@@ -1260,35 +1488,54 @@ app.post(['/api/upload', '/upload'], (req, res) => {
     return res.status(200).json({
       success: true,
       count: uploadedResults.length,
-      attachments: uploadedResults.map((r) => ({
-        id: r.id,
-        originalName: r.originalName,
-        name: r.originalName,
-        extension: r.extension,
-        mimeType: r.mimeType,
-        type: r.mimeType,
-        size: r.size,
-        formattedSize: r.formattedSize,
-        status: r.status,
-        uploadedAt: r.uploadedAt,
-        extraction: r.extraction
-          ? {
-              status: r.extraction.status,
-              success: r.extraction.success,
-              format: r.extraction.format,
-              totalCharacters: r.extraction.totalCharacters,
-              totalWords: r.extraction.totalWords,
-              summaryText: r.extraction.summaryText,
-              pageCount: r.extraction.pageCount,
-              slideCount: r.extraction.slideCount,
-              sectionCount: r.extraction.sectionCount,
-              isScanned: r.extraction.isScanned,
-              isTruncated: r.extraction.isTruncated,
-              warning: r.extraction.warning,
-              error: r.extraction.error
-            }
-          : undefined
-      }))
+      attachments: uploadedResults.map((r) => {
+        const ext = path.extname(r.diskFilename).toLowerCase();
+        const isImg =
+          ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+          r.mimeType.startsWith('image/');
+        return {
+          id: r.id,
+          originalName: r.originalName,
+          name: r.originalName,
+          extension: r.extension,
+          mimeType: r.mimeType,
+          type: r.mimeType,
+          size: r.size,
+          formattedSize: r.formattedSize,
+          status: r.status,
+          isImage: isImg,
+          dimensions: r.dimensions,
+          uploadedAt: r.uploadedAt,
+          extraction: r.extraction
+            ? {
+                id: r.id,
+                fileId: r.id,
+                filename: r.diskFilename,
+                originalName: r.originalName,
+                name: r.originalName,
+                status: r.extraction.status,
+                success: r.extraction.success,
+                format: r.extraction.format,
+                isImage: Boolean(r.extraction.isImage || isImg),
+                hasText: Boolean(r.extraction.hasText),
+                text: r.extraction.text || '',
+                message: r.extraction.message,
+                totalCharacters: r.extraction.totalCharacters ?? 0,
+                totalWords: r.extraction.totalWords ?? 0,
+                lineCount: r.extraction.lineCount,
+                confidence: r.extraction.confidence,
+                summaryText: r.extraction.summaryText,
+                pageCount: r.extraction.pageCount,
+                slideCount: r.extraction.slideCount,
+                sectionCount: r.extraction.sectionCount,
+                isScanned: r.extraction.isScanned,
+                isTruncated: r.extraction.isTruncated,
+                warning: r.extraction.warning,
+                error: r.extraction.error
+              }
+            : undefined
+        };
+      })
     });
   });
 });
@@ -1401,10 +1648,50 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       for (const att of attachments) {
         if (!att?.id) continue;
         const record = fileRegistry.get(att.id);
-        if (record?.extraction) {
-          addDocIfValid(record.extraction as DocumentData, record.conversationId);
-        } else if (att.extraction) {
-          addDocIfValid(att.extraction as DocumentData, conversationId || undefined);
+        if (record && !record.extraction) {
+          try {
+            const ext = path.extname(record.diskFilename).toLowerCase();
+            const isImg =
+              ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+              record.mimeType.startsWith('image/');
+            const fullDiskPath = path.join(UPLOAD_DIR, record.diskFilename);
+            if (fs.existsSync(fullDiskPath)) {
+              if (isImg) {
+                record.extraction = (await extractImageText(
+                  fullDiskPath,
+                  record.originalName,
+                  ext,
+                  record.mimeType,
+                  record.id,
+                  record.dimensions
+                )) as any;
+                record.status = 'ready';
+              } else {
+                record.extraction = (await extractDocumentContent(
+                  fullDiskPath,
+                  record.originalName,
+                  ext,
+                  record.mimeType,
+                  record.id
+                )) as any;
+              }
+            }
+          } catch (lazyErr) {
+            console.warn('[Extraction] On-demand extraction error:', lazyErr);
+          }
+        }
+
+        const rawExtraction = record?.extraction || att.extraction;
+        if (rawExtraction) {
+          const docData: DocumentData = {
+            ...(rawExtraction as DocumentData),
+            id: att.id,
+            fileId: att.id,
+            originalName: record?.originalName || att.originalName || att.name || (rawExtraction as any).originalName || 'image',
+            filename: record?.diskFilename || att.name || att.originalName || (rawExtraction as any).filename || 'image',
+            isImage: Boolean((rawExtraction as any).isImage || record?.isImage || att.isImage)
+          };
+          addDocIfValid(docData, record?.conversationId || conversationId || undefined);
         }
       }
     }

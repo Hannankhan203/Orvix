@@ -44,6 +44,10 @@ function getModalFormatIcon(ext = '') {
     case 'jpg':
     case 'jpeg':
     case 'webp':
+    case 'gif':
+    case 'bmp':
+    case 'heic':
+    case 'heif':
     case 'svg':
       return FileImage;
     default:
@@ -58,6 +62,9 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [blobUrl, setBlobUrl] = useState(null);
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [activeView, setActiveView] = useState('image'); // 'image' | 'ocr'
+  const [ocrData, setOcrData] = useState(attachment?.extraction || null);
+  const [ocrLoading, setOcrLoading] = useState(false);
 
   const filename = attachment?.name || attachment?.originalName || 'Document';
   const ext = (attachment?.extension || '').replace('.', '').toLowerCase();
@@ -65,7 +72,9 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const IconComponent = getModalFormatIcon(ext);
 
   const isPdf = ext === 'pdf' || mime === 'application/pdf';
-  const isImage = ['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif'].includes(ext) || mime.startsWith('image/');
+  const isImage =
+    ['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif', 'bmp', 'heic', 'heif'].includes(ext) ||
+    mime.startsWith('image/');
   const isTextual =
     ['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'js', 'jsx', 'ts', 'tsx', 'html', 'css'].includes(ext) ||
     mime.startsWith('text/') ||
@@ -82,9 +91,35 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     setTextContent('');
     setBlobUrl(null);
     setCopied(false);
+    setActiveView('image');
+    setOcrData(attachment?.extraction || null);
 
     async function loadContent() {
       try {
+        // Fetch OCR extraction if not already present on image
+        if (isImage) {
+          if (attachment.extraction) {
+            setOcrData(attachment.extraction);
+            if (attachment.extraction.text) {
+              setTextContent(attachment.extraction.text);
+            }
+          } else {
+            setOcrLoading(true);
+            fetch(`/api/upload/${attachment.id}/extraction`)
+              .then((r) => (r.ok ? r.json() : null))
+              .then((d) => {
+                if (active && d) {
+                  setOcrData(d);
+                  if (d.text) setTextContent(d.text);
+                }
+              })
+              .catch(() => {})
+              .finally(() => {
+                if (active) setOcrLoading(false);
+              });
+          }
+        }
+
         // 1. Try local IndexedDB
         const localRecord = await getAttachmentRecord(attachment.id);
         if (localRecord?.blob) {
@@ -146,7 +181,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     return () => {
       active = false;
     };
-  }, [isOpen, attachment?.id, ext, isTextual, isOffice]);
+  }, [isOpen, attachment?.id, ext, isTextual, isOffice, isImage]);
 
   // Clean up object URLs on unmount / change
   useEffect(() => {
@@ -182,10 +217,11 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   };
 
   const handleCopyText = async () => {
-    if (!textContent) return;
+    const textToCopy = isImage && activeView === 'ocr' ? (ocrData?.text || textContent) : textContent;
+    if (!textToCopy) return;
     try {
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(textContent);
+        await navigator.clipboard.writeText(textToCopy);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }
@@ -193,6 +229,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   };
 
   const sizeText = attachment.formattedSize || (attachment.size ? `${(attachment.size / 1024).toFixed(1)} KB` : '');
+  const hasCopyableText = Boolean(textContent || (isImage && activeView === 'ocr' && ocrData?.text));
 
   return (
     <div
@@ -230,12 +267,46 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-            {textContent && (
+            {isImage && (
+              <div className="flex items-center rounded-lg bg-black/40 p-0.5 border border-white/10 text-xs mr-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveView('image')}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
+                    activeView === 'image'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="View original image"
+                >
+                  <FileImage size={13} />
+                  <span>Image</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('ocr')}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
+                    activeView === 'ocr'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="View OCR extracted text"
+                >
+                  <FileText size={13} />
+                  <span>Extracted Text</span>
+                  {ocrData?.status === 'ready' && ocrData?.hasText ? (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Text detected"></span>
+                  ) : null}
+                </button>
+              </div>
+            )}
+
+            {hasCopyableText && (
               <button
                 type="button"
                 onClick={handleCopyText}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 transition-colors"
-                title="Copy extracted document text"
+                title="Copy extracted text"
               >
                 {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
                 <span>{copied ? 'Copied' : 'Copy Text'}</span>
@@ -291,7 +362,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               title={filename}
               className="w-full h-[70vh] rounded-md border border-white/5 bg-white"
             />
-          ) : isImage && blobUrl ? (
+          ) : isImage && activeView === 'image' && blobUrl ? (
             <div className="flex items-center justify-center max-h-[70vh] p-2">
               <img
                 src={blobUrl}
@@ -299,6 +370,62 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                 className="max-h-[70vh] max-w-full object-contain rounded-md shadow-md"
               />
             </div>
+          ) : isImage && activeView === 'ocr' ? (
+            ocrLoading ? (
+              <div className="flex flex-col items-center gap-3 text-slate-400 py-12">
+                <Loader2 size={28} className="animate-spin text-blue-400" />
+                <span className="text-sm">Extracting text from image with OCR...</span>
+              </div>
+            ) : ocrData?.status === 'NO_TEXT_DETECTED' || (ocrData?.success && !ocrData?.hasText) ? (
+              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md my-auto">
+                <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-400 mb-3">
+                  <FileText size={22} />
+                </div>
+                <h3 className="text-base font-semibold text-slate-100">No readable text detected in this image.</h3>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  The OCR scan completed successfully, but no readable text or characters were found in this image.
+                </p>
+              </div>
+            ) : ocrData?.status === 'ready' && ocrData?.hasText ? (
+              <div className="w-full h-full max-h-[70vh] flex flex-col">
+                <div className="text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-2 rounded-md mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-emerald-400">OCR Text Extracted</span>
+                    {ocrData.confidence > 0 && (
+                      <span className="text-slate-400">• Confidence: {ocrData.confidence}%</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 text-slate-400">
+                    <span>{ocrData.totalWords || 0} words</span>
+                    <span>{ocrData.totalCharacters || 0} characters</span>
+                    {ocrData.lineCount ? <span>{ocrData.lineCount} lines</span> : null}
+                  </div>
+                </div>
+                <pre className="flex-1 overflow-auto p-4 text-xs font-mono text-slate-200 bg-[#0b0f15] border border-white/10 rounded-lg whitespace-pre-wrap word-break leading-relaxed select-text">
+                  {ocrData.text || textContent}
+                </pre>
+              </div>
+            ) : ocrData?.status === 'unsupported_format' ? (
+              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md my-auto">
+                <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-400 mb-3">
+                  <AlertTriangle size={22} />
+                </div>
+                <h3 className="text-base font-semibold text-slate-100">OCR Format Not Supported</h3>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  {ocrData?.error || 'Text extraction is not supported for this image format in this environment.'}
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md my-auto">
+                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center text-red-400 mb-3">
+                  <AlertTriangle size={22} />
+                </div>
+                <h3 className="text-base font-semibold text-slate-100">Image Processing Error</h3>
+                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                  {ocrData?.error || 'Failed to process image for text extraction.'}
+                </p>
+              </div>
+            )
           ) : isTextual || textContent ? (
             <div className="w-full h-full max-h-[70vh] flex flex-col">
               {isOffice && (

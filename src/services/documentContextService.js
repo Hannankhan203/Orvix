@@ -8,7 +8,23 @@
 const MAX_PROMPT_CHARS_PER_DOC = 100_000; // ~20k words limit per document for safe LLM context
 
 /**
- * Parses user prompt text to detect questions about uploaded documents,
+ * Determines whether a document item represents an image file.
+ * @param {Object} doc
+ * @returns {boolean}
+ */
+export function isImageAttachment(doc) {
+  if (!doc) return false;
+  if (doc.isImage) return true;
+  const mime = (doc.mimeType || doc.type || '').toLowerCase();
+  if (mime.startsWith('image/')) return true;
+  const format = (doc.format || '').toUpperCase();
+  if (['JPG', 'JPEG', 'PNG', 'WEBP', 'GIF', 'BMP', 'HEIC', 'HEIF', 'IMAGE'].includes(format)) return true;
+  const name = (doc.originalName || doc.filename || doc.name || '').toLowerCase();
+  return ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].some((ext) => name.endsWith(ext));
+}
+
+/**
+ * Parses user prompt text to detect questions about uploaded documents, images,
  * specific pages, page ranges, PowerPoint slides, sections, or whole-file requests.
  * @param {string} prompt
  * @param {Array<Object>} [availableDocs=[]]
@@ -36,7 +52,67 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     }
   }
 
-  // 1. Detect slide range: e.g. "slides 3 to 7", "slides 2-5", "slides 1 through 4"
+  // 1. Detect image / document top section query (Requirement 3: "What is written in the top section?")
+  const topSectionRegex =
+    /\b(?:top\s+(?:section|part|portion|lines?|half|area)|(?:written|shown|stated)\s+(?:in|on|at)\s+the\s+top|header|heading)\b/i;
+  if (topSectionRegex.test(lowerPrompt)) {
+    return {
+      isDocumentQuery: true,
+      targetScope: 'top_section',
+      targetFilename,
+      cleanedQuestion: cleanPrompt
+    };
+  }
+
+  // 2. Detect bottom section query
+  const bottomSectionRegex =
+    /\b(?:bottom\s+(?:section|part|portion|lines?|half|area)|(?:written|shown|stated)\s+(?:in|on|at)\s+the\s+bottom|footer)\b/i;
+  if (bottomSectionRegex.test(lowerPrompt)) {
+    return {
+      isDocumentQuery: true,
+      targetScope: 'bottom_section',
+      targetFilename,
+      cleanedQuestion: cleanPrompt
+    };
+  }
+
+  // 3. Detect "what does this image say" / read / transcribe query (Requirement 3: "What does this image say?")
+  const imageReadRegex =
+    /\b(?:what\s+(?:does\s+(?:this|the)\s+image\s+say|is\s+written|is\s+said|does\s+it\s+say)|read\s+(?:this|the)\s+(?:image|photo|picture|text)|transcribe\s+(?:this|the)?\s*(?:image|photo|picture|text)?)\b/i;
+  if (imageReadRegex.test(lowerPrompt)) {
+    return {
+      isDocumentQuery: true,
+      targetScope: 'image_read',
+      targetFilename,
+      cleanedQuestion: cleanPrompt
+    };
+  }
+
+  // 4. Detect "explain this image" / "explain the information in this image" (Requirement 3: "Explain this image", "Explain the information in this image")
+  const imageExplainRegex =
+    /\b(?:explain\s+(?:this|the)?\s*(?:information\s+in\s+(?:this|the)\s+image|image|photo|picture)|describe\s+(?:this|the)\s+(?:image|photo|picture)|what\s+is\s+in\s+this\s+image)\b/i;
+  if (imageExplainRegex.test(lowerPrompt)) {
+    return {
+      isDocumentQuery: true,
+      targetScope: 'image_explain',
+      targetFilename,
+      cleanedQuestion: cleanPrompt
+    };
+  }
+
+  // 5. Detect "summarize the text" / "summarize this image" (Requirement 3: "Summarize the text")
+  const imageSummaryRegex =
+    /\b(?:summarize\s+(?:the\s+text|this\s+text|the\s+image|this\s+image)|summary\s+of\s+(?:the\s+text|this\s+image|the\s+image))\b/i;
+  if (imageSummaryRegex.test(lowerPrompt)) {
+    return {
+      isDocumentQuery: true,
+      targetScope: 'image_summary',
+      targetFilename,
+      cleanedQuestion: cleanPrompt
+    };
+  }
+
+  // 6. Detect slide range: e.g. "slides 3 to 7", "slides 2-5", "slides 1 through 4"
   const slideRangeMatch = lowerPrompt.match(/\bslides?\s*(?:#|\b)?\s*(\d+)\s*(?:to|-|through|–|—)\s*(\d+)\b/i);
   if (slideRangeMatch) {
     const start = parseInt(slideRangeMatch[1], 10);
@@ -55,7 +131,7 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     }
   }
 
-  // 2. Detect single slide: e.g. "slide 4", "slide #2", "explain slide 5"
+  // 7. Detect single slide: e.g. "slide 4", "slide #2", "explain slide 5"
   const singleSlideMatch = lowerPrompt.match(/\bslides?\s*(?:#|\b)?\s*(\d+)\b/i);
   if (singleSlideMatch) {
     const slideNum = parseInt(singleSlideMatch[1], 10);
@@ -70,7 +146,7 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     }
   }
 
-  // 3. Detect page range: e.g. "pages 3 to 7", "pages 3-7", "pages 3 through 7", "pages 2 to 4"
+  // 8. Detect page range: e.g. "pages 3 to 7", "pages 3-7", "pages 3 through 7", "pages 2 to 4"
   const pageRangeMatch = lowerPrompt.match(/\bpages?\s*(?:#|\b)?\s*(\d+)\s*(?:to|-|through|–|—)\s*(\d+)\b/i);
   if (pageRangeMatch) {
     const start = parseInt(pageRangeMatch[1], 10);
@@ -89,7 +165,7 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     }
   }
 
-  // 4. Detect single page: e.g. "page 5", "page #5", "p. 5", "pg 5"
+  // 9. Detect single page: e.g. "page 5", "page #5", "p. 5", "pg 5"
   const singlePageMatch =
     lowerPrompt.match(/\b(?:page|pg)\s*(?:#|\b)?\s*(\d+)\b/i) ||
     lowerPrompt.match(/\bp\.\s*(\d+)\b/i);
@@ -106,13 +182,13 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     }
   }
 
-  // 5. Detect whole-file or full summary requests
+  // 10. Detect whole-file or full summary requests
   const wholeFileRegex =
-    /(?:explain|summarize|review|analyze|describe|read|break down|overview|tell me about)\s+(?:this|the|all of the|our)?\s*(?:whole|entire|full|complete)\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|table|text)/i;
+    /(?:explain|summarize|review|analyze|describe|read|break down|overview|tell me about)\s+(?:this|the|all of the|our)?\s*(?:whole|entire|full|complete)\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|table|text|image|photo|picture)/i;
   const summarizeRegex =
-    /(?:summarize|summary of|give me a summary of|overview of|explain|review|analyze|tell me about|what is in|what is)\s+(?:this|the|all of the)?\s*(?:whole|entire|full|complete)?\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|attachment|data)/i;
+    /(?:summarize|summary of|give me a summary of|overview of|explain|review|analyze|tell me about|what is in|what is)\s+(?:this|the|all of the)?\s*(?:whole|entire|full|complete)?\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|attachment|data|image|photo|picture)/i;
   const directWholePrompt =
-    /^(?:summarize|summary|overview|explain this|explain file|explain document|summarize this|summarize document|summarize file|what is this (?:file|document|presentation)|tl;?dr)[.!?]?$/i;
+    /^(?:summarize|summary|overview|explain this|explain file|explain document|explain image|summarize this|summarize document|summarize file|summarize image|what is this (?:file|document|presentation|image|photo)|tl;?dr)[.!?]?$/i;
 
   if (wholeFileRegex.test(lowerPrompt) || summarizeRegex.test(lowerPrompt) || directWholePrompt.test(lowerPrompt)) {
     return {
@@ -123,9 +199,9 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     };
   }
 
-  // 6. Detect general document queries (e.g. "What does the document say about X?", "In this file, what is...", "Using the uploaded document, answer...")
+  // 11. Detect general document / image queries
   const docReferenceRegex =
-    /(?:document|file|uploaded|attachment|pdf|presentation|slides|docx|dataset|table|sheet)/i;
+    /(?:document|file|uploaded|attachment|pdf|presentation|slides|docx|dataset|table|sheet|image|photo|picture|screenshot|ocr|graphic|scan)/i;
   if (docReferenceRegex.test(lowerPrompt) || availableDocs.length > 0) {
     return {
       isDocumentQuery: true,
@@ -183,10 +259,89 @@ export function prepareDocumentContext(prompt, docs) {
   let isBoundedOrChunked = false;
   let truncationNote = undefined;
 
+  const allImageDocs = selectedDocs.filter(isImageAttachment);
+  const isOnlyImages = selectedDocs.length > 0 && selectedDocs.length === allImageDocs.length;
+  const anyImageHasText = allImageDocs.some(
+    (d) => Boolean(d.hasText || (d.text && d.text.trim().length > 0))
+  );
+
+  // Requirements 6 & 7: If all attached images have NO_TEXT_DETECTED, do not send fabricated text to AI
+  // Instead, return the exact required message: "No readable text detected in this image."
+  if (isOnlyImages && !anyImageHasText) {
+    return {
+      formattedContext: '',
+      hasErrorsOrWarnings: true,
+      unreadableDocNotes: ['No readable text detected in this image.'],
+      targetedDocs: selectedDocs,
+      scope: intent.targetScope,
+      isBoundedOrChunked: false,
+      directAnswer: 'No readable text detected in this image.'
+    };
+  }
+
   for (let docIdx = 0; docIdx < selectedDocs.length; docIdx++) {
     const doc = selectedDocs[docIdx];
     const docName = doc.originalName || doc.filename || doc.name || `Document_${docIdx + 1}`;
     const format = (doc.format || 'UNKNOWN').toUpperCase();
+
+    // Dedicated Image Handling (Requirements 2, 4, 5, 6, 7)
+    if (isImageAttachment(doc)) {
+      if (doc.status === 'unsupported_format') {
+        const issue = doc.error || `OCR text extraction is not supported for ${format} images in this environment.`;
+        unreadableDocNotes.push(issue);
+        if (selectedDocs.length === 1) directAnswer = issue;
+        docBlocks.push(`[ATTACHED IMAGE ${docIdx + 1}: "${docName}" (${format}) - STATUS: UNSUPPORTED]\n${issue}`);
+        continue;
+      }
+
+      if (doc.status === 'error' && doc.error) {
+        const issue = `The image '${docName}' could not be processed: ${doc.error}`;
+        unreadableDocNotes.push(issue);
+        if (selectedDocs.length === 1) directAnswer = issue;
+        docBlocks.push(`[ATTACHED IMAGE ${docIdx + 1}: "${docName}" (${format}) - STATUS: ERROR]\n${issue}`);
+        continue;
+      }
+
+      const hasReadableText = Boolean(doc.hasText || (doc.text && doc.text.trim().length > 0));
+      if (!hasReadableText || doc.status === 'NO_TEXT_DETECTED') {
+        const noTextMsg = 'No readable text detected in this image.';
+        unreadableDocNotes.push(noTextMsg);
+        if (selectedDocs.length === 1) directAnswer = noTextMsg;
+        docBlocks.push(
+          `=== ATTACHED IMAGE ${docIdx + 1} of ${selectedDocs.length}: "${docName}" ===\n` +
+          `Source Filename: ${docName} | Type: Image (${format})\n` +
+          `[Status]: ${noTextMsg}`
+        );
+        continue;
+      }
+
+      // Readable text is present
+      const charCount = doc.totalCharacters || (doc.text ? doc.text.length : 0);
+      const wordCount = doc.totalWords || countWordsInString(doc.text);
+      const lines = (doc.text || '')
+        .split('\n')
+        .map((l) => l.trimEnd())
+        .filter((l) => l.trim().length > 0);
+      const lineCount = doc.lineCount || lines.length;
+
+      let sectionHighlight = '';
+      if (intent.targetScope === 'top_section') {
+        const topSlice = lines.slice(0, Math.min(5, Math.ceil(lines.length / 2)));
+        sectionHighlight = `\n\n[Focused Top Section Content of "${docName}"]:\n${topSlice.join('\n')}`;
+      } else if (intent.targetScope === 'bottom_section') {
+        const botSlice = lines.slice(-Math.min(5, Math.ceil(lines.length / 2)));
+        sectionHighlight = `\n\n[Focused Bottom Section Content of "${docName}"]:\n${botSlice.join('\n')}`;
+      }
+
+      const imgHeader =
+        `=== ATTACHED IMAGE ${docIdx + 1} of ${selectedDocs.length}: "${docName}" ===\n` +
+        `Source Filename: ${docName} | Format: ${format} | Total Characters: ${charCount.toLocaleString()} | Words: ${wordCount.toLocaleString()} | Lines: ${lineCount}\n` +
+        `[Extracted OCR Text from Image "${docName}"]:\n`;
+
+      const imgBody = imgHeader + (doc.text || '').trim() + sectionHighlight;
+      docBlocks.push(imgBody);
+      continue;
+    }
 
     // Check for extraction failure or non-readable content
     if (
@@ -412,6 +567,133 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
   const primaryDoc = targetedDocs[0];
   const docName = primaryDoc.originalName || primaryDoc.filename || 'Uploaded Document';
   const format = (primaryDoc.format || 'FILE').toUpperCase();
+
+  // Dedicated Multi-Image Handling in Simulated / Demo Mode (Requirements 2, 3, 4, 5, 8)
+  if (targetedDocs.length > 1 && targetedDocs.every(isImageAttachment)) {
+    const docSections = targetedDocs.map((doc, idx) => {
+      const name = doc.originalName || doc.filename || `Image_${idx + 1}`;
+      const fmt = (doc.format || 'IMAGE').toUpperCase();
+      const hasTxt = Boolean(doc.hasText || (doc.text && doc.text.trim().length > 0));
+
+      if (!hasTxt || doc.status === 'NO_TEXT_DETECTED') {
+        return `### Image ${idx + 1}: "${name}"
+**Source Filename:** \`${name}\` (${fmt} Format)
+*Status:* No readable text detected in this image.`;
+      }
+
+      const lines = (doc.text || '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const textSnippet = doc.text.trim();
+      const charCount = doc.totalCharacters || doc.text.length;
+      const wordCount = doc.totalWords || countWordsInString(doc.text);
+
+      let contentSection = '';
+      if (scope === 'top_section') {
+        const topSlice = lines.slice(0, Math.min(5, Math.ceil(lines.length / 2)));
+        contentSection = `**Top Section Lines:**\n${topSlice.map((l) => `> ${l}`).join('\n')}`;
+      } else if (scope === 'bottom_section') {
+        const botSlice = lines.slice(-Math.min(5, Math.ceil(lines.length / 2)));
+        contentSection = `**Bottom Section Lines:**\n${botSlice.map((l) => `> ${l}`).join('\n')}`;
+      } else {
+        contentSection = `**Extracted OCR Text:**\n${lines.map((l) => `> ${l}`).join('\n')}\n\n**Key Points:**\n${formatExcerptIntoBullets(textSnippet)}`;
+      }
+
+      return `### Image ${idx + 1}: "${name}"
+**Source Filename:** \`${name}\` (${fmt} Format • ${charCount.toLocaleString()} Characters • ~${wordCount.toLocaleString()} Words)
+
+${contentSection}`;
+    });
+
+    const fileList = targetedDocs.map((d) => `\`${d.originalName || d.filename}\``).join(', ');
+    return `### Multi-Image Analysis (${targetedDocs.length} Images Attached)
+
+The following information was extracted from the attached images (${fileList}):
+
+${docSections.join('\n\n---\n\n')}
+
+#### Summary of Image Information:
+Based on the text extracted across all ${targetedDocs.length} attached images, each source is itemized above with its respective filename and OCR content.`;
+  }
+
+  // Dedicated Single Image Question Handling in Simulated / Demo Mode (Requirements 2, 3, 4, 5, 6, 7)
+  if (isImageAttachment(primaryDoc)) {
+    const isNoText =
+      primaryDoc.status === 'NO_TEXT_DETECTED' ||
+      (!primaryDoc.hasText && (!primaryDoc.text || !primaryDoc.text.trim()));
+
+    if (isNoText) {
+      return 'No readable text detected in this image.';
+    }
+
+    const lines = (primaryDoc.text || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const textSnippet = primaryDoc.text.trim();
+    const wordCount = primaryDoc.totalWords || countWordsInString(primaryDoc.text);
+    const charCount = primaryDoc.totalCharacters || primaryDoc.text.length;
+
+    // A. Top Section Question (Requirement 3: "What is written in the top section?")
+    if (scope === 'top_section') {
+      const topCount = Math.min(5, Math.max(1, Math.ceil(lines.length / 2)));
+      const topLines = lines.slice(0, topCount);
+      return `### Top Section Content of "${docName}"
+
+**Source Filename:** \`${docName}\`
+**Extracted Top Section Text:**
+${topLines.map((l) => `> ${l}`).join('\n')}
+
+#### Explanation of Top Section:
+The top section of **${docName}** contains ${topLines.length} line${topLines.length === 1 ? '' : 's'} of text as extracted above.`;
+    }
+
+    // B. Bottom Section Question
+    if (scope === 'bottom_section') {
+      const botCount = Math.min(5, Math.max(1, Math.ceil(lines.length / 2)));
+      const botLines = lines.slice(-botCount);
+      return `### Bottom Section Content of "${docName}"
+
+**Source Filename:** \`${docName}\`
+**Extracted Bottom Section Text:**
+${botLines.map((l) => `> ${l}`).join('\n')}
+
+#### Explanation of Bottom Section:
+The bottom portion of **${docName}** concludes with the ${botLines.length} line${botLines.length === 1 ? '' : 's'} displayed above.`;
+    }
+
+    // C. Summarize Text Question (Requirement 3: "Summarize the text")
+    if (scope === 'image_summary') {
+      return `### Text Summary for "${docName}"
+
+**Source Filename:** \`${docName}\` (${format} Format • ${charCount.toLocaleString()} Characters • ~${wordCount.toLocaleString()} Words)
+
+#### Key Extracted Points:
+${formatExcerptIntoBullets(textSnippet)}
+
+#### Summary:
+The text in **${docName}** comprises ${lines.length} readable line${lines.length === 1 ? '' : 's'} communicating the key points summarized above.`;
+    }
+
+    // D. "What does this image say?" / "Explain this image" / "Explain the information in this image"
+    let multiDocNote = '';
+    if (targetedDocs.length > 1) {
+      const additionalDocs = targetedDocs.slice(1).map((d) => `\`${d.originalName || d.filename}\``).join(', ');
+      multiDocNote = `\n\n*(Note: ${targetedDocs.length} images are attached to this conversation. Additional images: ${additionalDocs}).*`;
+    }
+
+    return `### Analysis of Image "${docName}"
+
+**Source Filename:** \`${docName}\` (${format} Format • ${charCount.toLocaleString()} Characters • ~${wordCount.toLocaleString()} Words)
+
+#### Extracted Text Content:
+${lines.map((l) => `> ${l}`).join('\n')}
+
+#### Explanation of Image Information:
+Based on the text extracted from **${docName}**:
+${formatExcerptIntoBullets(textSnippet)}${multiDocNote}`;
+  }
 
   // 1. Single Page Question
   if (scope === 'page') {
@@ -682,23 +964,27 @@ export function adaptDocumentContextForProvider({
   // Build provider-tailored system instructions
   const groundingInstructions = `
 
-[ATTACHED DOCUMENT CONTEXT]
-The user has attached the following extracted document content for this conversation:
+[ATTACHED DOCUMENT & IMAGE CONTEXT]
+The user has attached the following extracted document/image content for this conversation:
 ${finalDocContext}
 
-INSTRUCTIONS FOR DOCUMENT-BASED ANSWERS:
-1. Ground your response directly in the provided document content above.
-2. If the user asked about specific page(s) (e.g., "Explain page 5", "pages 3 to 7") or slide(s) (e.g., "slide 4"), focus on the requested pages/slides and explicitly cite the page/slide numbers in your answer.
-3. If the document format lacks physical page numbers (Word .docx, Markdown, plain text), note the pagination limitation and answer using the provided section headings and content.
-4. When multiple files are attached, clearly distinguish between the files and cite each filename.
-5. Never invent or extrapolate facts not present in the document.
-6. If the document context was noted as bounded due to provider context limits, summarize the provided outline and sections accurately without claiming to have analyzed sections that were not included.`;
+INSTRUCTIONS FOR DOCUMENT & IMAGE-BASED ANSWERS:
+1. Ground your response directly in the provided document and image content above.
+2. When the user asks about an attached image (e.g. "What does this image say?", "Explain this image", "Summarize the text", "What is written in the top section?", "Explain the information in this image"):
+   - Base your answer on the extracted OCR text provided above for that specific image.
+   - Always clearly identify and cite the source image filename in your response.
+3. If multiple images or documents are attached, keep each extracted text strictly associated with its correct filename and clearly distinguish between the files.
+4. If the user asks about a specific portion of an image (such as "top section", "bottom section", "first line", or "header"), focus on the corresponding lines/portions of the extracted text.
+5. If an image is noted as having no readable text detected, accurately report: "No readable text detected in this image." Do not invent or fabricate text.
+6. If the user asked about specific page(s) (e.g., "Explain page 5", "pages 3 to 7") or slide(s) (e.g., "slide 4"), focus on the requested pages/slides and cite the page/slide numbers.
+7. If the document format lacks physical page numbers (Word .docx, Markdown, plain text), note the pagination limitation and answer using the provided section headings and content.
+8. Never invent or extrapolate facts not present in the provided extracted text.`;
 
   const effectiveSystemInstruction = baseSystemInstruction
     ? `${baseSystemInstruction}${groundingInstructions}`
     : groundingInstructions.trim();
 
-  const effectivePrompt = `[Document Context Attached]\nUser Question: ${prompt}`;
+  const effectivePrompt = `[Extracted Attachment Context Provided]\nUser Question: ${prompt}`;
 
   return {
     provider: normProvider,
