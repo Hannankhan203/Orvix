@@ -345,10 +345,8 @@ export default function ChatMessage({
     };
   const fallbackProviders = PROVIDER_OPTIONS.filter((p) => p.id !== currentProviderId);
 
-  // Available models for "Regenerate with another AI Model" (derives from supported providers, excluding cloudflare which has no chat endpoint)
-  const availableAlternativeModels = useMemo(() => {
-    return PROVIDER_OPTIONS.filter((p) => p.id !== 'cloudflare');
-  }, []);
+  // Available models for "Regenerate with another AI Model" (reuses existing Orvix provider/model configuration)
+  const availableAlternativeModels = PROVIDER_OPTIONS;
 
   const activeAlternativeModelName = useMemo(() => {
     if (activeAlt?.modelUsed) return activeAlt.modelUsed;
@@ -356,9 +354,7 @@ export default function ChatMessage({
     return currentProviderObj?.name || 'AI Model';
   }, [activeAlt, message?.modelUsed, currentProviderObj]);
 
-  const selectableModels = useMemo(() => {
-    return availableAlternativeModels.filter((p) => p.id !== currentProviderId);
-  }, [availableAlternativeModels, currentProviderId]);
+  const selectableModels = availableAlternativeModels;
 
   const [copied, setCopied] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy');
@@ -1108,12 +1104,13 @@ export default function ChatMessage({
                         <div className="alternative-provider-list">
                           {selectableModels.length > 0 ? (
                             selectableModels.map((provider) => {
+                              const isCurrent = provider.id === currentProviderId;
                               const hasExistingAlt = (message.alternatives || []).some((a) => a.provider === provider.id);
                               return (
                                 <button
                                   key={provider.id}
                                   type="button"
-                                  className="alternative-provider-option"
+                                  className={`alternative-provider-option ${isCurrent ? 'is-active-provider' : ''}`}
                                   onClick={() => {
                                     setShowAltMenu(false);
                                     onGenerateAlternative(message, provider.id);
@@ -1125,7 +1122,11 @@ export default function ChatMessage({
                                     <span className="alt-provider-name">{provider.name}</span>
                                     <span className="alt-provider-model">{provider.modelTag}</span>
                                   </div>
-                                  {hasExistingAlt ? (
+                                  {isCurrent ? (
+                                    <span className="alt-provider-current-tag" title="Currently viewing this model's response">
+                                      Current
+                                    </span>
+                                  ) : hasExistingAlt ? (
                                     <span className="alt-provider-existing-tag" title="An alternative with this model was generated">
                                       Generated
                                     </span>
