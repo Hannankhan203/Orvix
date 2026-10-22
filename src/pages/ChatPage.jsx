@@ -1272,47 +1272,58 @@ export default function ChatPage() {
                   );
                 return {
                   ...proc,
+                  file: orig?.file,
+                  previewUrl: orig?.previewUrl || proc.dataUrl,
+                  dataUrl: proc.dataUrl,
+                  base64: proc.base64 || orig?.base64,
                   isImage: Boolean(proc.isImage || orig?.isImage)
                 };
               })
             : [];
 
           // Persist file blobs into IndexedDB for robust local preview/download across reloads
-          for (let i = 0; i < filesToUpload.length; i++) {
-            const attItem = filesToUpload[i];
-            const proc =
-              processedAttachments[i] ||
-              processedAttachments.find(
-                (p) => (p.originalName || p.name) === attItem.name
-              );
-            if (proc && proc.id && attItem.file) {
-              saveAttachmentBlob(proc.id, attItem.file, {
-                name: proc.name || attItem.name,
-                originalName: proc.originalName || attItem.name,
-                mimeType: proc.type || attItem.file.type,
-                size: proc.size || attItem.file.size,
-                formattedSize: proc.formattedSize || attItem.formattedSize,
-                extension: proc.extension || attItem.extension,
-                isImage: Boolean(attItem.isImage),
-                conversationId: activeChatIdRef.current || null
-              }).catch((e) => console.warn('Could not cache blob in IndexedDB:', e));
-
-              // Attach base64 data for images under 3MB so stateless serverless environments have direct multimodal access
-              if (attItem.isImage && attItem.file.size <= 3 * 1024 * 1024) {
+          await Promise.all(
+            filesToUpload.map(async (attItem, i) => {
+              const proc =
+                processedAttachments[i] ||
+                processedAttachments.find(
+                  (p) => (p.originalName || p.name) === attItem.name
+                );
+              if (proc && proc.id && attItem.file) {
                 try {
-                  const b64 = await new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result);
-                    reader.onerror = () => resolve(null);
-                    reader.readAsDataURL(attItem.file);
+                  await saveAttachmentBlob(proc.id, attItem.file, {
+                    name: proc.name || attItem.name,
+                    originalName: proc.originalName || attItem.name,
+                    mimeType: proc.type || attItem.file.type,
+                    size: proc.size || attItem.file.size,
+                    formattedSize: proc.formattedSize || attItem.formattedSize,
+                    extension: proc.extension || attItem.extension,
+                    isImage: Boolean(attItem.isImage),
+                    conversationId: activeChatIdRef.current || null
                   });
-                  if (b64) {
-                    proc.base64 = b64;
-                  }
-                } catch (_) {}
+                } catch (e) {
+                  console.warn('Could not cache blob in IndexedDB:', e);
+                }
+
+                // Attach base64 data for images under 3MB so stateless serverless environments have direct multimodal access
+                if (attItem.isImage && attItem.file.size <= 3 * 1024 * 1024 && !proc.base64) {
+                  try {
+                    const b64 = await new Promise((resolve) => {
+                      const reader = new FileReader();
+                      reader.onload = () => resolve(reader.result);
+                      reader.onerror = () => resolve(null);
+                      reader.readAsDataURL(attItem.file);
+                    });
+                    if (b64) {
+                      proc.base64 = b64;
+                      if (!proc.dataUrl) proc.dataUrl = b64;
+                      if (!proc.previewUrl) proc.previewUrl = b64;
+                    }
+                  } catch (_) {}
+                }
               }
-            }
-          }
+            })
+          );
         } catch (uploadErr) {
           console.error('File upload network error:', uploadErr);
           let userMsg = uploadErr?.message || 'Network request failed';

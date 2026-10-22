@@ -66,7 +66,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
       setLoading(true);
       setHasError(false);
 
-      // Direct in-memory File or Blob
+      // 1. Direct in-memory File or Blob
       if (attachment.file instanceof Blob) {
         createdBlobUrl = URL.createObjectURL(attachment.file);
         if (active) {
@@ -76,8 +76,18 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         return;
       }
 
-      // Pre-existing valid URL
-      if (typeof attachment.url === 'string' && attachment.url) {
+      // 2. Pre-existing previewUrl or dataUrl (e.g. data:image/...)
+      const directDataUri = attachment.previewUrl || attachment.dataUrl || attachment.base64;
+      if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
+        if (active) {
+          setImageSrc(directDataUri);
+          setLoading(false);
+        }
+        return;
+      }
+
+      // 3. Blob URL or external URL (excluding /api/upload endpoints for now)
+      if (typeof attachment.url === 'string' && attachment.url && !attachment.url.startsWith('/api/upload')) {
         if (active) {
           setImageSrc(attachment.url);
           setLoading(false);
@@ -85,7 +95,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         return;
       }
 
-      // Check IndexedDB
+      // 4. Check client-side IndexedDB
       if (attachment.id) {
         try {
           const record = await getAttachmentRecord(attachment.id);
@@ -97,7 +107,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
           }
         } catch (_) {}
 
-        // Fallback to backend serving endpoint
+        // 5. Fallback to backend serving endpoint
         if (active) {
           setImageSrc(`/api/upload/${attachment.id}/file`);
           setLoading(false);
@@ -118,7 +128,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         URL.revokeObjectURL(createdBlobUrl);
       }
     };
-  }, [attachment.id, attachment.file, attachment.url]);
+  }, [attachment.id, attachment.file, attachment.url, attachment.previewUrl, attachment.dataUrl, attachment.base64]);
 
   const handleCardClick = (e) => {
     if (e.target.closest('.image-card-action-btn')) {

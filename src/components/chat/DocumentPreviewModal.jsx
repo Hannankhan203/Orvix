@@ -120,6 +120,30 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
           }
         }
 
+        // 0. Direct in-memory File or Blob
+        if (attachment.file instanceof Blob) {
+          if (!active) return;
+          const url = URL.createObjectURL(attachment.file);
+          setBlobUrl(url);
+          if (isTextual) {
+            try {
+              const text = await attachment.file.text();
+              if (active) setTextContent(text);
+            } catch (_) {}
+          }
+          if (active) setLoading(false);
+          return;
+        }
+
+        // Direct previewUrl or dataUrl (data: or blob:)
+        const directDataUri = attachment.previewUrl || attachment.dataUrl;
+        if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
+          if (!active) return;
+          setBlobUrl(directDataUri);
+          if (active) setLoading(false);
+          return;
+        }
+
         // 1. Try local IndexedDB
         const localRecord = await getAttachmentRecord(attachment.id);
         if (localRecord?.blob) {

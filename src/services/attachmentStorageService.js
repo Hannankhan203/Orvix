@@ -137,6 +137,11 @@ export async function checkAttachmentStatus(attachment) {
     return { available: false, reason: 'invalid_attachment' };
   }
 
+  // 0. Check in-memory Blob or direct dataUrl
+  if (attachment.file instanceof Blob || (typeof (attachment.previewUrl || attachment.dataUrl) === 'string' && (attachment.previewUrl || attachment.dataUrl).startsWith('data:'))) {
+    return { available: true, source: 'memory' };
+  }
+
   // 1. Check local IndexedDB first (near-instantaneous)
   const localRecord = await getAttachmentRecord(attachment.id);
   if (localRecord && localRecord.blob) {
@@ -201,6 +206,42 @@ export async function openOrPreviewAttachment(attachment) {
   const mime = attachment.type || attachment.mimeType || '';
   const canPreview = isFormatPreviewable(ext, mime);
 
+  // 0. Check in-memory File or Blob
+  if (attachment.file instanceof Blob) {
+    const blobUrl = URL.createObjectURL(attachment.file);
+    if (canPreview) {
+      const win = window.open(blobUrl, '_blank');
+      if (win) {
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        return { success: true, action: 'preview' };
+      }
+    }
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    return { success: true, action: 'download' };
+  }
+
+  // Direct dataUrl or previewUrl
+  const directDataUri = attachment.previewUrl || attachment.dataUrl;
+  if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
+    if (canPreview) {
+      const win = window.open(directDataUri, '_blank');
+      if (win) return { success: true, action: 'preview' };
+    }
+    const link = document.createElement('a');
+    link.href = directDataUri;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return { success: true, action: 'download' };
+  }
+
   // 1. Check IndexedDB
   const localRecord = await getAttachmentRecord(attachment.id);
   if (localRecord && localRecord.blob) {
@@ -209,7 +250,6 @@ export async function openOrPreviewAttachment(attachment) {
     if (canPreview) {
       const win = window.open(blobUrl, '_blank');
       if (win) {
-        // Auto-revoke URL after delay to free memory
         setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
         return { success: true, action: 'preview' };
       }
@@ -279,6 +319,31 @@ export async function downloadAttachmentFile(attachment) {
 
   const filename = attachment.name || attachment.originalName || 'download';
 
+  // 0. Check in-memory Blob
+  if (attachment.file instanceof Blob) {
+    const blobUrl = URL.createObjectURL(attachment.file);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    return { success: true };
+  }
+
+  // Direct dataUrl or previewUrl
+  const directDataUri = attachment.previewUrl || attachment.dataUrl;
+  if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
+    const link = document.createElement('a');
+    link.href = directDataUri;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return { success: true };
+  }
+
   // 1. Check IndexedDB
   const localRecord = await getAttachmentRecord(attachment.id);
   if (localRecord && localRecord.blob) {
@@ -298,6 +363,20 @@ export async function downloadAttachmentFile(attachment) {
     const endpoint = `/api/upload/${attachment.id}/download`;
     const checkRes = await fetch(`/api/upload/${attachment.id}`, { method: 'GET' });
     if (!checkRes.ok) {
+      // If server does not have the binary but extraction text is available for textual document
+      if (attachment.extraction?.text) {
+        const textBlob = new Blob([attachment.extraction.text], { type: 'text/plain;charset=utf-8' });
+        const textUrl = URL.createObjectURL(textBlob);
+        const link = document.createElement('a');
+        link.href = textUrl;
+        link.download = filename.endsWith('.txt') ? filename : `${filename}.txt`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(textUrl), 10000);
+        return { success: true };
+      }
+
       return {
         success: false,
         error: 'This attachment has expired or is no longer stored on the server.'

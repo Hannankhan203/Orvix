@@ -10,8 +10,8 @@
   },
   "rewrites": [
     {
-      "source": "/api/upload/:match*",
-      "destination": "/api/upload"
+      "source": "/api/upload/:subpath*",
+      "destination": "/api/upload?__subpath=:subpath*"
     }
   ],
   "headers": [
