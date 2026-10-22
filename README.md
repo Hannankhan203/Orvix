@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.7.1**
+**Current Version: Orvix v0.8.0**
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model AI Conversation Workspace with Automatic Chat-Input Focus, Pixel-Perfect Code-Block Line Alignment, Live Response-Time Measurement, Left-Edge Swipe Gesture Navigation, Controlled Large-Response Continuation, Multimodal Attachment Inputs, Deep Document Understanding, Image Optical Character Recognition (OCR), and Serverless Production Resilience</strong>
+  <strong>An Intelligent, Multi-Model AI Conversation Workspace with Multi-Model Alternative Response Regeneration, Automatic Chat-Input Focus, Pixel-Perfect Code-Block Line Alignment, Live Response-Time Measurement, Left-Edge Swipe Gesture Navigation, Controlled Large-Response Continuation, Multimodal Attachment Inputs, Deep Document Understanding, Image Optical Character Recognition (OCR), and Serverless Production Resilience</strong>
 </p>
 
 ---
@@ -12,32 +12,40 @@
 
 1. [Project Overview](#project-overview)
 2. [Project Purpose & Current Status](#project-purpose--current-status)
-3. [Latest Update: v0.7.1 Usability & Reliability Update](#latest-update-v071-usability--reliability-update)
+3. [Latest Update: v0.8.0 Multi-Model Response Alternatives & Provider Unification](#latest-update-v080-multi-model-response-alternatives--provider-unification)
+   - [Regenerate with Another AI Model](#regenerate-with-another-ai-model)
+   - [Non-Destructive Alternative History & Preservation](#non-destructive-alternative-history--preservation)
+   - [Alternative Navigation & Model Provenance Badges](#alternative-navigation--model-provenance-badges)
+   - [Full Provider Unification (Groq, Cloudflare, Gemini, OpenRouter)](#full-provider-unification-groq-cloudflare-gemini-openrouter)
+   - [Dedicated In-Place Regenerate vs Alternative Generation](#dedicated-in-place-regenerate-vs-alternative-generation)
+   - [Context, Attachments & Session Persistence](#context-attachments--session-persistence)
+4. [v0.7.1 Usability & Reliability Update](#v071-usability--reliability-update)
    - [Automatic Chat-Input Focus (ChatGPT-Style Typing Activation)](#automatic-chat-input-focus-chatgpt-style-typing-activation)
    - [Pixel-Perfect Code-Block Line Alignment (Zero-Drift 100+ Lines)](#pixel-perfect-code-block-line-alignment-zero-drift-100-lines)
-4. [Live Response-Time Measurement & Swipe Navigation](#live-response-time-measurement--swipe-navigation)
+5. [Live Response-Time Measurement & Swipe Navigation](#live-response-time-measurement--swipe-navigation)
    - [Live Response-Time Measurement](#live-response-time-measurement)
    - [Left-Edge Swipe Gesture for Chat History](#left-edge-swipe-gesture-for-chat-history)
-5. [Controlled Large-Response Continuation](#controlled-large-response-continuation)
+6. [Controlled Large-Response Continuation](#controlled-large-response-continuation)
    - [Overview & Safe Output Budgeting](#overview--safe-output-budgeting)
    - [Continuation Notices & User Triggers](#continuation-notices--user-triggers)
    - [Interactive Composer Continuation Chip](#interactive-composer-continuation-chip)
    - [Context, Prompt & Attachment Preservation](#context-prompt--attachment-preservation)
    - [Multiple Continuations & History Persistence](#multiple-continuations--history-persistence)
-6. [Three Attachment Methods & Multimodal Inputs](#three-attachment-methods--multimodal-inputs)
+7. [Three Attachment Methods & Multimodal Inputs](#three-attachment-methods--multimodal-inputs)
    - [Method 1: File Picker Upload Button](#method-1-file-picker-upload-button)
    - [Method 2: Clipboard Paste (`Ctrl + V`)](#method-2-clipboard-paste-ctrl--v)
    - [Method 3: Drag-and-Drop Interaction](#method-3-drag-and-drop-interaction)
    - [Strict One-Attachment-Per-Message Rule](#strict-one-attachment-per-message-rule)
    - [Unified Processing Pipeline & 25MB Limit](#unified-processing-pipeline--25mb-limit)
    - [Composer Attachment Preview & Removal](#composer-attachment-preview--removal)
-7. [AI Providers & Selectable Models](#ai-providers--selectable-models)
+8. [AI Providers & Selectable Models](#ai-providers--selectable-models)
    - [Fully Implemented Providers](#fully-implemented-providers)
    - [Provider Context Capacities](#provider-context-capacities)
    - [AI Provider Routing, Streaming & Fallbacks](#ai-provider-routing-streaming--fallbacks)
    - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
-8. [Conversational, Code & Markdown Capabilities](#conversational-code--markdown-capabilities)
+9. [Conversational, Code & Markdown Capabilities](#conversational-code--markdown-capabilities)
    - [Multi-Turn Memory & Context Retention](#multi-turn-memory--context-retention)
+   - [Multi-Model Response Alternatives & Switching](#multi-model-response-alternatives--switching)
    - [Chat Modes & Persona Directives](#chat-modes--persona-directives)
    - [Personalization & Response Preferences](#personalization--response-preferences)
    - [Automatic Chat-Input Focus System](#automatic-chat-input-focus-system)
@@ -45,12 +53,12 @@
    - [Voice Dictation & Verbal Punctuation Engine](#voice-dictation--verbal-punctuation-engine)
    - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
    - [Conversation Management & Client-Side Export](#conversation-management--client-side-export)
-9. [Document Understanding & Analysis](#document-understanding--analysis)
-   - [Supported Document Formats](#supported-document-formats)
-   - [Targeted Questioning (Pages, Ranges, Slides)](#targeted-questioning-pages-ranges-slides)
-   - [Presenter Notes Extraction](#presenter-notes-extraction)
-   - [Scanned & Rasterized PDF Diagnostics](#scanned--rasterized-pdf-diagnostics)
-10. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
+10. [Document Understanding & Analysis](#document-understanding--analysis)
+    - [Supported Document Formats](#supported-document-formats)
+    - [Targeted Questioning (Pages, Ranges, Slides)](#targeted-questioning-pages-ranges-slides)
+    - [Presenter Notes Extraction](#presenter-notes-extraction)
+    - [Scanned & Rasterized PDF Diagnostics](#scanned--rasterized-pdf-diagnostics)
+11. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
     - [Image Upload & Verification Pipeline](#image-upload--verification-pipeline)
     - [Supported Image Formats](#supported-image-formats)
     - [Server-Side OCR Extraction Engine](#server-side-ocr-extraction-engine)
@@ -58,42 +66,42 @@
     - [Image Thumbnail Cards & User Message Display](#image-thumbnail-cards--user-message-display)
     - [Image Preview Modal & OCR Text Inspection](#image-preview-modal--ocr-text-inspection)
     - [OCR vs Native Visual Reasoning Clarification](#ocr-vs-native-visual-reasoning-clarification)
-11. [Architecture & Technology Stack](#architecture--technology-stack)
+12. [Architecture & Technology Stack](#architecture--technology-stack)
     - [Frontend Architecture](#frontend-architecture)
     - [Backend Architecture](#backend-architecture)
     - [Production Serverless & In-Memory Pipeline](#production-serverless--in-memory-pipeline)
     - [Database & Authentication Architecture](#database--authentication-architecture)
-12. [Storage & Persistence Architecture](#storage--persistence-architecture)
+13. [Storage & Persistence Architecture](#storage--persistence-architecture)
     - [Client-Side IndexedDB Storage](#client-side-indexeddb-storage)
     - [Serverless-Resilient In-Memory Staging](#serverless-resilient-in-memory-staging)
     - [Cloud Firestore Message History](#cloud-firestore-message-history)
     - [Guest Mode Storage](#guest-mode-storage)
-13. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
-14. [Project Structure & Important Files](#project-structure--important-files)
+14. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
+15. [Project Structure & Important Files](#project-structure--important-files)
     - [Directory Tree](#directory-tree)
     - [Important Files & Modules](#important-files--modules)
-15. [Environment Variables & Configuration](#environment-variables--configuration)
+16. [Environment Variables & Configuration](#environment-variables--configuration)
     - [Configuration Reference Table](#configuration-reference-table)
     - [Configuration Template (`.env.example`)](#configuration-template-envexample)
-16. [Prerequisites & Setup Instructions](#prerequisites--setup-instructions)
+17. [Prerequisites & Setup Instructions](#prerequisites--setup-instructions)
     - [Prerequisites](#prerequisites)
     - [Installation](#installation)
     - [Running in Development](#running-in-development)
     - [Building for Production](#building-for-production)
     - [Running the Production Server](#running-the-production-server)
     - [Type Checking & Linting](#type-checking--linting)
-17. [Deployment Instructions](#deployment-instructions)
-18. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
-19. [Security Architecture](#security-architecture)
-20. [Known Limitations](#known-limitations)
-21. [Version History & Changelog](#version-history--changelog)
-22. [Future Improvements](#future-improvements)
+18. [Deployment Instructions](#deployment-instructions)
+19. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
+20. [Security Architecture](#security-architecture)
+21. [Known Limitations](#known-limitations)
+22. [Version History & Changelog](#version-history--changelog)
+23. [Future Improvements](#future-improvements)
 
 ---
 
 ## Project Overview
 
-**Orvix** is an intelligent, multi-model conversational AI workspace engineered for high-performance text generation, keyboard-first usability, precision code rendering, live latency transparency, touch-optimized responsive navigation, surgical document comprehension, image Optical Character Recognition (OCR), and production-grade serverless reliability. Built as a full-stack Node.js application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides seamless access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete user privacy.
+**Orvix** is an intelligent, multi-model conversational AI workspace engineered for high-performance text generation, multi-model alternative response comparisons, keyboard-first usability, precision code rendering, live latency transparency, touch-optimized responsive navigation, surgical document comprehension, image Optical Character Recognition (OCR), and production-grade serverless reliability. Built as a full-stack Node.js application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides seamless access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete user privacy.
 
 Orvix integrates four selectable AI providers:
 - **Google Gemini** (`gemini-3.8-flash` primary, with automatic failover to `gemini-3.1-flash-lite`) via the modern `@google/genai` TypeScript SDK.
@@ -101,7 +109,7 @@ Orvix integrates four selectable AI providers:
 - **OpenRouter** (`openrouter/free`) routing across high-capacity free community models.
 - **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing serverless inference on Cloudflare's global edge network.
 
-With **version v0.7.1**, Orvix introduces **Automatic Chat-Input Focus** (allowing users to begin typing immediately without clicking the composer, even after selecting text in assistant messages) and fixes a long-standing code block alignment defect with **Pixel-Perfect Code-Block Line Numbering** (guaranteeing exact vertical 1:1 synchronization across 100, 200, and 500+ lines with zero cumulative drift).
+With **version v0.8.0**, Orvix introduces **Multi-Model Alternative Response Regeneration** (allowing users to regenerate any assistant response using another AI model—including Groq, Cloudflare Workers AI, Gemini, and OpenRouter—without overwriting previous answers, complete with `< X of Y >` alternative browsing and individual model badges).
 
 ---
 
@@ -109,27 +117,91 @@ With **version v0.7.1**, Orvix introduces **Automatic Chat-Input Focus** (allowi
 
 ### Purpose
 Orvix was engineered to deliver an accessible, flexible, and privacy-conscious AI workspace:
-1. **Keyboard-First Usability**: Automatically focus the message textbox when the user starts typing, eliminating repetitive manual clicking while preserving text selection and standard keyboard shortcuts.
-2. **Precision Code Block Rendering**: Render AI-generated code blocks with exact 1-to-1 line number vertical alignment, syntax highlighting, tabular numbers, and clean copy-to-clipboard behavior that strictly excludes line numbers.
-3. **Live Latency Transparency**: Display live elapsed response-generation time in seconds as the AI streams tokens, followed by an exact final response time badge stored across sessions and exports.
-4. **Natural Mobile & Tablet Navigation**: Allow users to swipe right from the left screen edge (within 0–40px) to slide open the chat history sidebar, coexisting seamlessly with the hamburger menu.
-5. **Controlled Multi-Part Large Output Handling**: Deliver deep, exhaustive answers safely without risking token truncations, gateway timeouts, or incomplete responses.
-6. **Effortless Multimodal Inputs**: Attach images and documents via file picker dialog, pasting copied items directly from the clipboard with `Ctrl + V`, or dragging and dropping files from your desktop.
-7. **Multi-Model Flexibility**: Switch models on the fly (Gemini, Groq, OpenRouter, Cloudflare Workers AI) within the same conversation without losing message history or attached file contexts.
-8. **Deep Document & Image Text Understanding**: Extract and analyze text from complex multi-page PDFs, Word documents, PowerPoint presentations, spreadsheets, data files, and images (OCR) with precise page/slide/section boundary citations.
-9. **Frictionless Onboarding**: Explore the complete application immediately via Guest Mode without requiring API keys, cloud subscriptions, or account creation.
-10. **Secure Server-Side Proxying**: Route all AI completions, uploads, and OCR through a protected Express server (`/api/chat`, `/api/upload`), ensuring API keys, file system paths, and raw payloads are never exposed to the client.
-11. **Production Serverless Resilience**: Process uploads in-memory on serverless deployments where filesystems are strictly read-only, while preserving disk-backed workflows in local development.
-12. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
-13. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
+1. **Multi-Model Alternative Comparison**: Generate and compare alternative responses from different AI providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI) for any prompt without overwriting or losing previous answers.
+2. **Keyboard-First Usability**: Automatically focus the message textbox when the user starts typing, eliminating repetitive manual clicking while preserving text selection and standard keyboard shortcuts.
+3. **Precision Code Block Rendering**: Render AI-generated code blocks with exact 1-to-1 line number vertical alignment, syntax highlighting, tabular numbers, and clean copy-to-clipboard behavior that strictly excludes line numbers.
+4. **Live Latency Transparency**: Display live elapsed response-generation time in seconds as the AI streams tokens, followed by an exact final response time badge stored across sessions and exports.
+5. **Natural Mobile & Tablet Navigation**: Allow users to swipe right from the left screen edge (within 0–40px) to slide open the chat history sidebar, coexisting seamlessly with the hamburger menu.
+6. **Controlled Multi-Part Large Output Handling**: Deliver deep, exhaustive answers safely without risking token truncations, gateway timeouts, or incomplete responses.
+7. **Effortless Multimodal Inputs**: Attach images and documents via file picker dialog, pasting copied items directly from the clipboard with `Ctrl + V`, or dragging and dropping files from your desktop.
+8. **Multi-Model Flexibility**: Switch models on the fly (Gemini, Groq, OpenRouter, Cloudflare Workers AI) within the same conversation without losing message history or attached file contexts.
+9. **Deep Document & Image Text Understanding**: Extract and analyze text from complex multi-page PDFs, Word documents, PowerPoint presentations, spreadsheets, data files, and images (OCR) with precise page/slide/section boundary citations.
+10. **Frictionless Onboarding**: Explore the complete application immediately via Guest Mode without requiring API keys, cloud subscriptions, or account creation.
+11. **Secure Server-Side Proxying**: Route all AI completions, uploads, and OCR through a protected Express server (`/api/chat`, `/api/upload`), ensuring API keys, file system paths, and raw payloads are never exposed to the client.
+12. **Production Serverless Resilience**: Process uploads in-memory on serverless deployments where filesystems are strictly read-only, while preserving disk-backed workflows in local development.
+13. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
+14. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
 
 ### Current Status
-- **Current Version**: `v0.7.1` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
+- **Current Version**: `v0.8.0` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
 - **Build Status**: Verified on Node.js 22 LTS. All TypeScript checks (`npm run lint`), Vite builds (`npm run build`), and test suites pass with zero errors.
 
 ---
 
-## Latest Update: v0.7.1 Usability & Reliability Update
+## Latest Update: v0.8.0 Multi-Model Response Alternatives & Provider Unification
+
+Version `v0.8.0` introduces **Multi-Model Alternative Response Regeneration** and fully unifies all configured Orvix AI providers within the message action bar:
+
+### Regenerate with Another AI Model
+
+After any assistant message finishes generating, users are no longer constrained to a single model's answer. The message action bar now features a dedicated **"Regenerate with another AI Model"** (compact: *"Another Model"*) action button with an accessible dropdown menu:
+
+1. **One-Click Model Selection**:
+   - Clicking the button reveals an Obsidian-themed menu listing all currently supported and configured Orvix AI models and providers.
+   - Selecting a target model initiates an immediate streaming request with that provider without requiring the user to retype or copy their original prompt.
+2. **Dynamic Provider Coverage**:
+   - Reuses the canonical project-wide `PROVIDER_OPTIONS` configuration from `src/services/aiRouter.js` instead of maintaining an isolated or hardcoded list.
+   - Includes all four active Orvix providers:
+     - **Google Gemini** (`gemini-3.8-flash` / `gemini-3.1-flash-lite`)
+     - **Groq Cloud** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`)
+     - **OpenRouter** (`openrouter/free`)
+     - **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`)
+3. **Smart Model Status Indicators**:
+   - **`Current`**: Highlights the model whose response is currently displayed in the message bubble.
+   - **`Generated`**: Denotes models that have already generated an alternative response for this prompt turn.
+   - **`Generate`**: Marks models ready to produce a fresh alternative.
+
+### Non-Destructive Alternative History & Preservation
+
+Unlike standard chatbots where regenerating destroys or permanently overwrites previous answers:
+- Orvix **preserves all responses** associated with a prompt turn.
+- Each generated response is stored as an independent, identifiable alternative record (`createAlternativeRecord`) containing its own text content, provider ID, model identifier, response time measurement, timestamp, and referenced attachments.
+- New alternatives are appended to the message's `alternatives` collection, leaving previous replies 100% intact.
+
+### Alternative Navigation & Model Provenance Badges
+
+When multiple alternatives exist for a message turn, Orvix renders an inline pagination controller in the action bar:
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ [ < ]  2 of 3  [ Cloudflare Workers AI — Llama 3.1 8B ]  [ > ]        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Previous / Next Navigation (`<` / `>`)**: Switch between alternatives with instant zero-reload state projection.
+- **Model Provenance Badge**: Clearly displays which specific AI model produced the response currently in view (e.g. `Gemini 3.8 Flash`, `Llama 3.3 70B`, `Cloudflare Workers AI — Llama 3.1 8B`).
+- **Seamless Feature Parity**: When switching between alternatives, all standard message tools (raw markdown copying, Text-to-Speech read-aloud, code-block copying, and conversation export) seamlessly synchronize with the active alternative.
+
+### Full Provider Unification (Groq, Cloudflare, Gemini, OpenRouter)
+
+- Fully resolved earlier restrictions where Cloudflare Workers AI was omitted from alternative generation.
+- All four providers are wired through the existing `/api/chat` streaming proxy, supporting live token streaming via Server-Sent Events (SSE) and zero-key local simulation fallbacks.
+
+### Dedicated In-Place Regenerate vs Alternative Generation
+
+Orvix strictly preserves both conversational workflows:
+- **Normal Regenerate (`RotateCcw`)**: Click the standard **Regenerate** button to regenerate the currently active response in place using its existing model/provider.
+- **Regenerate with Another Model (`Sparkles`)**: Click **Another Model** to create an additional alternative response using a different AI provider without discarding existing responses.
+
+### Context, Attachments & Session Persistence
+
+- **Context Preservation**: Automatically carries forward the user prompt, conversational history leading up to that prompt, and any attached multi-page documents (PDF, DOCX, PPTX) or images (OCR).
+- **Persistence Across Sessions**: Alternatives and the active selection state are persisted in Cloud Firestore (`users/{uid}/chats/{chatId}/messages/{messageId}`) and Guest Mode `localStorage`.
+- **Backward Compatibility**: Legacy conversation history without alternatives arrays is automatically normalized on load (`normalizeAssistantMessage`), safely wrapping single responses into Alternative #1 without migration scripts or data loss.
+
+---
+
+## v0.7.1 Usability & Reliability Update
 
 Version `v0.7.1` is an incremental usability and reliability release introducing two targeted enhancements to daily conversation workflows and developer code reading:
 
@@ -426,6 +498,13 @@ Orvix runs out-of-the-box without requiring any API keys. When no keys are confi
 - Maintains full conversation history across multiple turns.
 - Intelligently truncates history when approaching provider context limits to prevent submission errors.
 
+### Multi-Model Response Alternatives & Switching
+- **Non-Destructive Regeneration**: Generate responses from alternative AI models (Gemini, Groq, OpenRouter, Cloudflare Workers AI) for any completed assistant message without overwriting prior outputs.
+- **Interactive Alternative Navigation**: Embedded `< 1 of N >` navigation bar allows rapid side-by-side comparison across different model answers.
+- **Provider Provenance Badge**: Displays the specific model and provider that generated the currently viewed alternative (`.alternative-nav-model-badge`).
+- **Targeted Regeneration**: The primary **Regenerate** button updates the currently viewed alternative in place using its own model, while **Regenerate with another AI Model** creates a new alternative.
+- **Persistent Multi-Model State**: All alternatives, generation timestamps, and elapsed response times are persisted to Cloud Firestore and browser `localStorage`.
+
 ### Chat Modes & Persona Directives
 Orvix provides 4 specialized chat modes with tailored system instructions:
 - **General Assistant**: Balanced, versatile companion for everyday tasks.
@@ -649,6 +728,7 @@ Orvix features a responsive diagnostic error system:
 │   ├── pages/                       # ChatPage main page component
 │   ├── services/                    # Core business logic services
 │   │   ├── aiRouter.js              # Client-side AI router & fallback logic
+│   │   ├── alternativeResponseService.js # Multi-model alternative response state & normalization
 │   │   ├── attachmentStorageService.js # IndexedDB blob storage
 │   │   ├── authService.js           # Firebase authentication wrapper
 │   │   ├── chatStorageService.js    # Firestore & localStorage chat persistence
@@ -669,14 +749,15 @@ Orvix features a responsive diagnostic error system:
 ```
 
 ### Important Files & Modules
+- `src/services/alternativeResponseService.js`: Pure functional service for managing alternative assistant responses, normalizing legacy messages, adding new alternatives, switching active alternatives, and resolving correct target alternative IDs for in-place regeneration.
+- `src/components/chat/ChatMessage.jsx`: Message renderer featuring the `< 1 of N >` alternative response navigator, `.alternative-nav-model-badge`, "Regenerate with another AI Model" dropdown, `LiveResponseTimer` streaming elapsed badge, finalized duration badge, and markdown message rendering.
 - `src/components/chat/ChatArea.jsx`: Global typing keystroke listener for automatic composer focus, unified `processAttachment` pipeline, clipboard paste handler (`handlePaste`), drag-and-drop handlers, drop banner, and continuation chip.
 - `src/components/chat/CodeBlock.jsx`: Syntax-highlighted code block renderer with language badge, Copy Code handler, and sticky gutter.
 - `src/styles/index.css`: Locked typographic CSS custom properties (`--code-line-height: 22px;`, `--code-font-size: 0.8125rem;`), tabular line-number blocks, and inherited token styling.
 - `src/components/layout/Layout.jsx`: Native touch & pointer edge swipe gesture recognizer, viewport bounds, and drawer layout management.
-- `src/components/chat/ChatMessage.jsx`: `LiveResponseTimer` streaming elapsed badge, finalized duration badge, and markdown message rendering.
 - `src/utils/formatResponseTime.js`: Human-readable duration formatting utility (seconds, minutes/seconds, hours/minutes).
 - `src/services/multiPartResponseService.js`: Intent detection, continuation phrases, context resolution, and multi-part coordination.
-- `src/pages/ChatPage.jsx`: Top-level conversation controller, attachment submission, streaming handler, response-time calculation, and multi-part context forwarding.
+- `src/pages/ChatPage.jsx`: Top-level conversation controller, multi-model alternative generation routing, attachment submission, streaming handler, response-time calculation, and multi-part context forwarding.
 - `server.ts` & `api/upload.ts`: In-memory multipart upload handling, magic number validation, and Tesseract OCR engine.
 - `src/services/attachmentStorageService.js`: Browser IndexedDB binary blob caching (`orvix_attachments_db`).
 
@@ -840,7 +921,27 @@ service cloud.firestore {
 
 ## Version History & Changelog
 
-### v0.7.1 — Automatic Chat-Input Focus & Pixel-Perfect Code-Block Line Alignment *(Current Release)*
+### v0.8.0 — Multi-Model Response Alternatives & Provider Unification (October 22, 2026) *(Current Release)*
+
+**Added**
+- **"Regenerate with another AI Model"**: After any assistant response completes, users can click **Another Model** (`Sparkles` icon) to open an inline model picker and generate a new answer using any supported Orvix provider/model.
+- **Non-Destructive Alternative Responses**: Previous assistant answers are fully preserved rather than overwritten. Each response is captured as an independent alternative with its own model attribution, timestamp, and elapsed generation duration.
+- **Response Alternative Navigator**: Integrated `< 1 of N >` pager controls in `ChatMessage.jsx` with an active model badge (`.alternative-nav-model-badge`) to switch between different model outputs instantly.
+- **Dedicated In-Place Regenerate**: The primary **Regenerate** action (`RotateCcw`) continues to regenerate the currently selected active alternative in place using its associated original model according to implemented behavior.
+- **Pure Functional Alternative State Engine**: Introduced `src/services/alternativeResponseService.js` to manage adding alternatives, switching active alternatives, resolving targets for in-place re-generation, and normalizing legacy messages.
+- **Multi-Store Persistence**: Persists all response alternatives, model metadata, elapsed response times, and active alternative selections across Cloud Firestore (`users/{uid}/chats/{chatId}/messages/{messageId}`) and Guest Mode `localStorage`.
+- **Automatic Legacy History Normalization**: Automatically normalizes existing single-response chat messages into Alternative #1 on load (`normalizeAssistantMessage`), ensuring zero data loss and seamless backward compatibility.
+
+**Improved**
+- **Unified Provider Configuration**: Replaced isolated hardcoded model lists with canonical `PROVIDER_OPTIONS` shared across the header model selector and response alternative dropdowns, guaranteeing consistency across the entire application.
+- **Context & Attachment Continuity**: Forwarding logic automatically carries forward the original user prompt, preceding conversational history, and attached multimodal files (PDF, DOCX, PPTX, OCR images) to the newly selected provider.
+- **Clean Markdown & Plain Text Export**: Conversation export (`src/utils/exportConversation.js`) automatically exports the currently active alternative while retaining full metadata and response time metrics.
+
+**Fixed**
+- **Provider Selector Completeness**: Fixed model-selection menu in "Regenerate with Another AI Model" which previously only displayed Gemini and OpenAI; now correctly displays all supported and configured Orvix providers/models, including **GROQ** (`llama-3.3-70b-versatile` / `openai/gpt-oss-120b`) and **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`).
+- **Provider/Model Routing Alignment**: Ensured selected provider/model parameters (`selectedModel`, `selectedProvider`) are properly mapped and passed to `/api/chat` and `aiRouter.js` without dropping model IDs.
+
+### v0.7.1 — Automatic Chat-Input Focus & Pixel-Perfect Code-Block Line Alignment (October 22, 2026)
 - **Automatic Chat-Input Focus (ChatGPT-Style)**:
   - Implemented global keyboard listener in `src/components/chat/ChatArea.jsx` to automatically focus the chat input when the user starts typing anywhere on the page.
   - Automatically captures the first typed character and places the cursor right after it, eliminating lost keystrokes.

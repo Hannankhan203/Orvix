@@ -7,7 +7,7 @@ export const APP_CONFIG = {
   name: 'Orvix',
   tagline: 'Your Intelligent AI Conversation Companion',
   description: 'A clean, modern, and responsive AI chatbot for brainstorming, coding, writing, and problem-solving.',
-  version: '1.0.0',
+  version: '0.8.0',
   defaultGreeting: 'How can I assist you today?',
   starterPrompts: [
     {
