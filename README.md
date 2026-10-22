@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.7.0**
+**Current Version: Orvix v0.7.1**
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model AI Conversation Companion with Live Response-Time Measurement, Left-Edge Swipe Gesture Navigation, Controlled Large-Response Continuation, Multimodal Attachment Inputs, Deep Document Understanding, Image Optical Character Recognition (OCR), and Serverless Production Resilience</strong>
+  <strong>An Intelligent, Multi-Model AI Conversation Workspace with Automatic Chat-Input Focus, Pixel-Perfect Code-Block Line Alignment, Live Response-Time Measurement, Left-Edge Swipe Gesture Navigation, Controlled Large-Response Continuation, Multimodal Attachment Inputs, Deep Document Understanding, Image Optical Character Recognition (OCR), and Serverless Production Resilience</strong>
 </p>
 
 ---
@@ -12,83 +12,88 @@
 
 1. [Project Overview](#project-overview)
 2. [Project Purpose & Current Status](#project-purpose--current-status)
-3. [Latest Update: v0.7.0 Usability & Interface Update](#latest-update-v070-usability--interface-update)
+3. [Latest Update: v0.7.1 Usability & Reliability Update](#latest-update-v071-usability--reliability-update)
+   - [Automatic Chat-Input Focus (ChatGPT-Style Typing Activation)](#automatic-chat-input-focus-chatgpt-style-typing-activation)
+   - [Pixel-Perfect Code-Block Line Alignment (Zero-Drift 100+ Lines)](#pixel-perfect-code-block-line-alignment-zero-drift-100-lines)
+4. [Live Response-Time Measurement & Swipe Navigation](#live-response-time-measurement--swipe-navigation)
    - [Live Response-Time Measurement](#live-response-time-measurement)
    - [Left-Edge Swipe Gesture for Chat History](#left-edge-swipe-gesture-for-chat-history)
-4. [Controlled Large-Response Continuation](#controlled-large-response-continuation)
+5. [Controlled Large-Response Continuation](#controlled-large-response-continuation)
    - [Overview & Safe Output Budgeting](#overview--safe-output-budgeting)
    - [Continuation Notices & User Triggers](#continuation-notices--user-triggers)
    - [Interactive Composer Continuation Chip](#interactive-composer-continuation-chip)
    - [Context, Prompt & Attachment Preservation](#context-prompt--attachment-preservation)
    - [Multiple Continuations & History Persistence](#multiple-continuations--history-persistence)
-5. [Three Attachment Methods & Multimodal Inputs](#three-attachment-methods--multimodal-inputs)
+6. [Three Attachment Methods & Multimodal Inputs](#three-attachment-methods--multimodal-inputs)
    - [Method 1: File Picker Upload Button](#method-1-file-picker-upload-button)
    - [Method 2: Clipboard Paste (`Ctrl + V`)](#method-2-clipboard-paste-ctrl--v)
    - [Method 3: Drag-and-Drop Interaction](#method-3-drag-and-drop-interaction)
    - [Strict One-Attachment-Per-Message Rule](#strict-one-attachment-per-message-rule)
    - [Unified Processing Pipeline & 25MB Limit](#unified-processing-pipeline--25mb-limit)
    - [Composer Attachment Preview & Removal](#composer-attachment-preview--removal)
-6. [AI Providers & Selectable Models](#ai-providers--selectable-models)
+7. [AI Providers & Selectable Models](#ai-providers--selectable-models)
    - [Fully Implemented Providers](#fully-implemented-providers)
    - [Provider Context Capacities](#provider-context-capacities)
    - [AI Provider Routing, Streaming & Fallbacks](#ai-provider-routing-streaming--fallbacks)
    - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
-7. [Conversational & Text Chat Features](#conversational--text-chat-features)
+8. [Conversational, Code & Markdown Capabilities](#conversational-code--markdown-capabilities)
    - [Multi-Turn Memory & Context Retention](#multi-turn-memory--context-retention)
    - [Chat Modes & Persona Directives](#chat-modes--persona-directives)
    - [Personalization & Response Preferences](#personalization--response-preferences)
+   - [Automatic Chat-Input Focus System](#automatic-chat-input-focus-system)
+   - [Syntax Highlighting & Precision Line Numbering](#syntax-highlighting--precision-line-numbering)
    - [Voice Dictation & Verbal Punctuation Engine](#voice-dictation--verbal-punctuation-engine)
    - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
    - [Conversation Management & Client-Side Export](#conversation-management--client-side-export)
-8. [Document Understanding & Analysis](#document-understanding--analysis)
+9. [Document Understanding & Analysis](#document-understanding--analysis)
    - [Supported Document Formats](#supported-document-formats)
    - [Targeted Questioning (Pages, Ranges, Slides)](#targeted-questioning-pages-ranges-slides)
    - [Presenter Notes Extraction](#presenter-notes-extraction)
    - [Scanned & Rasterized PDF Diagnostics](#scanned--rasterized-pdf-diagnostics)
-9. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
-   - [Image Upload & Verification Pipeline](#image-upload--verification-pipeline)
-   - [Supported Image Formats](#supported-image-formats)
-   - [Server-Side OCR Extraction Engine](#server-side-ocr-extraction-engine)
-   - [Honest No-Readable-Text Handling](#honest-no-readable-text-handling)
-   - [Image Thumbnail Cards & User Message Display](#image-thumbnail-cards--user-message-display)
-   - [Image Preview Modal & OCR Text Inspection](#image-preview-modal--ocr-text-inspection)
-   - [OCR vs Native Visual Reasoning Clarification](#ocr-vs-native-visual-reasoning-clarification)
-10. [Architecture & Technology Stack](#architecture--technology-stack)
+10. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
+    - [Image Upload & Verification Pipeline](#image-upload--verification-pipeline)
+    - [Supported Image Formats](#supported-image-formats)
+    - [Server-Side OCR Extraction Engine](#server-side-ocr-extraction-engine)
+    - [Honest No-Readable-Text Handling](#honest-no-readable-text-handling)
+    - [Image Thumbnail Cards & User Message Display](#image-thumbnail-cards--user-message-display)
+    - [Image Preview Modal & OCR Text Inspection](#image-preview-modal--ocr-text-inspection)
+    - [OCR vs Native Visual Reasoning Clarification](#ocr-vs-native-visual-reasoning-clarification)
+11. [Architecture & Technology Stack](#architecture--technology-stack)
     - [Frontend Architecture](#frontend-architecture)
     - [Backend Architecture](#backend-architecture)
     - [Production Serverless & In-Memory Pipeline](#production-serverless--in-memory-pipeline)
     - [Database & Authentication Architecture](#database--authentication-architecture)
-11. [Storage & Persistence Architecture](#storage--persistence-architecture)
+12. [Storage & Persistence Architecture](#storage--persistence-architecture)
     - [Client-Side IndexedDB Storage](#client-side-indexeddb-storage)
     - [Serverless-Resilient In-Memory Staging](#serverless-resilient-in-memory-staging)
     - [Cloud Firestore Message History](#cloud-firestore-message-history)
     - [Guest Mode Storage](#guest-mode-storage)
-12. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
-13. [Project Structure & Important Files](#project-structure--important-files)
+13. [Resilient Error UI & Recovery Architecture](#resilient-error-ui--recovery-architecture)
+14. [Project Structure & Important Files](#project-structure--important-files)
     - [Directory Tree](#directory-tree)
     - [Important Files & Modules](#important-files--modules)
-14. [Environment Variables & Configuration](#environment-variables--configuration)
+15. [Environment Variables & Configuration](#environment-variables--configuration)
     - [Configuration Reference Table](#configuration-reference-table)
     - [Configuration Template (`.env.example`)](#configuration-template-envexample)
-15. [Prerequisites & Setup Instructions](#prerequisites--setup-instructions)
+16. [Prerequisites & Setup Instructions](#prerequisites--setup-instructions)
     - [Prerequisites](#prerequisites)
     - [Installation](#installation)
     - [Running in Development](#running-in-development)
     - [Building for Production](#building-for-production)
     - [Running the Production Server](#running-the-production-server)
     - [Type Checking & Linting](#type-checking--linting)
-16. [Deployment Instructions](#deployment-instructions)
-17. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
-18. [Security Architecture](#security-architecture)
-19. [Known Limitations](#known-limitations)
-20. [Version History & Changelog](#version-history--changelog)
-21. [Future Improvements](#future-improvements)
+17. [Deployment Instructions](#deployment-instructions)
+18. [Firebase Setup & Security Rules](#firebase-setup--security-rules)
+19. [Security Architecture](#security-architecture)
+20. [Known Limitations](#known-limitations)
+21. [Version History & Changelog](#version-history--changelog)
+22. [Future Improvements](#future-improvements)
 
 ---
 
 ## Project Overview
 
-**Orvix** is an intelligent, multi-model conversational AI web application designed for high-performance text conversation, live latency transparency, touch-optimized responsive navigation, surgical document comprehension, image Optical Character Recognition (OCR), and production-grade serverless reliability. Built as a full-stack Node.js application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides seamless access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete user privacy.
+**Orvix** is an intelligent, multi-model conversational AI workspace engineered for high-performance text generation, keyboard-first usability, precision code rendering, live latency transparency, touch-optimized responsive navigation, surgical document comprehension, image Optical Character Recognition (OCR), and production-grade serverless reliability. Built as a full-stack Node.js application with a responsive React 19 single-page frontend and an Express proxy backend running Vite in middleware mode, Orvix provides seamless access to leading open and proprietary language models while ensuring zero credential exposure, robust client-side caching, and complete user privacy.
 
 Orvix integrates four selectable AI providers:
 - **Google Gemini** (`gemini-3.8-flash` primary, with automatic failover to `gemini-3.1-flash-lite`) via the modern `@google/genai` TypeScript SDK.
@@ -96,7 +101,7 @@ Orvix integrates four selectable AI providers:
 - **OpenRouter** (`openrouter/free`) routing across high-capacity free community models.
 - **Cloudflare Workers AI** (`@cf/meta/llama-3.1-8b-instruct`) providing serverless inference on Cloudflare's global edge network.
 
-With **version v0.7.0**, Orvix introduces **Live Response-Time Measurement** (real-time elapsed timer badge during inference and exact duration persistence) and a native, conflict-free **Left-Edge Swipe Gesture for Chat History** on mobile and tablet devices, complementing the existing hamburger button.
+With **version v0.7.1**, Orvix introduces **Automatic Chat-Input Focus** (allowing users to begin typing immediately without clicking the composer, even after selecting text in assistant messages) and fixes a long-standing code block alignment defect with **Pixel-Perfect Code-Block Line Numbering** (guaranteeing exact vertical 1:1 synchronization across 100, 200, and 500+ lines with zero cumulative drift).
 
 ---
 
@@ -104,31 +109,96 @@ With **version v0.7.0**, Orvix introduces **Live Response-Time Measurement** (re
 
 ### Purpose
 Orvix was engineered to deliver an accessible, flexible, and privacy-conscious AI workspace:
-1. **Live Latency Transparency**: Display live elapsed response-generation time in seconds as the AI streams tokens, followed by an exact final response time badge stored across sessions and exports.
-2. **Natural Mobile & Tablet Navigation**: Allow users to swipe right from the left screen edge (within 20–40px) to slide open the chat history sidebar, coexisting seamlessly with the hamburger menu.
-3. **Controlled Multi-Part Large Output Handling**: Deliver deep, exhaustive answers safely without risking token truncations, gateway timeouts, or incomplete responses.
-4. **Effortless Multimodal Inputs**: Attach images and documents via file picker dialog, pasting copied items directly from the clipboard with `Ctrl + V`, or dragging and dropping files from your desktop.
-5. **Multi-Model Flexibility**: Switch models on the fly (Gemini, Groq, OpenRouter, Cloudflare Workers AI) within the same conversation without losing message history or attached file contexts.
-6. **Deep Document & Image Text Understanding**: Extract and analyze text from complex multi-page PDFs, Word documents, PowerPoint presentations, spreadsheets, data files, and images (OCR) with precise page/slide/section boundary citations.
-7. **Frictionless Onboarding**: Explore the complete application immediately via Guest Mode without requiring API keys, cloud subscriptions, or account creation.
-8. **Secure Server-Side Proxying**: Route all AI completions, uploads, and OCR through a protected Express server (`/api/chat`, `/api/upload`), ensuring API keys, file system paths, and raw payloads are never exposed to the client.
-9. **Production Serverless Resilience**: Process uploads in-memory on serverless deployments where filesystems are strictly read-only, while preserving disk-backed workflows in local development.
-10. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
-11. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
+1. **Keyboard-First Usability**: Automatically focus the message textbox when the user starts typing, eliminating repetitive manual clicking while preserving text selection and standard keyboard shortcuts.
+2. **Precision Code Block Rendering**: Render AI-generated code blocks with exact 1-to-1 line number vertical alignment, syntax highlighting, tabular numbers, and clean copy-to-clipboard behavior that strictly excludes line numbers.
+3. **Live Latency Transparency**: Display live elapsed response-generation time in seconds as the AI streams tokens, followed by an exact final response time badge stored across sessions and exports.
+4. **Natural Mobile & Tablet Navigation**: Allow users to swipe right from the left screen edge (within 0–40px) to slide open the chat history sidebar, coexisting seamlessly with the hamburger menu.
+5. **Controlled Multi-Part Large Output Handling**: Deliver deep, exhaustive answers safely without risking token truncations, gateway timeouts, or incomplete responses.
+6. **Effortless Multimodal Inputs**: Attach images and documents via file picker dialog, pasting copied items directly from the clipboard with `Ctrl + V`, or dragging and dropping files from your desktop.
+7. **Multi-Model Flexibility**: Switch models on the fly (Gemini, Groq, OpenRouter, Cloudflare Workers AI) within the same conversation without losing message history or attached file contexts.
+8. **Deep Document & Image Text Understanding**: Extract and analyze text from complex multi-page PDFs, Word documents, PowerPoint presentations, spreadsheets, data files, and images (OCR) with precise page/slide/section boundary citations.
+9. **Frictionless Onboarding**: Explore the complete application immediately via Guest Mode without requiring API keys, cloud subscriptions, or account creation.
+10. **Secure Server-Side Proxying**: Route all AI completions, uploads, and OCR through a protected Express server (`/api/chat`, `/api/upload`), ensuring API keys, file system paths, and raw payloads are never exposed to the client.
+11. **Production Serverless Resilience**: Process uploads in-memory on serverless deployments where filesystems are strictly read-only, while preserving disk-backed workflows in local development.
+12. **Accessible Multimodal Speech**: Built-in voice dictation with spoken verbal punctuation conversion and Web Speech synthesis read-aloud with playback speed adjustments.
+13. **Local-First Reliability**: Original files are cached in browser IndexedDB to survive page reloads and network reconnects even when temporary server files have expired.
 
 ### Current Status
-- **Current Version**: `v0.7.0` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
+- **Current Version**: `v0.7.1` (Semantic Versioning: `MAJOR.MINOR.PATCH`).
 - **Build Status**: Verified on Node.js 22 LTS. All TypeScript checks (`npm run lint`), Vite builds (`npm run build`), and test suites pass with zero errors.
 
 ---
 
-## Latest Update: v0.7.0 Usability & Interface Update
+## Latest Update: v0.7.1 Usability & Reliability Update
 
-Version `v0.7.0` is a targeted usability and interface update delivering two core quality-of-life enhancements:
+Version `v0.7.1` is an incremental usability and reliability release introducing two targeted enhancements to daily conversation workflows and developer code reading:
+
+### Automatic Chat-Input Focus (ChatGPT-Style Typing Activation)
+
+When reviewing assistant responses, users frequently highlight text snippets, copy code, or scroll through the thread. In standard web applications, this drops focus from the message composer, forcing users to reach for the mouse and click into the textbox before typing their next prompt.
+
+Orvix now features seamless, intelligent automatic input focusing:
+
+1. **Keystroke Detection & Instant Capture**:
+   - Detects ordinary keyboard typing when the main chat textbox is unfocused.
+   - Synchronously captures the initial typed character, appends it at the current insertion/cursor position in the textarea, and immediately focuses the input without dropping the first keystroke.
+   - Subsequent characters flow naturally into the input with zero stutter.
+2. **Text Selection Preservation**:
+   - Text selection inside assistant messages, document viewer modals, and code blocks is completely protected.
+   - Selecting, highlighting, or dragging over text **never** causes focus to be stolen. Focus is acquired only when an actual typing keystroke is registered.
+3. **Shortcut & Modifier Protection**:
+   - Modifier keys (`Ctrl`, `Meta`/`Cmd`, `Alt`) are strictly bypassed.
+   - Critical system and browser shortcuts continue to function without interference:
+     - `Ctrl + C` / `Cmd + C` (Copy selected text)
+     - `Ctrl + A` / `Cmd + A` (Select all)
+     - `Ctrl + V` / `Cmd + V` (Clipboard paste, handled by Orvix's multimodal paste engine)
+     - `Ctrl + F` / `Cmd + F` (Browser page search)
+     - `Ctrl + Z` / `Cmd + Z` (Undo)
+     - `Ctrl + Shift + R` (Hard reload)
+4. **Interactive Element & Dialog Respect**:
+   - Does not hijack keystrokes when the user is focused on:
+     - Other form inputs, textareas, select menus, or contenteditable areas.
+     - Buttons, tabs, and menu items operated via keyboard navigation (`Tab`, `Enter`, `Space`, `Escape`).
+     - Open modal dialogs (`[role="dialog"]`, `.modal-backdrop`, `.settings-modal-backdrop`, `.document-preview-overlay`, `.auth-modal-backdrop`).
+5. **IME Composition & Non-Printable Key Filtering**:
+   - Skips navigation keys (Arrow keys, PageUp/PageDown, Home/End), function keys (`F1`–`F12`), `Tab`, `Escape`, `Backspace`, `Delete`, and standalone Spacebars.
+   - Completely ignores Input Method Editor (IME) composition states (`e.isComposing`, `keyCode 229`) for international languages (Chinese, Japanese, Korean).
+
+### Pixel-Perfect Code-Block Line Alignment (Zero-Drift 100+ Lines)
+
+In previous versions, rendering large code blocks (over 100 lines) suffered from subtle vertical drift between the line number gutter and the code text. Over 100+ lines, differences between unitless line-height scaling and mismatched font sizes caused line numbers to visibly shift out of phase with their corresponding lines of code.
+
+Version `v0.7.1` solves this with a mathematically locked rendering strategy:
+
+1. **Typographic Synchronization via CSS Variables**:
+   - Enforces uniform custom properties across both the gutter and code container in `src/styles/index.css`:
+     - `--code-line-height: 22px;`
+     - `--code-font-size: 0.8125rem;`
+2. **Block Line Number Architecture**:
+   - Individual line numbers in `.line-number` are rendered with explicit `display: block`, `height: 22px`, and `line-height: 22px`.
+   - Incorporates `font-variant-numeric: tabular-nums` and `font-feature-settings: "tnum"` to guarantee equal-width digits regardless of whether numbers are single, double, or triple digits (e.g. `1`, `42`, `180`).
+3. **Strict Token & Code Inheritance**:
+   - Applied `line-height: var(--code-line-height) !important;` and `font-size: var(--code-font-size) !important;` across `pre`, `pre code`, and all Prism/syntax-highlighted `.token` elements.
+   - Prevents nested styled spans (keywords, strings, comments) from introducing sub-pixel font baseline variations.
+4. **Horizontal Scroll & Indentation Independence**:
+   - The line number gutter resides in a sticky column (`position: sticky; left: 0; z-index: 10`) within the code block.
+   - Long lines of code can be scrolled horizontally without un-aligning the line numbers.
+5. **Zero Cumulative Drift Over 100+ Lines**:
+   - Line 1 aligns with code line 1, line 50 aligns with code line 50, and line 150 aligns with code line 150 with 0px offset.
+   - Empty lines and indentation retain identical 22px vertical metrics.
+6. **Clean Clipboard Export**:
+   - Line numbers are marked with `user-select: none; pointer-events: none;` and `aria-hidden="true"`.
+   - Clicking **Copy Code** in `src/components/chat/CodeBlock.jsx` or manually highlighting code text copies pristine source code without line numbers.
+
+---
+
+## Live Response-Time Measurement & Swipe Navigation
+
+Introduced in `v0.7.0` and fully active in `v0.7.1`:
 
 ### Live Response-Time Measurement
 
-Orvix now measures and displays the elapsed response generation duration for every assistant reply:
+Orvix measures and displays the elapsed response generation duration for every assistant reply:
 
 1. **Active Streaming Phase (`LiveResponseTimer`)**:
    - While an AI model is actively streaming tokens, a lightweight, self-contained live badge appears above the message bubble: `Thinking... 1.4s`.
@@ -145,7 +215,7 @@ Orvix now measures and displays the elapsed response generation duration for eve
 
 ### Left-Edge Swipe Gesture for Chat History
 
-Mobile and tablet users can now quickly view and switch chat threads with an intuitive edge gesture:
+Mobile and tablet users can navigate conversation history with an intuitive edge gesture:
 
 1. **Activation Zone & Coordinates**:
    - Swiping right starting within 0–40px from the left edge of the viewport (`EDGE_ZONE_PX = 40`) initiates drawer opening.
@@ -198,156 +268,159 @@ To solve this, Orvix features a **Controlled Large-Response Continuation System*
 │  resolveMultiPartContext() carries forward:                            │
 │    - Original prompt & attached documents                              │
 │    - Summary of topics already covered in previous parts               │
-│    - Explicit instruction to continue seamlessly WITHOUT restarting    │
+│    - Specific guidance for next section                                │
 │        │                                                               │
 │        ▼                                                               │
-│  Assistant responds with Part 2 (subsequent sections)                  │
+│  Assistant generates Part 2 seamlessly without repetition              │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Continuation Notices & User Triggers
 
-When an answer is partitioned, Orvix ends the message with a clear, markdown-formatted continuation notice:
-- **Part 1 Notice**:
-  > *This is a large response, so I’ve provided the first part. Reply "Continue" and I’ll send the rest.*
-- **Subsequent Parts Notice**:
-  > *There is still more to cover. Reply "Continue" for the next part.*
+When Part 1 completes, the assistant signs off with a clear, standardized continuation notice:
 
-The continuation engine recognizes a comprehensive list of continuation phrases (`isContinuationRequest`), including:
-- `"continue"`, `"cont"`, `"go on"`, `"carry on"`, `"keep going"`
-- `"send the rest"`, `"send rest"`, `"give me the rest"`, `"show the rest"`
-- `"next"`, `"next part"`, `"next section"`, `"part 2"`, `"part 3"`
-- `"more"`, `"more please"`, `"please continue"`, `"proceed"`
-- `"finish the answer"`, `"complete the answer"`, `"finish the response"`
+> *This is a large response, so I’ve provided the first part. Reply "Continue" and I’ll send the rest.*
+
+The user can trigger the next part through multiple natural phrases recognized by `isContinuationRequest()`:
+- `"Continue"`, `"continue"`, `"cont"`
+- `"Send the rest"`, `"send rest"`, `"give me the rest"`
+- `"Next"`, `"next part"`, `"part 2"`, `"part 3"`
+- `"Go on"`, `"keep going"`, `"proceed"`, `"more"`
 
 ### Interactive Composer Continuation Chip
 
-Users do not even need to type. Whenever the most recent assistant message concludes with a continuation notice (`canContinueLastMessage` in `ChatArea.jsx`), an interactive quick-action chip appears floating above the composer:
+For maximum convenience, when the last message ends with a continuation notice, a floating chip appears directly above the message composer:
 
-```
-[ → Continue response ]
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ [ → Continue response ]                                                │
+│ ┌────────────────────────────────────────────────────────────────────┐ │
+│ │ Type your message...                                               │ │
+│ └────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-Clicking this chip immediately issues a `Continue` command, streaming the next segment seamlessly.
+Clicking the chip automatically submits the continuation request without requiring the user to type anything.
 
 ### Context, Prompt & Attachment Preservation
 
-Orvix prevents model hallucination and restarting via `resolveMultiPartContext()` and `buildMultiPartPromptAugmentation()`:
-1. **Original Prompt Retention**: Inspects conversation history to retrieve the root user prompt that initiated the multi-part sequence.
-2. **Attached File & Document Forwarding**: If the original prompt included an attached document or image, its extracted text and metadata are automatically forwarded into the continuation request.
-3. **Covered Content Tracking**: A synthesized record of what sections were covered in prior parts is passed to the AI prompt with strict instructions:
-   > *"Continue from where the previous part ended. DO NOT restart the response or repeat sections already delivered. Begin immediately with the next section."*
+Unlike standard chat turns where the model might lose track of the original goal:
+1. `resolveMultiPartContext()` inspects the conversation history and identifies the root prompt that initiated the multi-part sequence.
+2. Any document or image attachments associated with the original prompt are automatically forwarded into the continuation turn context.
+3. The system appends an explicit directive instructing the model:
+   - What section has already been answered.
+   - What specific section to cover next.
+   - To resume directly without repeating introductory greetings or previous text.
 
 ### Multiple Continuations & History Persistence
 
-- Orvix supports chains of multiple continuations (Part 1 → Part 2 → Part 3 → Final Part) until the entire topic is exhaustively completed.
-- When the final section has been fully delivered, Orvix omits the continuation notice, signaling completion.
-- Each part is stored as an independent, fully rendered assistant message with response time metadata. Both Firestore (for authenticated users) and `localStorage` (for guests) persist every part.
+Responses can span across 2, 3, or more parts as needed for truly massive topics:
+- Each part is stored as an independent, fully readable message in the thread.
+- If the model determines that more content remains after Part 2, it appends a continuation notice for Part 3.
+- When the final section is complete, the model finishes normally without appending a notice, and the continuation chip disappears.
+- All parts are persisted permanently in Cloud Firestore or Guest Mode `localStorage`.
 
 ---
 
 ## Three Attachment Methods & Multimodal Inputs
 
-Orvix supports **three distinct ways to attach an image or file** to your message. All three methods route through the identical validation and processing pipeline (`processAttachment` in `src/components/chat/ChatArea.jsx`), ensuring consistent behavior across desktop and mobile.
+Orvix supports three unified methods for adding attachments to any conversation:
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                   THREE WAYS TO ATTACH IN ORVIX                        │
+│                    THREE ATTACHMENT METHODS                            │
 │                                                                        │
-│   1. Paperclip Button        2. Ctrl + V Paste       3. Drag-and-Drop  │
-│      [ 📎 Attach ]             [ Clipboard ]            [ OS Files ]   │
-│            │                         │                       │         │
-│            ▼                         ▼                       ▼         │
-│   Native File Dialog        MIME File Extraction      Drag-Over Banner │
-│            │                         │                       │         │
-│            └─────────────────────────┼───────────────────────┘         │
-│                                      ▼                                 │
-│                   ┌──────────────────────────────────────┐             │
-│                   │      processAttachment() Pipeline    │             │
-│                   ├──────────────────────────────────────┤             │
-│                   │ 1. Strictly 1 attachment per message │             │
-│                   │ 2. 25MB maximum file size limit      │             │
-│                   │ 3. Supported extension & MIME check  │             │
-│                   │ 4. Client-side thumbnail generation  │             │
-│                   └──────────────────┬───────────────────┘             │
-│                                      ▼                                 │
-│                   Composer Attachment Chip Preview                     │
-│                   [ 📄 document.pdf (2.4 MB)  ✕ ]                     │
+│   [ Method 1: File Picker ]      [ Method 2: Clipboard Paste ]         │
+│     Click paperclip icon           Press Ctrl + V / Cmd + V            │
+│     Native OS file selector        Image or file data from clipboard   │
+│              │                                    │                    │
+│              └─────────────────┬──────────────────┘                    │
+│                                │                                       │
+│                 [ Method 3: Drag & Drop ]                              │
+│                   Drag file from desktop manager                       │
+│                   Visual drop overlay & border highlight               │
+│                                │                                       │
+│                                ▼                                       │
+│                  processAttachment() Pipeline                          │
+│                    ├── Strict 1-Attachment Rule                        │
+│                    ├── 25 MB File Size Limit Check                     │
+│                    ├── Format & Magic Number Validation                │
+│                    └── Instant Thumbnail / Preview Generation          │
+│                                │                                       │
+│                                ▼                                       │
+│                 Composer Attachment Dock Card                          │
+│                   [ Thumbnail | Filename | Size | (X) Remove ]         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Method 1: File Picker Upload Button
-- Located directly in the composer dock as a paperclip button (`composer-attach-btn`).
-- Clicking it opens the native operating system file selection dialog.
-- Configured with `accept` attributes for all supported image and document MIME types.
+Click the paperclip button on the left of the composer to open the native OS file picker. Filtered by supported MIME types for images, documents, and spreadsheets.
 
 ### Method 2: Clipboard Paste (`Ctrl + V`)
-- Copy an image or supported file to your clipboard and press `Ctrl + V` while the chat input is focused.
-- **Intelligent MIME Resolution**: When copying raw image data without a filename (e.g. Snipping Tool), Orvix automatically generates a sensible filename (e.g. `pasted-image.png`).
-- **Normal Text Paste Preserved**: Standard text, URLs, and code snippets pass through unhindered directly into the textarea.
+Copy an image or screenshot from your clipboard (e.g. from Snipping Tool, Photoshop, browser) and press `Ctrl + V` (or `Cmd + V` on macOS) while inside the Orvix window:
+- Images are automatically captured with an assigned filename (e.g. `pasted-image.png`).
+- Standard text, URLs, and code snippets pasted from the clipboard pass through normally into the textbox without triggering the attachment system.
 
 ### Method 3: Drag-and-Drop Interaction
-- Drag any supported image or document from your computer's file explorer directly over the chat area (`.chat-area-container`).
-- **Visual Feedback**: The chat area and composer form highlight with an Obsidian-accented dashed border (`.is-drag-over`) and a clear drop indicator banner:
-  > **Drop file to attach**
-- **Window Drop Protection**: Prevents the browser's default behavior of navigating away or opening raw files when dragged over the window.
+Drag any supported file from your file manager directly onto the chat window:
+- The entire chat area illuminates with an Obsidian-accented dashed border (`.is-drag-over`) and displays a `"Drop file to attach"` visual banner.
+- Dragging files over the window prevents the browser from opening the file in a new tab.
+- Dropping the file attaches it immediately.
 
 ### Strict One-Attachment-Per-Message Rule
-Orvix strictly enforces **one attachment maximum per message** across all three input methods:
-- **Button**: Rejects multi-selection and displays a notice if clicked while a file is already attached.
-- **Paste (`Ctrl + V`)**: Rejects duplicate pastes with:
-  > *"Only one attachment can be added per message. Remove the current attachment before pasting another file."*
-- **Drag-and-Drop**: Rejects duplicate drops with:
-  > *"Only one attachment can be added per message. Remove the current attachment before adding another file."*
+To maintain focused contextual reasoning and prevent quota exhaustion, Orvix enforces a strict limit of **one attachment per message**:
+- If an attachment is already staged and the user attempts to add another via upload, paste, or drop, the action is rejected with a clear notification:
+  > *"Only one attachment can be added per message. Remove the current attachment first to select a different one."*
+- Dropping multiple files simultaneously is rejected with:
+  > *"Only one attachment can be added per message. Please drop one file at a time."*
 
 ### Unified Processing Pipeline & 25MB Limit
-Every attached file passes through the same validation:
-1. **Size Restriction**: Hard limit of **25 MB** per file. Files exceeding this are rejected with:
-   > *"File '[filename]' exceeds the maximum allowed size of 25MB."*
-2. **Format Whitelist**:
-   - **Images**: PNG, JPG, JPEG, WEBP, GIF, BMP, HEIC/HEIF.
-   - **Documents**: PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, CSV, TSV, JSON, XML, TXT, MD.
-3. **Instant Preview Generation**: Image files immediately generate an in-memory thumbnail preview (`URL.createObjectURL`), while document files render an extension badge pill (`PDF`, `DOCX`, etc.).
+All three attachment methods pass through the unified `processAttachment()` pipeline:
+- **Maximum File Size**: 25 MB. Files exceeding this limit are rejected with an explicit size notice.
+- **Preview Generation**: Image attachments generate immediate client-side `blob:` object URLs for zero-latency thumbnail rendering in the composer dock.
 
 ### Composer Attachment Preview & Removal
-- When an attachment is staged, a preview strip renders above the input field with the file name, formatted size, and an explicit `"One attachment maximum per message"` indicator.
-- Clicking the **Remove (✕)** button instantly purges the file, revokes object URLs to prevent memory leaks, and clears file input references.
+Once attached, a preview card docks above the text input showing the file icon, filename, human-readable size, and an `(X)` remove button to clear the attachment before sending.
 
 ---
 
 ## AI Providers & Selectable Models
 
+Orvix features an intelligent multi-provider architecture connecting to four distinct AI infrastructures:
+
 ### Fully Implemented Providers
 
-| Provider | Model Identifier | Primary / Fallback Role | Max Context Budget | Protocol / Integration |
-| :--- | :--- | :--- | :--- | :--- |
-| **Google Gemini** | `gemini-3.8-flash` | Primary Model | 120,000 characters | Official `@google/genai` TypeScript SDK with SSE streaming |
-| **Google Gemini (Fallback)** | `gemini-3.1-flash-lite` | Automatic Resilient Fallback | 120,000 characters | Seamless failover on 429/503 quota or rate limit events |
-| **Groq** | `llama-3.3-70b-versatile` | Ultra-Fast Primary | 24,000 characters | OpenAI-compatible REST API via Groq LPU inference |
-| **Groq (Alternative)** | `openai/gpt-oss-120b` | High-Capacity Model | 24,000 characters | Fast secondary option for complex code generation |
-| **OpenRouter** | `openrouter/free` | Free Multi-Model Router | 16,000 characters | OpenRouter completions API routing to free community models |
-| **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | Global Edge Inference | 16,000 characters | Cloudflare REST API with Server-Sent Events stream transform |
+| Provider | Model Identifier | Architecture / Hosting | Primary Use Case |
+| :--- | :--- | :--- | :--- |
+| **Google Gemini** | `gemini-3.8-flash` *(Failover: `gemini-3.1-flash-lite`)* | Google AI Studio REST / SDK | Lightning-fast inference, high context window, default model |
+| **Groq Cloud** | `llama-3.3-70b-versatile` *(Alt: `openai/gpt-oss-120b`)* | Groq LPU™ Inference Engine | Near-instantaneous response streaming, coding & structured text |
+| **OpenRouter** | `openrouter/free` | Decentralized open-access pool | Broad multi-model ecosystem with automatic free-tier routing |
+| **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | Cloudflare Global Edge Network | Low-latency edge computing across 300+ global cities |
 
 ### Provider Context Capacities
-When documents or OCR text are injected into prompts, Orvix applies context bounds tailored to each provider's context window:
-- **Gemini**: 120,000 characters (~30,000 tokens)
-- **Groq**: 24,000 characters (~6,000 tokens)
-- **OpenRouter & Cloudflare**: 16,000 characters (~4,000 tokens)
+
+Each provider operates with calibrated context budgets in `src/services/documentContextService.js`:
+
+| Provider | Max Prompt Context | Document Budget | Safety Margin |
+| :--- | :--- | :--- | :--- |
+| **Google Gemini** | 1,000,000 tokens | ~120,000 chars | Large documents, complete books, multi-part continuation |
+| **Groq Cloud** | 128,000 tokens | ~24,000 chars | Fast structured analysis, multi-part synthesis |
+| **OpenRouter** | Variable by model | ~16,000 chars | Broad multi-model coverage |
+| **Cloudflare Workers AI** | 8,192 tokens | ~16,000 chars | Edge inference, quick summaries |
 
 ### AI Provider Routing, Streaming & Fallbacks
-1. **Real-Time Streaming**: Responses stream to the browser via Server-Sent Events (SSE) through `POST /api/chat`.
-2. **Automatic Provider Failover**: If Gemini `gemini-3.8-flash` encounters a quota error or high demand, the server retries `gemini-3.1-flash-lite` automatically before returning an error.
-3. **One-Click Model Switch & Retry**: When a provider quota or rate limit is reached, error banners offer a one-click button to retry the prompt using an alternative active provider (e.g., switch to Groq or Gemini).
+
+- **Server-Sent Events (SSE)**: All providers stream tokens via real-time SSE chunks (`POST /api/chat`), rendering text incrementally on the client.
+- **Failover Hierarchy**: If Google Gemini encounters a rate limit (429) or temporary server unavailability (503), Orvix automatically fails over to `gemini-3.1-flash-lite`.
+- **Cross-Provider Switcher**: If any provider fails completely, the UI error card provides a one-click **"Switch Provider & Retry"** button that redirects the exact prompt to an active alternative provider without retyping.
 
 ### Zero-Key Simulation Mode
-If no API keys are provided in `.env`, Orvix runs in **Simulation Mode**:
-- Generates realistic, contextual responses without crashing.
-- Simulates live response time calculation and large multi-part responses with continuation invitations for testing.
-- Allows full exploration of the UI, modes, attachments, OCR inspection, and export features.
+
+Orvix runs out-of-the-box without requiring any API keys. When no keys are configured, Orvix switches to **Simulated Mode**, generating responsive, realistic conversational replies locally so you can test all UI features, dictation, attachments, and exports immediately.
 
 ---
 
-## Conversational & Text Chat Features
+## Conversational, Code & Markdown Capabilities
 
 ### Multi-Turn Memory & Context Retention
 - Maintains full conversation history across multiple turns.
@@ -365,6 +438,19 @@ User settings permit custom persona overrides:
 - **Tone**: Professional, Casual, Academic, Creative, or Concise.
 - **Response Length**: Concise, Balanced, or Detailed.
 - **Enter to Send**: Configurable between Plain Enter and `Ctrl + Enter`.
+
+### Automatic Chat-Input Focus System
+- Automatically captures typing keystrokes anywhere on the page and targets the chat textbox.
+- Preserves response text selection and highlighting for copying quotes.
+- Bypasses modifier keys (`Ctrl`, `Cmd`, `Alt`) to keep all OS shortcuts working.
+- Bypasses buttons, menus, dialogs, and IME composition.
+
+### Syntax Highlighting & Precision Line Numbering
+- Powered by `react-markdown` and `remark-gfm` with dedicated `CodeBlock.jsx`.
+- Language badge displayed at top right of every code block.
+- **Pixel-Perfect Line Number Alignment**: Gutter numbers lock to an exact 22px block height (`--code-line-height: 22px`), maintaining strict 1-to-1 vertical parity across 100+ lines.
+- **Tabular Numerals**: Numbers use fixed-width figures (`tabular-nums`) to prevent horizontal shifts as line counts scale from 9 to 10 to 100+.
+- **Clean Copying**: Line numbers use `user-select: none; pointer-events: none; aria-hidden="true"`, ensuring the "Copy Code" button and manual drag-selection only copy pure code.
 
 ### Voice Dictation & Verbal Punctuation Engine
 - Uses the Web Speech API with multi-language recognition (9 languages).
@@ -463,7 +549,7 @@ Orvix extracts readable printed and typographic text via OCR. It does not perfor
 
 ### Backend Architecture
 - **Server**: Express (`express` ^4.22.3) in TypeScript (`server.ts`).
-- **Development Runtime**: `tsx` (^4.21.0) running `server.ts` with Vite middleware mode on port 3000 (`0.0.0.0`).
+- **Development Runtime**: `tsx` running `server.ts` with Vite middleware mode on port 3000 (`0.0.0.0`).
 - **Production Server**: Serves pre-built assets from `dist/` with SPA routing fallback to `index.html`.
 - **Endpoints**:
   - `GET /api/health`: Uptime and system status check.
@@ -539,9 +625,9 @@ Orvix features a responsive diagnostic error system:
 │   │   ├── auth/                    # Authentication modal & guest switcher
 │   │   ├── chat/                    # Chat interface components
 │   │   │   ├── AttachmentCard.jsx   # Document attachment chip & card
-│   │   │   ├── ChatArea.jsx         # Composer dock, paste & drop handlers
-│   │   │   ├── ChatMessage.jsx      # Markdown message rendering, live timer & response badge
-│   │   │   ├── CodeBlock.jsx        # Syntax highlighter & copy button
+│   │   │   ├── ChatArea.jsx         # Composer dock, auto-focus listener, paste & drop
+│   │   │   ├── ChatMessage.jsx      # Markdown rendering, live timer & response badge
+│   │   │   ├── CodeBlock.jsx        # Precision syntax highlighter & copy button
 │   │   │   ├── DocumentPreviewModal.jsx # Full-screen image/OCR preview
 │   │   │   ├── ExportChatMenu.jsx   # Markdown / Plain Text export
 │   │   │   ├── ImageAttachmentCard.jsx  # Inline image message thumbnail
@@ -573,7 +659,7 @@ Orvix features a responsive diagnostic error system:
 │   │   ├── imageOcrService.js       # Tesseract.js OCR engine
 │   │   ├── multiPartResponseService.js # Large-response continuation engine
 │   │   └── openrouterService.js     # OpenRouter completions API
-│   ├── styles/                      # Tailwind CSS v4 & theme definitions
+│   ├── styles/                      # Tailwind CSS v4 & precision code styling (index.css)
 │   └── utils/                       # Export, speech, formatResponseTime & highlighter utilities
 ├── server.ts                        # Express development & production server
 ├── vite.config.ts                   # Vite configuration
@@ -583,11 +669,13 @@ Orvix features a responsive diagnostic error system:
 ```
 
 ### Important Files & Modules
+- `src/components/chat/ChatArea.jsx`: Global typing keystroke listener for automatic composer focus, unified `processAttachment` pipeline, clipboard paste handler (`handlePaste`), drag-and-drop handlers, drop banner, and continuation chip.
+- `src/components/chat/CodeBlock.jsx`: Syntax-highlighted code block renderer with language badge, Copy Code handler, and sticky gutter.
+- `src/styles/index.css`: Locked typographic CSS custom properties (`--code-line-height: 22px;`, `--code-font-size: 0.8125rem;`), tabular line-number blocks, and inherited token styling.
 - `src/components/layout/Layout.jsx`: Native touch & pointer edge swipe gesture recognizer, viewport bounds, and drawer layout management.
 - `src/components/chat/ChatMessage.jsx`: `LiveResponseTimer` streaming elapsed badge, finalized duration badge, and markdown message rendering.
 - `src/utils/formatResponseTime.js`: Human-readable duration formatting utility (seconds, minutes/seconds, hours/minutes).
 - `src/services/multiPartResponseService.js`: Intent detection, continuation phrases, context resolution, and multi-part coordination.
-- `src/components/chat/ChatArea.jsx`: Unified `processAttachment` pipeline, clipboard paste handler (`handlePaste`), drag-and-drop handlers, drop banner, and continuation chip.
 - `src/pages/ChatPage.jsx`: Top-level conversation controller, attachment submission, streaming handler, response-time calculation, and multi-part context forwarding.
 - `server.ts` & `api/upload.ts`: In-memory multipart upload handling, magic number validation, and Tesseract OCR engine.
 - `src/services/attachmentStorageService.js`: Browser IndexedDB binary blob caching (`orvix_attachments_db`).
@@ -752,7 +840,21 @@ service cloud.firestore {
 
 ## Version History & Changelog
 
-### v0.7.0 — Live Response-Time Measurement & Left-Edge Swipe Gesture *(Current Release)*
+### v0.7.1 — Automatic Chat-Input Focus & Pixel-Perfect Code-Block Line Alignment *(Current Release)*
+- **Automatic Chat-Input Focus (ChatGPT-Style)**:
+  - Implemented global keyboard listener in `src/components/chat/ChatArea.jsx` to automatically focus the chat input when the user starts typing anywhere on the page.
+  - Automatically captures the first typed character and places the cursor right after it, eliminating lost keystrokes.
+  - Preserves response text selection so highlighting and copying assistant answers never triggers accidental focus stealing.
+  - Ignores modifier shortcuts (`Ctrl`, `Cmd`, `Alt`) to keep `Ctrl + C`, `Ctrl + V`, `Ctrl + A`, `Ctrl + F`, `Ctrl + Z` intact.
+  - Excludes standalone spaces, navigation keys, IME composition (`isComposing`, `keyCode 229`), buttons, menu items, other form inputs, and modal dialogs.
+- **Pixel-Perfect Code-Block Line Alignment**:
+  - Identified and eliminated vertical drift between line numbers and code text across large (100+, 200+) line code blocks in `src/styles/index.css`.
+  - Harmonized typography with locked CSS variables: `--code-line-height: 22px;` and `--code-font-size: 0.8125rem;`.
+  - Rendered `.line-number` items as explicit 22px block elements with `tabular-nums` / `font-feature-settings: "tnum"`, preventing number width jitter.
+  - Forced `pre code` and all syntax-highlighting `.token` elements to inherit the exact 22px line height, resolving sub-pixel font variance.
+  - Maintained zero line drift over 100+ lines, full horizontal scrolling support, and clean clipboard copying (line numbers are excluded from clipboard).
+
+### v0.7.0 — Live Response-Time Measurement & Left-Edge Swipe Gesture
 - **Live Response-Time Measurement**:
   - Implemented high-resolution live elapsed duration timer (`LiveResponseTimer` in `src/components/chat/ChatMessage.jsx`) that updates every 100ms during active AI generation (`Thinking... X.Xs`).
   - Added final response duration badge (`Response time: X.Xs`) displaying the total generation time once streaming finishes or is stopped.
