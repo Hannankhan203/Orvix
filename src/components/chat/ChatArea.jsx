@@ -749,6 +749,114 @@ export default function ChatArea({
       textareaRef.current.style.height = `${Math.max(newHeight, 44)}px`;
     }
   }, [inputValue]);
+  // Keep refs to avoid stale closures in global keydown listener
+  const inputValueRef = useRef(inputValue);
+  useEffect(() => {
+    inputValueRef.current = inputValue;
+  }, [inputValue]);
+
+  const onInputChangeRef = useRef(onInputChange);
+  useEffect(() => {
+    onInputChangeRef.current = onInputChange;
+  }, [onInputChange]);
+
+  // Automatic input focus when the user starts typing on the keyboard
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleGlobalKeyDown = (e) => {
+      // 1. If textarea does not exist or is already focused, do nothing
+      if (!textareaRef.current || document.activeElement === textareaRef.current) {
+        return;
+      }
+
+      // 2. Ignore modifier shortcuts (Ctrl, Cmd, Alt) to preserve browser shortcuts & OS commands (Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+Z, Ctrl+F, etc.)
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
+
+      // 3. Ignore non-printable keys (Enter, Tab, Escape, Backspace, Delete, Arrows, F1-F12, etc.) and Space
+      if (!e.key || e.key.length !== 1 || e.key === ' ') {
+        return;
+      }
+
+      // 4. Ignore if user is composing with an IME (Chinese, Japanese, etc.)
+      if (e.isComposing || e.keyCode === 229) {
+        return;
+      }
+
+      // 5. Check if another editable element or input currently has focus
+      const activeEl = document.activeElement;
+      if (activeEl) {
+        const tagName = activeEl.tagName?.toLowerCase();
+        if (
+          tagName === 'input' ||
+          tagName === 'textarea' ||
+          tagName === 'select' ||
+          activeEl.isContentEditable ||
+          activeEl.getAttribute?.('contenteditable') === 'true'
+        ) {
+          return;
+        }
+
+        // If a button or link is focused, let it retain focus for standard accessibility navigation
+        // unless it's an ordinary character key (letters, numbers, symbols)
+        const isInteractive =
+          tagName === 'button' ||
+          tagName === 'a' ||
+          activeEl.getAttribute?.('role') === 'button' ||
+          activeEl.getAttribute?.('role') === 'menuitem' ||
+          activeEl.getAttribute?.('role') === 'option';
+
+        if (isInteractive && (e.key === 'Enter' || e.key === ' ' || e.key === 'Tab' || e.key === 'Escape')) {
+          return;
+        }
+      }
+
+      // 6. Check if any modal or dialog is currently open
+      if (
+        document.querySelector(
+          '[role="dialog"], .modal-backdrop, .settings-modal-backdrop, .document-preview-overlay, .auth-modal-backdrop'
+        )
+      ) {
+        return;
+      }
+
+      // 7. Legitimate typing detected while chat textarea was not focused!
+      // Prevent browser default action for this key to prevent scroll or conflict
+      e.preventDefault();
+
+      const currentVal = inputValueRef.current || '';
+      const start = textareaRef.current.selectionStart ?? currentVal.length;
+      const end = textareaRef.current.selectionEnd ?? start;
+      const before = currentVal.slice(0, start);
+      const after = currentVal.slice(end);
+      const newVal = before + e.key + after;
+      const newCursorPos = before.length + e.key.length;
+
+      // Update state and textarea value synchronously
+      if (onInputChangeRef.current) {
+        onInputChangeRef.current(newVal);
+      }
+      textareaRef.current.value = newVal;
+
+      // Auto-adjust textarea height immediately
+      try {
+        textareaRef.current.style.height = 'auto';
+        const newHeight = Math.min(textareaRef.current.scrollHeight, 180);
+        textareaRef.current.style.height = `${Math.max(newHeight, 44)}px`;
+      } catch (_) {}
+
+      // Focus the textarea and set cursor directly after the inserted character
+      textareaRef.current.focus();
+      try {
+        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      } catch (_) {}
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
 
   const handlePromptSelect = (promptText) => {
     if (onInputChange) {
