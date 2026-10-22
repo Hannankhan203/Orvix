@@ -705,13 +705,7 @@ app.get(['/api/config', '/config'], (_req, res) => {
    Controlled Temporary File Upload & Storage Management Architecture
    ========================================================================== */
 
-// Vercel's deployed filesystem is read-only except for /tmp.
-// Keep the existing persistent-looking directory locally,
-// but use Vercel's writable temporary filesystem in production.
-const UPLOAD_DIR = process.env.VERCEL
-  ? path.join('/tmp', 'orvix-uploads')
-  : path.resolve(__dirname, 'uploads', 'temp');
-
+const UPLOAD_DIR = path.resolve(__dirname, 'uploads', 'temp');
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
@@ -1494,35 +1488,54 @@ app.post(['/api/upload', '/upload'], (req, res) => {
     return res.status(200).json({
       success: true,
       count: uploadedResults.length,
-      attachments: uploadedResults.map((r) => ({
-        id: r.id,
-        originalName: r.originalName,
-        name: r.originalName,
-        extension: r.extension,
-        mimeType: r.mimeType,
-        type: r.mimeType,
-        size: r.size,
-        formattedSize: r.formattedSize,
-        status: r.status,
-        uploadedAt: r.uploadedAt,
-        extraction: r.extraction
-          ? {
-              status: r.extraction.status,
-              success: r.extraction.success,
-              format: r.extraction.format,
-              totalCharacters: r.extraction.totalCharacters,
-              totalWords: r.extraction.totalWords,
-              summaryText: r.extraction.summaryText,
-              pageCount: r.extraction.pageCount,
-              slideCount: r.extraction.slideCount,
-              sectionCount: r.extraction.sectionCount,
-              isScanned: r.extraction.isScanned,
-              isTruncated: r.extraction.isTruncated,
-              warning: r.extraction.warning,
-              error: r.extraction.error
-            }
-          : undefined
-      }))
+      attachments: uploadedResults.map((r) => {
+        const ext = path.extname(r.diskFilename).toLowerCase();
+        const isImg =
+          ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+          r.mimeType.startsWith('image/');
+        return {
+          id: r.id,
+          originalName: r.originalName,
+          name: r.originalName,
+          extension: r.extension,
+          mimeType: r.mimeType,
+          type: r.mimeType,
+          size: r.size,
+          formattedSize: r.formattedSize,
+          status: r.status,
+          isImage: isImg,
+          dimensions: r.dimensions,
+          uploadedAt: r.uploadedAt,
+          extraction: r.extraction
+            ? {
+                id: r.id,
+                fileId: r.id,
+                filename: r.diskFilename,
+                originalName: r.originalName,
+                name: r.originalName,
+                status: r.extraction.status,
+                success: r.extraction.success,
+                format: r.extraction.format,
+                isImage: Boolean(r.extraction.isImage || isImg),
+                hasText: Boolean(r.extraction.hasText),
+                text: r.extraction.text || '',
+                message: r.extraction.message,
+                totalCharacters: r.extraction.totalCharacters ?? 0,
+                totalWords: r.extraction.totalWords ?? 0,
+                lineCount: r.extraction.lineCount,
+                confidence: r.extraction.confidence,
+                summaryText: r.extraction.summaryText,
+                pageCount: r.extraction.pageCount,
+                slideCount: r.extraction.slideCount,
+                sectionCount: r.extraction.sectionCount,
+                isScanned: r.extraction.isScanned,
+                isTruncated: r.extraction.isTruncated,
+                warning: r.extraction.warning,
+                error: r.extraction.error
+              }
+            : undefined
+        };
+      })
     });
   });
 });
