@@ -47,12 +47,6 @@ export function detectDictationCapabilities() {
     };
   }
 
-  const hasSpeechRecognition = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
-  const hasGetUserMedia = Boolean(
-    navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function'
-  );
-  const hasMediaRecorder = Boolean(window.MediaRecorder);
-
   const userAgent = navigator.userAgent || '';
   const isFirefox = /Firefox/i.test(userAgent);
   const isIOS =
@@ -66,18 +60,32 @@ export function detectDictationCapabilities() {
     (typeof navigator !== 'undefined' && (navigator.standalone || navigator.windowControlsOverlay?.visible))
   );
 
+  const isMobile =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(userAgent) ||
+    (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1 && /MacIntel/.test(navigator.platform));
+
+  // iOS Standalone PWA limitation: Apple WebKit intentionally disables Web Speech API (webkitSpeechRecognition)
+  // in standalone home-screen PWAs. Invocations throw an immediate NotAllowedError or service-not-allowed.
+  const rawSpeechRecognition = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const hasSpeechRecognition = rawSpeechRecognition && !(isIOS && isStandalone);
+
+  const hasGetUserMedia = Boolean(
+    navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function'
+  );
+  const hasMediaRecorder = Boolean(window.MediaRecorder);
+
   // Engine mode resolution:
-  // - 'hybrid': Chrome, Edge, Safari, Android & iOS PWAs (SpeechRecognition live preview + MediaRecorder Whisper enhancement)
-  // - 'direct-audio': Firefox on Windows/macOS/Android (Direct MediaRecorder capture + Whisper transcription)
+  // - 'hybrid': Desktop Chrome, Edge, Safari (Concurrent SpeechRecognition live preview + MediaRecorder Whisper enhancement)
+  // - 'native-live': Mobile Chrome (Android) & Mobile Safari (iOS browser) (Dedicated SpeechRecognition for real-time live preview without audio HAL hardware contention)
+  // - 'direct-audio': Firefox, iOS standalone PWAs, & browsers without functional SpeechRecognition (Direct MediaRecorder capture + Whisper transcription)
   // - 'native-only': Browsers with SpeechRecognition but missing MediaRecorder
   // - 'unsupported': Neither capability available
   let engineMode = 'unsupported';
-  if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
+  if (!isFirefox && hasSpeechRecognition && !isMobile && hasGetUserMedia && hasMediaRecorder) {
     engineMode = 'hybrid';
+  } else if (!isFirefox && hasSpeechRecognition && isMobile) {
+    engineMode = 'native-live';
   } else if (hasGetUserMedia && hasMediaRecorder) {
-    // Firefox fallback (or browsers without functional native SpeechRecognition):
-    // Native SpeechRecognition is not enabled/functional by default in Firefox,
-    // but MediaRecorder + getUserMedia are fully supported for direct Whisper transcription!
     engineMode = 'direct-audio';
   } else if (!isFirefox && hasSpeechRecognition) {
     engineMode = 'native-only';
@@ -92,7 +100,8 @@ export function detectDictationCapabilities() {
     isFirefox,
     isIOS,
     isSafari,
-    isStandalone
+    isStandalone,
+    isMobile
   };
 }
 
@@ -914,7 +923,20 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       isStartingRef.current = true;
 
       // 1. In parallel for fresh sessions (isNewSession), initialize microphone stream for audio visualizer & MediaRecorder
-      if (isNewSession && caps.hasGetUserMedia && caps.hasMediaRecorder) {
+      // ARCHITECTURAL RULE:
+      // Desktop 'hybrid' mode: Desktop OS audio subsystems (WASAPI, CoreAudio, PulseAudio) allow multiple clients
+      // to capture from the hardware microphone simultaneously without hardware contention.
+      // Mobile 'native-live' mode: Mobile OS audio subsystems (Android AudioRecord and iOS AVAudioSession) strictly
+      // restrict hardware audio input to a single recording client. Starting getUserMedia concurrently seizes
+      // the hardware microphone, starving SpeechRecognition of audio and killing the live interim transcript.
+      // Therefore, on mobile with native SpeechRecognition, recognition is given exclusive, uncontested access to the mic.
+      const shouldRecordConcurrentAudio =
+        isNewSession &&
+        caps.hasGetUserMedia &&
+        caps.hasMediaRecorder &&
+        caps.engineMode === 'hybrid';
+
+      if (shouldRecordConcurrentAudio) {
         acquireMicrophoneStream()
           .then((sharedStream) => {
             if (
@@ -971,10 +993,18 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         recognition.onspeechstart = () => {
           if (instanceCounterRef.current !== currentInstanceId) return;
           consecutiveErrorsRef.current = 0;
+          if (caps.engineMode === 'native-live') {
+            setAudioLevel(65);
+            setAudioFrequencies([0.35, 0.65, 0.85, 0.6, 0.3]);
+          }
         };
 
         recognition.onspeechend = () => {
-          // User paused speaking; session remains open
+          if (instanceCounterRef.current !== currentInstanceId) return;
+          if (caps.engineMode === 'native-live') {
+            setAudioLevel(0);
+            setAudioFrequencies([0.15, 0.25, 0.35, 0.25, 0.15]);
+          }
         };
 
         recognition.onnomatch = () => {
@@ -1075,6 +1105,18 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
           const liveCombined = combineComposerText(baseTextRef.current, liveSpeech);
 
+          if (caps.engineMode === 'native-live') {
+            const dynamicLevel = currentInterim ? 75 : 45;
+            setAudioLevel(dynamicLevel);
+            setAudioFrequencies([
+              0.25 + Math.random() * 0.25,
+              0.45 + Math.random() * 0.35,
+              0.65 + Math.random() * 0.3,
+              0.45 + Math.random() * 0.35,
+              0.25 + Math.random() * 0.25
+            ]);
+          }
+
           if (liveCombined !== inputValueRef.current) {
             recordEmission(liveCombined);
             if (onInputChangeRef.current) {
@@ -1107,6 +1149,37 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
               });
               return;
             }
+
+            // On mobile native-live, if SpeechRecognition fails with service-not-allowed (e.g. Google Speech service disabled),
+            // gracefully transition to direct-audio mode so user speech is captured and transcribed with Whisper.
+            if (
+              caps.engineMode === 'native-live' &&
+              caps.hasGetUserMedia &&
+              caps.hasMediaRecorder &&
+              errorType === 'service-not-allowed'
+            ) {
+              console.warn('[Dictation] Native speech service not allowed; falling back to direct audio Whisper transcription');
+              cleanupRecognitionInstance();
+              acquireMicrophoneStream()
+                .then((sharedStream) => {
+                  attachAudioAnalyser(sharedStream);
+                  startMediaRecorder(sharedStream);
+                  setEngineMode('direct-audio');
+                  updateRecordingState('listening');
+                  setTranscriptionNotice({
+                    type: 'fallback',
+                    message: 'Live speech preview unavailable on this device — audio is recording for Whisper transcription.'
+                  });
+                })
+                .catch(() => {
+                  hasFatalErrorRef.current = true;
+                  stopAudioResources();
+                  setDictationError('Unable to access microphone. Please check device permissions.');
+                  updateRecordingState('error');
+                });
+              return;
+            }
+
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1349,41 +1422,43 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       hasFatalErrorRef.current = false;
       setDictationError(null);
 
-      // Verify if existing microphone stream is live and unmuted
-      let stream = mediaStreamRef.current;
-      const isStreamLive =
-        stream?.active &&
-        stream.getAudioTracks().some((t) => t.readyState === 'live' && !t.muted);
+      // For modes utilizing MediaRecorder (desktop hybrid or direct-audio), verify/resume hardware audio stream
+      if (engineMode === 'hybrid' || engineMode === 'direct-audio') {
+        let stream = mediaStreamRef.current;
+        const isStreamLive =
+          stream?.active &&
+          stream.getAudioTracks().some((t) => t.readyState === 'live' && !t.muted);
 
-      if (!isStreamLive) {
-        try {
-          stream = await acquireMicrophoneStream();
-        } catch (streamErr) {
-          stopAudioResources();
-          setDictationError('Unable to reactivate microphone. Please tap to start dictation again.');
-          updateRecordingState('error');
-          return;
-        }
-      }
-
-      // Resume or re-attach MediaRecorder
-      if (mediaRecorderRef.current) {
-        if (mediaRecorderRef.current.state === 'paused') {
+        if (!isStreamLive) {
           try {
-            mediaRecorderRef.current.resume();
-          } catch (_) {
+            stream = await acquireMicrophoneStream();
+          } catch (streamErr) {
+            stopAudioResources();
+            setDictationError('Unable to reactivate microphone. Please tap to start dictation again.');
+            updateRecordingState('error');
+            return;
+          }
+        }
+
+        // Resume or re-attach MediaRecorder
+        if (mediaRecorderRef.current) {
+          if (mediaRecorderRef.current.state === 'paused') {
+            try {
+              mediaRecorderRef.current.resume();
+            } catch (_) {
+              startMediaRecorder(stream);
+            }
+          } else if (mediaRecorderRef.current.state === 'inactive') {
             startMediaRecorder(stream);
           }
-        } else if (mediaRecorderRef.current.state === 'inactive') {
+        } else if (stream) {
           startMediaRecorder(stream);
         }
-      } else if (stream) {
-        startMediaRecorder(stream);
-      }
 
-      // Resume visualizer
-      if (stream) {
-        attachAudioAnalyser(stream);
+        // Resume visualizer
+        if (stream) {
+          attachAudioAnalyser(stream);
+        }
       }
 
       await startRecognitionSession(false);
@@ -1395,6 +1470,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   }, [
     acquireMicrophoneStream,
     attachAudioAnalyser,
+    engineMode,
     startMediaRecorder,
     startRecognitionSession,
     stopAudioResources,
