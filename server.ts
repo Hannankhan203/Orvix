@@ -2193,7 +2193,10 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
     if (hasGemini) {
       try {
         const ai = new GoogleGenAI({ apiKey: geminiKey });
-        const cleanMime = (audioFile.mimetype || 'audio/webm').split(';')[0].trim();
+        let cleanMime = (audioFile.mimetype || 'audio/webm').split(';')[0].trim().toLowerCase();
+        if (cleanMime === 'audio/m4a' || cleanMime === 'audio/x-m4a' || cleanMime === 'audio/mp4') {
+          cleanMime = 'audio/aac';
+        }
         const base64Data = audioFile.buffer.toString('base64');
 
         const geminiPrompt = `You are a high-accuracy speech transcription engine.

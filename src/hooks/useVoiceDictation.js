@@ -61,13 +61,21 @@ export function detectDictationCapabilities() {
   const isSafari =
     /Safari/i.test(userAgent) && !/Chrome|CriOS|Edg|OPR|Firefox/i.test(userAgent);
 
+  const isStandalone = Boolean(
+    (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    (typeof navigator !== 'undefined' && (navigator.standalone || navigator.windowControlsOverlay?.visible))
+  );
+
   // Engine mode resolution:
-  // - 'hybrid': Chrome, Edge, desktop/iOS Safari (SpeechRecognition + MediaRecorder Whisper enhancement)
-  // - 'direct-audio': Firefox on Windows/macOS/Android (Direct MediaRecorder capture + Whisper transcription)
+  // - 'hybrid': Chrome, Edge, desktop/iOS Safari browser (SpeechRecognition + MediaRecorder Whisper enhancement)
+  // - 'direct-audio': Firefox on Windows/macOS/Android, and iOS Standalone PWA (Direct MediaRecorder capture + Whisper transcription)
   // - 'native-only': Browsers with SpeechRecognition but missing MediaRecorder
   // - 'unsupported': Neither capability available
   let engineMode = 'unsupported';
-  if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
+  if (isIOS && isStandalone && hasGetUserMedia && hasMediaRecorder) {
+    // iOS Standalone PWA restricts native webkitSpeechRecognition, but getUserMedia + MediaRecorder work reliably
+    engineMode = 'direct-audio';
+  } else if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
     engineMode = 'hybrid';
   } else if (hasGetUserMedia && hasMediaRecorder) {
     // Firefox fallback (or browsers without functional native SpeechRecognition):
@@ -86,7 +94,8 @@ export function detectDictationCapabilities() {
     engineMode,
     isFirefox,
     isIOS,
-    isSafari
+    isSafari,
+    isStandalone
   };
 }
 
@@ -939,16 +948,24 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       isStartingRef.current = true;
 
       try {
+        const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
         const recognition = new SpeechRecognition();
-        recognition.continuous = true;
+        recognition.continuous = !isMobileDevice;
         recognition.interimResults = true;
-        recognition.maxAlternatives = 3;
+        recognition.maxAlternatives = isMobileDevice ? 1 : 3;
         recognition.lang = selectedLanguageRef.current;
+
+        console.log(
+          `[Dictation] Initializing recognition (continuous: ${!isMobileDevice}, maxAlternatives: ${
+            isMobileDevice ? 1 : 3
+          }, lang: ${selectedLanguageRef.current}, mobile: ${isMobileDevice})`
+        );
 
         hasFatalErrorRef.current = false;
 
         recognition.onstart = () => {
           if (instanceCounterRef.current !== currentInstanceId) return;
+          console.log('[Dictation] Speech recognition service active');
           isStartingRef.current = false;
           updateRecordingState('listening');
           setDictationError(null);
@@ -1479,6 +1496,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
       // Only submit to Whisper endpoint if non-trivial audio was recorded (>= 300 bytes)
       if (finalBlob && finalBlob.size >= 300) {
+        console.log(
+          `[Dictation] Submitting audio for transcription (${finalBlob.size} bytes, type: ${
+            finalBlob.type || 'unknown'
+          }, lang: ${selectedLanguageRef.current})`
+        );
         transcriptionSessionCounterRef.current += 1;
         const currentSessionId = transcriptionSessionCounterRef.current;
 
@@ -1507,6 +1529,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
           const rawWhisper = (result.text || '').trim();
           if (rawWhisper) {
+            console.log(
+              `[Dictation] Server transcription received: "${rawWhisper}" (model: ${result.model}, provider: ${result.provider})`
+            );
             const initialBase = sessionBaseTextRef.current || '';
             const formattedWhisper = formatSpeechTranscript(
               rawWhisper,
@@ -1517,8 +1542,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             const currentVal = inputValueRef.current || '';
 
             // Non-destructive reconciliation policy (Phase 5.4 & Rule A):
-            // 1. If composer is currently empty (manually cleared by user), NEVER repopulate!
-            if (!currentVal.trim()) {
+            // 1. If composer had text during the session and is now empty (manually cleared by user), NEVER repopulate!
+            // But if the session started with an empty composer and no live speech was emitted (e.g. mobile PWA or direct-audio mode),
+            // empty currentVal is expected and MUST receive the Whisper transcript!
+            const hadTextDuringSession = Boolean(preTranscribeValue?.trim() || initialBase?.trim());
+            if (!currentVal.trim() && hadTextDuringSession) {
+              console.log('[Dictation] Composer was cleared by user during session; discarding whisper transcript.');
               return;
             }
 
@@ -1551,8 +1580,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
               currentSpeechPortion = currentVal.slice(initialBase.length).trim();
             }
 
-            if (isExactPreTranscribe || isRecentEmission || isLastEmitted) {
-              // 2. Composer was untouched since stop, or contains a dictation emission: apply complete Whisper transcript
+            if (isExactPreTranscribe || isRecentEmission || isLastEmitted || (!currentVal.trim() && !hadTextDuringSession)) {
+              // 2. Composer was untouched since stop, contains a dictation emission, or was empty waiting for transcribe: apply complete Whisper transcript
               reconciled = fullReconciled;
             } else if (currentNativeSpeech && currentVal.includes(currentNativeSpeech)) {
               // 3. User made edits around the speech: substitute the speech portion
@@ -1626,6 +1655,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           }
         }
       } else {
+        console.warn(
+          `[Dictation] Audio recording buffer too small for server transcription (${
+            finalBlob ? finalBlob.size : 0
+          } bytes)`
+        );
         updateRecordingState('idle');
       }
     } finally {
