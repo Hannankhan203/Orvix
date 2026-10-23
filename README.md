@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.9.1** *(Application Package: v0.9.0)*
+**Current Version: Orvix v0.9.2** *(Application Package: v0.9.0)*
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring High-Accuracy Voice Dictation with Server Whisper Refinement, Refined Conversational Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Touch Edge-Swipe Navigation, Large-Response Continuation, and Deep Document Understanding</strong>
+  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, High-Accuracy Voice Dictation with Server Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
 </p>
 
 ---
@@ -12,7 +12,19 @@
 
 1. [Project Overview](#project-overview)
 2. [Key Features](#key-features)
-3. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
+3. [Message Copying, Markdown Rendering & Table Formatting](#message-copying-markdown-rendering--table-formatting)
+   - [Dual-Format Clipboard Generation (`text/html` and `text/plain`)](#dual-format-clipboard-generation-texthtml-and-textplain)
+   - [Plain-Text Record Layout for Messaging Applications (WhatsApp, Telegram)](#plain-text-record-layout-for-messaging-applications-whatsapp-telegram)
+   - [Rich HTML Table Styling for Documents & Workspaces](#rich-html-table-styling-for-documents--workspaces)
+   - [Mixed-Content Parsing & Code Block Protection](#mixed-content-parsing--code-block-protection)
+   - [Three-Tier Clipboard Writing Strategy & Fallbacks](#three-tier-clipboard-writing-strategy--fallbacks)
+4. [Mobile Responsiveness & Swipe Navigation](#mobile-responsiveness--swipe-navigation)
+   - [Main Conversation Area Swipe-Right Activation](#main-conversation-area-swipe-right-activation)
+   - [Excluded Zones & Interaction Safeguards](#excluded-zones--interaction-safeguards)
+   - [Horizontal Intent Disambiguation vs. Vertical Scroll](#horizontal-intent-disambiguation-vs-vertical-scroll)
+   - [Activation Thresholds & Quick Flick Detection](#activation-thresholds--quick-flick-detection)
+   - [Dual Touch and Pointer Event Architecture](#dual-touch-and-pointer-event-architecture)
+5. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
    - [Hybrid & Direct-Audio Browser Engine Support](#hybrid--direct-audio-browser-engine-support)
    - [Real-Time Audio Capture & Visualizer](#real-time-audio-capture--visualizer)
    - [Smart Punctuation & Typography Formatting](#smart-punctuation--typography-formatting)
@@ -20,50 +32,49 @@
    - [Context-Aware Technical Polishing](#context-aware-technical-polishing)
    - [Session Isolation & Stale Result Protection](#session-isolation--stale-result-protection)
    - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
-4. [Chatbot Modes](#chatbot-modes)
+6. [Chatbot Modes](#chatbot-modes)
    - [1. General Assistant Mode](#1-general-assistant-mode)
    - [2. Learning Mode](#2-learning-mode)
    - [3. Writing Mode](#3-writing-mode)
    - [4. Coding Mode](#4-coding-mode)
-5. [AI Providers & Supported Models](#ai-providers--supported-models)
+7. [AI Providers & Supported Models](#ai-providers--supported-models)
    - [Supported Providers & Models](#supported-providers--models)
    - [Provider Context Budgets](#provider-context-budgets)
    - [Streaming & Fallback System](#streaming--fallback-system)
    - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
-6. [Attachments & Deep Document Understanding](#attachments--deep-document-understanding)
+8. [Attachments & Deep Document Understanding](#attachments--deep-document-understanding)
    - [Three Multimodal Attachment Methods](#three-multimodal-attachment-methods)
    - [Attachment Constraints & Rules](#attachment-constraints--rules)
    - [Supported Document Formats](#supported-document-formats)
    - [Targeted Questioning & Presenter Notes](#targeted-questioning--presenter-notes)
-7. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
+9. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
    - [Supported Image Formats & Binary Verification](#supported-image-formats--binary-verification)
    - [Server-Side OCR Engine](#server-side-ocr-engine)
    - [Honest No-Readable-Text Handling](#honest-no-readable-text-handling)
    - [Dual-Tab Preview Modal](#dual-tab-preview-modal)
-8. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
-   - [Multi-Model Alternative Response Regeneration](#multi-model-alternative-response-regeneration)
-   - [Automatic Chat-Input Focus](#automatic-chat-input-focus)
-   - [Live Response-Time Measurement](#live-response-time-measurement)
-   - [Left-Edge Swipe Gesture](#left-edge-swipe-gesture)
-   - [Controlled Large-Response Continuation](#controlled-large-response-continuation)
-   - [Conversation Pinning & Client-Side Export](#conversation-pinning--client-side-export)
-9. [Architecture & Technology Stack](#architecture--technology-stack)
-10. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
-11. [Project Structure](#project-structure)
-12. [Environment Variables & Configuration](#environment-variables--configuration)
-13. [Installation & Running Locally](#installation--running-locally)
-14. [Build & Deployment Instructions](#build--deployment-instructions)
-15. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
-16. [Security Architecture](#security-architecture)
-17. [Current Limitations](#current-limitations)
-18. [Version History & Detailed Changelog](#version-history--detailed-changelog)
-19. [Future Roadmap](#future-roadmap)
+10. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
+    - [Multi-Model Alternative Response Regeneration](#multi-model-alternative-response-regeneration)
+    - [Automatic Chat-Input Focus](#automatic-chat-input-focus)
+    - [Live Response-Time Measurement](#live-response-time-measurement)
+    - [Controlled Large-Response Continuation](#controlled-large-response-continuation)
+    - [Conversation Pinning & Client-Side Export](#conversation-pinning--client-side-export)
+11. [Architecture & Technology Stack](#architecture--technology-stack)
+12. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
+13. [Project Structure](#project-structure)
+14. [Environment Variables & Configuration](#environment-variables--configuration)
+15. [Installation & Running Locally](#installation--running-locally)
+16. [Build & Deployment Instructions](#build--deployment-instructions)
+17. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
+18. [Security Architecture](#security-architecture)
+19. [Current Limitations](#current-limitations)
+20. [Version History & Detailed Changelog](#version-history--detailed-changelog)
+21. [Future Roadmap](#future-roadmap)
 
 ---
 
 ## Project Overview
 
-**Orvix** is an intelligent, multi-model AI conversational workspace built to deliver production-grade text generation, specialized conversational modes, multi-provider model comparisons, keyboard-first interaction, precision code rendering, transparent latency tracking, touch gesture navigation, voice dictation, and multi-format document analysis.
+**Orvix** is an intelligent, multi-model AI conversational workspace built to deliver production-grade text generation, specialized conversational modes, multi-provider model comparisons, keyboard-first interaction, precision code rendering, transparent latency tracking, fluid mobile touch gestures, voice dictation, dual-format table copying, and multi-format document analysis.
 
 Engineered as a full-stack Node.js application, Orvix pairs a responsive React 19 single-page application with an Express proxy backend running Vite in middleware mode. All AI completions, speech transcriptions, file uploads, and OCR operations are executed server-side to guarantee that API credentials, tokens, and storage paths remain strictly private.
 
@@ -71,19 +82,159 @@ Engineered as a full-stack Node.js application, Orvix pairs a responsive React 1
 
 ## Key Features
 
+- **Dual-Format Table & Message Copying**: Copies assistant responses as both rich `text/html` and optimized `text/plain`. Tables pasted into messaging apps (such as WhatsApp) render as clear, structured field-value records so values never lose their column associations, while rich destinations (Google Docs, Word, Slack) receive formatted HTML tables with borders and backgrounds.
+- **Main Conversation Mobile Swipe Navigation**: Fluid swipe-right gesture active across the main conversation area on mobile and tablet screens to open chat history, with exclusions for the top header, bottom composer, interactive buttons, code blocks, and an iOS-safe margin (>16px) to avoid native edge navigation conflicts.
 - **High-Accuracy Voice Dictation**: Dual-engine dictation combining progressive browser Web Speech recognition with server-side Whisper Large v3 Turbo audio refinement, multi-language support (9 locales), silence restart auto-recovery, and context-aware technical vocabulary polishing.
 - **Four Specialized Chatbot Modes**: Purpose-built modes for **General Assistant**, **Learning**, **Writing**, and **Coding** with custom system prompts, specialized typography, educational callouts, editorial layouts, and VS Code-style code blocks.
 - **Multi-Model Response Alternatives**: Compare outputs across different AI providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI) without overwriting existing messages, navigable via an interactive `< X of Y >` pager.
 - **Automatic Chat-Input Focus**: Type naturally from anywhere on the page to immediately activate the message composer without losing the first keystroke, with complete protection for text selection, keyboard shortcuts, and modal dialogs.
 - **Pixel-Perfect Code Blocks**: Mathematically locked 22px line height with zero vertical line-number drift over 500+ lines, syntax highlighting for 20+ languages, sticky line number gutter, and clean source code clipboard copying.
 - **Live Response-Time Tracking**: Real-time elapsed duration timer (`Thinking... X.Xs`) updating every 100ms during streaming, transitioning to an immutable duration badge (`Response time: X.Xs`) saved across sessions and exports.
-- **Left-Edge Swipe Navigation**: Touch swipe gesture (0–40px from left edge) on mobile and tablet viewports to slide open chat history without conflicting with vertical scrolling.
 - **Controlled Large-Response Continuation**: Intelligent multi-part output splitting for extensive queries with continuation notices and an interactive composer continuation chip (`[ → Continue response ]`).
 - **Three Multimodal Attachment Methods**: File picker dialog, direct clipboard paste (`Ctrl + V`), and drag-and-drop staging with a 25MB limit and a strict 1-attachment-per-message policy.
 - **Deep Document Understanding**: Text extraction from PDFs (`unpdf`), Word documents (`mammoth`), PowerPoint presentations with speaker notes (`jszip`), spreadsheets (CSV/TSV), JSON, XML, and Markdown.
 - **Server-Side OCR Engine**: Powered by `tesseract.js` with binary magic number verification, image metadata inspection, and honest "No readable text detected" handling.
 - **Flexible Data Persistence**: Browser IndexedDB for raw binary attachment caching, Cloud Firestore for authenticated cross-device sync, and `localStorage` for complete Guest Mode usage.
 - **Zero-Key Simulation Mode**: Runs immediately out-of-the-box without requiring API keys, providing realistic local responses for testing all UI workflows, attachments, and exports.
+
+---
+
+## Message Copying, Markdown Rendering & Table Formatting
+
+Orvix features an advanced clipboard formatting pipeline implemented in `src/utils/clipboardFormatter.js` and wired into message action buttons in `src/components/chat/ChatMessage.jsx`. When users click **Copy** on any message, Orvix formats the content to maintain structural fidelity across diverse paste destinations.
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   ORVIX CLIPBOARD FORMATTING PIPELINE                  │
+├───────────────────────────────────┬────────────────────────────────────┤
+│ 1. RICH-TEXT DESTINATIONS         │ 2. MESSAGING APPS (WHATSAPP, ETC.) │
+│ - Target: Word, Docs, Slack, Mail │ - Target: WhatsApp, Telegram, SMS  │
+│ - Mime-type: text/html            │ - Mime-type: text/plain            │
+│ - HTML <table> with borders       │ - Structured record layout         │
+│ - Alternating row zebra fills     │ - Bold "• Header: Value" pairs    │
+│ - Text alignment (left/center/rt) │ - No pipe distortion in variable   │
+│ - Inline bold, italic, code styling│   width proportional fonts         │
+└───────────────────────────────────┴────────────────────────────────────┘
+```
+
+### Dual-Format Clipboard Generation (`text/html` and `text/plain`)
+
+Modern operating systems and browsers support writing multiple representations of content simultaneously via `ClipboardItem`. When copying a message:
+1. Orvix normalizes line breaks and parses Markdown tables, code blocks, lists, blockquotes, and paragraphs.
+2. It generates two distinct payloads:
+   - A fully styled **`text/html`** fragment for rich-text software.
+   - An optimized **`text/plain`** string designed specifically for plain-text messaging platforms.
+3. Both payloads are bound to the clipboard in a single atomic transaction.
+
+### Plain-Text Record Layout for Messaging Applications (WhatsApp, Telegram)
+
+**The Problem with Raw ASCII Markdown Tables:**  
+Messaging applications like WhatsApp and Telegram render plain text using proportional fonts and collapse multiple spaces. When traditional Markdown tables (`| Column 1 | Column 2 |`) are pasted, columns misalign, borders break, and cell contents become detached from their headers.
+
+**The Orvix Solution (`formatTableAsPlainText`):**  
+Orvix transforms Markdown tables into an unambiguous, structured record layout:
+
+```text
+• Feature / Dimension: Operational Logic
+  Traditional Software: Predefined, deterministic IF/THEN rules
+  Artificial Intelligence: Probabilistic patterns inferred from training
+
+• Feature / Dimension: Adaptability
+  Traditional Software: Static; requires manual code updates
+  Artificial Intelligence: Dynamic; continuously learns and refines
+```
+
+- **Header-Value Association**: Each data row is rendered as an indented block where every value is explicitly labeled with its corresponding column header.
+- **Internal Break Handling**: Newlines and `<br>` tags within table cells are converted into indented sublines (`\n    `).
+- **Single-Column Grace**: Single-column tables simplify automatically to clean bullet points (`• Value`).
+- **Header Sanitization**: Header markers like `*`, `_`, and `` ` `` are cleaned so labels remain crisp.
+- **Accurate Expectation**: This does *not* claim that WhatsApp renders an invisible spreadsheet or enforces grid column widths in plain text; rather, it structures the plain-text output so that data remains clear, readable, and associated with its correct heading on any device or font.
+
+### Rich HTML Table Styling for Documents & Workspaces
+
+For rich destinations (Google Docs, Microsoft Word, Apple Pages, Microsoft Outlook, and Slack), Orvix writes an HTML `<table>` element with inline CSS styles:
+- **Table Container**: `border-collapse: collapse; width: 100%; font-family: sans-serif; font-size: 14px;`
+- **Headers (`<thead>`)**: Background fill `#f1f5f9`, dark typography `#0f172a`, semi-bold weight `600`, and border `#cbd5e1`.
+- **Data Rows (`<tbody>`)**: Subtle alternating zebra striping (`#ffffff` and `#f8fafc`) with border dividers `#e2e8f0`.
+- **Column Alignments**: Respects GFM column delimiter alignments (`left`, `center`, `right`) based on colon placement (`:---`, `:---:`, `---:`).
+- **Inline Formatting**: Preserves bold (`<strong>`), italic (`<em>`), code tags with background pills (`<code>`), and hyperlinks (`<a>`).
+
+### Mixed-Content Parsing & Code Block Protection
+
+Responses frequently combine introductory text, bullet points, data tables, and programming code blocks.
+- **Code Block Tokenization**: Before table detection runs, all fenced code blocks (```` ```lang ... ``` ````) are tokenized and protected with zero-byte boundary placeholders (`\u0000FENCED_CODE_N\u0000`). This ensures that pipe characters (`|`) or dashes (`---`) inside code are never misinterpreted as table syntax.
+- **Markdown Preservation**: Text outside tables retains its standard formatting in plain text, while being transformed into semantic `<p>`, `<h1>`–`<h6>`, `<ul>`, `<ol>`, and `<blockquote>` elements in the HTML payload.
+
+### Three-Tier Clipboard Writing Strategy & Fallbacks
+
+Orvix implements a resilient three-tier execution hierarchy in `copyFormattedMessage`:
+1. **Tier 1 — Asynchronous Clipboard API (`ClipboardItem`)**: Constructs binary `Blob` objects for both `text/html` and `text/plain` and calls `navigator.clipboard.write([item])`.
+2. **Tier 2 — Clipboard Text API (`writeText`)**: If `ClipboardItem` or HTML MIME-type writing is blocked by browser security policies, falls back to `navigator.clipboard.writeText(plainText)`.
+3. **Tier 3 — Off-Screen Textarea Fallback (`document.execCommand`)**: If modern asynchronous clipboard APIs are unavailable or permission is denied, appends an off-screen `<textarea>`, selects the plain text, executes `document.execCommand('copy')`, and immediately removes the element.
+4. **User Feedback**: The copy button provides visual feedback (`"Copied"` with check icon for 2 seconds, or `"Failed to copy"` on error).
+
+---
+
+## Mobile Responsiveness & Swipe Navigation
+
+Orvix includes a responsive touch gesture navigation system implemented in `src/components/layout/Layout.jsx`. Mobile and tablet users can access their previous conversation history without reaching for the top hamburger button.
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│               MOBILE SWIPE-TO-OPEN CHAT HISTORY REGION                 │
+├────────────────────────────────────────────────────────────────────────┤
+│ [Header / Action Bar]  ⛔ EXCLUDED from gesture activation             │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  < 16px  │                  MAIN CONVERSATION AREA                     │
+│ ┌──────┐ │                                                             │
+│ │  ⛔  │ │  ✅ SWIPE-RIGHT ZONE (Across center, upper, lower chat)     │
+│ │ iOS  │ │                                                             │
+│ │ Back │ │  • Swiping right slides open the Chat History sidebar       │
+│ │ Margin│ │  • Vertical scrolling continues completely uninterrupted   │
+│ └──────┘ │  • Interactive buttons & code blocks are strictly excluded │
+│          │                                                             │
+├────────────────────────────────────────────────────────────────────────┤
+│ [Composer / Dictation Dock]  ⛔ EXCLUDED from gesture activation       │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Main Conversation Area Swipe-Right Activation
+
+- **Broad Interaction Area**: Unlike restrictive edge-only gestures that require touching within 0–40px of the screen bezel, Orvix allows initiating the swipe from across the main conversation viewport (`.chat-scroll-viewport, .chat-area-container, .chatora-main`).
+- **Responsive Viewports**: Operates on viewports with screen widths `<= 1024px` (smartphones and tablets in portrait/landscape) when the sidebar drawer is closed.
+
+### Excluded Zones & Interaction Safeguards
+
+To prevent accidental drawer activations and gesture conflicts, `isExcludedSwipeTarget()` rigorously excludes non-neutral surfaces:
+1. **iOS Native Back Margin (`< 16px`)**: Touches starting within 16px of the extreme left edge are ignored. This preserves the native iOS Safari swipe-to-go-back gesture without triggering the sidebar.
+2. **Top Navigation Bar (`header`)**: Touches on the title bar, model selector, export menu, and new chat buttons are excluded.
+3. **Bottom Message Composer**: Touches inside the message textarea, action buttons, voice dictation strip, and attachment staging tray are excluded.
+4. **Interactive Controls**: Touches on buttons, links, form inputs, dialogs, dropdowns, and popup menus are excluded.
+5. **Horizontally Scrollable Elements**: Touches inside code blocks (`pre`, `code`), Markdown data tables, and suggestion chip lists are excluded so users can scroll wide content horizontally without opening the drawer.
+6. **Active Text Selection**: Gestures are suspended if the user has highlighted text on the screen.
+
+### Horizontal Intent Disambiguation vs. Vertical Scroll
+
+To guarantee that normal reading and vertical message scrolling remain smooth:
+- **Intent Evaluation Threshold**: The gesture tracks initial touch coordinates until movement exceeds `INTENT_THRESHOLD_PX = 10px`.
+- **Dominance Calculation**: The gesture only locks into a horizontal swipe if the rightward horizontal movement clearly dominates vertical movement:
+  $$\Delta X > 0 \quad \text{and} \quad |\Delta X| > |\Delta Y| \times 1.25$$
+- **Immediate Scroll Release**: If vertical scrolling or a leftward swipe is detected, the gesture handler calls `resetTouchGesture()` immediately and stops tracking. The browser's native vertical scrolling continues without stutter or cancellation.
+- **Scroll Lock on Confirmation**: Once confirmed as an intentional rightward swipe, `e.preventDefault()` prevents the underlying chat list from scrolling vertically during the gesture.
+
+### Activation Thresholds & Quick Flick Detection
+
+The sidebar opens upon touch completion if either condition is met:
+1. **Distance Threshold**: Total rightward displacement $\Delta X \ge 50\text{px}$ (`MIN_SWIPE_PX`) with $|\Delta X| > |\Delta Y|$.
+2. **Velocity Flick**: Total rightward displacement $\Delta X \ge 30\text{px}$ (`FLICK_DISTANCE_PX`) with a flick velocity exceeding $0.35\text{px/ms}$ (`FLICK_VELOCITY`).
+
+### Dual Touch and Pointer Event Architecture
+
+- **Primary**: Listens to native `touchstart`, `touchmove`, `touchend`, and `touchcancel` events.
+- **Synthetic/Pointer Fallback**: Includes matching `pointerdown`, `pointermove`, and `pointerup` handlers for pointer devices and synthetic testing environments.
+- **Collision Avoidance**: If native touch tracking begins, pointer tracking is immediately reset to prevent double-firing.
+- **Device Support Note**: While engineered according to standard touch events and responsive web standards, gesture behavior may vary across specific mobile browsers, web views, or custom Android gesture navigation settings.
 
 ---
 
@@ -107,7 +258,6 @@ Orvix features a robust voice dictation engine implemented in `src/hooks/useVoic
 ### Hybrid & Direct-Audio Browser Engine Support
 
 Orvix dynamically detects browser capabilities (`detectDictationCapabilities`) to provide optimal dictation across desktop and mobile platforms:
-
 - **Hybrid Mode (Chrome, Edge, Safari macOS & iOS)**: Runs native `SpeechRecognition` in parallel with `MediaRecorder` audio buffering. Recognized words appear progressively in the composer in real time. Upon tapping **Done**, the captured audio is refined by Whisper on the server.
 - **Direct-Audio Mode (Mozilla Firefox on Windows, macOS & Android)**: Firefox disables the Web Speech API by default. Orvix captures audio directly via `MediaRecorder` and `getUserMedia`, providing full audio visualizer feedback and delivering high-accuracy Whisper transcription upon tapping **Done**.
 - **Native-Only Mode**: Graceful fallback for environments with SpeechRecognition but restricted MediaRecorder access.
@@ -151,7 +301,7 @@ Upon stopping dictation, the audio recording is submitted to `/api/transcribe`:
 - **Primary Engine**: **Groq Whisper Large v3 Turbo** (`whisper-large-v3-turbo`) with zero-temperature inference.
 - **Vocabulary Conditioning**: Injected prompt context conditioning technical terms: `JavaScript`, `TypeScript`, `React`, `palindrome`, `algorithms`, `async await`, `promises`, `functions`, `objects`, `arrays`, `code`.
 - **Secondary Backup**: Automatic failover to **Gemini Audio Recognition** (`gemini-3.8-flash`) if Groq encounters rate limits or connection errors.
-- **Truncation Protection**: If Whisper returns an incomplete or truncated fragment (<40% the length of a long native transcript with >= 50 characters), Orvix retains the complete native speech transcript and presents an informational notice.
+- **Truncation Protection**: If Whisper returns an incomplete or truncated fragment (<40% the length of a long native transcript with $\ge 50$ characters), Orvix retains the complete native speech transcript and presents an informational notice.
 
 ### Context-Aware Technical Polishing
 
@@ -355,11 +505,6 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 - **Final Duration Badge**: Seamlessly transitions to a static badge upon completion (e.g., `Response time: 2.3s` or `Response time: 1m 04s`).
 - **Session & Export Persistence**: Durations are permanently saved in Cloud Firestore (`responseTimeMs`), local guest storage, and client-side conversation exports.
 
-### Left-Edge Swipe Gesture
-
-- Mobile and tablet users (`window.innerWidth <= 1024`) can swipe right from the left screen edge (within 0–40px) to slide open the chat history sidebar.
-- Integrated intent resolution (`INTENT_THRESHOLD_PX = 8`) separates horizontal swipes from vertical scrolling, ensuring smooth native chat scrolling.
-
 ### Controlled Large-Response Continuation
 
 - For exhaustive prompts, `detectLargeResponseIntent()` divides massive responses into coherent sections.
@@ -382,9 +527,10 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 │ CLIENT (React 19 SPA)             │ SERVER (Express + Vite Middleware) │
 │ - React 19, Tailwind CSS v4       │ - Express in TypeScript (server.ts)│
 │ - Lucide Icons, React-Markdown    │ - @google/genai TypeScript SDK     │
-│ - Web Speech API (Voice & TTS)    │ - Groq, OpenRouter & Cloudflare SSE│
-│ - IndexedDB (Attachment Caching)  │ - In-Memory Multer & Tesseract OCR │
-│ - LocalStorage (Guest Mode)       │ - Document Parsers (unpdf, mammoth)│
+│ - Dual-Format Clipboard Formatter │ - Groq, OpenRouter & Cloudflare SSE│
+│ - Web Speech API (Voice & TTS)    │ - In-Memory Multer & Tesseract OCR │
+│ - IndexedDB (Attachment Caching)  │ - Document Parsers (unpdf, mammoth)│
+│ - LocalStorage (Guest Mode)       │ - Touch & Pointer Gesture Pipeline │
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -422,7 +568,7 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 │   │   ├── chat/                    # Core chat interface
 │   │   │   ├── AttachmentCard.jsx   # Document attachment chip & card
 │   │   │   ├── ChatArea.jsx         # Composer dock, auto-focus, paste & drop
-│   │   │   ├── ChatMessage.jsx      # Markdown rendering, callouts, alternatives & timer
+│   │   │   ├── ChatMessage.jsx      # Markdown rendering, callouts, copy & timer
 │   │   │   ├── CodeBlock.jsx        # Precision syntax highlighter & copy button
 │   │   │   ├── DocumentPreviewModal.jsx # Full-screen image/OCR modal
 │   │   │   ├── ExportChatMenu.jsx   # Markdown / Plain Text / JSON export
@@ -432,7 +578,7 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 │   │   │   ├── ModelSelector.jsx    # AI provider & model selector
 │   │   │   ├── PromptSuggestions.jsx# Welcome starter prompt chips
 │   │   │   └── TypingIndicator.jsx  # Streaming indicator dots
-│   │   ├── layout/                  # Navigation header, sidebar & layout
+│   │   ├── layout/                  # Navigation header, sidebar & gesture layout
 │   │   ├── settings/                # User preferences & persona modal
 │   │   └── ui/                      # Reusable UI primitives (Button, Logo)
 │   ├── config/                      # App config, 4 chat modes & Firebase
@@ -454,7 +600,7 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 │   │   ├── openrouterService.js     # OpenRouter completions API
 │   │   └── transcriptionService.js  # Whisper audio transcription client
 │   ├── styles/                      # Tailwind CSS v4 & custom stylesheet (index.css)
-│   └── utils/                       # Export, speech, formatResponseTime & highlighter
+│   └── utils/                       # Export, speech, clipboardFormatter & highlighter
 ├── server.ts                        # Express development & production server
 ├── vite.config.ts                   # Vite configuration
 ├── package.json                     # Project dependencies & scripts
@@ -543,6 +689,8 @@ Orvix is pre-configured with `vercel.json` and dedicated entry points in `api/`:
 
 | Issue | Likely Cause | Resolution |
 | :--- | :--- | :--- |
+| **Pasted table distorted in WhatsApp** | Messaging app uses proportional fonts | Use Orvix's built-in **Copy** button on the message card; Orvix automatically generates structured record plain text (`• Header: Value`) so column values never lose association. |
+| **Swipe gesture does not open drawer** | Swiping inside composer, header, or code block | Initiate the swipe from the neutral conversation area; avoid touching the composer bar, top header, or horizontally scrollable code blocks. |
 | **Microphone access denied** | Browser blocked mic permission | Click the camera/microphone icon in the browser address bar, set permission to "Allow", and reload. |
 | **No live words in Firefox** | Firefox lacks Web Speech API by default | Normal behavior. Orvix automatically switches to Direct-Audio mode; audio records directly and transcribes via Whisper upon tapping Done. |
 | **Dictation pauses on iOS Safari** | iOS Safari requires user gesture after silence | Tap **Resume** on the dictation strip to reactivate the microphone session. |
@@ -565,11 +713,12 @@ Orvix is pre-configured with `vercel.json` and dedicated entry points in `api/`:
 
 ## Current Limitations
 
-1. **OCR vs. Visual Reasoning**: Orvix extracts printed and typographic text from images via OCR. It does not perform spatial visual reasoning or artistic descriptions beyond text extraction.
-2. **Binary File Longevity**: Extracted text and chat metadata persist permanently. Raw binary files are stored in browser IndexedDB on the local device; temporary server files expire after a 2-hour TTL.
-3. **Browser HEIC Rendering**: Standard web browsers cannot decode HEIC/HEIF images natively in `<img>` tags; Orvix displays an informational fallback card with direct download and modal text inspection.
-4. **Scanned PDFs Without Embedded Text**: PDFs containing exclusively rasterized scans require image extraction for OCR parsing.
-5. **Firefox Live Speech Display**: Because Mozilla Firefox does not enable the native Web Speech API by default, live progressive word display is unavailable; full transcription is delivered upon tapping Done via Whisper.
+1. **Messaging App Plain Text Constraints**: While Orvix generates structured record plain text (`• Header: Value`), plain-text platforms like WhatsApp cannot render HTML tables or grid borders.
+2. **Device-Specific Gesture Variations**: Edge swipe sensitivity and gesture handling may vary depending on device touch controllers, OS gesture settings (e.g., Android full-screen gesture navigation), or browser UI overlays.
+3. **OCR vs. Visual Reasoning**: Orvix extracts printed and typographic text from images via OCR. It does not perform spatial visual reasoning or artistic descriptions beyond text extraction.
+4. **Binary File Longevity**: Extracted text and chat metadata persist permanently. Raw binary files are stored in browser IndexedDB on the local device; temporary server files expire after a 2-hour TTL.
+5. **Browser HEIC Rendering**: Standard web browsers cannot decode HEIC/HEIF images natively in `<img>` tags; Orvix displays an informational fallback card with direct download and modal text inspection.
+6. **Firefox Live Speech Display**: Because Mozilla Firefox does not enable the native Web Speech API by default, live progressive word display is unavailable; full transcription is delivered upon tapping Done via Whisper.
 
 ---
 
@@ -580,78 +729,122 @@ Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`):
 - **MINOR**: Substantial new feature additions and multi-component workflows.
 - **PATCH**: Bug fixes, performance optimizations, and reliability enhancements.
 
-> **Version Alignment Note**: The application package metadata in `package.json` specifies version `0.9.0`. The release notes below document the recent dictation overhaul and reliability hardening as **v0.9.1**.
+> **Version Alignment Note**: The application package metadata in `package.json` specifies version `0.9.0`. The release notes below document the recent enhancements through **v0.9.2**.
 
-### v0.9.1 — High-Accuracy Voice Dictation & Whisper Pipeline Hardening (October 2026) *(Current Codebase)*
+### v0.9.2 — Table Copying, Mobile Swipe Navigation & Dictation Hardening (October 2026) *(Current Codebase)*
 
 **Newly Added & Enhanced**
-- **High-Accuracy Server Whisper Pipeline**:
-  - Integrated server-side audio transcription via Groq Whisper Large v3 Turbo (`whisper-large-v3-turbo`) with Gemini audio fallback at `/api/transcribe`.
-  - Added technical prompt conditioning for programming and algorithmic vocabulary.
-  - Implemented Whisper truncation protection: retains complete live native transcripts when Whisper responses are suspiciously short (<40% of native length).
-- **Dual-Engine Dictation Architecture**:
-  - Hybrid mode for Chrome, Edge, and Safari (live Web Speech API + MediaRecorder audio capture in parallel).
-  - Direct-Audio mode for Mozilla Firefox and restricted environments, capturing audio directly and delivering complete Whisper transcription upon tapping **Done**.
-  - Multi-language support across 9 locales (`en-US`, `en-GB`, `en-PK`, `ur-PK`, `es-ES`, `fr-FR`, `de-DE`, `ar-SA`, `hi-IN`).
-- **Context-Aware Technical Polishing**:
-  - Added `polishSpokenTranscript()` with contextual disambiguation:
-    - Corrects phonetic slips like `pedrandom` to `palindrome` in JavaScript/coding contexts.
-    - Strictly preserves `Math.random` as `Math.random`.
-    - Corrects `sync await` to `async/await` in asynchronous programming contexts.
-    - Automatically formats `ECMAScript`, `JavaScript`, and technical acronyms.
-  - Implemented deterministic offline polishing fallback when remote AI providers are unconfigured or unavailable.
-- **Reliability & Session Isolation Hardening**:
-  - **Delete and Dictate Again**: Cleared composer states (`Ctrl+A` + `Backspace`) unconditionally invalidate in-flight transcriptions, preventing deleted text from resurrecting.
-  - **Asynchronous Safety**: Session counters ensure delayed transcription responses cannot overwrite subsequent sessions.
-  - **Manual Edit Protection**: Preserves manual user edits made in the composer while background transcription is processing.
-  - **Silence Restart Continuity**: Calculates `totalSessionSpeech` across all silence restarts and pauses without truncating earlier words or duplicating segments.
-  - **Hardware Indicator Release**: Stops hardware audio tracks on tab backgrounding (`visibilitychange`, `pagehide`), turning off OS microphone indicators immediately.
+
+- **A. Improved Table Copying and Clipboard Alignment (`clipboardFormatter.js`)**:
+  - **Dual-Payload Clipboard Generation**: Generates both `text/html` and `text/plain` payloads in modern browsers using `ClipboardItem`, with graceful fallback to `navigator.clipboard.writeText` and off-screen `<textarea>` selection.
+  - **Messaging Application Plain-Text Layout (WhatsApp, Telegram)**: Formats Markdown tables into an unambiguous, labeled record layout (`• Header1: Value1 \n  Header2: Value2`) so table data remains readable and structured even when pasted into proportional-font messaging apps.
+  - **Internal Cell Break Handling**: Normalizes `<br>` tags in table cells into indented sublines (`\n    `), preventing multiline table cell overflows.
+  - **Rich HTML Table Formatting**: Generates styled HTML tables with headers (`#f1f5f9`), zebra-striped rows, borders (`#cbd5e1`, `#e2e8f0`), text alignment (`left`, `center`, `right`), and inline typography for Google Docs, Word, Outlook, and Slack.
+  - **Fenced Code Block Shielding**: Protects code blocks during table parsing to prevent pipe symbols (`|`) in code from triggering false table extractions.
+  - **Mixed Content Support**: Preserves surrounding headings, paragraphs, lists, and blockquotes alongside formatted tables.
+
+- **B. Improved Mobile Chat-History Swipe Gesture (`Layout.jsx`)**:
+  - **Expanded Swipe Activation Zone**: Enables swiping right to open the chat history sidebar from across the main conversation area (`.chat-scroll-viewport, .chat-area-container, .chatora-main`) on screen widths `<= 1024px`, removing the previous 0–40px edge restriction.
+  - **Native iOS Back Avoidance**: Rejects touches within `< 16px` of the extreme left screen edge to prevent contention with the native iOS swipe-to-go-back gesture.
+  - **Comprehensive Excluded Target Filters**: Excludes top navigation/action bar, bottom composer dock, interactive buttons, form inputs, dialogs, popovers, and horizontally scrollable code blocks or tables.
+  - **Horizontal vs. Vertical Intent Disambiguation**: Evaluates movement after crossing `10px` (`INTENT_THRESHOLD_PX`); if vertical scrolling dominates, gesture tracking resets immediately so native scrolling remains smooth.
+  - **Flick Acceleration**: Supports standard swipes ($\Delta X \ge 50\text{px}$) and rapid flicks ($\Delta X \ge 30\text{px}$ with velocity $> 0.35\text{px/ms}$).
+  - **Dual Touch and Pointer Event Handling**: Implements native touch handlers alongside synthetic pointer event support with collision prevention.
+
+- **C. High-Accuracy Voice Dictation & Whisper Pipeline Hardening (`useVoiceDictation.js`, `speechTextCleaner.js`)**:
+  - **Server-Side Whisper Large v3 Turbo**: Integrated Groq Whisper (`whisper-large-v3-turbo`) with zero-temperature inference and technical vocabulary conditioning, with automatic backup to Gemini audio recognition.
+  - **Hybrid & Direct-Audio Architecture**: Progressive Web Speech recognition in Chrome/Edge/Safari, paired with direct MediaRecorder audio capture in Firefox and restricted environments.
+  - **Whisper Truncation Protection**: Retains native transcript if server-side transcription returns an unexpectedly truncated fragment (<40% of native length when $\ge 50$ characters).
+  - **Context-Aware Technical Polishing**: Algorithmic correction for programming terms (`pedrandom` → `palindrome`, `sync await` → `async/await`, `Math.random` preservation, keyword lists).
+  - **Session Isolation & Stale Result Protection**: Composer clears (`Ctrl+A` + `Backspace`) unconditionally invalidate in-flight transcriptions; session counters prevent delayed responses from overwriting active text; manual user edits during transcription are preserved.
+  - **Hardware Track Release**: Audio tracks stop immediately when the browser tab is hidden or backgrounded (`visibilitychange`, `pagehide`).
+
+- **D. Other Verified Enhancements & Reliability Fixes**:
+  - **Visual Copy Feedback**: Message copy button provides immediate state feedback (`"Copied"` or `"Failed to copy"`).
+  - **CodeBlock Clean Copying**: Code block copy button extracts pure code without line numbers or UI chrome.
+  - **Response Timer Persistence**: High-resolution response durations (`responseTimeMs`) saved across Firestore, local storage, and client exports.
+
+---
+
+### v0.9.1 — High-Accuracy Voice Dictation & Whisper Pipeline Hardening (October 2026)
+
+- **High-Accuracy Server Whisper Pipeline**: Integrated server-side audio transcription via Groq Whisper Large v3 Turbo with Gemini audio fallback at `/api/transcribe`.
+- **Dual-Engine Dictation Architecture**: Hybrid mode for Chrome/Edge/Safari and Direct-Audio mode for Firefox with 9 supported locales.
+- **Context-Aware Technical Polishing**: Added `polishSpokenTranscript()` with contextual disambiguation for programming vocabulary.
+- **Session Isolation Hardening**: Reset base references on composer clearing, session counter guards for async transcription, and silence restart continuity.
+
+---
 
 ### v0.9.0 — Four Chatbot Modes Refinement & Documentation Overhaul (October 2026)
 
-**Added & Refined**
 - **Refinement of All Four Chatbot Modes**:
-  - **General Mode**: Enhanced universal markdown presentation, heading hierarchy (H1–H6) with adjacent margin collapse, multi-tier nested unordered and ordered lists, task list checkboxes, and responsive tables.
-  - **Learning Mode**: Purpose-built educational interface with topic, concept, and step heading tiers; sequential numbered steps with purple tabular markers; educational comparison tables; and automated detection of 8 distinct educational callout blocks (*Important*, *Warning*, *Note*, *Tip*, *Key Takeaway*, *Definition*, *Example*, *Comparison*) plus GFM alert tags.
-  - **Writing Mode**: Refined editorial formatting constrained to 76ch max-width, balanced heading wraps, formal memo/email header card detection (`Subject:`, `To:`, `From:`, `Date:`, `Regarding:`), warm amber styling, editorial blockquotes, and document-style tables.
-  - **Coding Mode**: Developer-focused workspace featuring macOS/VS Code-style window controls (red/yellow/green dots), syntax highlighting for 20+ languages, total line-count badge, sticky line number gutter, mathematically locked 22px line height with zero vertical drift over 100+ lines, and pure source code clipboard copying.
+  - **General Mode**: Enhanced universal markdown presentation, heading hierarchy (H1–H6), multi-tier nested lists, task list checkboxes, and responsive tables.
+  - **Learning Mode**: Educational interface with sequential numbered steps, comparison tables, and automated detection of 8 educational callout blocks.
+  - **Writing Mode**: Constrained 76ch max-width, balanced heading wraps, formal memo/email header card detection, and warm amber styling.
+  - **Coding Mode**: VS Code-style window controls, syntax highlighting for 20+ languages, line-count badge, sticky line number gutter, and locked 22px line height.
+
+---
 
 ### v0.8.0 — Multi-Model Response Alternatives & Provider Unification (October 2026)
-- **"Regenerate with another AI Model"**: Allows users to regenerate any completed assistant response using a different provider (Gemini, Groq, OpenRouter, Cloudflare Workers AI) without losing earlier outputs.
+
+- **"Regenerate with another AI Model"**: Regenerate any completed assistant response using a different provider (Gemini, Groq, OpenRouter, Cloudflare Workers AI) without losing earlier outputs.
 - **Non-Destructive Alternative History**: Captures every response as an independent alternative with its own model badge, timestamp, and duration metric.
-- **Response Alternative Navigator**: Integrated `< X of Y >` pager in `ChatMessage.jsx` with active model badges.
-- **Provider Unification**: Unified model selector and alternative generation options to support Gemini, Groq, OpenRouter, and Cloudflare Workers AI.
+- **Response Alternative Navigator**: Integrated `< X of Y >` pager in `ChatMessage.jsx`.
+
+---
 
 ### v0.7.1 — Automatic Chat-Input Focus & Pixel-Perfect Line Alignment (October 2026)
+
 - **Automatic Chat-Input Focus**: Global typing capture in `ChatArea.jsx` to immediately focus the composer on any alphanumeric keystroke without dropping the initial character.
 - **Pixel-Perfect Code-Block Line Alignment**: Synchronized typography (`--code-line-height: 22px;`) to eliminate vertical line number drift across 100+ line code blocks.
 
+---
+
 ### v0.7.0 — Live Response-Time Measurement & Left-Edge Swipe Gesture (October 2026)
+
 - **Live Response-Time Measurement**: Live timer badge (`Thinking... X.Xs`) updating every 100ms during streaming, transitioning to an immutable final duration badge (`Response time: X.Xs`).
-- **Left-Edge Swipe Gesture**: Native touch swipe (0–40px from left edge) on mobile/tablet viewports to slide open chat history.
+- **Initial Left-Edge Swipe Gesture**: Native touch swipe from left edge on mobile/tablet viewports to slide open chat history.
+
+---
 
 ### v0.6.0 — Controlled Large-Response Continuation & Multimodal Inputs (October 2026)
+
 - **Controlled Large-Response Continuation**: Split massive responses into safe parts with continuation notices and an interactive composer chip (`[ → Continue response ]`).
 - **Three Multimodal Attachment Methods**: File picker dialog, clipboard paste (`Ctrl + V`), and drag-and-drop file staging with a 25MB limit.
 
+---
+
 ### v0.5.0 — Serverless Upload Architecture & Resilience (October 2026)
+
 - Migrated uploads to `multer.memoryStorage()`, resolving read-only filesystem errors (`EROFS`) on serverless platforms.
 - Extended client upload timeout to 90 seconds for large files and OCR processing.
 
+---
+
 ### v0.4.0 — Image Attachments & Optical Character Recognition (OCR) (October 2026)
+
 - Server-side OCR engine using `tesseract.js` with binary magic number verification.
 - Honest "No readable text detected" reporting to prevent model hallucinations.
 - Dual-tab image preview modal (Image view + Extracted text view).
 
+---
+
 ### v0.3.0 — Deep Document Understanding & Error UI Overhaul (October 2026)
+
 - Text extraction for PDF (`unpdf`), Word DOCX (`mammoth`), and PowerPoint PPTX with speaker notes (`jszip`).
 - Targeted inquiries by page, range, or slide.
 - Responsive diagnostic error cards with one-click retry and provider switching.
 
+---
+
 ### v0.2.0 — Cloudflare Workers AI Integration (October 2026)
+
 - Integrated `@cf/meta/llama-3.1-8b-instruct` via Cloudflare's edge REST API with SSE streaming.
 
+---
+
 ### v0.1.0 — Initial Full-Stack Release (October 2026)
+
 - React 19 SPA frontend with Tailwind CSS v4, Obsidian Dark and Clean Light themes.
 - Express backend (`server.ts`) with Vite middleware mode on port 3000.
 - Google Gemini, Groq, and OpenRouter streaming.
