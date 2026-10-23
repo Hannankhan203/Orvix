@@ -6703,6 +6703,19 @@ body.theme-light .listening-text,
   animation: slideUpFade 0.15s ease-out;
 }
 
+.composer-actions .dictation-lang-dropdown {
+  left: auto;
+  right: 0;
+}
+
+.composer-lang-btn {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-medium);
+}
+
 .lang-dropdown-header {
   font-size: 0.68rem;
   font-weight: 700;
@@ -6903,20 +6916,98 @@ body.theme-light .listening-text,
 
 @media (max-width: 480px) {
   .composer-listening-bar {
-    padding: 5px 8px;
+    padding: 6px 8px;
     gap: 6px;
+    min-height: 44px;
   }
   .live-speech-placeholder {
     display: none;
   }
-  .dictation-strip-btn .btn-label {
-    display: none;
-  }
   .dictation-strip-btn {
-    width: 28px;
-    min-width: 28px;
+    height: 34px;
+    width: 34px;
+    min-width: 34px;
     padding: 0;
   }
+  .dictation-strip-btn.stop-btn {
+    width: auto;
+    min-width: 60px;
+    padding: 0 10px;
+    gap: 4px;
+  }
+  .dictation-strip-btn:not(.stop-btn) .btn-label {
+    display: none;
+  }
+}
+
+/* Live interim hearing indicator inside message composer */
+.composer-live-speech-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  margin: 4px 0 2px 0;
+  background-color: rgba(37, 99, 235, 0.08);
+  border: 1px dashed rgba(59, 130, 246, 0.35);
+  border-radius: var(--radius-md);
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  max-width: 100%;
+  animation: fadeIn 0.15s ease-out;
+  box-sizing: border-box;
+}
+
+:root[data-theme="light"] .composer-live-speech-pill,
+html[data-theme="light"] .composer-live-speech-pill,
+body.theme-light .composer-live-speech-pill,
+[data-theme="light"] .composer-live-speech-pill {
+  background-color: rgba(37, 99, 235, 0.05);
+  border-color: rgba(37, 99, 235, 0.3);
+}
+
+.live-speech-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background-color: #3b82f6;
+  flex-shrink: 0;
+  animation: dotPulse 1.2s infinite ease-in-out;
+}
+
+@keyframes dotPulse {
+  0%, 100% {
+    transform: scale(0.85);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
+.live-speech-tag {
+  font-weight: 700;
+  font-size: 0.70rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+:root[data-theme="light"] .live-speech-tag,
+html[data-theme="light"] .live-speech-tag,
+body.theme-light .live-speech-tag,
+[data-theme="light"] .live-speech-tag {
+  color: #2563eb;
+}
+
+.live-speech-words {
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
 /* Voice Dictation Error Notification */

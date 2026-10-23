@@ -731,6 +731,40 @@ export default function ChatArea({
   const activeLang =
     supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
 
+  const handleStopListening = () => {
+    stopListening();
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const len = textareaRef.current.value.length;
+        try {
+          textareaRef.current.setSelectionRange(len, len);
+        } catch (_) {}
+      }
+    });
+  };
+
+  const handleCancelListening = () => {
+    cancelListening();
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+    });
+  };
+
+  const handleToggleListening = () => {
+    if (recordingState === 'listening') {
+      handleStopListening();
+    } else if (recordingState === 'paused') {
+      resumeListening();
+    } else if (recordingState === 'requesting') {
+      handleCancelListening();
+    } else {
+      startListening();
+    }
+  };
+
   // Close language menu when clicking outside
   useEffect(() => {
     if (!langMenuOpen) return;
@@ -1148,7 +1182,7 @@ Transcript:
                 </div>
 
                 {/* Recognition Language Selector Pill */}
-                <div className="dictation-lang-wrapper" ref={langMenuRef}>
+                <div className="dictation-lang-wrapper" ref={isRecordingActive ? langMenuRef : undefined}>
                   <button
                     type="button"
                     className="dictation-lang-btn"
@@ -1235,18 +1269,18 @@ Transcript:
                 <button
                   type="button"
                   className="dictation-strip-btn stop-btn"
-                  onClick={stopListening}
-                  title="Stop dictation and keep message"
-                  aria-label="Stop dictation"
+                  onClick={handleStopListening}
+                  title="Finish dictation and keep message"
+                  aria-label="Finish dictation and keep message"
                 >
-                  <Square size={10} fill="currentColor" />
-                  <span className="btn-label">Stop</span>
+                  <Check size={14} strokeWidth={2.5} />
+                  <span className="btn-label">Done</span>
                 </button>
 
                 <button
                   type="button"
                   className="dictation-strip-btn cancel-btn"
-                  onClick={cancelListening}
+                  onClick={handleCancelListening}
                   title="Cancel dictation (discard session)"
                   aria-label="Cancel dictation"
                 >
@@ -1494,7 +1528,7 @@ Transcript:
                 className="composer-textarea"
                 placeholder={
                   isListening
-                    ? 'Listening to speech...'
+                    ? 'Listening... Speak naturally (tap Done when finished)'
                     : isPaused
                     ? 'Dictation paused — speak or type...'
                     : isRequesting
@@ -1517,19 +1551,71 @@ Transcript:
                 aria-label="Message input text"
               />
 
+              {/* Real-time live speech hearing indicator inside composer */}
+              {isRecordingActive && interimTranscript && (
+                <div className="composer-live-speech-pill" role="status" aria-live="polite">
+                  <span className="live-speech-pulse-dot" aria-hidden="true" />
+                  <span className="live-speech-tag">Hearing:</span>
+                  <span className="live-speech-words">"{interimTranscript}"</span>
+                </div>
+              )}
+
               <div className="composer-actions">
+                {/* Recognition Language Selector (pre-recording) */}
+                {isSupported && !isRecordingActive && (
+                  <div className="dictation-lang-wrapper composer-pre-lang" ref={!isRecordingActive ? langMenuRef : undefined}>
+                    <button
+                      type="button"
+                      className="dictation-lang-btn composer-lang-btn"
+                      onClick={() => setLangMenuOpen((prev) => !prev)}
+                      title={`Dictation language: ${activeLang.label}. Click to switch.`}
+                      aria-label={`Dictation language: ${activeLang.label}`}
+                      aria-expanded={langMenuOpen}
+                    >
+                      <span className="lang-flag">{activeLang.flag}</span>
+                      <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
+                      <ChevronDown size={11} className={`lang-chevron ${langMenuOpen ? 'open' : ''}`} />
+                    </button>
+
+                    {langMenuOpen && (
+                      <div className="dictation-lang-dropdown" role="menu">
+                        <div className="lang-dropdown-header">Recognition Language</div>
+                        {supportedLanguages.map((lang) => (
+                          <button
+                            key={lang.code}
+                            type="button"
+                            role="menuitem"
+                            className={`dictation-lang-option ${lang.code === selectedLanguage ? 'active' : ''}`}
+                            onClick={() => {
+                              setSelectedLanguage(lang.code);
+                              setLangMenuOpen(false);
+                            }}
+                          >
+                            <span className="lang-opt-flag">{lang.flag}</span>
+                            <div className="lang-opt-info">
+                              <span className="lang-opt-label">{lang.label}</span>
+                              <span className="lang-opt-native">{lang.native}</span>
+                            </div>
+                            {lang.code === selectedLanguage && <Check size={14} className="lang-check" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Voice Dictation Microphone Button */}
                 <Button
                   type="button"
                   variant={isListening ? 'primary' : isRequesting ? 'outline' : 'ghost'}
                   size="icon-round"
                   disabled={isLoading}
-                  onClick={toggleListening}
+                  onClick={handleToggleListening}
                   title={
                     !isSupported
                       ? 'Voice dictation is not supported in this browser. Please use Chrome, Edge, or Safari.'
                       : isListening
-                      ? 'Stop listening (Voice dictation active)'
+                      ? 'Finish dictation (Keep text in composer)'
                       : isRequesting
                       ? 'Connecting microphone... Click to cancel'
                       : isPaused
@@ -1540,7 +1626,7 @@ Transcript:
                     !isSupported
                       ? 'Voice dictation not supported'
                       : isListening
-                      ? 'Stop listening'
+                      ? 'Finish voice dictation'
                       : isRequesting
                       ? 'Connecting microphone'
                       : isPaused
