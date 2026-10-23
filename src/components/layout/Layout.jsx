@@ -94,16 +94,21 @@ export default function Layout({
     sidebarOpenRef.current = sidebarOpen;
   }, [sidebarOpen]);
 
-  // Mobile/Tablet left-edge swipe-right gesture to open previous chat list/sidebar
+  // Mobile/Tablet swipe-right gesture to open previous chat list/sidebar
+  // Works across the main conversation area (center, upper, lower) while strictly excluding
+  // the top navigation header, bottom composer, interactive controls, and iOS extreme-edge back gesture.
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Edge activation zone: gesture must start within ~40px from the left screen edge
-    const EDGE_ZONE_PX = 40;
-    // Minimum horizontal movement distance required to trigger opening the sidebar
-    const MIN_SWIPE_PX = 40;
-    // Initial movement threshold before determining horizontal vs vertical intent
-    const INTENT_THRESHOLD_PX = 8;
+    // Minimum distance from left screen edge to avoid conflicting with iPhone native Back gesture
+    const IOS_EDGE_MARGIN_PX = 16;
+    // Minimum horizontal movement required to open sidebar
+    const MIN_SWIPE_PX = 50;
+    // Quick flick distance and velocity threshold
+    const FLICK_DISTANCE_PX = 30;
+    const FLICK_VELOCITY = 0.35;
+    // Initial movement threshold before determining horizontal swipe vs vertical scroll
+    const INTENT_THRESHOLD_PX = 10;
 
     // --- Isolated Touch State ---
     let touchStartX = null;
@@ -145,11 +150,69 @@ export default function Layout({
       activePointerId = null;
     };
 
-    const isInteractiveElement = (target) => {
-      if (!target || !target.closest) return false;
-      return Boolean(
-        target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="dialog"]')
-      );
+    /**
+     * Determines whether a touch target is in an excluded zone:
+     * - Left edge zone (< 16px) reserved for iOS native Back gesture
+     * - Top Navigation / Action Bar (header)
+     * - Bottom Composer area (inputs, buttons, dictation, attachments)
+     * - Interactive controls (buttons, links, inputs, dialogs, popovers)
+     * - Horizontally scrollable elements (code blocks, tables, chips)
+     * - Active text selection
+     */
+    const isExcludedSwipeTarget = (target, clientX) => {
+      if (!target || !target.closest) return true;
+
+      // 1. Native iOS Back gesture avoidance zone at extreme left edge
+      if (typeof clientX === 'number' && clientX < IOS_EDGE_MARGIN_PX) {
+        return true;
+      }
+
+      // 2. Exclude Top Navigation Bar / Header controls
+      if (target.closest('header, .chatora-header-wrapper, .header-desktop-view, .header-mobile-view')) {
+        return true;
+      }
+
+      // 3. Exclude Bottom Composer Area & Composer Dock
+      if (
+        target.closest(
+          '.chat-composer-dock, .chat-composer-inner, .composer-form, .composer-attachments-preview, .dictation-strip, .transcript-review-card, .transcript-cleanup-banner, .scroll-to-bottom-dock'
+        )
+      ) {
+        return true;
+      }
+
+      // 4. Exclude Interactive Elements, form inputs, buttons, dialogs, popovers, and menus
+      if (
+        target.closest(
+          'button, a, input, textarea, select, [role="button"], [role="dialog"], [role="menu"], [role="menuitem"], [role="tab"], [contenteditable="true"]'
+        )
+      ) {
+        return true;
+      }
+
+      // 5. Exclude Horizontally Scrollable Elements (code blocks, data tables, scrollable pills)
+      if (
+        target.closest(
+          '.table-responsive-wrapper, .markdown-table, .code-block-container, pre, code, .prompt-suggestions-scroll, .alternative-nav-wrapper, .dictation-lang-dropdown'
+        )
+      ) {
+        return true;
+      }
+
+      // 6. Active text selection check
+      try {
+        const selection = window.getSelection();
+        if (selection && selection.toString().trim().length > 0) {
+          return true;
+        }
+      } catch (_) {}
+
+      // 7. Touch must be within the main viewport/chat container
+      if (!target.closest('.chat-scroll-viewport, .chat-area-container, .chatora-main')) {
+        return true;
+      }
+
+      return false;
     };
 
     // --- Native Touch Event Handlers ---
@@ -162,10 +225,7 @@ export default function Layout({
       const clientX = touch.clientX;
       const clientY = touch.clientY;
 
-      // Must start near the left edge (0 to 40px)
-      if (clientX < 0 || clientX > EDGE_ZONE_PX) return;
-      // Do not capture if touch starts on form inputs or interactive controls
-      if (isInteractiveElement(e.target)) return;
+      if (isExcludedSwipeTarget(e.target, clientX)) return;
 
       touchStartX = clientX;
       touchStartY = clientY;
@@ -193,20 +253,21 @@ export default function Layout({
       const absY = Math.abs(deltaY);
 
       if (!isHorizontalTouchSwipe) {
+        // Evaluate initial intent once movement exceeds INTENT_THRESHOLD_PX
         if (absX >= INTENT_THRESHOLD_PX || absY >= INTENT_THRESHOLD_PX) {
-          // If predominantly moving rightward
-          if (deltaX > 0 && absX > absY) {
+          // Confirm horizontal rightward swipe when moving right and horizontal distance clearly dominates
+          if (deltaX > 0 && absX > absY * 1.25) {
             isHorizontalTouchSwipe = true;
           } else {
-            // Predominantly vertical scrolling or leftward movement:
-            // Release tracking immediately to allow seamless vertical scrolling
+            // Predominantly vertical scrolling or leftward swipe:
+            // Release tracking immediately so native vertical scrolling continues completely uninterrupted
             resetTouchGesture();
             return;
           }
         }
       }
 
-      // Once confirmed horizontal swipe from the edge, prevent default scroll contention
+      // Once confirmed as an intentional horizontal right-swipe, prevent vertical scroll contention
       if (isHorizontalTouchSwipe && e.cancelable) {
         e.preventDefault();
       }
@@ -230,7 +291,12 @@ export default function Layout({
       const velocityX = deltaX / duration;
 
       // Open sidebar if horizontal swipe crossed threshold or was a fast rightward flick
-      if ((deltaX >= MIN_SWIPE_PX || (deltaX >= 25 && velocityX > 0.3)) && absX > absY) {
+      const isQualifyingSwipe =
+        deltaX > 0 &&
+        absX > absY &&
+        (deltaX >= MIN_SWIPE_PX || (deltaX >= FLICK_DISTANCE_PX && velocityX > FLICK_VELOCITY));
+
+      if (isQualifyingSwipe && !sidebarOpenRef.current) {
         setSidebarOpen(true);
       }
 
@@ -238,17 +304,10 @@ export default function Layout({
     };
 
     const handleTouchCancel = () => {
-      if (isTrackingTouch && isHorizontalTouchSwipe && touchStartX !== null && touchCurrentX !== null) {
-        const deltaX = touchCurrentX - touchStartX;
-        const deltaY = (touchCurrentY ?? touchStartY) - touchStartY;
-        if (deltaX >= MIN_SWIPE_PX && deltaX > Math.abs(deltaY)) {
-          setSidebarOpen(true);
-        }
-      }
       resetTouchGesture();
     };
 
-    // --- Pointer Event Handlers (for environments dispatching PointerEvents) ---
+    // --- Pointer Event Handlers (for environments dispatching PointerEvents / synthetic tests) ---
     const handlePointerDown = (e) => {
       // If a native touch gesture is already tracking, ignore pointer events completely
       if (isTrackingTouch) return;
@@ -258,8 +317,7 @@ export default function Layout({
       const clientX = e.clientX;
       const clientY = e.clientY;
 
-      if (clientX < 0 || clientX > EDGE_ZONE_PX) return;
-      if (isInteractiveElement(e.target)) return;
+      if (isExcludedSwipeTarget(e.target, clientX)) return;
 
       pointerStartX = clientX;
       pointerStartY = clientY;
@@ -288,7 +346,7 @@ export default function Layout({
 
       if (!isHorizontalPointerSwipe) {
         if (absX >= INTENT_THRESHOLD_PX || absY >= INTENT_THRESHOLD_PX) {
-          if (deltaX > 0 && absX > absY) {
+          if (deltaX > 0 && absX > absY * 1.25) {
             isHorizontalPointerSwipe = true;
           } else {
             resetPointerGesture();
@@ -319,7 +377,12 @@ export default function Layout({
       const duration = Math.max(Date.now() - pointerStartTime, 1);
       const velocityX = deltaX / duration;
 
-      if ((deltaX >= MIN_SWIPE_PX || (deltaX >= 25 && velocityX > 0.3)) && absX > absY) {
+      const isQualifyingSwipe =
+        deltaX > 0 &&
+        absX > absY &&
+        (deltaX >= MIN_SWIPE_PX || (deltaX >= FLICK_DISTANCE_PX && velocityX > FLICK_VELOCITY));
+
+      if (isQualifyingSwipe && !sidebarOpenRef.current) {
         setSidebarOpen(true);
       }
 
@@ -327,16 +390,9 @@ export default function Layout({
     };
 
     const handlePointerCancel = (e) => {
-      if (e.pointerId !== activePointerId) return;
-      // Only process pointer cancel if native touch is not handling it
-      if (!isTrackingTouch && isTrackingPointer && isHorizontalPointerSwipe && pointerStartX !== null && pointerCurrentX !== null) {
-        const deltaX = pointerCurrentX - pointerStartX;
-        const deltaY = (pointerCurrentY ?? pointerStartY) - pointerStartY;
-        if (deltaX >= MIN_SWIPE_PX && deltaX > Math.abs(deltaY)) {
-          setSidebarOpen(true);
-        }
+      if (e.pointerId === activePointerId) {
+        resetPointerGesture();
       }
-      resetPointerGesture();
     };
 
     const handleWindowBlur = () => {
