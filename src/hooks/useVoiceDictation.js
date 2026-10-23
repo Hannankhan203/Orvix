@@ -67,15 +67,12 @@ export function detectDictationCapabilities() {
   );
 
   // Engine mode resolution:
-  // - 'hybrid': Chrome, Edge, desktop/iOS Safari browser (SpeechRecognition + MediaRecorder Whisper enhancement)
-  // - 'direct-audio': Firefox on Windows/macOS/Android, and iOS Standalone PWA (Direct MediaRecorder capture + Whisper transcription)
+  // - 'hybrid': Chrome, Edge, Safari, Android & iOS PWAs (SpeechRecognition live preview + MediaRecorder Whisper enhancement)
+  // - 'direct-audio': Firefox on Windows/macOS/Android (Direct MediaRecorder capture + Whisper transcription)
   // - 'native-only': Browsers with SpeechRecognition but missing MediaRecorder
   // - 'unsupported': Neither capability available
   let engineMode = 'unsupported';
-  if (isIOS && isStandalone && hasGetUserMedia && hasMediaRecorder) {
-    // iOS Standalone PWA restricts native webkitSpeechRecognition, but getUserMedia + MediaRecorder work reliably
-    engineMode = 'direct-audio';
-  } else if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
+  if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
     engineMode = 'hybrid';
   } else if (hasGetUserMedia && hasMediaRecorder) {
     // Firefox fallback (or browsers without functional native SpeechRecognition):
@@ -913,52 +910,51 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       // Clean up any existing recognition instance completely before instantiating a new one
       cleanupRecognitionInstance();
 
-      // Acquire shared microphone stream and coordinate visualizer + MediaRecorder
-      let sharedStream = null;
-      try {
-        sharedStream = await acquireMicrophoneStream();
-
-        // If user stopped or cancelled while getUserMedia was resolving, immediately release stream
-        if (
-          isExplicitStopRef.current ||
-          (recordingStateRef.current !== 'listening' && recordingStateRef.current !== 'requesting')
-        ) {
-          stopAudioResources();
-          return;
-        }
-
-        attachAudioAnalyser(sharedStream);
-        startMediaRecorder(sharedStream);
-      } catch (streamErr) {
-        isStartingRef.current = false;
-        hasFatalErrorRef.current = true;
-        stopAudioResources();
-        const errorMsg =
-          streamErr?.name === 'NotAllowedError' || streamErr?.name === 'PermissionDeniedError'
-            ? 'Microphone access was denied. Please allow microphone permissions in your browser address bar.'
-            : streamErr?.name === 'NotFoundError' || streamErr?.name === 'DevicesNotFoundError'
-            ? 'No microphone detected or microphone is currently busy in another application.'
-            : 'Unable to access microphone. Please check device permissions.';
-        setDictationError(errorMsg);
-        updateRecordingState('error');
-        return;
-      }
-
       if (isStartingRef.current) return;
       isStartingRef.current = true;
 
+      // 1. In parallel for fresh sessions (isNewSession), initialize microphone stream for audio visualizer & MediaRecorder
+      if (isNewSession && caps.hasGetUserMedia && caps.hasMediaRecorder) {
+        acquireMicrophoneStream()
+          .then((sharedStream) => {
+            if (
+              isExplicitStopRef.current ||
+              (recordingStateRef.current !== 'listening' && recordingStateRef.current !== 'requesting')
+            ) {
+              stopAudioResources();
+              return;
+            }
+            attachAudioAnalyser(sharedStream);
+            startMediaRecorder(sharedStream);
+          })
+          .catch((streamErr) => {
+            console.warn('[Dictation] MediaRecorder stream acquisition failed:', streamErr);
+            if (!recognitionRef.current) {
+              isStartingRef.current = false;
+              hasFatalErrorRef.current = true;
+              stopAudioResources();
+              const errorMsg =
+                streamErr?.name === 'NotAllowedError' || streamErr?.name === 'PermissionDeniedError'
+                  ? 'Microphone access was denied. Please allow microphone permissions in your browser address bar.'
+                  : streamErr?.name === 'NotFoundError' || streamErr?.name === 'DevicesNotFoundError'
+                  ? 'No microphone detected or microphone is currently busy in another application.'
+                  : 'Unable to access microphone. Please check device permissions.';
+              setDictationError(errorMsg);
+              updateRecordingState('error');
+            }
+          });
+      }
+
+      // 2. Synchronously instantiate and start SpeechRecognition under the active user activation
       try {
-        const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
         const recognition = new SpeechRecognition();
-        recognition.continuous = !isMobileDevice;
+        recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.maxAlternatives = isMobileDevice ? 1 : 3;
+        recognition.maxAlternatives = 1;
         recognition.lang = selectedLanguageRef.current;
 
         console.log(
-          `[Dictation] Initializing recognition (continuous: ${!isMobileDevice}, maxAlternatives: ${
-            isMobileDevice ? 1 : 3
-          }, lang: ${selectedLanguageRef.current}, mobile: ${isMobileDevice})`
+          `[Dictation] Initializing recognition (continuous: true, interimResults: true, lang: ${selectedLanguageRef.current})`
         );
 
         hasFatalErrorRef.current = false;
@@ -1098,6 +1094,19 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           }
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
+            // If MediaRecorder is actively recording, native speech engine was restricted by OS/webview.
+            // Maintain recording so the user's speech is still captured and transcribed by Whisper upon Stop.
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              console.warn(
+                '[Dictation] Live speech recognition not permitted in this context; maintaining audio capture:',
+                errorType
+              );
+              setTranscriptionNotice({
+                type: 'fallback',
+                message: 'Live speech preview unavailable in this mode — audio is recording for Whisper transcription.'
+              });
+              return;
+            }
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1105,6 +1114,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             );
             updateRecordingState('error');
           } else if (errorType === 'audio-capture') {
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              console.warn('[Dictation] Audio-capture event from SpeechRecognition; MediaRecorder active.');
+              return;
+            }
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1117,6 +1130,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             return;
           } else if (errorType === 'network') {
             consecutiveErrorsRef.current += 1;
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              console.warn('[Dictation] Speech recognition network error; MediaRecorder active.');
+              return;
+            }
             if (consecutiveErrorsRef.current > 2) {
               hasFatalErrorRef.current = true;
               stopAudioResources();
@@ -1211,6 +1228,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           return;
         }
         console.warn('SpeechRecognition initialization error:', initErr);
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          console.warn(
+            '[Dictation] SpeechRecognition init failed but MediaRecorder is active; maintaining recording session.'
+          );
+          return;
+        }
         hasFatalErrorRef.current = true;
         stopAudioResources();
         setDictationError('Unable to activate microphone. Please verify device permissions.');
