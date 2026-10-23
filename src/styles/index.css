@@ -6441,6 +6441,12 @@ body.theme-light .composer-drop-banner,
   border: 1px solid rgba(59, 130, 246, 0.4);
 }
 
+.composer-mic-btn.transcribing {
+  background-color: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
 @keyframes micGlowPulse {
   0% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
@@ -6504,6 +6510,12 @@ body.theme-light .composer-drop-banner,
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), var(--bg-card));
 }
 
+.composer-listening-bar.state-transcribing {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), var(--bg-card));
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2), var(--shadow-sm);
+}
+
 /* Light Mode Overrides for Dictation Strip */
 :root[data-theme="light"] .composer-listening-bar,
 html[data-theme="light"] .composer-listening-bar,
@@ -6521,6 +6533,15 @@ body.theme-light .composer-listening-bar.state-listening,
   background: linear-gradient(135deg, rgba(37, 99, 235, 0.09), #ffffff);
   border-color: rgba(37, 99, 235, 0.4);
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15), 0 2px 10px rgba(37, 99, 235, 0.08);
+}
+
+:root[data-theme="light"] .composer-listening-bar.state-transcribing,
+html[data-theme="light"] .composer-listening-bar.state-transcribing,
+body.theme-light .composer-listening-bar.state-transcribing,
+[data-theme="light"] .composer-listening-bar.state-transcribing {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), #ffffff);
+  border-color: rgba(16, 185, 129, 0.35);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.15), 0 2px 10px rgba(16, 185, 129, 0.08);
 }
 
 .listening-left-group {
@@ -6568,6 +6589,12 @@ body.theme-light .composer-listening-bar.state-listening,
   background-color: rgba(59, 130, 246, 0.15);
   color: #60a5fa;
   border-color: rgba(59, 130, 246, 0.35);
+}
+
+.listening-mic-badge.transcribing {
+  background-color: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.4);
 }
 
 @keyframes micBadgePulse {
@@ -6891,26 +6918,64 @@ body.theme-light .listening-text,
   color: #ef4444;
 }
 
-.btn-label-sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border-width: 0;
+.dictation-strip-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }
 
-/* Responsive Behavior for Dictation Strip */
+.dictation-strip-btn.text-btn {
+  width: auto;
+  min-width: fit-content;
+  padding: 4px 10px;
+  background-color: rgba(37, 99, 235, 0.15);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+  gap: 5px;
+}
+
+.dictation-strip-btn.text-btn:hover {
+  background-color: rgba(37, 99, 235, 0.28);
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.text-btn,
+html[data-theme="light"] .dictation-strip-btn.text-btn,
+body.theme-light .dictation-strip-btn.text-btn,
+[data-theme="light"] .dictation-strip-btn.text-btn {
+  background-color: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.3);
+  color: #2563eb;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.text-btn:hover,
+html[data-theme="light"] .dictation-strip-btn.text-btn:hover,
+body.theme-light .dictation-strip-btn.text-btn:hover,
+[data-theme="light"] .dictation-strip-btn.text-btn:hover {
+  background-color: rgba(37, 99, 235, 0.16);
+  border-color: rgba(37, 99, 235, 0.45);
+  color: #1d4ed8;
+}
+
+/* Responsive Behavior for Dictation Strip (Phase 5.4 Mobile & Cross-Browser Usability) */
 @media (max-width: 640px) {
   .composer-listening-bar {
-    padding: 5px 10px;
+    padding: 6px 10px;
     gap: 8px;
+    min-height: 44px;
   }
   .listening-soundwave {
     display: none;
+  }
+  .dictation-strip-btn {
+    height: 36px;
+    min-height: 36px;
+    min-width: 36px;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .dictation-strip-btn:active {
+    transform: scale(0.96);
   }
 }
 
@@ -6918,25 +6983,53 @@ body.theme-light .listening-text,
   .composer-listening-bar {
     padding: 6px 8px;
     gap: 6px;
-    min-height: 44px;
+    min-height: 46px;
   }
   .live-speech-placeholder {
-    display: none;
+    font-size: 0.72rem;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .listening-preview-area {
+    min-width: 0;
+    flex: 1;
   }
   .dictation-strip-btn {
-    height: 34px;
-    width: 34px;
-    min-width: 34px;
+    height: 38px;
+    min-height: 38px;
+    width: 38px;
+    min-width: 38px;
     padding: 0;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
   .dictation-strip-btn.stop-btn {
     width: auto;
-    min-width: 60px;
+    min-width: 64px;
     padding: 0 10px;
     gap: 4px;
+    font-size: 0.78rem;
   }
-  .dictation-strip-btn:not(.stop-btn) .btn-label {
+  .dictation-strip-btn:not(.stop-btn):not(.text-btn) .btn-label {
     display: none;
+  }
+  .composer-mic-btn {
+    min-width: 38px;
+    min-height: 38px;
+    touch-action: manipulation;
+  }
+  .composer-attach-btn {
+    min-width: 38px;
+    min-height: 38px;
+    touch-action: manipulation;
+  }
+  .composer-send-btn,
+  .composer-stop-btn {
+    min-width: 38px;
+    min-height: 38px;
+    touch-action: manipulation;
   }
 }
 
@@ -7055,6 +7148,129 @@ body.theme-light .live-speech-tag,
 }
 
 .dictation-error-dismiss:hover {
+  opacity: 1;
+}
+
+/* Voice Dictation High-Accuracy / Fallback Notice (Phase 5.3) */
+.composer-dictation-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--radius-md);
+  margin-bottom: 6px;
+  font-size: 0.74rem;
+  animation: slideUpFade 0.18s ease-out;
+  box-sizing: border-box;
+}
+
+.composer-dictation-notice.notice-success {
+  background-color: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34d399;
+}
+
+:root[data-theme="light"] .composer-dictation-notice.notice-success,
+html[data-theme="light"] .composer-dictation-notice.notice-success,
+body.theme-light .composer-dictation-notice.notice-success,
+[data-theme="light"] .composer-dictation-notice.notice-success {
+  background-color: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #059669;
+}
+
+.composer-dictation-notice.notice-fallback {
+  background-color: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  color: #fbbf24;
+}
+
+:root[data-theme="light"] .composer-dictation-notice.notice-fallback,
+html[data-theme="light"] .composer-dictation-notice.notice-fallback,
+body.theme-light .composer-dictation-notice.notice-fallback,
+[data-theme="light"] .composer-dictation-notice.notice-fallback {
+  background-color: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #d97706;
+}
+
+.composer-dictation-notice .notice-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-dictation-notice .notice-icon {
+  flex-shrink: 0;
+}
+
+.composer-dictation-notice .notice-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-dictation-notice .notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.notice-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 0.70rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background-color: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fde68a;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+:root[data-theme="light"] .notice-retry-btn,
+html[data-theme="light"] .notice-retry-btn,
+body.theme-light .notice-retry-btn,
+[data-theme="light"] .notice-retry-btn {
+  background-color: rgba(245, 158, 11, 0.15);
+  border-color: rgba(217, 119, 6, 0.4);
+  color: #b45309;
+}
+
+.notice-retry-btn:hover:not(:disabled) {
+  background-color: rgba(245, 158, 11, 0.32);
+}
+
+.notice-retry-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.notice-dismiss-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  opacity: 0.75;
+  transition: opacity var(--transition-fast);
+}
+
+.notice-dismiss-btn:hover {
   opacity: 1;
 }
 
@@ -7241,6 +7457,12 @@ body.theme-light .live-speech-tag,
   background-color: #f59e0b !important;
   color: #ffffff !important;
   box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.35) !important;
+}
+
+.composer-mic-btn.transcribing {
+  background-color: #10b981 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35) !important;
 }
 
 @keyframes micPulse {

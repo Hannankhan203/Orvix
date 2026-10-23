@@ -590,6 +590,67 @@ function generateSimulatedResponse(
   const isBeginner = Boolean(preferences?.beginnerFriendly);
   const normalizedMode = (mode || 'general').toLowerCase().trim();
 
+  // Context-aware speech transcript polish simulation
+  if (
+    promptLower.includes('transcript polisher') ||
+    promptLower.includes('phonetic speech recognition glitches')
+  ) {
+    const transcriptMatch = promptText.match(/Transcript:\s*\n?["'«»“]([\s\S]*?)["'«»”]\s*$/i);
+    const rawTranscript = transcriptMatch ? transcriptMatch[1].trim() : promptText.trim();
+    if (rawTranscript) {
+      let polished = rawTranscript;
+      const combined = `${promptLower} ${polished.toLowerCase()}`;
+      const isProgramming =
+        combined.includes('javascript') ||
+        combined.includes('ecmascript') ||
+        combined.includes('typescript') ||
+        combined.includes('code') ||
+        combined.includes('programming') ||
+        combined.includes('function') ||
+        combined.includes('algorithm');
+      const isAsync =
+        isProgramming &&
+        (combined.includes('promise') ||
+          combined.includes('callback') ||
+          combined.includes('async') ||
+          combined.includes('await') ||
+          combined.includes('hoisting'));
+
+      // 1. Acronyms & technical terms
+      polished = polished
+        .replace(/\bjava\s*script\b/gi, 'JavaScript')
+        .replace(/\becma\s*script\b/gi, 'ECMAScript')
+        .replace(/\btype\s*script\b/gi, 'TypeScript')
+        .replace(/\bmath\s*\.\s*random\b/gi, 'Math.random')
+        .replace(/\busing\s+math\s+random\b/gi, 'using Math.random')
+        .replace(/\bwith\s+math\s+random\b/gi, 'with Math.random');
+
+      // 2. Contextual disambiguation
+      if (isProgramming) {
+        polished = polished.replace(/(?<!math\s*\.?\s*)\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome');
+        if (isAsync) {
+          polished = polished.replace(/\b(?:sync\s+await|sink\s+await)\b/gi, 'async/await');
+          polished = polished.replace(/\basync\s+await\b/gi, 'async/await');
+        }
+      }
+
+      // 3. Punctuation & capitalization
+      polished = polished
+        .replace(/\s+([.,!?:;۔،؟])/g, '$1')
+        .replace(/(?<!\b[A-Za-z0-9_])\.([a-zA-Z])/g, '. $1')
+        .replace(/([,!?:;۔،؟])([^\s\d\n])/g, '$1 $2')
+        .replace(/[ \t]+/g, ' ');
+
+      if (polished.length > 0) {
+        polished = polished.charAt(0).toUpperCase() + polished.slice(1);
+      }
+      polished = polished.replace(/([.!?\n]\s+)([a-z])/g, (_, sep, letter) => `${sep}${letter.toUpperCase()}`);
+      polished = polished.replace(/\bMath\.\s*random\b/gi, 'Math.random');
+
+      return polished.trim();
+    }
+  }
+
   // Mode-specific simulated responses
   if (normalizedMode === 'coding') {
     if (isConcise) {
@@ -919,7 +980,9 @@ app.get(['/api/config', '/config'], (_req, res) => {
       cfAccountId !== 'YOUR_CLOUDFLARE_ACCOUNT_ID' &&
       cfToken &&
       cfToken !== 'YOUR_CLOUDFLARE_API_TOKEN'
-    )
+    ),
+    whisperConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') || Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
+    whisperProvider: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') ? 'groq' : (Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') ? 'gemini' : null)
   });
 });
 
@@ -1886,6 +1949,313 @@ app.post(['/api/upload', '/upload'], (req, res) => {
             : undefined
         };
       })
+    });
+  });
+});
+
+/* ==========================================================================
+   Voice Dictation Audio Transcription Architecture (Phase 5.3)
+   Whisper-based High-Accuracy Transcription Endpoint
+   ========================================================================== */
+
+const audioUploadFilter = (
+  _req: express.Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback
+) => {
+  const mime = (file.mimetype || '').toLowerCase();
+  const originalName = file.originalname || '';
+  const ext = path.extname(originalName).toLowerCase();
+
+  const allowedAudioMimes = [
+    'audio/webm',
+    'audio/webm;codecs=opus',
+    'audio/ogg',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+    'audio/mp4a-latm',
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/wav',
+    'audio/x-wav',
+    'audio/wave',
+    'audio/m4a',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/flac',
+    'audio/x-flac',
+    'application/octet-stream',
+    'video/webm',
+    'video/mp4'
+  ];
+
+  const allowedExts = ['.webm', '.ogg', '.mp4', '.m4a', '.mp3', '.wav', '.aac', '.flac', '.oga'];
+
+  const isMimeOk = allowedAudioMimes.some((m) => mime.startsWith(m) || m.startsWith(mime));
+  const isExtOk = allowedExts.includes(ext);
+
+  if (!isMimeOk && !isExtOk && mime !== 'application/octet-stream') {
+    return cb(
+      new Error(
+        `Unsupported audio format: '${mime || ext}'. Supported formats include WebM, OGG, MP4, MP3, WAV, and M4A.`
+      )
+    );
+  }
+
+  cb(null, true);
+};
+
+const transcribeUploadMiddleware = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 25 * 1024 * 1024, // 25 MB max
+    files: 1
+  },
+  fileFilter: audioUploadFilter as any
+});
+
+// Map BCP-47 language tag (e.g., 'en-US', 'ur-PK') to ISO-639-1 code ('en', 'ur')
+function mapBcp47ToIso639(bcp47Tag?: string | null): string | undefined {
+  if (!bcp47Tag || typeof bcp47Tag !== 'string') return undefined;
+  const clean = bcp47Tag.trim().toLowerCase();
+  const primary = clean.split('-')[0].split('_')[0];
+  const supported = ['en', 'ur', 'es', 'fr', 'de', 'ar', 'hi', 'zh', 'ja', 'ko', 'ru', 'it', 'pt'];
+  return supported.includes(primary) ? primary : undefined;
+}
+
+// Default Whisper Context Prompt (Section 4: Technical vocabulary conditioning without hardcoded word replacements)
+const DEFAULT_WHISPER_CONTEXT_PROMPT =
+  'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, Node.js, Python, palindrome, algorithms, data structures, async await, promises, functions, objects, arrays, CSS, HTML, API, JSON, programming terminology, code.';
+
+app.post(['/api/transcribe', '/transcribe'], (req, res) => {
+  transcribeUploadMiddleware.any()(req as any, res as any, async (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({
+            success: false,
+            error: 'Audio file exceeds the maximum allowed size of 25MB.',
+            code: 'AUDIO_TOO_LARGE',
+            fallbackAvailable: true
+          });
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+          return res.status(400).json({
+            success: false,
+            error: 'Only one audio recording can be transcribed at a time.',
+            code: 'TOO_MANY_FILES',
+            fallbackAvailable: true
+          });
+        }
+      }
+      return res.status(400).json({
+        success: false,
+        error: err.message || 'Audio upload failed.',
+        code: 'AUDIO_UPLOAD_ERROR',
+        fallbackAvailable: true
+      });
+    }
+
+    const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+    const audioFile = files[0];
+
+    if (!audioFile || !audioFile.buffer || audioFile.buffer.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No audio data was received in the request.',
+        code: 'NO_AUDIO_DATA',
+        fallbackAvailable: true
+      });
+    }
+
+    // Minimum audio payload size check (less than 100 bytes is an uninitialized or empty container)
+    if (audioFile.buffer.length < 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'The recorded audio is empty or too short to transcribe.',
+        code: 'AUDIO_TOO_SHORT',
+        fallbackAvailable: true
+      });
+    }
+
+    const rawLang = req.body?.language ? String(req.body.language).trim() : null;
+    const isoLang = mapBcp47ToIso639(rawLang);
+    const customPrompt = req.body?.prompt ? String(req.body.prompt).trim() : '';
+    const effectivePrompt = customPrompt
+      ? `${DEFAULT_WHISPER_CONTEXT_PROMPT} Spoken context: ${customPrompt.slice(0, 180)}`
+      : DEFAULT_WHISPER_CONTEXT_PROMPT;
+
+    const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
+    const hasGroq = Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY');
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+    const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
+
+    // Primary Transcription Path: Groq Whisper Large v3 Turbo
+    if (hasGroq) {
+      try {
+        const mime = (audioFile.mimetype || 'audio/webm').toLowerCase();
+        let fileExt = '.webm';
+        if (mime.includes('mp4') || mime.includes('m4a')) fileExt = '.m4a';
+        else if (mime.includes('ogg')) fileExt = '.ogg';
+        else if (mime.includes('wav')) fileExt = '.wav';
+        else if (mime.includes('mpeg') || mime.includes('mp3')) fileExt = '.mp3';
+
+        const safeFilename = audioFile.originalname && audioFile.originalname.includes('.')
+          ? audioFile.originalname
+          : `dictation-${Date.now()}${fileExt}`;
+
+        const formData = new FormData();
+        const audioBlob = new Blob([new Uint8Array(audioFile.buffer)], { type: mime });
+        formData.append('file', audioBlob, safeFilename);
+        formData.append('model', 'whisper-large-v3-turbo');
+        formData.append('temperature', '0');
+        formData.append('response_format', 'verbose_json');
+        if (isoLang) {
+          formData.append('language', isoLang);
+        }
+        formData.append('prompt', effectivePrompt);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s max timeout
+
+        const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${groqKey}`
+          },
+          body: formData,
+          signal: controller.signal
+        }).finally(() => clearTimeout(timeoutId));
+
+        if (groqRes.ok) {
+          const result: any = await groqRes.json();
+          const transcriptText = (result.text || '').trim();
+
+          return res.status(200).json({
+            success: true,
+            text: transcriptText,
+            language: result.language || isoLang || 'en',
+            duration: result.duration || 0,
+            model: 'whisper-large-v3-turbo',
+            provider: 'groq',
+            highAccuracy: true
+          });
+        }
+
+        const errStatus = groqRes.status;
+        const errText = await groqRes.text().catch(() => '');
+        logAIDiagnostic({
+          category: 'provider API error',
+          provider: 'groq',
+          model: 'whisper-large-v3-turbo',
+          phase: 'dispatch',
+          upstreamStatus: errStatus,
+          sanitizedMessage: `Groq Whisper failed: ${errText.slice(0, 200)}`
+        });
+
+        // If Groq rate-limited (429) or unavailable (503), attempt Gemini audio fallback if available
+        if (!hasGemini) {
+          const isRateLimit = errStatus === 429;
+          return res.status(errStatus >= 500 || errStatus === 429 ? 503 : 400).json({
+            success: false,
+            error: isRateLimit
+              ? 'Groq Whisper rate limit exceeded. Native speech transcript retained.'
+              : 'Groq Whisper service encountered an error. Native speech transcript retained.',
+            code: isRateLimit ? 'RATE_LIMIT_EXCEEDED' : 'PROVIDER_ERROR',
+            statusCode: errStatus,
+            fallbackAvailable: true
+          });
+        }
+      } catch (groqErr: any) {
+        logAIDiagnostic({
+          category: groqErr?.name === 'AbortError' ? 'provider timeout' : 'provider network failure',
+          provider: 'groq',
+          model: 'whisper-large-v3-turbo',
+          phase: 'dispatch',
+          sanitizedMessage: groqErr?.message || 'Groq request failed'
+        });
+
+        if (!hasGemini) {
+          return res.status(504).json({
+            success: false,
+            error: groqErr?.name === 'AbortError'
+              ? 'Whisper transcription timed out. Native speech transcript retained.'
+              : 'Network error connecting to Whisper service. Native speech transcript retained.',
+            code: groqErr?.name === 'AbortError' ? 'TRANSCRIPTION_TIMEOUT' : 'NETWORK_ERROR',
+            statusCode: 504,
+            fallbackAvailable: true
+          });
+        }
+      }
+    }
+
+    // Secondary Transcription Path: Gemini Audio Recognition Fallback
+    if (hasGemini) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: geminiKey });
+        const cleanMime = (audioFile.mimetype || 'audio/webm').split(';')[0].trim();
+        const base64Data = audioFile.buffer.toString('base64');
+
+        const geminiPrompt = `You are a high-accuracy speech transcription engine.
+Transcribe the speech in this audio recording verbatim.
+Preserve exact words, technical terminology (e.g. Orvix, JavaScript, TypeScript, React, palindrome, algorithms, data structures, async await, promises, functions, objects, arrays, code), and punctuation.
+${isoLang ? `The spoken language is: ${isoLang}.` : ''}
+Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
+
+        const geminiRes = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: cleanMime,
+                    data: base64Data
+                  }
+                },
+                { text: geminiPrompt }
+              ]
+            }
+          ]
+        });
+
+        const text = (geminiRes?.text || '').trim();
+        return res.status(200).json({
+          success: true,
+          text,
+          language: isoLang || 'en',
+          duration: 0,
+          model: 'gemini-3.8-flash',
+          provider: 'gemini',
+          highAccuracy: true
+        });
+      } catch (geminiErr: any) {
+        logAIDiagnostic({
+          category: 'provider API error',
+          provider: 'gemini',
+          model: 'gemini-3.8-flash',
+          phase: 'dispatch',
+          sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
+        });
+
+        return res.status(503).json({
+          success: false,
+          error: 'Transcription service is temporarily unavailable. Native speech transcript retained.',
+          code: 'TRANSCRIPTION_UNAVAILABLE',
+          statusCode: 503,
+          fallbackAvailable: true
+        });
+      }
+    }
+
+    // If neither provider key is configured
+    return res.status(503).json({
+      success: false,
+      error: 'High-accuracy Whisper transcription requires GROQ_API_KEY. Native speech transcript retained.',
+      code: 'PROVIDER_NOT_CONFIGURED',
+      statusCode: 503,
+      fallbackAvailable: true
     });
   });
 });

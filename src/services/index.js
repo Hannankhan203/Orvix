@@ -14,3 +14,4 @@ export * from './groqService.js';
 export * from './openrouterService.js';
 export * from './documentContextService.js';
 export * from './alternativeResponseService.js';
+export * from './transcriptionService.js';

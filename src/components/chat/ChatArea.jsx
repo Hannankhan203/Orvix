@@ -20,9 +20,10 @@ import {
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
-import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
+import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage } from '../../services/aiRouter.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
+import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
 
 // Whitelist of supported image extensions
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
@@ -699,14 +700,19 @@ export default function ChatArea({
     updateScrollButtonVisibility();
   }, [messages, messagesLoading, activeChatId]);
 
-  // Hook into upgraded speech recognition engine
+  // Hook into upgraded speech recognition engine (Phase 5.2 audio capture, Phase 5.3 Whisper transcription, Phase 5.4 cross-browser & mobile reliability)
   const {
     recordingState,
+    engineMode,
     isListening,
     isPaused,
     isRequesting,
     isFinalizing,
+    isTranscribing,
     isSupported,
+    isFirefox,
+    isIOS,
+    isSafari,
     dictationError,
     interimTranscript,
     lastSessionTranscript,
@@ -720,9 +726,15 @@ export default function ChatArea({
     resumeListening,
     stopListening,
     cancelListening,
+    keepLiveTranscript,
     toggleListening,
     clearDictationError,
-    clearLastSessionTranscript
+    clearLastSessionTranscript,
+    hasRecordedAudio,
+    transcriptionMeta,
+    transcriptionNotice,
+    clearTranscriptionNotice,
+    retryTranscription
   } = useVoiceDictation({
     inputValue,
     onInputChange
@@ -746,6 +758,7 @@ export default function ChatArea({
 
   const handleCancelListening = () => {
     cancelListening();
+    setSuggestedRefinement(null);
     requestAnimationFrame(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -760,6 +773,9 @@ export default function ChatArea({
       resumeListening();
     } else if (recordingState === 'requesting') {
       handleCancelListening();
+    } else if (recordingState === 'finalizing' || recordingState === 'transcribing') {
+      // Safe guard: ignore multi-tap while actively finalizing or transcribing
+      return;
     } else {
       startListening();
     }
@@ -777,14 +793,17 @@ export default function ChatArea({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [langMenuOpen]);
 
-  // Auto-resize textarea according to text length
+  // Auto-resize textarea according to text length and follow speech stream
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       const newHeight = Math.min(textareaRef.current.scrollHeight, 180);
       textareaRef.current.style.height = `${Math.max(newHeight, 44)}px`;
+      if (recordingState === 'listening' || recordingState === 'paused') {
+        textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
+      }
     }
-  }, [inputValue]);
+  }, [inputValue, recordingState]);
   // Keep refs to avoid stale closures in global keydown listener
   const inputValueRef = useRef(inputValue);
   useEffect(() => {
@@ -928,60 +947,128 @@ export default function ChatArea({
 
     if (shouldSend) {
       e.preventDefault();
+      let textToSend = inputValue;
       if (isListening || isPaused || isRequesting) {
+        if (
+          interimTranscript &&
+          interimTranscript.trim() &&
+          !inputValue.toLowerCase().includes(interimTranscript.trim().toLowerCase())
+        ) {
+          textToSend = combineComposerText(inputValue, interimTranscript.trim());
+        }
         stopListening();
       }
       clearLastSessionTranscript();
       setSuggestedRefinement(null);
-      if (onSubmit && (inputValue.trim() || attachments.length > 0) && !isLoading) {
+      if (onSubmit && (textToSend.trim() || attachments.length > 0) && !isLoading) {
         const currentAttachments = [...attachments];
         setAttachments([]);
-        onSubmit(currentAttachments);
+        onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
       }
     }
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    let textToSend = inputValue;
     if (isListening || isPaused || isRequesting) {
+      if (
+        interimTranscript &&
+        interimTranscript.trim() &&
+        !inputValue.toLowerCase().includes(interimTranscript.trim().toLowerCase())
+      ) {
+        textToSend = combineComposerText(inputValue, interimTranscript.trim());
+      }
       stopListening();
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
-    if (onSubmit && (inputValue.trim() || attachments.length > 0) && !isLoading) {
+    if (onSubmit && (textToSend.trim() || attachments.length > 0) && !isLoading) {
       const currentAttachments = [...attachments];
       setAttachments([]);
-      onSubmit(currentAttachments);
+      onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
     }
   };
 
-  // Optional AI Transcript Refinement Handler (Phase 4)
+  // Optional AI Transcript Refinement Handler (Phase 4 & Phase 6.2)
   const handleImproveTranscript = async () => {
     if (!lastSessionTranscript || isCleaningTranscript) return;
     setIsCleaningTranscript(true);
 
     try {
-      const cleanPrompt = `You are a specialized speech-to-text transcript polisher.
-Improve punctuation, capitalization, and obvious speech recognition phonetic glitches in the provided spoken transcript.
+      let polished = '';
 
-STRICT CONSTRAINTS:
-1. Preserve the speaker's exact meaning, words, names, and technical terms.
-2. DO NOT summarize, rewrite, or add any commentary.
-3. DO NOT translate (if Urdu, keep Urdu; if English, keep English).
-4. Return ONLY the refined transcript text and nothing else.
+      try {
+        const cleanPrompt = `You are a specialized, context-aware speech-to-text transcript polisher for AI conversation and programming.
+
+TASK:
+Improve punctuation, capitalization, and phonetic speech recognition glitches in the provided spoken transcript while strictly preserving the speaker's original intent, task, and meaning.
+
+CONTEXT-AWARE TECHNICAL DISAMBIGUATION RULES:
+1. Sentence Context Governs Technical Corrections:
+   - Analyze surrounding sentence grammar, phrasing, and the programming domain to distinguish intended concepts.
+   - Example: In "code for pedrandom" or "palindrome checker", the speaker requests a classic programming problem ("palindrome"). Do NOT substitute "Math.random" or an unrelated API when the context clearly requests an algorithmic task.
+   - Example: In "using Math.random" or "generate random numbers with Math.random", the user genuinely wants the random API. Preserve "Math.random" as-is.
+   - Example: In "difference between a palindrome and Math.random", keep both terms distinct and accurately spelled.
+   - Example: In an asynchronous programming context alongside "promises" or "callbacks", "sync await" is an obvious phonetic glitch for "async await" (or "async/await").
+   - Example: In a list of declaration keywords like "var, constant, let", "constant" contextually refers to "const".
+
+2. Preserve Legitimate Technical Vocabulary:
+   - Valid technical terms, programming identifiers, and APIs (such as JavaScript, ECMAScript, palindrome, Math.random, var, const, let, functions, arrow functions, objects, arrays, callbacks, promises, async/await, hoisting, React, useState, useEffect, Node.js, Express, Firebase, TypeScript, etc.) must NEVER be replaced with an unrelated term simply because of surface phonetic similarities.
+
+3. Minimal & Conservative Edits:
+   - Fix punctuation (commas, periods, question marks, capitalization).
+   - Only correct obvious phonetic recognition slips that are strongly supported by the surrounding context.
+   - If a word's meaning cannot be confidently determined from the surrounding context, PRESERVE the original wording rather than making a speculative technical substitution.
+   - NEVER invent requirements, add unrequested libraries or APIs, or omit topics mentioned by the user.
+   - DO NOT summarize, rephrase, or restructure the sentence.
+   - DO NOT translate (preserve the speaker's language, e.g. English, Urdu, etc.).
+
+OUTPUT FORMAT:
+Return ONLY the polished transcript text with no explanations, no introductory phrases, no markdown fences, and no surrounding quotes.
 
 Transcript:
 "${lastSessionTranscript}"`;
 
-      const res = await sendAIMessage({
-        provider: selectedProvider || 'gemini',
-        prompt: cleanPrompt,
-        history: [],
-        username: null
-      });
+        const res = await sendAIMessage({
+          provider: selectedProvider || 'gemini',
+          prompt: cleanPrompt,
+          history: [],
+          username: null
+        });
 
-      if (res && res.text) {
-        const polished = res.text.replace(/^["']|["']$/g, '').trim();
+        if (res && res.text) {
+          let text = res.text.trim();
+          // Strip markdown code fences if present
+          if (text.startsWith('```')) {
+            text = text.replace(/^```[a-zA-Z0-9_-]*\n?/i, '').replace(/\n?```$/i, '').trim();
+          }
+          // Strip common AI conversational prefixes if any leaked
+          text = text.replace(/^(?:here(?:'s| is) (?:the )?(?:polished|refined|corrected) transcript:?\s*)/i, '').trim();
+          // Strip wrapping quotes
+          text = text.replace(/^["'«»“](.*)["'«»”]$/s, '$1').trim();
+
+          // Reject if the response is an unintended code block or simulated chatbot response
+          if (
+            text &&
+            !text.includes('function handleUserMessage') &&
+            !text.includes('**[Simulated Response') &&
+            !text.includes('export function solveProblem') &&
+            !text.includes('Clean implementation')
+          ) {
+            polished = text;
+          }
+        }
+      } catch (networkErr) {
+        console.warn('Network transcript refinement failed, falling back to local polisher:', networkErr);
+      }
+
+      // If remote AI returned empty, failed, or was rejected, apply deterministic contextual polisher
+      if (!polished) {
+        polished = polishSpokenTranscript(lastSessionTranscript, inputValue);
+      }
+
+      if (polished) {
         setSuggestedRefinement(polished);
       }
     } catch (err) {
@@ -1006,12 +1093,13 @@ Transcript:
 
   const hasContent = inputValue.trim().length > 0 || attachments.length > 0;
   const hasMessages = messages.length > 0;
-  // Dictation dock is only active when actively requesting, listening, paused, or finalizing
+  // Dictation dock is active when actively requesting, listening, paused, finalizing, or transcribing
   const isRecordingActive =
     recordingState === 'listening' ||
     recordingState === 'paused' ||
     recordingState === 'requesting' ||
-    recordingState === 'finalizing';
+    recordingState === 'finalizing' ||
+    recordingState === 'transcribing';
 
   return (
     <main
@@ -1138,6 +1226,40 @@ Transcript:
             </div>
           )}
 
+          {/* Voice Dictation High-Accuracy / Fallback Notification (Phase 5.3) */}
+          {transcriptionNotice && !isRecordingActive && (
+            <div className={`composer-dictation-notice ${transcriptionNotice.type}`} role="status">
+              <div className="dictation-notice-content">
+                {transcriptionNotice.type === 'success' ? (
+                  <Sparkles size={13} className="notice-icon success" aria-hidden="true" />
+                ) : (
+                  <AlertCircle size={13} className="notice-icon fallback" aria-hidden="true" />
+                )}
+                <span>{transcriptionNotice.message}</span>
+              </div>
+              <div className="dictation-notice-actions">
+                {transcriptionNotice.canRetry && hasRecordedAudio && (
+                  <button
+                    type="button"
+                    className="notice-retry-btn"
+                    onClick={retryTranscription}
+                    title="Retry Whisper transcription on the captured audio recording"
+                  >
+                    Retry Whisper
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="notice-dismiss-btn"
+                  onClick={clearTranscriptionNotice}
+                  aria-label="Dismiss notice"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Professional Active Dictation Strip */}
           {isRecordingActive && (
             <div
@@ -1148,7 +1270,7 @@ Transcript:
               <div className="listening-left-group">
                 <div className="listening-indicator-content">
                   <div className={`listening-mic-badge ${recordingState}`} aria-hidden="true">
-                    {recordingState === 'requesting' ? (
+                    {recordingState === 'requesting' || recordingState === 'transcribing' || recordingState === 'finalizing' ? (
                       <Loader2 size={13} className="spin-icon" />
                     ) : (
                       <Mic size={13} />
@@ -1175,6 +1297,8 @@ Transcript:
                       ? 'Connecting...'
                       : recordingState === 'paused'
                       ? 'Paused'
+                      : recordingState === 'transcribing'
+                      ? 'Whisper refining...'
                       : recordingState === 'finalizing'
                       ? 'Finishing...'
                       : 'Dictating...'}
@@ -1233,8 +1357,12 @@ Transcript:
                       ? 'Connecting to microphone...'
                       : recordingState === 'paused'
                       ? 'Speech paused'
+                      : recordingState === 'transcribing'
+                      ? 'Transcribing audio with Whisper Large v3...'
                       : recordingState === 'finalizing'
                       ? 'Finishing...'
+                      : engineMode === 'direct-audio'
+                      ? 'Recording audio (Direct Whisper mode)... Tap Done when finished'
                       : 'Speak to dictate...'}
                   </span>
                 )}
@@ -1242,51 +1370,66 @@ Transcript:
 
               {/* Action Buttons: Pause/Resume, Stop, Cancel (✕) */}
               <div className="listening-actions-group">
-                {recordingState === 'listening' ? (
+                {recordingState === 'transcribing' ? (
                   <button
                     type="button"
-                    className="dictation-strip-btn pause-btn"
-                    onClick={pauseListening}
-                    title="Pause dictation"
-                    aria-label="Pause dictation"
+                    className="dictation-strip-btn cancel-btn text-btn"
+                    onClick={keepLiveTranscript}
+                    title="Keep live transcript and cancel Whisper refinement"
+                    aria-label="Keep live transcript and cancel Whisper refinement"
                   >
-                    <Pause size={12} />
-                    <span className="btn-label">Pause</span>
+                    <span className="btn-label">Keep live</span>
+                    <X size={12} />
                   </button>
-                ) : recordingState === 'paused' ? (
-                  <button
-                    type="button"
-                    className="dictation-strip-btn resume-btn"
-                    onClick={resumeListening}
-                    title="Resume dictation"
-                    aria-label="Resume dictation"
-                  >
-                    <Play size={12} fill="currentColor" />
-                    <span className="btn-label">Resume</span>
-                  </button>
-                ) : null}
+                ) : (
+                  <>
+                    {recordingState === 'listening' ? (
+                      <button
+                        type="button"
+                        className="dictation-strip-btn pause-btn"
+                        onClick={pauseListening}
+                        title="Pause dictation"
+                        aria-label="Pause dictation"
+                      >
+                        <Pause size={12} />
+                        <span className="btn-label">Pause</span>
+                      </button>
+                    ) : recordingState === 'paused' ? (
+                      <button
+                        type="button"
+                        className="dictation-strip-btn resume-btn"
+                        onClick={resumeListening}
+                        title="Resume dictation"
+                        aria-label="Resume dictation"
+                      >
+                        <Play size={12} fill="currentColor" />
+                        <span className="btn-label">Resume</span>
+                      </button>
+                    ) : null}
 
-                <button
-                  type="button"
-                  className="dictation-strip-btn stop-btn"
-                  onClick={handleStopListening}
-                  title="Finish dictation and keep message"
-                  aria-label="Finish dictation and keep message"
-                >
-                  <Check size={14} strokeWidth={2.5} />
-                  <span className="btn-label">Done</span>
-                </button>
+                    <button
+                      type="button"
+                      className="dictation-strip-btn stop-btn"
+                      onClick={handleStopListening}
+                      title="Finish dictation and refine with Whisper"
+                      aria-label="Finish dictation and refine with Whisper"
+                    >
+                      <Check size={14} strokeWidth={2.5} />
+                      <span className="btn-label">Done</span>
+                    </button>
 
-                <button
-                  type="button"
-                  className="dictation-strip-btn cancel-btn"
-                  onClick={handleCancelListening}
-                  title="Cancel dictation (discard session)"
-                  aria-label="Cancel dictation"
-                >
-                  <X size={14} />
-                  <span className="btn-label-sr">Cancel</span>
-                </button>
+                    <button
+                      type="button"
+                      className="dictation-strip-btn cancel-btn"
+                      onClick={handleCancelListening}
+                      title="Cancel dictation (discard session)"
+                      aria-label="Cancel dictation"
+                    >
+                      <X size={14} />
+                      <span className="btn-label-sr">Cancel</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1607,37 +1750,47 @@ Transcript:
                 {/* Voice Dictation Microphone Button */}
                 <Button
                   type="button"
-                  variant={isListening ? 'primary' : isRequesting ? 'outline' : 'ghost'}
+                  variant={isListening ? 'primary' : (isRequesting || isTranscribing) ? 'outline' : 'ghost'}
                   size="icon-round"
-                  disabled={isLoading}
+                  disabled={isLoading || isTranscribing || isFinalizing}
                   onClick={handleToggleListening}
                   title={
                     !isSupported
-                      ? 'Voice dictation is not supported in this browser. Please use Chrome, Edge, or Safari.'
+                      ? 'Microphone recording is not supported in this browser environment.'
+                      : isTranscribing
+                      ? 'Enhancing transcript with Whisper Large v3...'
                       : isListening
-                      ? 'Finish dictation (Keep text in composer)'
+                      ? engineMode === 'direct-audio'
+                        ? 'Finish audio recording and transcribe with Whisper'
+                        : 'Finish dictation and refine with Whisper'
                       : isRequesting
                       ? 'Connecting microphone... Click to cancel'
                       : isPaused
                       ? 'Resume listening (Voice dictation paused)'
+                      : engineMode === 'direct-audio'
+                      ? `Record voice message (${activeLang.label}) — Transcribed by Whisper`
                       : `Dictate message (${activeLang.label})`
                   }
                   ariaLabel={
                     !isSupported
                       ? 'Voice dictation not supported'
+                      : isTranscribing
+                      ? 'Enhancing transcript with Whisper'
                       : isListening
                       ? 'Finish voice dictation'
                       : isRequesting
                       ? 'Connecting microphone'
                       : isPaused
                       ? 'Resume dictation'
+                      : engineMode === 'direct-audio'
+                      ? 'Start voice recording for Whisper transcription'
                       : 'Start voice dictation'
                   }
-                  className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : ''}`}
+                  className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing ? 'transcribing' : ''}`}
                   icon={
                     isListening ? (
                       <Square size={13} fill="currentColor" />
-                    ) : isRequesting ? (
+                    ) : (isRequesting || isTranscribing) ? (
                       <Loader2 size={16} className="spin-icon" />
                     ) : isPaused ? (
                       <Play size={13} fill="currentColor" />
@@ -1683,6 +1836,9 @@ Transcript:
               : selectedProvider === 'cloudflare'
               ? 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.'
               : 'Orvix is powered by Google Gemini (Gemini 3.1 Flash Lite). Client integration — verify important facts independently.'}
+            {engineMode === 'direct-audio'
+              ? ' • Dictation powered by direct audio capture with Whisper Large v3 server transcription.'
+              : ' • Dictation combines live browser speech with Whisper Large v3 refinement via server API.'}
           </p>
         </div>
       </div>

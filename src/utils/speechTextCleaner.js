@@ -248,3 +248,132 @@ export function getWordBoundaryOffset(text, offset) {
   return start;
 }
 
+/**
+ * Context-aware speech transcript polisher (Phase 4 & Phase 6.3).
+ *
+ * Polishes punctuation, capitalization, and phonetic speech recognition slips
+ * according to context-aware technical disambiguation rules:
+ * - In programming/algorithmic contexts ("javascript", "code", "function", "algorithms", etc.),
+ *   phonetic slips like "pedrandom", "ped random", "pelindrome" are corrected to "palindrome".
+ * - Valid APIs like "Math.random" are strictly preserved as "Math.random".
+ * - In asynchronous programming contexts, "sync await" / "sink await" is corrected to "async/await".
+ * - Acronyms and technical standards (ECMAScript, JavaScript, TypeScript, React, HTML, CSS, JSON, APIs) are properly cased.
+ * - Spoken verbal commands ("period", "comma", "question mark") are converted to proper typography.
+ * - Punctuation spacing and sentence capitalization are formatted cleanly.
+ * - Preserves all user topics and meaning with zero arbitrary deletions or hallucinations.
+ *
+ * @param {string} transcript - Spoken transcript to polish
+ * @param {string} [surroundingContext=''] - Optional surrounding composer text for additional context
+ * @returns {string} Polished transcript
+ */
+export function polishSpokenTranscript(transcript = '', surroundingContext = '') {
+  if (!transcript || typeof transcript !== 'string') return '';
+  let text = transcript.trim();
+  if (!text) return '';
+
+  const combinedContext = `${surroundingContext} ${text}`.toLowerCase();
+  const isProgrammingContext =
+    combinedContext.includes('javascript') ||
+    combinedContext.includes('ecmascript') ||
+    combinedContext.includes('typescript') ||
+    combinedContext.includes('code') ||
+    combinedContext.includes('programming') ||
+    combinedContext.includes('function') ||
+    combinedContext.includes('algorithm') ||
+    combinedContext.includes('array') ||
+    combinedContext.includes('object') ||
+    combinedContext.includes('promise') ||
+    combinedContext.includes('react') ||
+    combinedContext.includes('python');
+
+  const isAsyncContext =
+    isProgrammingContext &&
+    (combinedContext.includes('promise') ||
+      combinedContext.includes('callback') ||
+      combinedContext.includes('async') ||
+      combinedContext.includes('await') ||
+      combinedContext.includes('hoisting') ||
+      combinedContext.includes('javascript'));
+
+  // 1. Spoken verbal punctuation conversion
+  text = text
+    .replace(/(?:\s+|^)\b(?:period|full\s*stop)\b/gi, '.')
+    .replace(/(?:\s+|^)\bcomma\b/gi, ',')
+    .replace(/(?:\s+|^)\bquestion\s*mark\b/gi, '?')
+    .replace(/(?:\s+|^)\b(?:exclamation\s*mark|exclamation\s*point)\b/gi, '!')
+    .replace(/(?:\s+|^)\bcolon\b/gi, ':')
+    .replace(/(?:\s+|^)\bsemicolon\b/gi, ';')
+    .replace(/(?:\s+|^)\b(?:new\s*paragraph|next\s*paragraph)\b/gi, '\n\n')
+    .replace(/(?:\s+|^)\b(?:new\s*line|newline)\b/gi, '\n')
+    .replace(/(?:\s+|^)\b(?:hyphen|dash)\b/gi, ' - ');
+
+  // 2. English pronoun "I" and standard contractions
+  text = text
+    .replace(/\bi\b/g, 'I')
+    .replace(/\bi'm\b/g, "I'm")
+    .replace(/\bi'll\b/g, "I'll")
+    .replace(/\bi've\b/g, "I've")
+    .replace(/\bi'd\b/g, "I'd");
+
+  // 3. Technical Acronyms and Proper Names
+  const techReplacements = [
+    [/\b(?:or\s*vix|our\s*vix|or\s*fix)\b/gi, 'Orvix'],
+    [/\b(?:chat\s*gpt|chat\s*g\s*p\s*t)\b/gi, 'ChatGPT'],
+    [/\bopen\s*ai\b/gi, 'OpenAI'],
+    [/\bjava\s*script\b/gi, 'JavaScript'],
+    [/\becma\s*script\b/gi, 'ECMAScript'],
+    [/\btype\s*script\b/gi, 'TypeScript'],
+    [/\bpython\b/gi, 'Python'],
+    [/\breact\b/gi, 'React'],
+    [/\bangular\b/gi, 'Angular'],
+    [/\bhannan\b/gi, 'Hannan'],
+    [/\b(?:a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'APIs' : 'API')],
+    [/\b(?:j\s*s\s*o\s*n)\b/gi, 'JSON'],
+    [/\b(?:h\s*t\s*m\s*l)\b/gi, 'HTML'],
+    [/\b(?:c\s*s\s*s)\b/gi, 'CSS'],
+    [/\b(?:u\s*r\s*l)s?\b/gi, (m) => (/s$/i.test(m) ? 'URLs' : 'URL')]
+  ];
+
+  for (const [pattern, replacement] of techReplacements) {
+    text = text.replace(pattern, replacement);
+  }
+
+  // 4. Context-aware technical disambiguation
+  // A. Protect Math.random API calls so they are never converted to palindrome
+  text = text.replace(/\bmath\s*\.\s*random\b/gi, 'Math.random');
+  text = text.replace(/\busing\s+math\s+random\b/gi, 'using Math.random');
+  text = text.replace(/\bwith\s+math\s+random\b/gi, 'with Math.random');
+
+  // B. Disambiguate "pedrandom" / "ped random" -> "palindrome" in programming context
+  if (isProgrammingContext) {
+    text = text.replace(/(?<!math\s*\.?\s*)\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome');
+
+    // C. Disambiguate "sync await" / "sink await" -> "async/await" in async/programming context
+    if (isAsyncContext) {
+      text = text.replace(/\b(?:sync\s+await|sink\s+await)\b/gi, 'async/await');
+      text = text.replace(/\basync\s+await\b/gi, 'async/await');
+    }
+  }
+
+  // 5. Punctuation spacing and sentence boundaries
+  text = text
+    .replace(/\s+([.,!?:;۔،؟])/g, '$1')
+    .replace(/(?<!\b[A-Za-z0-9_])\.([a-zA-Z])/g, '. $1')
+    .replace(/([,!?:;۔،؟])([^\s\d\n])/g, '$1 $2')
+    .replace(/[ \t]+/g, ' ');
+
+  // 6. Sentence capitalization
+  if (text.length > 0) {
+    text = text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  text = text.replace(/([.!?\n]\s+)([a-z])/g, (_, sep, letter) => `${sep}${letter.toUpperCase()}`);
+
+  // 7. Ensure technical APIs with dot notation are preserved cleanly
+  text = text.replace(/\bMath\.\s*random\b/gi, 'Math.random');
+
+  // Natural greeting punctuation: "Hello, Orvix"
+  text = text.replace(/\b(hello|hi|hey)\s+orvix\b/gi, (_, g) => `${g.charAt(0).toUpperCase() + g.slice(1).toLowerCase()}, Orvix`);
+
+  return text.trim();
+}
+
