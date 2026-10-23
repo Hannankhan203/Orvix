@@ -3,7 +3,7 @@
 **Current Version: Orvix v0.9.0**
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring Refined General, Learning, Writing, and Coding Modes, Multi-Model Response Alternatives, Automatic Chat-Input Focus, Pixel-Perfect Code-Block Line Alignment, Live Response-Time Measurement, Touch Edge Swipe Navigation, Controlled Large-Response Continuation, Multimodal Attachments, Deep Document Understanding, and Server-Side OCR Text Extraction</strong>
+  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring four refined modes — General, Learning, Writing, and Coding — with multi-model response alternatives, multimodal attachments, deep document understanding, and advanced chat usability features.</strong>
 </p>
 
 ---
