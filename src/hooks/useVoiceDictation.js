@@ -484,7 +484,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     // 2. Ignore dictation's own emissions to prevent React render cycles from treating them as manual user edits
     if (
       recentEmissionsRef.current.has(inputValue) ||
-      recentEmissionsRef.current.has(inputValue.trim())
+      recentEmissionsRef.current.has(inputValue.trim()) ||
+      inputValue === lastEmittedValueRef.current
     ) {
       return;
     }
@@ -502,6 +503,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         recordingStateRef.current === 'paused'
       ) {
         committedSegmentsRef.current = [];
+        interimTranscriptRef.current = '';
+        setInterimTranscript('');
       }
     }
   }, [inputValue, updateRecordingState]);
@@ -846,20 +849,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         updateRecordingState('requesting');
       } else {
         // Continuing session after browser silence restart:
-        // Fold already finalized speech segments and any pending interim speech into baseTextRef so the new instance starts cleanly
+        // Fold already finalized speech segments into baseTextRef so the new instance starts cleanly.
+        // CRITICAL: NEVER fold interimTranscript into baseTextRef! Interim is unfinalized temporary speech
+        // that will be re-evaluated by the active speech stream. Folding it into baseText duplicates words.
         let committedSoFar = '';
         for (const seg of committedSegmentsRef.current) {
           committedSoFar = combineComposerText(committedSoFar, seg.text);
-        }
-        if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
-          const formattedInterim = formatSpeechTranscript(
-            interimTranscriptRef.current.trim(),
-            selectedLanguageRef.current,
-            combineComposerText(baseTextRef.current, committedSoFar)
-          );
-          if (formattedInterim) {
-            committedSoFar = combineComposerText(committedSoFar, formattedInterim);
-          }
         }
         if (committedSoFar) {
           baseTextRef.current = combineComposerText(baseTextRef.current, committedSoFar);
@@ -1055,12 +1050,28 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
                 );
 
                 if (!isExactRestartEcho && !alreadyCommitted) {
-                  committedSegmentsRef.current.push({
-                    instanceId: currentInstanceId,
-                    index: i,
-                    text: formatted,
-                    timestamp: now
-                  });
+                  // Guard against Android bug where progressive intermediate results are erroneously marked isFinal
+                  // and extend or subsume the previous committed segment within the same instance
+                  const prevSeg = committedSegmentsRef.current.length > 0
+                    ? committedSegmentsRef.current[committedSegmentsRef.current.length - 1]
+                    : null;
+
+                  if (
+                    prevSeg &&
+                    prevSeg.instanceId === currentInstanceId &&
+                    formatted.toLowerCase().startsWith(prevSeg.text.toLowerCase())
+                  ) {
+                    // Update and replace the previous premature final chunk rather than appending to prevent compounding
+                    prevSeg.text = formatted;
+                    prevSeg.timestamp = now;
+                  } else {
+                    committedSegmentsRef.current.push({
+                      instanceId: currentInstanceId,
+                      index: i,
+                      text: formatted,
+                      timestamp: now
+                    });
+                  }
                   lastCommittedSegmentRef.current = {
                     text: formatted,
                     timestamp: now
@@ -1070,14 +1081,32 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             }
           }
 
-          // 2. Compute current interim text across all unfinalized results
+          // 2. Compute current interim text across unfinalized results
+          // CRITICAL ARCHITECTURAL RULE:
+          // The current interim result is a temporary interpretation of currently spoken words.
+          // Progressive interim results are successive snapshots of the SAME current speech.
+          // The latest interim result replaces previous interim snapshots; it must NEVER be accumulated or appended.
           let currentInterim = '';
           for (let i = 0; i < event.results.length; i++) {
             const res = event.results[i];
             if (res && !res.isFinal) {
               const interimCand = selectBestAlternative(res);
               if (interimCand) {
-                currentInterim += (currentInterim ? ' ' : '') + interimCand;
+                const candTrimmed = interimCand.trim();
+                const existingTrimmed = currentInterim.trim();
+
+                if (!existingTrimmed) {
+                  currentInterim = candTrimmed;
+                } else if (candTrimmed.toLowerCase().startsWith(existingTrimmed.toLowerCase())) {
+                  // Progressive extension snapshot: replace with the more complete interim candidate
+                  currentInterim = candTrimmed;
+                } else if (existingTrimmed.toLowerCase().startsWith(candTrimmed.toLowerCase())) {
+                  // Existing interim already holds a longer/more complete hypothesis: retain it
+                  currentInterim = existingTrimmed;
+                } else {
+                  // In multi-result interim streams, the latest entry represents the active interim hypothesis
+                  currentInterim = candTrimmed;
+                }
               }
             }
           }
