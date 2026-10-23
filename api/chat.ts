@@ -2,6 +2,12 @@
 import { app } from '../server.ts';
 
 export default function handler(req: Request, res: Response) {
+  // Ensure no socket or response timeouts cut off streaming
+  req.setTimeout?.(0);
+  res.setTimeout?.(0);
+  if (req.socket) req.socket.setTimeout?.(0);
+  if (res.socket) res.socket.setTimeout?.(0);
+
   if (req.url === '/' || !req.url) {
     req.url = '/api/chat';
   } else if (!req.url.startsWith('/api/chat') && !req.url.startsWith('/chat')) {
@@ -10,11 +16,15 @@ export default function handler(req: Request, res: Response) {
   return app(req, res);
 }
 
+export const maxDuration = 300;
+
 export const config = {
+  maxDuration: 300,
   api: {
     bodyParser: {
       sizeLimit: '10mb'
-    }
+    },
+    responseLimit: false
   }
 };
 

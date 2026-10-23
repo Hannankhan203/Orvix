@@ -1,7 +1,10 @@
 import type { Request, Response } from 'express';
 import { app } from '../server.ts';
 
+export const maxDuration = 300;
+
 export const config = {
+  maxDuration: 300,
   api: {
     bodyParser: false
   }

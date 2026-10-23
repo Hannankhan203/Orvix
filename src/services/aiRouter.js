@@ -280,6 +280,54 @@ export async function streamAIMessage({
         let accumulatedText = '';
         let modelUsed = null;
         let finalProvider = normalizedProvider;
+        let receivedDone = false;
+
+        const handleSSELine = (line) => {
+          const trimmed = line.trim();
+          // Transparently ignore keep-alive heartbeats (lines starting with ':') and blank lines
+          if (!trimmed || trimmed.startsWith(':')) return null;
+          if (!trimmed.startsWith('data:')) return null;
+          const dataStr = trimmed.slice(5).trim();
+          if (dataStr === '[DONE]') {
+            receivedDone = true;
+            return { done: true };
+          }
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.type === 'start') {
+              modelUsed = data.modelUsed;
+              finalProvider = data.provider || normalizedProvider;
+              onStart?.({ modelUsed, provider: finalProvider });
+            } else if (data.type === 'chunk' && data.text) {
+              accumulatedText += data.text;
+              onChunk?.(data.text, accumulatedText);
+            } else if (data.type === 'done') {
+              receivedDone = true;
+              if (data.modelUsed) modelUsed = data.modelUsed;
+              if (data.provider) finalProvider = data.provider;
+              const finalText = data.text || accumulatedText;
+              return {
+                done: true,
+                result: {
+                  text: finalText,
+                  modelUsed: modelUsed || 'AI Model',
+                  provider: finalProvider
+                }
+              };
+            } else if (data.type === 'error') {
+              const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
+              if (data.code) streamErr.code = data.code;
+              if (data.status) streamErr.status = data.status;
+              if (typeof data.retryable === 'boolean') streamErr.retryable = data.retryable;
+              throw streamErr;
+            }
+          } catch (jsonErr) {
+            if (jsonErr.message && !jsonErr.message.includes('JSON')) {
+              throw jsonErr;
+            }
+          }
+          return null;
+        };
 
         try {
           while (true) {
@@ -291,39 +339,9 @@ export async function streamAIMessage({
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-              try {
-                const data = JSON.parse(dataStr);
-                if (data.type === 'start') {
-                  modelUsed = data.modelUsed;
-                  finalProvider = data.provider || normalizedProvider;
-                  onStart?.({ modelUsed, provider: finalProvider });
-                } else if (data.type === 'chunk' && data.text) {
-                  accumulatedText += data.text;
-                  onChunk?.(data.text, accumulatedText);
-                } else if (data.type === 'done') {
-                  if (data.modelUsed) modelUsed = data.modelUsed;
-                  if (data.provider) finalProvider = data.provider;
-                  const finalText = data.text || accumulatedText;
-                  return {
-                    text: finalText,
-                    modelUsed: modelUsed || 'AI Model',
-                    provider: finalProvider
-                  };
-                } else if (data.type === 'error') {
-                  const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
-                  if (data.code) streamErr.code = data.code;
-                  if (data.status) streamErr.status = data.status;
-                  if (typeof data.retryable === 'boolean') streamErr.retryable = data.retryable;
-                  throw streamErr;
-                }
-              } catch (jsonErr) {
-                if (jsonErr.message && !jsonErr.message.includes('JSON')) {
-                  throw jsonErr;
-                }
+              const res = handleSSELine(line);
+              if (res?.result) {
+                return res.result;
               }
             }
           }
@@ -336,33 +354,66 @@ export async function streamAIMessage({
           if (buffer) {
             const trailingLines = buffer.split('\n');
             for (const tLine of trailingLines) {
-              const trimmed = tLine.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-              try {
-                const data = JSON.parse(dataStr);
-                if (data.type === 'start') {
-                  modelUsed = data.modelUsed;
-                  finalProvider = data.provider || normalizedProvider;
-                  onStart?.({ modelUsed, provider: finalProvider });
-                } else if (data.type === 'chunk' && data.text) {
-                  accumulatedText += data.text;
-                  onChunk?.(data.text, accumulatedText);
-                } else if (data.type === 'done') {
-                  if (data.modelUsed) modelUsed = data.modelUsed;
-                  if (data.provider) finalProvider = data.provider;
-                  return {
-                    text: data.text || accumulatedText,
-                    modelUsed: modelUsed || 'AI Model',
-                    provider: finalProvider
-                  };
-                } else if (data.type === 'error') {
-                  const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
-                  throw streamErr;
-                }
-              } catch (_) {}
+              const res = handleSSELine(tLine);
+              if (res?.result) {
+                return res.result;
+              }
             }
+          }
+
+          // If standard completion was signaled
+          if (receivedDone) {
+            return {
+              text: accumulatedText,
+              modelUsed: modelUsed || 'AI Model',
+              provider: finalProvider
+            };
+          }
+
+          // If the client explicitly requested cancellation, stop cleanly
+          if (signal?.aborted) {
+            const abortErr = new Error('Generation cancelled by user.');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+          }
+
+          // If the connection was abruptly dropped mid-stream (e.g. Vercel Hobby 60s serverless execution limit
+          // or intermediate network drop), seamlessly continue generation without aborting or losing tokens:
+          if (accumulatedText.length > 0 && (partNumber || 1) < 10) {
+            console.log(`[Stream Continuation] Connection closed before 'done' event at ${accumulatedText.length} chars. Auto-continuing stream...`);
+            const continuationPrompt = 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.';
+            const contResult = await streamAIMessage({
+              provider: finalProvider || normalizedProvider,
+              model: modelUsed || model,
+              mode: normalizedMode,
+              prompt: continuationPrompt,
+              history: [
+                ...history,
+                { sender: 'user', content: prompt },
+                { sender: 'assistant', content: accumulatedText }
+              ],
+              username,
+              preferences,
+              onChunk: (chunkText) => {
+                accumulatedText += chunkText;
+                onChunk?.(chunkText, accumulatedText);
+              },
+              onStart: (info) => {
+                if (info?.modelUsed) modelUsed = info.modelUsed;
+              },
+              signal,
+              conversationId,
+              attachments: [],
+              isContinuation: true,
+              partNumber: (partNumber || 1) + 1,
+              originalPrompt: originalPrompt || prompt,
+              previousContentSummary: accumulatedText.slice(-300)
+            });
+            return contResult;
+          }
+
+          if (!accumulatedText && !receivedDone) {
+            throw parseRouterError('Stream connection was closed before response data was received.', 503);
           }
 
           return {

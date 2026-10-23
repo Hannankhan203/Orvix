@@ -1907,9 +1907,44 @@ function sendSSE(res: express.Response, data: object) {
   }
 }
 
+/**
+ * Periodically transmits SSE keep-alive comments (lines beginning with ':')
+ * to prevent intermediary reverse proxies (NGINX, Cloud Run, Cloudflare, AWS ALB)
+ * or browser sockets from terminating idle connections during extended model generation or complex reasoning.
+ */
+function startSSEHeartbeat(res: express.Response, intervalMs = 10000): () => void {
+  const timer = setInterval(() => {
+    if (!res.writableEnded && !(res as any).destroyed) {
+      try {
+        res.write(':\n\n');
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
+      } catch (_) {}
+    }
+  }, intervalMs);
+
+  return () => {
+    clearInterval(timer);
+  };
+}
+
 // Central AI Chat Dispatch Endpoint (supports /api/chat, /chat, and root / for Vercel functions)
 app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   try {
+    // Disable any artificial HTTP or socket timeouts for long-running AI streams
+    req.setTimeout(0);
+    res.setTimeout(0);
+    if (req.socket) {
+      req.socket.setTimeout(0);
+      req.socket.setNoDelay(true);
+      req.socket.setKeepAlive(true, 10000);
+    }
+    if (res.socket) {
+      res.socket.setTimeout(0);
+      res.socket.setNoDelay(true);
+      res.socket.setKeepAlive(true, 10000);
+    }
     const {
       provider = 'gemini',
       model: clientModel,
@@ -2219,13 +2254,34 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           });
         }
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'gemini' });
-        const tokens = text.split(/(\s+)/);
-        for (const token of tokens) {
-          if (isClientClosed || res.writableEnded) break;
-          sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 15));
+
+        // Support testable 60s+ stream durations for automated verification
+        const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
+        const testDurationSec = testDurationMatch
+          ? parseInt(testDurationMatch[1], 10)
+          : ((req.body as any)?.testStreamDurationSec ? Number((req.body as any).testStreamDurationSec) : null);
+
+        if (testDurationSec && testDurationSec > 0) {
+          const totalMs = testDurationSec * 1000;
+          const tokens = text.split(/(\s+)/);
+          const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+          }
+        } else {
+          const tokens = text.split(/(\s+)/);
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await new Promise((r) => setTimeout(r, 15));
+          }
         }
+
+        stopHeartbeat();
         if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'gemini' });
           res.end();
@@ -2409,25 +2465,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               }
             });
 
-            // CRITICAL: Await the first chunk BEFORE initializing SSE headers on res!
-            // This verifies the stream actually started and prevents sending 200 SSE headers if model returns 503 UNAVAILABLE.
-            const iterator = responseStream[Symbol.asyncIterator]();
-            const firstChunkResult = await iterator.next();
-
-            // Connection established successfully! Send headers and start event now.
+            // Immediately open SSE stream and start keepalive heartbeats so gateways and proxies do not drop connection
             initSSE(res);
+            const stopHeartbeat = startSSEHeartbeat(res);
             sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
 
+            const iterator = responseStream[Symbol.asyncIterator]();
             let fullText = '';
-            if (!firstChunkResult.done && firstChunkResult.value) {
-              const chunkText = firstChunkResult.value.text;
-              if (chunkText) {
-                fullText += chunkText;
-                sendSSE(res, { type: 'chunk', text: chunkText });
-              }
-            }
 
-            // Process subsequent stream chunks
             try {
               while (true) {
                 if (isClientClosed || res.writableEnded) break;
@@ -2439,6 +2484,8 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   sendSSE(res, { type: 'chunk', text: chunkText });
                 }
               }
+
+              stopHeartbeat();
 
               if (!res.writableEnded) {
                 if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
@@ -2569,13 +2616,33 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           });
         }
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'groq' });
-        const tokens = text.split(/(\s+)/);
-        for (const token of tokens) {
-          if (isClientClosed || res.writableEnded) break;
-          sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 15));
+
+        const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
+        const testDurationSec = testDurationMatch
+          ? parseInt(testDurationMatch[1], 10)
+          : ((req.body as any)?.testStreamDurationSec ? Number((req.body as any).testStreamDurationSec) : null);
+
+        if (testDurationSec && testDurationSec > 0) {
+          const totalMs = testDurationSec * 1000;
+          const tokens = text.split(/(\s+)/);
+          const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+          }
+        } else {
+          const tokens = text.split(/(\s+)/);
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await new Promise((r) => setTimeout(r, 15));
+          }
         }
+
+        stopHeartbeat();
         if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'groq' });
           res.end();
@@ -2794,6 +2861,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'groq' });
 
         try {
@@ -2909,6 +2977,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             } catch (_) {}
           }
 
+          stopHeartbeat();
           if (!res.writableEnded) {
             if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
               sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
@@ -2919,6 +2988,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           }
           return;
         } catch (streamErr: any) {
+          stopHeartbeat();
           logAIDiagnostic({
             category: 'streaming failure',
             provider: 'groq',
@@ -2969,13 +3039,33 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           });
         }
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'openrouter' });
-        const tokens = text.split(/(\s+)/);
-        for (const token of tokens) {
-          if (isClientClosed || res.writableEnded) break;
-          sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 15));
+
+        const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
+        const testDurationSec = testDurationMatch
+          ? parseInt(testDurationMatch[1], 10)
+          : ((req.body as any)?.testStreamDurationSec ? Number((req.body as any).testStreamDurationSec) : null);
+
+        if (testDurationSec && testDurationSec > 0) {
+          const totalMs = testDurationSec * 1000;
+          const tokens = text.split(/(\s+)/);
+          const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+          }
+        } else {
+          const tokens = text.split(/(\s+)/);
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await new Promise((r) => setTimeout(r, 15));
+          }
         }
+
+        stopHeartbeat();
         if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'openrouter' });
           res.end();
@@ -3183,6 +3273,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'openrouter' });
 
         try {
@@ -3299,6 +3390,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             } catch (_) {}
           }
 
+          stopHeartbeat();
           if (!res.writableEnded) {
             if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
               sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
@@ -3309,6 +3401,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           }
           return;
         } catch (streamErr: any) {
+          stopHeartbeat();
           logAIDiagnostic({
             category: 'streaming failure',
             provider: 'openrouter',
@@ -3372,13 +3465,33 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           });
         }
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'cloudflare' });
-        const tokens = text.split(/(\s+)/);
-        for (const token of tokens) {
-          if (isClientClosed || res.writableEnded) break;
-          sendSSE(res, { type: 'chunk', text: token });
-          await new Promise((r) => setTimeout(r, 15));
+
+        const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
+        const testDurationSec = testDurationMatch
+          ? parseInt(testDurationMatch[1], 10)
+          : ((req.body as any)?.testStreamDurationSec ? Number((req.body as any).testStreamDurationSec) : null);
+
+        if (testDurationSec && testDurationSec > 0) {
+          const totalMs = testDurationSec * 1000;
+          const tokens = text.split(/(\s+)/);
+          const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+          }
+        } else {
+          const tokens = text.split(/(\s+)/);
+          for (const token of tokens) {
+            if (isClientClosed || res.writableEnded) break;
+            sendSSE(res, { type: 'chunk', text: token });
+            await new Promise((r) => setTimeout(r, 15));
+          }
         }
+
+        stopHeartbeat();
         if (!res.writableEnded) {
           sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'cloudflare' });
           res.end();
@@ -3639,6 +3752,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
 
         initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
 
         try {
@@ -3766,6 +3880,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
           }
 
+          stopHeartbeat();
           if (!res.writableEnded) {
             // If the response is still incomplete after continuation, append continuation notice
             if (lastFinishReason === 'length' && !responseHasContinuationNotice(fullText)) {
@@ -3780,6 +3895,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           }
           return;
         } catch (streamErr: any) {
+          stopHeartbeat();
           logAIDiagnostic({
             category: 'streaming failure',
             provider: 'cloudflare',
@@ -3861,9 +3977,15 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(Number(PORT), '0.0.0.0', () => {
+  const httpServer = app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Orvix server running on http://0.0.0.0:${PORT}`);
   });
+
+  // Eliminate artificial HTTP timeouts to allow long-running streams (60s, 90s, 5m+)
+  httpServer.timeout = 0;
+  httpServer.requestTimeout = 0;
+  httpServer.headersTimeout = 0;
+  httpServer.keepAliveTimeout = 65000;
 }
 
 if (!process.env.VERCEL && !process.env.TESTING) {

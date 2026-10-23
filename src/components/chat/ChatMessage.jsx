@@ -35,7 +35,8 @@ import ImageAttachmentCard from './ImageAttachmentCard.jsx';
 import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
-import { formatResponseTime } from '../../utils/formatResponseTime.js';
+import { formatResponseTime, formatLiveElapsed } from '../../utils/formatResponseTime.js';
+export { formatLiveElapsed };
 import { getAlternativeMetrics, getActiveAlternative } from '../../services/alternativeResponseService.js';
 
 /**
@@ -432,17 +433,6 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
  * Lightweight, self-contained live timer that updates every 100ms while AI generation is actively running.
  * Only re-renders this tiny badge component, completely avoiding chat re-renders.
  */
-function formatLiveElapsed(startTime) {
-  if (typeof startTime !== 'number' || startTime <= 0) return '0.0s';
-  const elapsedMs = Math.max(0, performance.now() - startTime);
-  if (elapsedMs <= 0) return '0.0s';
-  if (elapsedMs < 60000) {
-    const sec = elapsedMs / 1000;
-    const rounded = Math.round(sec * 10) / 10;
-    return `${rounded.toFixed(1)}s`;
-  }
-  return formatResponseTime(elapsedMs) || `${(elapsedMs / 1000).toFixed(1)}s`;
-}
 
 function LiveResponseTimer({ startTime }) {
   const [elapsedText, setElapsedText] = useState(() => formatLiveElapsed(startTime));

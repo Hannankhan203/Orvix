@@ -1300,12 +1300,12 @@ export default function ChatPage() {
         }
 
         const uploadController = new AbortController();
-        const UPLOAD_TIMEOUT_MS = 60000;
+        const UPLOAD_TIMEOUT_MS = 300000;
         let isTimeout = false;
         const uploadTimeoutId = setTimeout(() => {
           isTimeout = true;
           try {
-            uploadController.abort(new DOMException('Upload timed out after 60 seconds.', 'TimeoutError'));
+            uploadController.abort(new DOMException('Upload timed out after 5 minutes.', 'TimeoutError'));
           } catch (_) {
             uploadController.abort();
           }
