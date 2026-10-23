@@ -127,7 +127,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const portArgIndex = process.argv.indexOf('--port');
 const portFromArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
-const PORT = Number(portFromArg) || 3000;
+const PORT = Number(portFromArg) || Number(process.env.PORT) || 3000;
 
 // Permissive CORS middleware for cross-origin and Vercel preview environments
 app.use((req, res, next) => {
@@ -136,6 +136,14 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
+  }
+  next();
+});
+
+app.use((req, _res, next) => {
+  // If running in Vercel serverless runtime where body has already been parsed into an object
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+    (req as any)._body = true;
   }
   next();
 });
@@ -176,39 +184,51 @@ function sanitizeErrorLog(msg: string): string {
     .replace(/key=[^&\s]+/gi, 'key=[REDACTED]');
 }
 
+export type AIDiagnosticCategory =
+  | 'request validation error'
+  | 'provider configuration error'
+  | 'provider API error'
+  | 'provider timeout'
+  | 'provider network failure'
+  | 'streaming failure'
+  | 'attachment/context processing failure'
+  | 'internal server error';
+
 interface DiagnosticLogData {
+  category: AIDiagnosticCategory;
   provider: string;
-  model: string;
-  phase: 'pre-stream' | 'mid-stream' | 'non-streaming';
-  attempt: number;
-  maxAttempts: number;
+  model?: string;
+  phase?: 'validation' | 'configuration' | 'attachment' | 'pre-stream' | 'mid-stream' | 'non-streaming' | 'dispatch';
+  attempt?: number;
+  maxAttempts?: number;
   upstreamStatus?: number;
   upstreamErrorCode?: string;
   sanitizedMessage: string;
   retryAfterSeconds?: number;
-  willRetry: boolean;
+  willRetry?: boolean;
 }
 
 /**
- * Server-side diagnostic logger recording provider, model, HTTP status, sanitized error,
+ * Server-side diagnostic logger recording category, provider, model, HTTP status, sanitized error,
  * retry attempt number, and streaming phase without exposing credentials or user data.
  */
 function logAIDiagnostic(data: DiagnosticLogData) {
   const statusStr = data.upstreamStatus ? `HTTP ${data.upstreamStatus}` : 'HTTP N/A';
   const codeStr = data.upstreamErrorCode ? `[${data.upstreamErrorCode}]` : '';
   const actionDesc = data.willRetry
-    ? `Will retry (attempt ${data.attempt + 1}/${data.maxAttempts}${data.retryAfterSeconds ? ` after ${data.retryAfterSeconds}s` : ''})`
+    ? `Will retry (attempt ${(data.attempt || 1) + 1}/${data.maxAttempts || 1}${data.retryAfterSeconds ? ` after ${data.retryAfterSeconds}s` : ''})`
     : 'No further retries';
 
   console.warn(
-    `[AI Diagnostic] Provider: ${data.provider} | Model: ${data.model} | Phase: ${data.phase} | Status: ${statusStr} ${codeStr} | Attempt: ${data.attempt}/${data.maxAttempts} | Action: ${actionDesc} | Sanitized: ${sanitizeErrorLog(data.sanitizedMessage)}`
+    `[AI Diagnostic][${data.category}] Provider: ${data.provider} | Model: ${data.model || 'N/A'} | Phase: ${data.phase || 'dispatch'} | Status: ${statusStr} ${codeStr} | Action: ${actionDesc} | Sanitized: ${sanitizeErrorLog(data.sanitizedMessage)}`
   );
 }
 
-// Parses and normalizes Gemini API errors into clean user-facing representations
-export function parseGeminiError(err: any): {
+// Parses and normalizes API errors into clean user-facing representations across all providers
+export function parseGeminiError(err: any, provider = 'gemini'): {
   statusCode: number;
   status: string;
+  category: AIDiagnosticCategory;
   isUnavailable: boolean;
   isRetryable: boolean;
   message: string;
@@ -220,6 +240,10 @@ export function parseGeminiError(err: any): {
   let isRetryable = false;
   let isUnavailable = false;
   let retryAfterSeconds: number | undefined = undefined;
+
+  const cause = err?.cause;
+  const causeCode = String(cause?.code || err?.code || '');
+  const causeMessage = String(cause?.message || '');
 
   // Unpack nested JSON from @google/genai errors (can be 2 levels deep)
   for (let i = 0; i < 3; i++) {
@@ -254,39 +278,101 @@ export function parseGeminiError(err: any): {
   }
 
   const lowerMsg = message.toLowerCase();
+  const lowerCause = causeMessage.toLowerCase();
   const upperStatus = statusText.toUpperCase();
+  const displayProvider = provider.charAt(0).toUpperCase() + provider.slice(1);
 
-  // Classify error types accurately without masking non-503 errors
+  // 1. Timeout / Abort errors
+  const isTimeout =
+    err?.name === 'TimeoutError' ||
+    err?.name === 'AbortError' ||
+    causeCode === 'ETIMEDOUT' ||
+    causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
+    lowerMsg.includes('timeout') ||
+    lowerMsg.includes('timed out') ||
+    lowerMsg.includes('deadline expired') ||
+    lowerMsg.includes('deadline_exceeded') ||
+    upperStatus === 'DEADLINE_EXCEEDED' ||
+    statusCode === 504;
+
+  if (isTimeout) {
+    return {
+      statusCode: 504,
+      status: 'DEADLINE_EXCEEDED',
+      category: 'provider timeout',
+      isUnavailable: true,
+      isRetryable: true,
+      message: `The request to ${displayProvider} timed out while waiting for a response. Please try again.`,
+      retryAfterSeconds
+    };
+  }
+
+  // 2. Network connectivity / DNS failure to upstream AI provider
+  const isNetworkFailure =
+    (err?.name === 'TypeError' && (lowerMsg.includes('fetch failed') || lowerMsg.includes('failed to fetch'))) ||
+    ['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode) ||
+    lowerMsg.includes('getaddrinfo') ||
+    lowerMsg.includes('econnrefused') ||
+    lowerMsg.includes('econnreset') ||
+    lowerCause.includes('enotfound') ||
+    lowerCause.includes('econnrefused') ||
+    lowerMsg.includes('network error');
+
+  if (isNetworkFailure) {
+    const detail = causeCode || (lowerMsg.includes('fetch failed') ? 'connection failed' : 'network unreachable');
+    return {
+      statusCode: 503,
+      status: 'NETWORK_FAILURE',
+      category: 'provider network failure',
+      isUnavailable: true,
+      isRetryable: true,
+      message: `Unable to establish network connection to ${displayProvider} (${detail}). Please check your internet connection or try again in a few moments.`,
+      retryAfterSeconds
+    };
+  }
+
+  // 3. Service Unavailable / Overloaded
   if (
     statusCode === 503 ||
-    statusCode === 504 ||
     upperStatus === 'UNAVAILABLE' ||
-    upperStatus === 'DEADLINE_EXCEEDED' ||
     lowerMsg.includes('overloaded') ||
     lowerMsg.includes('high demand') ||
     lowerMsg.includes('spikes in demand') ||
     lowerMsg.includes('service unavailable') ||
-    lowerMsg.includes('temporarily unavailable') ||
-    lowerMsg.includes('deadline expired')
+    lowerMsg.includes('temporarily unavailable')
   ) {
-    statusCode = statusCode === 504 || upperStatus === 'DEADLINE_EXCEEDED' ? 504 : 503;
-    statusText = statusCode === 504 ? 'DEADLINE_EXCEEDED' : 'UNAVAILABLE';
-    isUnavailable = true;
-    isRetryable = true;
-    message = 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
-  } else if (
+    return {
+      statusCode: 503,
+      status: 'UNAVAILABLE',
+      category: 'provider API error',
+      isUnavailable: true,
+      isRetryable: true,
+      message: `${displayProvider} is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.`,
+      retryAfterSeconds
+    };
+  }
+
+  // 4. Rate Limit / Quota Exceeded
+  if (
     statusCode === 429 ||
     upperStatus === 'RESOURCE_EXHAUSTED' ||
     lowerMsg.includes('rate limit') ||
     lowerMsg.includes('quota') ||
     lowerMsg.includes('resource_exhausted')
   ) {
-    statusCode = 429;
-    statusText = 'RESOURCE_EXHAUSTED';
-    isUnavailable = true;
-    isRetryable = true;
-    message = 'Gemini rate limit or quota exceeded. Please wait a moment before trying again.';
-  } else if (
+    return {
+      statusCode: 429,
+      status: 'RESOURCE_EXHAUSTED',
+      category: 'provider API error',
+      isUnavailable: true,
+      isRetryable: true,
+      message: `${displayProvider} rate limit or quota exceeded. Please wait a moment before trying again.`,
+      retryAfterSeconds
+    };
+  }
+
+  // 5. Auth / API Key Errors
+  if (
     statusCode === 401 ||
     statusCode === 403 ||
     upperStatus === 'UNAUTHENTICATED' ||
@@ -296,42 +382,66 @@ export function parseGeminiError(err: any): {
     lowerMsg.includes('unauthorized') ||
     lowerMsg.includes('permission denied')
   ) {
-    statusCode = statusCode === 401 ? 401 : 403;
-    statusText = statusCode === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
-    isRetryable = false;
-    message = 'Invalid or unauthorized Gemini API key. Please check your API configuration.';
-  } else if (
+    return {
+      statusCode: statusCode === 401 ? 401 : 403,
+      status: statusCode === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED',
+      category: 'provider configuration error',
+      isUnavailable: false,
+      isRetryable: false,
+      message: `Invalid or unauthorized API key for ${displayProvider}. Please check your configuration.`,
+      retryAfterSeconds
+    };
+  }
+
+  // 6. Model Not Found / Decommissioned Model
+  if (
     statusCode === 404 ||
     upperStatus === 'NOT_FOUND' ||
     lowerMsg.includes('not found') ||
-    lowerMsg.includes('is no longer available')
+    lowerMsg.includes('is no longer available') ||
+    lowerMsg.includes('does not exist') ||
+    lowerMsg.includes('you do not have access to it') ||
+    lowerMsg.includes('decommissioned') ||
+    lowerMsg.includes('retired')
   ) {
-    statusCode = 404;
-    statusText = 'NOT_FOUND';
-    isRetryable = false;
-    message = sanitizeErrorLog(message) || 'Requested Gemini model not found.';
-  } else if (
+    return {
+      statusCode: 404,
+      status: 'NOT_FOUND',
+      category: 'provider API error',
+      isRetryable: false,
+      isUnavailable: false,
+      message: sanitizeErrorLog(message) || `The requested ${displayProvider} model was not found or is no longer available.`,
+      retryAfterSeconds
+    };
+  }
+
+  // 7. Invalid Argument / Validation Error
+  if (
     statusCode === 400 ||
     upperStatus === 'INVALID_ARGUMENT' ||
     lowerMsg.includes('invalid argument')
   ) {
-    statusCode = 400;
-    statusText = 'INVALID_ARGUMENT';
-    isRetryable = false;
-    message = sanitizeErrorLog(message) || 'Invalid argument provided to the Gemini model.';
-  } else if (statusCode === 500 || upperStatus === 'INTERNAL') {
-    statusCode = 500;
-    statusText = 'INTERNAL';
-    isRetryable = false;
-    message = sanitizeErrorLog(message) || 'Internal error encountered by Google Gemini service.';
+    return {
+      statusCode: 400,
+      status: 'INVALID_ARGUMENT',
+      category: 'request validation error',
+      isRetryable: false,
+      isUnavailable: false,
+      message: sanitizeErrorLog(message) || `Invalid argument provided to the ${displayProvider} model.`,
+      retryAfterSeconds
+    };
   }
 
+  // 8. Internal Server Error (500)
   return {
     statusCode: Number.isFinite(statusCode) ? statusCode : 500,
-    status: statusText || (isUnavailable ? 'UNAVAILABLE' : 'ERROR'),
-    isUnavailable,
-    isRetryable,
-    message: sanitizeErrorLog(message),
+    status: statusText || 'INTERNAL',
+    category: 'internal server error',
+    isUnavailable: false,
+    isRetryable: false,
+    message: sanitizeErrorLog(message) && sanitizeErrorLog(message) !== 'fetch failed'
+      ? sanitizeErrorLog(message)
+      : `Internal error encountered while processing ${displayProvider} service request.`,
     retryAfterSeconds
   };
 }
@@ -677,6 +787,85 @@ ${isBeginner ? '\n*Each idea is framed around solving a practical everyday workf
 4. **SpectraAI** — Precision intelligence layer tailored for high-speed research.
 
 *Tip: You can select any conversation from the sidebar or click "+ New Chat" to start fresh.*`;
+    }
+  } else if (
+    promptLower.includes('artificial intelligence') ||
+    (promptLower.includes('ai') && (promptLower.includes('everyday') || promptLower.includes('real-world') || promptLower.includes('use') || promptLower.includes('table') || promptLower.includes('explain')))
+  ) {
+    if (isConcise) {
+      body = `### Artificial Intelligence in Everyday Life
+
+**Introduction:** Artificial Intelligence (AI) refers to computational systems that simulate human intelligence to learn from data, recognize patterns, and make automated decisions.
+
+**5 Common Real-World Uses:**
+1. **Virtual Assistants:** Voice agents like Siri and Alexa process natural speech to answer questions and trigger tasks.
+2. **Recommendation Engines:** Streaming services (Netflix, Spotify) analyze consumption habits to suggest tailored content.
+3. **Smart Navigation:** Apps like Google Maps calculate optimal routes using real-time traffic telemetry.
+4. **Fraud Detection:** Financial systems monitor payment transactions in milliseconds to flag anomalous activity.
+5. **Healthcare Imaging:** Pattern-recognition models assist clinicians in identifying abnormalities on medical scans.
+
+**Comparison Table:**
+| Characteristic | Traditional Software | Artificial Intelligence |
+| :--- | :--- | :--- |
+| **Decision Logic** | Explicit hardcoded IF/THEN rules | Probabilistic learning from training data |
+| **Adaptability** | Fixed; requires manual code updates | Self-improves as fresh data arrives |
+| **Edge Cases** | Halts or errors on unanticipated input | Infers closest probable resolution |
+
+**Short Example:** Email spam filters dynamically classify messages based on sender reputational metrics, suspicious phrasing, and link patterns without requiring manual rule coding for every new spam campaign.
+
+**Conclusion:** AI has become an everyday companion that enhances productivity and decision accuracy across digital workflows.`;
+    } else {
+      body = `### 1. Introduction: What is Artificial Intelligence?
+
+**Artificial Intelligence (AI)** encompasses computer systems and algorithmic architectures engineered to simulate human cognitive capabilities—including empirical learning, contextual reasoning, natural language comprehension, and autonomous decision-making. Rather than relying solely on rigid, hard-coded procedures, modern AI systems utilize machine learning and neural networks to ingest large datasets, identify complex patterns, and refine their predictive performance over time.
+
+---
+
+### 2. Five Common Real-World Uses of AI in Everyday Life
+
+1. **Virtual Personal Assistants & Voice Interfaces**
+   *Everyday manifestation:* Apple Siri, Amazon Alexa, Google Assistant.
+   *How it works:* Uses Automatic Speech Recognition (ASR) and Natural Language Understanding (NLU) to interpret vocal commands, manage calendars, operate smart home devices, and retrieve real-time information.
+
+2. **Predictive Recommendation Engines**
+   *Everyday manifestation:* Netflix, Spotify, YouTube, and Amazon.
+   *How it works:* Employs collaborative filtering and deep retrieval models to evaluate historical user preferences, session length, and behavioral affinity matrices, surfacing highly relevant content tailored to individual tastes.
+
+3. **Dynamic Navigation & Urban Mobility**
+   *Everyday manifestation:* Google Maps, Waze, and ride-hailing services like Uber.
+   *How it works:* Ingests crowdsourced GPS telemetry, historical transit speeds, and live incident reports to dynamically compute the most time-efficient routes and predict estimated arrival times (ETAs).
+
+4. **Financial Fraud Prevention & Cybersecurity**
+   *Everyday manifestation:* Real-time banking alerts and payment gateway defenses.
+   *How it works:* Machine learning anomaly detection models evaluate millions of credit card transactions per second against established behavioral profiles, instantly blocking unauthorized purchases or suspicious geographical anomalies.
+
+5. **Diagnostic Healthcare & Medical Imaging**
+   *Everyday manifestation:* Computer-aided detection in radiology, ophthalmology, and pathology.
+   *How it works:* High-resolution convolutional networks examine X-rays, MRIs, and retinal scans to detect early-stage indicators of disease—such as micro-fractures, tumors, or diabetic retinopathy—supporting physician diagnoses.
+
+---
+
+### 3. Comparison: Traditional Software vs. Artificial Intelligence
+
+| Feature / Dimension | Traditional Software | Artificial Intelligence (AI) |
+| :--- | :--- | :--- |
+| **Operational Logic** | Predefined, deterministic \`IF/THEN\` conditional rules | Probabilistic patterns inferred from training datasets |
+| **Adaptability** | Static; requires human developers to rewrite code | Dynamic; continuously learns and refines from new data |
+| **Handling Ambiguity** | Halts, fails, or throws unhandled exceptions on edge cases | Gracefully infers probable outcomes from noisy or incomplete inputs |
+| **Primary Strength** | Precise calculations, transactional ledger integrity, speed | Semantic understanding, perceptual recognition, and synthesis |
+| **Development Paradigm** | Programmer writes explicit algorithms and specifications | Developer builds architectures and trains models on curated data |
+
+---
+
+### 4. Short Real-World Example: Email Spam Filtering
+
+A prime example is the modern email spam filter (such as Gmail's or Outlook's). Instead of relying on a human programmer to maintain an exhaustive blacklist of every offensive word, an AI classification model analyzes incoming messages across hundreds of simultaneous dimensions: sender domain reputation, header anomalies, sentence embeddings, urgency phrasing, and link destinations. When millions of users mark a novel deceptive email as "Spam", the model automatically adjusts its weights within minutes, shielding users from emerging phishing tactics without any software update.
+
+---
+
+### 5. Conclusion
+
+Artificial Intelligence has evolved from specialized computational research into an ambient foundation of modern daily life. By operating silently behind digital services—anticipating our travel needs, securing financial transactions, and filtering digital noise—AI functions not as a replacement for human agency, but as an indispensable cognitive amplifier that elevates everyday efficiency and decision-making.`;
     }
   } else if (
     promptLower.startsWith('hi') ||
@@ -1723,6 +1912,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   try {
     const {
       provider = 'gemini',
+      model: clientModel,
       mode = 'general',
       prompt,
       history = [],
@@ -1737,6 +1927,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       previousContentSummary: clientPreviousContentSummary
     } = req.body as {
       provider?: string;
+      model?: string;
       mode?: string;
       prompt?: string;
       history?: Array<{ sender?: string; content?: string; attachments?: any[] }>;
@@ -1752,6 +1943,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     };
 
     if (!prompt || typeof prompt !== 'string') {
+      logAIDiagnostic({
+        category: 'request validation error',
+        provider: String(req.body?.provider || 'unknown'),
+        model: String(req.body?.model || 'unknown'),
+        phase: 'validation',
+        upstreamStatus: 400,
+        sanitizedMessage: 'Prompt is required and must be a string.'
+      });
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
@@ -1861,6 +2060,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
           } catch (lazyErr) {
             console.warn('[Extraction] On-demand extraction error:', lazyErr);
+            logAIDiagnostic({
+              category: 'attachment/context processing failure',
+              provider: String(req.body?.provider || 'unknown'),
+              model: String(req.body?.model || 'unknown'),
+              phase: 'attachment',
+              sanitizedMessage: `Extraction failed for attachment: ${(lazyErr as Error)?.message || lazyErr}`
+            });
           }
         }
 
@@ -2076,15 +2282,25 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       const contents = formatGeminiHistory(history, effectivePrompt, 12, imageParts);
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
-      // Attempt 1 tries gemini-flash-latest (fastest and highest availability in all tiers)
-      // Attempt 2 tries gemini-3.8-flash (primary recommended model)
-      // Attempt 3 tries gemini-3.1-flash-lite (alternative lite model)
+      // Uses the requested Gemini model if valid, falling back to gemini-3.8-flash and gemini-flash-latest
+      const requestedGeminiModel =
+        typeof clientModel === 'string' && clientModel.trim()
+          ? clientModel.trim()
+          : 'gemini-3.1-flash-lite';
+
       const attemptPlan = [
-        { model: 'gemini-flash-latest', attemptNum: 1 },
-        { model: 'gemini-3.8-flash', attemptNum: 2 },
-        { model: 'gemini-3.1-flash-lite', attemptNum: 3 }
+        { model: requestedGeminiModel, attemptNum: 1 },
+        { model: requestedGeminiModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash', attemptNum: 2 },
+        { model: 'gemini-flash-latest', attemptNum: 3 }
       ];
       const maxAttempts = attemptPlan.length;
+
+      let targetGeminiTokens = 4096;
+      if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
+        targetGeminiTokens = 8192;
+      } else if (preferences?.responseLength === 'concise') {
+        targetGeminiTokens = 1024;
+      }
 
       if (!shouldStream) {
         let lastParsedErr = null;
@@ -2098,7 +2314,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               model,
               contents,
               config: {
-                systemInstruction: effectiveSystemInstruction
+                systemInstruction: effectiveSystemInstruction,
+                maxOutputTokens: targetGeminiTokens,
+                temperature: 0.7
               }
             });
 
@@ -2114,12 +2332,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               });
             }
           } catch (err: any) {
-            const parsed = parseGeminiError(err);
+            const parsed = parseGeminiError(err, 'gemini');
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
             const willRetry = parsed.isRetryable && hasMoreAttempts && !isClientClosed;
 
             logAIDiagnostic({
+              category: parsed.category,
               provider: 'gemini',
               model,
               phase: 'non-streaming',
@@ -2184,7 +2403,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               model,
               contents,
               config: {
-                systemInstruction: effectiveSystemInstruction
+                systemInstruction: effectiveSystemInstruction,
+                maxOutputTokens: targetGeminiTokens,
+                temperature: 0.7
               }
             });
 
@@ -2229,8 +2450,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               }
               return;
             } catch (midStreamErr: any) {
-              const parsedMid = parseGeminiError(midStreamErr);
+              const parsedMid = parseGeminiError(midStreamErr, 'gemini');
               logAIDiagnostic({
+                category: 'streaming failure',
                 provider: 'gemini',
                 model,
                 phase: 'mid-stream',
@@ -2259,12 +2481,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
           } catch (initialErr: any) {
             // Initial connection failed BEFORE headers were sent!
-            const parsed = parseGeminiError(initialErr);
+            const parsed = parseGeminiError(initialErr, 'gemini');
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
             const willRetry = parsed.isRetryable && hasMoreAttempts && !isClientClosed;
 
             logAIDiagnostic({
+              category: parsed.category,
               provider: 'gemini',
               model,
               phase: 'pre-stream',
@@ -2337,7 +2560,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'Llama 3.3 70B (demo)';
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'GPT OSS 120B (demo)';
         if (!shouldStream) {
           return res.json({
             text,
@@ -2366,121 +2589,356 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
-      if (!shouldStream) {
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: 'openai/gpt-oss-120b',
-            messages,
-            temperature: 0.7
-          })
-        });
+      // Active production Groq model: openai/gpt-oss-120b (131k context tokens, high performance LPU)
+      // Automatically migrate decommissioned Groq models (e.g. llama-3.3-70b-versatile, llama-3.1-8b-instant)
+      const GROQ_ACTIVE_MODEL = 'openai/gpt-oss-120b';
+      let selectedModel = GROQ_ACTIVE_MODEL;
 
-        if (!groqRes.ok) {
-          const errText = await groqRes.text();
-          let friendlyError = `Groq request failed (${groqRes.status}): ${errText}`;
-          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
-            friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+      if (typeof clientModel === 'string' && clientModel.trim()) {
+        const trimmed = clientModel.trim();
+        if (
+          trimmed === 'llama-3.3-70b-versatile' ||
+          trimmed === 'llama-3.1-8b-instant' ||
+          trimmed.includes('llama-3.3') ||
+          trimmed.includes('llama-3.1-70b')
+        ) {
+          selectedModel = GROQ_ACTIVE_MODEL;
+        } else {
+          selectedModel = trimmed;
+        }
+      }
+
+      let groqMaxTokens = 2560;
+      if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
+        groqMaxTokens = 4096;
+      } else if (preferences?.responseLength === 'concise') {
+        groqMaxTokens = 1024;
+      }
+
+      if (!shouldStream) {
+        try {
+          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages,
+              max_tokens: groqMaxTokens,
+              temperature: 0.7
+            })
+          });
+
+          if (!groqRes.ok) {
+            const errText = await groqRes.text();
+            const parsed = parseGeminiError({ status: groqRes.status, message: errText }, 'groq');
+            let friendlyError = parsed.message;
+            if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
+              friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+            }
+            logAIDiagnostic({
+              category: parsed.category,
+              provider: 'groq',
+              model: selectedModel,
+              phase: 'non-streaming',
+              upstreamStatus: groqRes.status,
+              sanitizedMessage: friendlyError
+            });
+            return res.status(groqRes.status).json({
+              error: friendlyError,
+              code: groqRes.status,
+              status: parsed.status,
+              category: parsed.category,
+              provider: 'groq',
+              model: selectedModel,
+              retryable: parsed.isRetryable,
+              canFallback: true,
+              suggestedProviders: ['gemini', 'openrouter']
+            });
           }
-          return res.status(groqRes.status).json({
-            error: friendlyError,
-            code: groqRes.status,
+
+          const data = await groqRes.json();
+          let finalText = data?.choices?.[0]?.message?.content || '';
+          const finishReason = data?.choices?.[0]?.finish_reason;
+
+          // Transparent continuation if output limit reached
+          if (finishReason === 'length' && finalText.length > 60) {
+            try {
+              const contMessages = [
+                ...messages,
+                { role: 'assistant', content: finalText },
+                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+              ];
+              const contRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: selectedModel,
+                  messages: contMessages,
+                  max_tokens: Math.min(2048, groqMaxTokens),
+                  temperature: 0.7
+                })
+              });
+              if (contRes.ok) {
+                const contData = await contRes.json();
+                const contText = contData?.choices?.[0]?.message?.content;
+                if (contText) {
+                  finalText += (finalText.endsWith(' ') || contText.startsWith(' ') ? '' : ' ') + contText;
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+            finalText += CONTINUATION_NOTICES.PART_1;
+          }
+          return res.json({
+            text: finalText,
+            modelUsed: data.model || selectedModel,
+            provider: 'groq'
+          });
+        } catch (fetchErr: any) {
+          const parsed = parseGeminiError(fetchErr, 'groq');
+          logAIDiagnostic({
+            category: parsed.category,
             provider: 'groq',
-            model: 'openai/gpt-oss-120b',
+            model: selectedModel,
+            phase: 'non-streaming',
+            upstreamStatus: parsed.statusCode,
+            sanitizedMessage: parsed.message
+          });
+          return res.status(parsed.statusCode).json({
+            error: parsed.message,
+            code: parsed.statusCode,
+            status: parsed.status,
+            category: parsed.category,
+            provider: 'groq',
+            model: selectedModel,
+            retryable: parsed.isRetryable,
+            canFallback: true,
+            suggestedProviders: ['gemini', 'openrouter']
+          });
+        }
+      } else {
+        // Genuine streaming via Groq OpenAI-compatible SSE
+        let groqRes: Response;
+        try {
+          groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages,
+              max_tokens: groqMaxTokens,
+              temperature: 0.7,
+              stream: true
+            })
+          });
+        } catch (fetchErr: any) {
+          const parsed = parseGeminiError(fetchErr, 'groq');
+          logAIDiagnostic({
+            category: parsed.category,
+            provider: 'groq',
+            model: selectedModel,
+            phase: 'pre-stream',
+            upstreamStatus: parsed.statusCode,
+            sanitizedMessage: parsed.message
+          });
+          return res.status(parsed.statusCode).json({
+            error: parsed.message,
+            code: parsed.statusCode,
+            status: parsed.status,
+            category: parsed.category,
+            provider: 'groq',
+            model: selectedModel,
+            retryable: parsed.isRetryable,
             canFallback: true,
             suggestedProviders: ['gemini', 'openrouter']
           });
         }
 
-        const data = await groqRes.json();
-        let finalText = data?.choices?.[0]?.message?.content || '';
-        if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
-          finalText += CONTINUATION_NOTICES.PART_1;
-        }
-        return res.json({
-          text: finalText,
-          modelUsed: data.model || 'openai/gpt-oss-120b',
-          provider: 'groq'
-        });
-      } else {
-        // Genuine streaming via Groq OpenAI-compatible SSE
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: 'openai/gpt-oss-120b',
-            messages,
-            temperature: 0.7,
-            stream: true
-          })
-        });
-
         if (!groqRes.ok) {
           const errText = await groqRes.text();
-          let friendlyError = `Groq request failed (${groqRes.status}): ${errText}`;
+          const parsed = parseGeminiError({ status: groqRes.status, message: errText }, 'groq');
+          let friendlyError = parsed.message;
           if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
             friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
           }
+          logAIDiagnostic({
+            category: parsed.category,
+            provider: 'groq',
+            model: selectedModel,
+            phase: 'pre-stream',
+            upstreamStatus: groqRes.status,
+            sanitizedMessage: friendlyError
+          });
           return res.status(groqRes.status).json({
             error: friendlyError,
             code: groqRes.status,
+            status: parsed.status,
+            category: parsed.category,
             provider: 'groq',
-            model: 'openai/gpt-oss-120b',
+            model: selectedModel,
+            retryable: parsed.isRetryable,
             canFallback: true,
             suggestedProviders: ['gemini', 'openrouter']
           });
         }
 
         initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: 'openai/gpt-oss-120b', provider: 'groq' });
+        sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'groq' });
 
-        const reader = groqRes.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
-        let modelUsed = 'openai/gpt-oss-120b';
+        try {
+          const reader = groqRes.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let fullText = '';
+          let modelUsed = selectedModel;
+          let lastFinishReason: string | null = null;
 
-        while (true) {
-          if (isClientClosed || res.writableEnded) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+          while (true) {
+            if (isClientClosed || res.writableEnded) {
+              try { await reader.cancel(); } catch (_) {}
+              break;
+            }
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const dataStr = trimmed.slice(6);
-            if (dataStr === '[DONE]') continue;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.model) modelUsed = parsed.model;
+                const finishReason = parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) lastFinishReason = finishReason;
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Process trailing bytes and buffer
+          const finalBytes = decoder.decode();
+          if (finalBytes) buffer += finalBytes;
+          if (buffer && buffer.trim().startsWith('data:')) {
+            const dataStr = buffer.trim().slice(5).trim();
+            if (dataStr !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.model) modelUsed = parsed.model;
+                const finishReason = parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) lastFinishReason = finishReason;
+                const delta = parsed?.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Continuation if finish_reason indicates token truncation
+          if ((lastFinishReason === 'length' || lastFinishReason === 'max_tokens') && !isClientClosed && !res.writableEnded && fullText.length > 60) {
             try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.model) modelUsed = parsed.model;
-              const delta = parsed.choices?.[0]?.delta?.content;
-              if (delta) {
-                fullText += delta;
-                sendSSE(res, { type: 'chunk', text: delta });
+              const contMessages = [
+                ...messages,
+                { role: 'assistant', content: fullText },
+                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+              ];
+              const contRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: selectedModel,
+                  messages: contMessages,
+                  max_tokens: Math.min(2048, groqMaxTokens),
+                  temperature: 0.7,
+                  stream: true
+                })
+              });
+
+              if (contRes.ok && contRes.body) {
+                const contReader = contRes.body.getReader();
+                let contBuffer = '';
+                while (true) {
+                  if (isClientClosed || res.writableEnded) {
+                    try { await contReader.cancel(); } catch (_) {}
+                    break;
+                  }
+                  const { done: cDone, value: cVal } = await contReader.read();
+                  if (cDone) break;
+                  contBuffer += decoder.decode(cVal, { stream: true });
+                  const cLines = contBuffer.split('\n');
+                  contBuffer = cLines.pop() || '';
+                  for (const cLine of cLines) {
+                    const cTrimmed = cLine.trim();
+                    if (!cTrimmed.startsWith('data:')) continue;
+                    const cData = cTrimmed.slice(5).trim();
+                    if (cData === '[DONE]') continue;
+                    try {
+                      const cParsed = JSON.parse(cData);
+                      const cDelta = cParsed?.choices?.[0]?.delta?.content;
+                      if (cDelta) {
+                        fullText += cDelta;
+                        sendSSE(res, { type: 'chunk', text: cDelta });
+                      }
+                    } catch (_) {}
+                  }
+                }
               }
             } catch (_) {}
           }
-        }
 
-        if (!res.writableEnded) {
-          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
-            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
-            fullText += CONTINUATION_NOTICES.PART_1;
+          if (!res.writableEnded) {
+            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+              sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+              fullText += CONTINUATION_NOTICES.PART_1;
+            }
+            sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'groq' });
+            res.end();
           }
-          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'groq' });
-          res.end();
+          return;
+        } catch (streamErr: any) {
+          logAIDiagnostic({
+            category: 'streaming failure',
+            provider: 'groq',
+            model: selectedModel,
+            phase: 'mid-stream',
+            sanitizedMessage: streamErr?.message || 'Groq stream read interrupted'
+          });
+          if (!res.writableEnded) {
+            sendSSE(res, {
+              type: 'error',
+              error: 'Groq streaming connection interrupted.',
+              code: 503,
+              status: 'STREAM_FAILED',
+              provider: 'groq',
+              retryable: false
+            });
+            res.end();
+          }
+          return;
         }
-        return;
       }
     }
 
@@ -2531,123 +2989,346 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
-      if (!shouldStream) {
-        const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'X-Title': 'Orvix'
-          },
-          body: JSON.stringify({
-            model: 'openrouter/free',
-            messages,
-            temperature: 0.7
-          })
-        });
+      const selectedModel =
+        typeof clientModel === 'string' && clientModel.trim()
+          ? clientModel.trim()
+          : 'openrouter/free';
 
-        if (!orRes.ok) {
-          const errText = await orRes.text();
-          let friendlyError = `OpenRouter request failed (${orRes.status}): ${errText}`;
-          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
-            friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+      let openRouterMaxTokens = 2560;
+      if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
+        openRouterMaxTokens = 4096;
+      } else if (preferences?.responseLength === 'concise') {
+        openRouterMaxTokens = 1024;
+      }
+
+      if (!shouldStream) {
+        try {
+          const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'X-Title': 'Orvix'
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages,
+              max_tokens: openRouterMaxTokens,
+              temperature: 0.7
+            })
+          });
+
+          if (!orRes.ok) {
+            const errText = await orRes.text();
+            const parsed = parseGeminiError({ status: orRes.status, message: errText }, 'openrouter');
+            let friendlyError = parsed.message;
+            if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
+              friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+            }
+            logAIDiagnostic({
+              category: parsed.category,
+              provider: 'openrouter',
+              model: selectedModel,
+              phase: 'non-streaming',
+              upstreamStatus: orRes.status,
+              sanitizedMessage: friendlyError
+            });
+            return res.status(orRes.status).json({
+              error: friendlyError,
+              code: orRes.status,
+              status: parsed.status,
+              category: parsed.category,
+              provider: 'openrouter',
+              model: selectedModel,
+              retryable: parsed.isRetryable,
+              canFallback: true,
+              suggestedProviders: ['gemini', 'groq']
+            });
           }
-          return res.status(orRes.status).json({
-            error: friendlyError,
-            code: orRes.status,
+
+          const data = await orRes.json();
+          let finalText = data?.choices?.[0]?.message?.content || '';
+          const finishReason = data?.choices?.[0]?.finish_reason;
+
+          // Transparent continuation if OpenRouter reached output limit
+          if (finishReason === 'length' && finalText.length > 60) {
+            try {
+              const contMessages = [
+                ...messages,
+                { role: 'assistant', content: finalText },
+                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+              ];
+              const contRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  'Content-Type': 'application/json',
+                  'X-Title': 'Orvix'
+                },
+                body: JSON.stringify({
+                  model: selectedModel,
+                  messages: contMessages,
+                  max_tokens: Math.min(2048, openRouterMaxTokens),
+                  temperature: 0.7
+                })
+              });
+              if (contRes.ok) {
+                const contData = await contRes.json();
+                const contText = contData?.choices?.[0]?.message?.content;
+                if (contText) {
+                  finalText += (finalText.endsWith(' ') || contText.startsWith(' ') ? '' : ' ') + contText;
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+            finalText += CONTINUATION_NOTICES.PART_1;
+          }
+          return res.json({
+            text: finalText,
+            modelUsed: data.model || selectedModel,
+            provider: 'openrouter'
+          });
+        } catch (fetchErr: any) {
+          const parsed = parseGeminiError(fetchErr, 'openrouter');
+          logAIDiagnostic({
+            category: parsed.category,
             provider: 'openrouter',
-            model: 'openrouter/free',
+            model: selectedModel,
+            phase: 'non-streaming',
+            upstreamStatus: parsed.statusCode,
+            sanitizedMessage: parsed.message
+          });
+          return res.status(parsed.statusCode).json({
+            error: parsed.message,
+            code: parsed.statusCode,
+            status: parsed.status,
+            category: parsed.category,
+            provider: 'openrouter',
+            model: selectedModel,
+            retryable: parsed.isRetryable,
+            canFallback: true,
+            suggestedProviders: ['gemini', 'groq']
+          });
+        }
+      } else {
+        // Genuine streaming via OpenRouter SSE
+        let orRes: Response;
+        try {
+          orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'X-Title': 'Orvix'
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages,
+              max_tokens: openRouterMaxTokens,
+              temperature: 0.7,
+              stream: true
+            })
+          });
+        } catch (fetchErr: any) {
+          const parsed = parseGeminiError(fetchErr, 'openrouter');
+          logAIDiagnostic({
+            category: parsed.category,
+            provider: 'openrouter',
+            model: selectedModel,
+            phase: 'pre-stream',
+            upstreamStatus: parsed.statusCode,
+            sanitizedMessage: parsed.message
+          });
+          return res.status(parsed.statusCode).json({
+            error: parsed.message,
+            code: parsed.statusCode,
+            status: parsed.status,
+            category: parsed.category,
+            provider: 'openrouter',
+            model: selectedModel,
+            retryable: parsed.isRetryable,
             canFallback: true,
             suggestedProviders: ['gemini', 'groq']
           });
         }
 
-        const data = await orRes.json();
-        let finalText = data?.choices?.[0]?.message?.content || '';
-        if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
-          finalText += CONTINUATION_NOTICES.PART_1;
-        }
-        return res.json({
-          text: finalText,
-          modelUsed: data.model || 'openrouter/free',
-          provider: 'openrouter'
-        });
-      } else {
-        // Genuine streaming via OpenRouter SSE
-        const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'X-Title': 'Orvix'
-          },
-          body: JSON.stringify({
-            model: 'openrouter/free',
-            messages,
-            temperature: 0.7,
-            stream: true
-          })
-        });
-
         if (!orRes.ok) {
           const errText = await orRes.text();
-          let friendlyError = `OpenRouter request failed (${orRes.status}): ${errText}`;
+          const parsed = parseGeminiError({ status: orRes.status, message: errText }, 'openrouter');
+          let friendlyError = parsed.message;
           if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
             friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
           }
+          logAIDiagnostic({
+            category: parsed.category,
+            provider: 'openrouter',
+            model: selectedModel,
+            phase: 'pre-stream',
+            upstreamStatus: orRes.status,
+            sanitizedMessage: friendlyError
+          });
           return res.status(orRes.status).json({
             error: friendlyError,
             code: orRes.status,
+            status: parsed.status,
+            category: parsed.category,
             provider: 'openrouter',
-            model: 'openrouter/free',
+            model: selectedModel,
+            retryable: parsed.isRetryable,
             canFallback: true,
             suggestedProviders: ['gemini', 'groq']
           });
         }
 
         initSSE(res);
-        sendSSE(res, { type: 'start', modelUsed: 'openrouter/free', provider: 'openrouter' });
+        sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'openrouter' });
 
-        const reader = orRes.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
-        let modelUsed = 'openrouter/free';
+        try {
+          const reader = orRes.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let fullText = '';
+          let modelUsed = selectedModel;
+          let lastFinishReason: string | null = null;
 
-        while (true) {
-          if (isClientClosed || res.writableEnded) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+          while (true) {
+            if (isClientClosed || res.writableEnded) {
+              try { await reader.cancel(); } catch (_) {}
+              break;
+            }
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const dataStr = trimmed.slice(6);
-            if (dataStr === '[DONE]') continue;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.model) modelUsed = parsed.model;
+                const finishReason = parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) lastFinishReason = finishReason;
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Process trailing bytes and buffer
+          const finalBytes = decoder.decode();
+          if (finalBytes) buffer += finalBytes;
+          if (buffer && buffer.trim().startsWith('data:')) {
+            const dataStr = buffer.trim().slice(5).trim();
+            if (dataStr !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.model) modelUsed = parsed.model;
+                const finishReason = parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) lastFinishReason = finishReason;
+                const delta = parsed?.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Continuation if finish_reason indicates token truncation
+          if ((lastFinishReason === 'length' || lastFinishReason === 'max_tokens') && !isClientClosed && !res.writableEnded && fullText.length > 60) {
             try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.model) modelUsed = parsed.model;
-              const delta = parsed.choices?.[0]?.delta?.content;
-              if (delta) {
-                fullText += delta;
-                sendSSE(res, { type: 'chunk', text: delta });
+              const contMessages = [
+                ...messages,
+                { role: 'assistant', content: fullText },
+                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+              ];
+              const contRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  'Content-Type': 'application/json',
+                  'X-Title': 'Orvix'
+                },
+                body: JSON.stringify({
+                  model: selectedModel,
+                  messages: contMessages,
+                  max_tokens: Math.min(2048, openRouterMaxTokens),
+                  temperature: 0.7,
+                  stream: true
+                })
+              });
+
+              if (contRes.ok && contRes.body) {
+                const contReader = contRes.body.getReader();
+                let contBuffer = '';
+                while (true) {
+                  if (isClientClosed || res.writableEnded) {
+                    try { await contReader.cancel(); } catch (_) {}
+                    break;
+                  }
+                  const { done: cDone, value: cVal } = await contReader.read();
+                  if (cDone) break;
+                  contBuffer += decoder.decode(cVal, { stream: true });
+                  const cLines = contBuffer.split('\n');
+                  contBuffer = cLines.pop() || '';
+                  for (const cLine of cLines) {
+                    const cTrimmed = cLine.trim();
+                    if (!cTrimmed.startsWith('data:')) continue;
+                    const cData = cTrimmed.slice(5).trim();
+                    if (cData === '[DONE]') continue;
+                    try {
+                      const cParsed = JSON.parse(cData);
+                      const cDelta = cParsed?.choices?.[0]?.delta?.content;
+                      if (cDelta) {
+                        fullText += cDelta;
+                        sendSSE(res, { type: 'chunk', text: cDelta });
+                      }
+                    } catch (_) {}
+                  }
+                }
               }
             } catch (_) {}
           }
-        }
 
-        if (!res.writableEnded) {
-          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
-            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
-            fullText += CONTINUATION_NOTICES.PART_1;
+          if (!res.writableEnded) {
+            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+              sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+              fullText += CONTINUATION_NOTICES.PART_1;
+            }
+            sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'openrouter' });
+            res.end();
           }
-          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'openrouter' });
-          res.end();
+          return;
+        } catch (streamErr: any) {
+          logAIDiagnostic({
+            category: 'streaming failure',
+            provider: 'openrouter',
+            model: selectedModel,
+            phase: 'mid-stream',
+            sanitizedMessage: streamErr?.message || 'OpenRouter streaming interrupted'
+          });
+          if (!res.writableEnded) {
+            sendSSE(res, {
+              type: 'error',
+              error: 'OpenRouter streaming connection interrupted.',
+              code: 503,
+              status: 'STREAM_FAILED',
+              provider: 'openrouter',
+              retryable: false
+            });
+            res.end();
+          }
+          return;
         }
-        return;
       }
     }
 
@@ -2655,7 +3336,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     if (normalizedProvider === 'cloudflare') {
       const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
       const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-      const modelId = '@cf/meta/llama-3.1-8b-instruct';
+      const modelId =
+        typeof clientModel === 'string' && clientModel.trim().startsWith('@cf/')
+          ? clientModel.trim()
+          : '@cf/meta/llama-3.1-8b-instruct';
       const displayModel = 'Cloudflare Workers AI — Llama 3.1 8B';
 
       // If credentials are not configured, return simulated response
@@ -2708,80 +3392,190 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
+      // Calculate optimal max_tokens for Cloudflare Workers AI (@cf/meta/llama-3.1-8b-instruct)
+      // Root cause fix: Cloudflare defaults to only 256 tokens if max_tokens is omitted!
+      // Total context window for Llama 3.1 8B on Workers AI is 8192 tokens.
+      // We budget output tokens generously based on user response preferences while leaving headroom for prompt tokens.
+      const estimatedPromptTokens = Math.ceil(JSON.stringify(messages).length / 3.8);
+      const maxContextTokens = 8192;
+      const availableTokenHeadroom = Math.max(1024, maxContextTokens - estimatedPromptTokens - 256);
+
+      let targetOutputTokens = 3072;
+      if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
+        targetOutputTokens = 4096;
+      } else if (preferences?.responseLength === 'concise') {
+        targetOutputTokens = 1024;
+      } else if (preferences?.responseLength === 'balanced') {
+        targetOutputTokens = 2560;
+      }
+
+      const cfMaxTokens = Math.min(targetOutputTokens, availableTokenHeadroom);
       const cfEndpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId.trim())}/ai/run/${modelId}`;
 
       if (!shouldStream) {
-        const cfRes = await fetch(cfEndpoint, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiToken.trim()}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            messages,
-            stream: false
-          })
-        });
+        try {
+          const cfRes = await fetch(cfEndpoint, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiToken.trim()}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              messages,
+              stream: false,
+              max_tokens: cfMaxTokens,
+              temperature: 0.6
+            })
+          });
 
-        if (!cfRes.ok) {
-          let errDetail = '';
-          try {
-            const errJson = await cfRes.json();
-            if (Array.isArray(errJson?.errors) && errJson.errors.length > 0) {
-              errDetail = errJson.errors.map((e: any) => e.message || JSON.stringify(e)).join('; ');
-            } else if (errJson?.error) {
-              errDetail = typeof errJson.error === 'string' ? errJson.error : errJson.error.message;
+          if (!cfRes.ok) {
+            let errDetail = '';
+            try {
+              const errJson = await cfRes.json();
+              if (Array.isArray(errJson?.errors) && errJson.errors.length > 0) {
+                errDetail = errJson.errors.map((e: any) => e.message || JSON.stringify(e)).join('; ');
+              } else if (errJson?.error) {
+                errDetail = typeof errJson.error === 'string' ? errJson.error : errJson.error.message;
+              }
+            } catch (_) {
+              errDetail = await cfRes.text();
             }
-          } catch (_) {
-            errDetail = await cfRes.text();
+
+            const parsed = parseGeminiError({ status: cfRes.status, message: errDetail || cfRes.statusText }, 'cloudflare');
+            let friendlyError = parsed.message;
+            if (cfRes.status === 401 || cfRes.status === 403) {
+              friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
+            } else if (cfRes.status === 404) {
+              friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
+            }
+
+            logAIDiagnostic({
+              category: parsed.category,
+              provider: 'cloudflare',
+              model: modelId,
+              phase: 'non-streaming',
+              upstreamStatus: cfRes.status,
+              sanitizedMessage: friendlyError
+            });
+
+            return res.status(cfRes.status).json({
+              error: friendlyError,
+              code: cfRes.status,
+              status: parsed.status,
+              category: parsed.category,
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: parsed.isRetryable,
+              canFallback: true,
+              suggestedProviders: ['gemini', 'groq', 'openrouter']
+            });
           }
 
-          let friendlyError = `Cloudflare Workers AI request failed (${cfRes.status}): ${errDetail || cfRes.statusText}`;
-          if (cfRes.status === 401 || cfRes.status === 403) {
-            friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
-          } else if (cfRes.status === 404) {
-            friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
-          } else if (cfRes.status === 429) {
-            friendlyError = 'Cloudflare Workers AI rate limit exceeded. Please wait a moment before trying again.';
-          } else if (cfRes.status === 500 || cfRes.status === 503 || cfRes.status === 504) {
-            friendlyError = 'Cloudflare Workers AI service is temporarily unavailable. Please retry shortly.';
+          const data = await cfRes.json();
+          let text = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+          const finishReason = data?.result?.finish_reason || (data?.result?.usage?.completion_tokens >= cfMaxTokens ? 'length' : null);
+
+          // Transparent continuation if Cloudflare reached output token limit
+          if (finishReason === 'length' && text.length > 60) {
+            try {
+              const contMessages = [
+                ...messages,
+                { role: 'assistant', content: text },
+                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+              ];
+              const contRes = await fetch(cfEndpoint, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiToken.trim()}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  messages: contMessages,
+                  stream: false,
+                  max_tokens: Math.min(2048, cfMaxTokens),
+                  temperature: 0.6
+                })
+              });
+              if (contRes.ok) {
+                const contData = await contRes.json();
+                const contText = contData?.result?.response || (typeof contData?.result === 'string' ? contData.result : '');
+                if (contText) {
+                  text += (text.endsWith(' ') || contText.startsWith(' ') ? '' : ' ') + contText;
+                }
+              }
+            } catch (_) {}
           }
 
-          return res.status(cfRes.status).json({
-            error: friendlyError,
-            code: cfRes.status,
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(text)) {
+            text += CONTINUATION_NOTICES.PART_1;
+          }
+          return res.json({
+            text,
+            modelUsed: displayModel,
+            provider: 'cloudflare'
+          });
+        } catch (fetchErr: any) {
+          const parsed = parseGeminiError(fetchErr, 'cloudflare');
+          logAIDiagnostic({
+            category: parsed.category,
             provider: 'cloudflare',
             model: modelId,
-            retryable: cfRes.status === 429 || cfRes.status === 503,
+            phase: 'non-streaming',
+            upstreamStatus: parsed.statusCode,
+            sanitizedMessage: parsed.message
+          });
+          return res.status(parsed.statusCode).json({
+            error: parsed.message,
+            code: parsed.statusCode,
+            status: parsed.status,
+            category: parsed.category,
+            provider: 'cloudflare',
+            model: modelId,
+            retryable: parsed.isRetryable,
+            canFallback: true,
+            suggestedProviders: ['gemini', 'groq', 'openrouter']
+          });
+        }
+      } else {
+        // Genuine streaming via Cloudflare Workers AI SSE
+        let cfRes: Response;
+        try {
+          cfRes = await fetch(cfEndpoint, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiToken.trim()}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              messages,
+              stream: true,
+              max_tokens: cfMaxTokens,
+              temperature: 0.6
+            })
+          });
+        } catch (fetchErr: any) {
+          const parsed = parseGeminiError(fetchErr, 'cloudflare');
+          logAIDiagnostic({
+            category: parsed.category,
+            provider: 'cloudflare',
+            model: modelId,
+            phase: 'pre-stream',
+            upstreamStatus: parsed.statusCode,
+            sanitizedMessage: parsed.message
+          });
+          return res.status(parsed.statusCode).json({
+            error: parsed.message,
+            code: parsed.statusCode,
+            status: parsed.status,
+            category: parsed.category,
+            provider: 'cloudflare',
+            model: modelId,
+            retryable: parsed.isRetryable,
             canFallback: true,
             suggestedProviders: ['gemini', 'groq', 'openrouter']
           });
         }
 
-        const data = await cfRes.json();
-        let text = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
-        if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(text)) {
-          text += CONTINUATION_NOTICES.PART_1;
-        }
-        return res.json({
-          text,
-          modelUsed: displayModel,
-          provider: 'cloudflare'
-        });
-      } else {
-        // Genuine streaming via Cloudflare Workers AI SSE
-        const cfRes = await fetch(cfEndpoint, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiToken.trim()}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            messages,
-            stream: true
-          })
-        });
-
         if (!cfRes.ok) {
           let errDetail = '';
           try {
@@ -2795,23 +3589,31 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             errDetail = await cfRes.text();
           }
 
-          let friendlyError = `Cloudflare Workers AI request failed (${cfRes.status}): ${errDetail || cfRes.statusText}`;
+          const parsed = parseGeminiError({ status: cfRes.status, message: errDetail || cfRes.statusText }, 'cloudflare');
+          let friendlyError = parsed.message;
           if (cfRes.status === 401 || cfRes.status === 403) {
             friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
           } else if (cfRes.status === 404) {
             friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
-          } else if (cfRes.status === 429) {
-            friendlyError = 'Cloudflare Workers AI rate limit exceeded. Please wait a moment before trying again.';
-          } else if (cfRes.status === 500 || cfRes.status === 503 || cfRes.status === 504) {
-            friendlyError = 'Cloudflare Workers AI service is temporarily unavailable. Please retry shortly.';
           }
+
+          logAIDiagnostic({
+            category: parsed.category,
+            provider: 'cloudflare',
+            model: modelId,
+            phase: 'pre-stream',
+            upstreamStatus: cfRes.status,
+            sanitizedMessage: friendlyError
+          });
 
           return res.status(cfRes.status).json({
             error: friendlyError,
             code: cfRes.status,
+            status: parsed.status,
+            category: parsed.category,
             provider: 'cloudflare',
             model: modelId,
-            retryable: cfRes.status === 429 || cfRes.status === 503,
+            retryable: parsed.isRetryable,
             canFallback: true,
             suggestedProviders: ['gemini', 'groq', 'openrouter']
           });
@@ -2839,74 +3641,182 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         initSSE(res);
         sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
 
-        const reader = cfRes.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
+        try {
+          const reader = cfRes.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let fullText = '';
+          let lastFinishReason: string | null = null;
 
-        while (true) {
-          if (isClientClosed || res.writableEnded) {
-            try {
-              await reader.cancel();
-            } catch (_) {}
-            break;
+          while (true) {
+            if (isClientClosed || res.writableEnded) {
+              try {
+                await reader.cancel();
+              } catch (_) {}
+              break;
+            }
+
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(dataStr);
+                const finishReason = parsed?.finish_reason || parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) {
+                  lastFinishReason = finishReason;
+                }
+                const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
           }
 
-          const { done, value } = await reader.read();
-          if (done) break;
+          // Process any trailing bytes and line in buffer
+          const finalBytes = decoder.decode();
+          if (finalBytes) {
+            buffer += finalBytes;
+          }
+          if (buffer && buffer.trim().startsWith('data:')) {
+            const dataStr = buffer.trim().slice(5).trim();
+            if (dataStr !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(dataStr);
+                const finishReason = parsed?.finish_reason || parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) {
+                  lastFinishReason = finishReason;
+                }
+                const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-            const dataStr = trimmed.slice(6).trim();
-            if (dataStr === '[DONE]') continue;
-
+          // Transparent continuation if Cloudflare reached output token ceiling mid-generation
+          if (lastFinishReason === 'length' && !isClientClosed && !res.writableEnded && fullText.length > 60) {
             try {
-              const parsed = JSON.parse(dataStr);
-              const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
-              if (delta) {
-                fullText += delta;
-                sendSSE(res, { type: 'chunk', text: delta });
+              const contMessages = [
+                ...messages,
+                { role: 'assistant', content: fullText },
+                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+              ];
+              const contRes = await fetch(cfEndpoint, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiToken.trim()}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  messages: contMessages,
+                  stream: true,
+                  max_tokens: Math.min(2048, cfMaxTokens),
+                  temperature: 0.6
+                })
+              });
+
+              if (contRes.ok && contRes.body) {
+                const contReader = contRes.body.getReader();
+                let contBuffer = '';
+                let contFinishReason: string | null = null;
+                while (true) {
+                  if (isClientClosed || res.writableEnded) {
+                    try { await contReader.cancel(); } catch (_) {}
+                    break;
+                  }
+                  const { done: cDone, value: cVal } = await contReader.read();
+                  if (cDone) break;
+                  contBuffer += decoder.decode(cVal, { stream: true });
+                  const cLines = contBuffer.split('\n');
+                  contBuffer = cLines.pop() || '';
+                  for (const cLine of cLines) {
+                    const cTrimmed = cLine.trim();
+                    if (!cTrimmed.startsWith('data:')) continue;
+                    const cData = cTrimmed.slice(5).trim();
+                    if (cData === '[DONE]') continue;
+                    try {
+                      const cParsed = JSON.parse(cData);
+                      if (cParsed?.finish_reason) contFinishReason = cParsed.finish_reason;
+                      const cDelta = cParsed?.response ?? cParsed?.choices?.[0]?.delta?.content ?? '';
+                      if (cDelta) {
+                        fullText += cDelta;
+                        sendSSE(res, { type: 'chunk', text: cDelta });
+                      }
+                    } catch (_) {}
+                  }
+                }
+                lastFinishReason = contFinishReason || 'stop';
               }
-            } catch (_) {}
+            } catch (contErr) {
+              console.warn('[Cloudflare] Streaming continuation notice:', contErr);
+            }
           }
-        }
 
-        // Process any trailing line in buffer
-        if (buffer && buffer.trim().startsWith('data: ')) {
-          const dataStr = buffer.trim().slice(6).trim();
-          if (dataStr !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(dataStr);
-              const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
-              if (delta) {
-                fullText += delta;
-                sendSSE(res, { type: 'chunk', text: delta });
-              }
-            } catch (_) {}
+          if (!res.writableEnded) {
+            // If the response is still incomplete after continuation, append continuation notice
+            if (lastFinishReason === 'length' && !responseHasContinuationNotice(fullText)) {
+              sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_N });
+              fullText += CONTINUATION_NOTICES.PART_N;
+            } else if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+              sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+              fullText += CONTINUATION_NOTICES.PART_1;
+            }
+            sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
+            res.end();
           }
-        }
-
-        if (!res.writableEnded) {
-          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
-            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
-            fullText += CONTINUATION_NOTICES.PART_1;
+          return;
+        } catch (streamErr: any) {
+          logAIDiagnostic({
+            category: 'streaming failure',
+            provider: 'cloudflare',
+            model: modelId,
+            phase: 'mid-stream',
+            sanitizedMessage: streamErr?.message || 'Cloudflare streaming interrupted'
+          });
+          if (!res.writableEnded) {
+            sendSSE(res, {
+              type: 'error',
+              error: 'Cloudflare streaming connection interrupted.',
+              code: 503,
+              status: 'STREAM_FAILED',
+              provider: 'cloudflare',
+              retryable: false
+            });
+            res.end();
           }
-          sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
-          res.end();
+          return;
         }
-        return;
       }
     }
 
     return res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (error: any) {
     console.error('API Error in /api/chat:', error);
-    const parsed = parseGeminiError(error);
+    const providerName = String(req.body?.provider || 'unknown');
+    const parsed = parseGeminiError(error, providerName);
+    logAIDiagnostic({
+      category: parsed.category || 'internal server error',
+      provider: providerName,
+      model: String(req.body?.model || 'unknown'),
+      phase: 'dispatch',
+      upstreamStatus: parsed.statusCode,
+      upstreamErrorCode: parsed.status,
+      sanitizedMessage: parsed.message
+    });
     if (res.headersSent) {
       sendSSE(res, {
         type: 'error',

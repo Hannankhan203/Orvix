@@ -26,7 +26,7 @@ export const PROVIDER_OPTIONS = [
   {
     id: AI_PROVIDERS.GROQ,
     name: 'Groq',
-    modelTag: 'Llama 3.3 70B',
+    modelTag: 'GPT OSS 120B',
     description: 'Ultra-fast inference',
     envKey: 'VITE_GROQ_API_KEY'
   },
@@ -123,7 +123,22 @@ function parseRouterError(rawError, statusCode = 500) {
   const upperStatus = String(status).toUpperCase();
 
   // Distinct error classification
-  if (
+  const isNetwork =
+    lowerMsg === 'fetch failed' ||
+    lowerMsg === 'failed to fetch' ||
+    lowerMsg.includes('econnrefused') ||
+    lowerMsg.includes('enotfound') ||
+    lowerMsg.includes('network error') ||
+    lowerMsg.includes('network_failure') ||
+    upperStatus === 'NETWORK_FAILURE' ||
+    upperStatus === 'NETWORK_ERROR';
+
+  if (isNetwork) {
+    code = code === 500 ? 503 : code;
+    status = 'NETWORK_ERROR';
+    retryable = true;
+    cleanMsg = 'Unable to establish network connection with the AI service. Please check your internet connection or try again in a few moments.';
+  } else if (
     code === 503 ||
     upperStatus === 'UNAVAILABLE' ||
     (lowerMsg.includes('high demand') && !lowerMsg.includes('500')) ||
@@ -133,7 +148,7 @@ function parseRouterError(rawError, statusCode = 500) {
     code = 503;
     status = 'UNAVAILABLE';
     retryable = true;
-    cleanMsg = 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
+    cleanMsg = 'The AI service is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
   } else if (
     code === 429 ||
     upperStatus === 'RESOURCE_EXHAUSTED' ||
@@ -162,6 +177,9 @@ function parseRouterError(rawError, statusCode = 500) {
     code = 404;
     status = 'NOT_FOUND';
     retryable = false;
+    if (!cleanMsg || cleanMsg === 'Not Found' || cleanMsg.includes('Server request failed (404)')) {
+      cleanMsg = 'The requested AI model was not found or is no longer available. Please select another provider or model.';
+    }
   } else if (code === 400 || upperStatus === 'INVALID_ARGUMENT') {
     code = 400;
     status = 'INVALID_ARGUMENT';
@@ -189,6 +207,7 @@ function parseRouterError(rawError, statusCode = 500) {
 
 export async function streamAIMessage({
   provider = DEFAULT_PROVIDER,
+  model = null,
   mode = 'general',
   prompt,
   history = [],
@@ -223,6 +242,7 @@ export async function streamAIMessage({
         },
         body: JSON.stringify({
           provider: normalizedProvider,
+          model: model ? String(model).trim() : null,
           mode: normalizedMode,
           prompt,
           history,
@@ -272,8 +292,9 @@ export async function streamAIMessage({
 
             for (const line of lines) {
               const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data: ')) continue;
-              const dataStr = trimmed.slice(6);
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
               try {
                 const data = JSON.parse(dataStr);
                 if (data.type === 'start') {
@@ -307,30 +328,41 @@ export async function streamAIMessage({
             }
           }
 
-          if (buffer && buffer.trim().startsWith('data: ')) {
-            const dataStr = buffer.trim().slice(6);
-            try {
-              const data = JSON.parse(dataStr);
-              if (data.type === 'start') {
-                modelUsed = data.modelUsed;
-                finalProvider = data.provider || normalizedProvider;
-                onStart?.({ modelUsed, provider: finalProvider });
-              } else if (data.type === 'chunk' && data.text) {
-                accumulatedText += data.text;
-                onChunk?.(data.text, accumulatedText);
-              } else if (data.type === 'done') {
-                if (data.modelUsed) modelUsed = data.modelUsed;
-                if (data.provider) finalProvider = data.provider;
-                return {
-                  text: data.text || accumulatedText,
-                  modelUsed: modelUsed || 'AI Model',
-                  provider: finalProvider
-                };
-              } else if (data.type === 'error') {
-                const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
-                throw streamErr;
-              }
-            } catch (_) {}
+          // Process any trailing bytes and buffered events
+          const finalDecoded = decoder.decode();
+          if (finalDecoded) {
+            buffer += finalDecoded;
+          }
+          if (buffer) {
+            const trailingLines = buffer.split('\n');
+            for (const tLine of trailingLines) {
+              const trimmed = tLine.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+              try {
+                const data = JSON.parse(dataStr);
+                if (data.type === 'start') {
+                  modelUsed = data.modelUsed;
+                  finalProvider = data.provider || normalizedProvider;
+                  onStart?.({ modelUsed, provider: finalProvider });
+                } else if (data.type === 'chunk' && data.text) {
+                  accumulatedText += data.text;
+                  onChunk?.(data.text, accumulatedText);
+                } else if (data.type === 'done') {
+                  if (data.modelUsed) modelUsed = data.modelUsed;
+                  if (data.provider) finalProvider = data.provider;
+                  return {
+                    text: data.text || accumulatedText,
+                    modelUsed: modelUsed || 'AI Model',
+                    provider: finalProvider
+                  };
+                } else if (data.type === 'error') {
+                  const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
+                  throw streamErr;
+                }
+              } catch (_) {}
+            }
           }
 
           return {
@@ -363,6 +395,12 @@ export async function streamAIMessage({
       if (apiErr.name === 'TypeError' && isProviderConfigured(normalizedProvider)) {
         console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
         break;
+      }
+
+      if (apiErr.name === 'TypeError' && !apiErr.status) {
+        const netErr = parseRouterError(apiErr.message || 'fetch failed', 503);
+        netErr.provider = normalizedProvider;
+        throw netErr;
       }
 
       throw apiErr;

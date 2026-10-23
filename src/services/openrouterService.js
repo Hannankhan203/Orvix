@@ -153,6 +153,7 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
       body: JSON.stringify({
         model: DEFAULT_MODEL,
         messages,
+        max_tokens: 4096,
         temperature: 0.7
       })
     });
@@ -242,6 +243,7 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
       body: JSON.stringify({
         model: DEFAULT_MODEL,
         messages,
+        max_tokens: 4096,
         temperature: 0.7,
         stream: true
       }),
@@ -283,8 +285,29 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const dataStr = trimmed.slice(6);
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const dataStr = trimmed.slice(5).trim();
+      if (dataStr === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(dataStr);
+        if (parsed.model) modelUsed = parsed.model;
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (delta) {
+          accumulated += delta;
+          onChunk?.(delta, accumulated);
+        }
+      } catch (_) {}
+    }
+  }
+
+  const finalDecoded = decoder.decode();
+  if (finalDecoded) buffer += finalDecoded;
+  if (buffer) {
+    const trailingLines = buffer.split('\n');
+    for (const line of trailingLines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const dataStr = trimmed.slice(5).trim();
       if (dataStr === '[DONE]') continue;
       try {
         const parsed = JSON.parse(dataStr);

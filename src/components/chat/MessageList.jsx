@@ -30,7 +30,8 @@ export default function MessageList({
   onStartEdit,
   onCancelEdit,
   showTimestamps = true,
-  selectedProvider = 'gemini'
+  selectedProvider = 'gemini',
+  activeMode = 'general'
 }) {
   const bottomAnchorRef = useRef(null);
 
@@ -56,6 +57,7 @@ export default function MessageList({
           onEditResend={onEditResend}
           showTimestamps={showTimestamps}
           selectedProvider={selectedProvider}
+          activeMode={activeMode}
         />
       ))}
 

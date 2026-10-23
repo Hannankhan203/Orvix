@@ -150,6 +150,7 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general', 
       body: JSON.stringify({
         model: DEFAULT_MODEL,
         messages,
+        max_tokens: 4096,
         temperature: 0.7
       })
     });
@@ -166,6 +167,9 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general', 
       errorDetail = await response.text();
     }
 
+    if (response.status === 404) {
+      throw new Error(`Groq model not found or decommissioned (${errorDetail || 'Model unavailable'}). Please verify your model configuration.`);
+    }
     if (response.status === 401 || response.status === 403) {
       throw new Error('Invalid or unauthorized Groq API key. Please check VITE_GROQ_API_KEY.');
     }
@@ -237,6 +241,7 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
       body: JSON.stringify({
         model: DEFAULT_MODEL,
         messages,
+        max_tokens: 4096,
         temperature: 0.7,
         stream: true
       }),
@@ -254,6 +259,18 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
       errorDetail = errJson?.error?.message || '';
     } catch (_) {
       errorDetail = await response.text();
+    }
+    if (response.status === 404) {
+      throw new Error(`Groq model not found or decommissioned (${errorDetail || 'Model unavailable'}). Please verify your model configuration.`);
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Invalid or unauthorized Groq API key. Please check VITE_GROQ_API_KEY.');
+    }
+    if (response.status === 429) {
+      throw new Error('Groq rate limit or quota exceeded. Please wait a moment before trying again.');
+    }
+    if (response.status === 503) {
+      throw new Error('Groq service is temporarily unavailable. Please retry shortly.');
     }
     throw new Error(`Groq request failed (${response.status}): ${errorDetail || response.statusText}`);
   }
@@ -278,8 +295,29 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const dataStr = trimmed.slice(6);
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const dataStr = trimmed.slice(5).trim();
+      if (dataStr === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(dataStr);
+        if (parsed.model) modelUsed = parsed.model;
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (delta) {
+          accumulated += delta;
+          onChunk?.(delta, accumulated);
+        }
+      } catch (_) {}
+    }
+  }
+
+  const finalDecoded = decoder.decode();
+  if (finalDecoded) buffer += finalDecoded;
+  if (buffer) {
+    const trailingLines = buffer.split('\n');
+    for (const line of trailingLines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const dataStr = trimmed.slice(5).trim();
       if (dataStr === '[DONE]') continue;
       try {
         const parsed = JSON.parse(dataStr);

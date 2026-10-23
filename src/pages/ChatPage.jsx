@@ -34,7 +34,8 @@ import {
   switchActiveAlternativeInMessage,
   updateActiveAlternativeInMessage,
   ensureConversationAlternatives,
-  createAlternativeRecord
+  createAlternativeRecord,
+  getActiveAlternative
 } from '../services/alternativeResponseService.js';
 import { AlertCircle, X, Check } from 'lucide-react';
 
@@ -690,7 +691,8 @@ export default function ChatPage() {
     overrideProvider = null,
     currentAttachments = [],
     multiPartParams = {},
-    customStartTime = null
+    customStartTime = null,
+    overrideModel = null
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
     setIsLoading(true);
@@ -720,7 +722,7 @@ export default function ChatPage() {
 
     let targetText = '';
     let displayedText = '';
-    let activeModel = null;
+    let activeModel = overrideModel || null;
     let finalProvider = providerToUse;
     let isStreamDone = false;
     let timerId = null;
@@ -914,6 +916,7 @@ export default function ChatPage() {
     try {
       const result = await streamAIMessage({
         provider: providerToUse,
+        model: overrideModel || null,
         mode: activeMode,
         prompt: promptText,
         history: historyContext,
@@ -1151,11 +1154,22 @@ export default function ChatPage() {
         error?.status === 'PERMISSION_DENIED';
       const isRateLimit =
         error?.code === 429 || error?.status === 'RESOURCE_EXHAUSTED';
+      const isNotFound =
+        error?.code === 404 ||
+        error?.status === 'NOT_FOUND' ||
+        rawMsg.toLowerCase().includes('not found') ||
+        rawMsg.toLowerCase().includes('does not exist') ||
+        rawMsg.toLowerCase().includes('access to it') ||
+        rawMsg.toLowerCase().includes('decommissioned') ||
+        rawMsg.toLowerCase().includes('retired');
 
       let friendlyMsg = rawMsg;
       if (is503) {
         friendlyMsg =
           'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.';
+      } else if (isNotFound) {
+        friendlyMsg =
+          `The requested model for ${providerToUse} is unavailable or retired (${rawMsg || 'Model not found'}). Please choose another model or provider below.`;
       } else if (is500) {
         friendlyMsg =
           rawMsg && !rawMsg.includes('Server request failed') && !rawMsg.includes('Internal Server Error')
@@ -1171,126 +1185,74 @@ export default function ChatPage() {
         friendlyMsg = `An unexpected error occurred while communicating with ${providerToUse}.`;
       }
 
+      const isInterrupted = targetText.trim().length > 0;
+      const errorContent = isInterrupted
+        ? `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`
+        : friendlyMsg;
+
       if (activeChatIdRef.current === targetChatId) {
-        if (targetText.trim().length > 0) {
-          const partialMessage = {
-            id: assistantMessageId,
-            sender: 'assistant',
-            provider: finalProvider || providerToUse,
-            modelUsed: activeModel,
-            timestamp: new Date().toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit'
-            }),
-            content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
-            isStreaming: false,
-            isInterrupted: true,
-            failedPrompt: promptText,
-            failedProvider: finalProvider || providerToUse,
-            canSwitchProvider: true,
-            referencedAttachments:
-              currentAttachments && currentAttachments.length > 0
-                ? currentAttachments
-                : undefined
-          };
+        let finalizedErrorMessage = null;
+        setMessages((previous) =>
+          previous.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            const normalized = normalizeAssistantMessage(message);
+            const updated = updateActiveAlternativeInMessage(normalized, {
+              content: errorContent,
+              modelUsed: activeModel || normalized.modelUsed,
+              provider: finalProvider || providerToUse || normalized.provider,
+              isStreaming: false,
+              isError: !isInterrupted,
+              isInterrupted,
+              failedPrompt: promptText,
+              failedProvider: finalProvider || providerToUse,
+              canSwitchProvider: true,
+              referencedAttachments:
+                currentAttachments && currentAttachments.length > 0
+                  ? currentAttachments
+                  : normalized.referencedAttachments
+            });
+            finalizedErrorMessage = updated;
+            return updated;
+          })
+        );
 
-          setMessages((previous) =>
-            previous.map((message) =>
-              message.id === assistantMessageId
-                ? partialMessage
-                : message
-            )
-          );
-
-          if (targetChatId) {
-            await persistMessageSafe(targetChatId, partialMessage);
-          }
-        } else {
-          // Empty failure before any content could stream
-          let preservedExistingAlternative = false;
-
-          setMessages((previous) =>
-            previous.map((message) => {
-              if (message.id !== assistantMessageId) return message;
-              const normalized = normalizeAssistantMessage(message);
-              const altList = Array.isArray(normalized.alternatives) ? normalized.alternatives : [];
-
-              // If there are multiple alternatives (e.g. newly requested alternative failed),
-              // remove the empty failed alternative and safely restore the previous successful response
-              if (altList.length > 1) {
-                preservedExistingAlternative = true;
-                const remainingAlts = altList.filter(
-                  (a) => a.id !== normalized.activeAlternativeId || (a.content && a.content.trim().length > 0)
-                );
-                const restoredAlts = remainingAlts.length > 0 ? remainingAlts : altList;
-                const activeAlt = restoredAlts[restoredAlts.length - 1];
-                return {
-                  ...normalized,
-                  alternatives: restoredAlts,
-                  activeAlternativeId: activeAlt?.id || normalized.activeAlternativeId,
-                  content: activeAlt?.content || normalized.content,
-                  provider: activeAlt?.provider || normalized.provider,
-                  modelUsed: activeAlt?.modelUsed || normalized.modelUsed,
-                  isStreaming: false,
-                  isError: false
-                };
-              }
-
-              // If single alternative that already had content (e.g. regenerating in place failed)
-              if (normalized.content && normalized.content.trim().length > 0) {
-                preservedExistingAlternative = true;
-                return {
-                  ...normalized,
-                  isStreaming: false
-                };
-              }
-
-              const errorMessage = {
-                id: `error-${Date.now()}`,
-                sender: 'assistant',
-                isError: true,
-                failedPrompt: promptText,
-                failedProvider: finalProvider || providerToUse,
-                canSwitchProvider: true,
-                timestamp: new Date().toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit'
-                }),
-                content: friendlyMsg,
-                referencedAttachments:
-                  currentAttachments && currentAttachments.length > 0
-                    ? currentAttachments
-                    : undefined
-              };
-              return errorMessage;
-            })
-          );
-
-          setPersistenceError(friendlyMsg);
+        if (targetChatId && finalizedErrorMessage) {
+          await persistMessageSafe(targetChatId, finalizedErrorMessage, true);
         }
-      } else if (targetChatId && targetText.trim().length > 0) {
-        const partialMessage = {
+        setPersistenceError(friendlyMsg);
+      } else if (targetChatId) {
+        let existingTargetMsg = null;
+        setUserChats((chats) => {
+          const chat = chats.find((c) => c.id === targetChatId);
+          existingTargetMsg = chat?.messages?.find((m) => m.id === assistantMessageId);
+          return chats;
+        });
+
+        const normalized = normalizeAssistantMessage(existingTargetMsg || {
           id: assistantMessageId,
           sender: 'assistant',
           provider: finalProvider || providerToUse,
           modelUsed: activeModel,
-          timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          }),
-          content: `${targetText}\n\n*[Response interrupted: ${friendlyMsg}]*`,
+          content: errorContent
+        });
+
+        const updated = updateActiveAlternativeInMessage(normalized, {
+          content: errorContent,
+          modelUsed: activeModel || normalized.modelUsed,
+          provider: finalProvider || providerToUse || normalized.provider,
           isStreaming: false,
-          isInterrupted: true,
+          isError: !isInterrupted,
+          isInterrupted,
           failedPrompt: promptText,
           failedProvider: finalProvider || providerToUse,
           canSwitchProvider: true,
           referencedAttachments:
             currentAttachments && currentAttachments.length > 0
               ? currentAttachments
-              : undefined
-        };
+              : normalized.referencedAttachments
+        });
 
-        await persistMessageSafe(targetChatId, partialMessage);
+        await persistMessageSafe(targetChatId, updated, true);
       }
 
       setIsLoading(false);
@@ -1618,6 +1580,7 @@ export default function ChatPage() {
           parentMessageId: userMessage.id,
           provider: selectedProvider,
           modelUsed: null,
+          mode: activeMode || 'general',
           timestamp: new Date().toLocaleTimeString([], {
             hour: '2-digit',
             minute: '2-digit'
@@ -1745,6 +1708,10 @@ export default function ChatPage() {
       ...updatedMessages,
       initialAssistantMessage
     ]);
+
+    const validHistory = updatedMessages.filter(
+      (message) => !message.isError && !message.isInterrupted
+    );
 
     const isRetryContinuation = isContinuationRequest(failedMessage.failedPrompt);
     const retryMultiPart = isRetryContinuation
@@ -1898,6 +1865,7 @@ export default function ChatPage() {
     const normalizedTarget = normalizeAssistantMessage(assistantMessage, precedingUserMessage);
     const activeAlt = getActiveAlternative(normalizedTarget);
     const providerToUse = activeAlt?.provider || assistantMessage.provider || selectedProvider;
+    const modelToUse = activeAlt?.modelUsed || assistantMessage.modelUsed || null;
 
     const requestStartTime = performance.now();
 
@@ -1935,7 +1903,7 @@ export default function ChatPage() {
         const normalized = normalizeAssistantMessage(m, precedingUserMessage);
         const updated = updateActiveAlternativeInMessage(normalized, {
           content: '',
-          modelUsed: null,
+          modelUsed: modelToUse,
           provider: providerToUse,
           responseTimeMs: null,
           timestamp: new Date().toLocaleTimeString([], {
@@ -1965,7 +1933,8 @@ export default function ChatPage() {
       providerToUse,
       precedingAttachments,
       {},
-      requestStartTime
+      requestStartTime,
+      modelToUse
     );
   };
 
@@ -1996,7 +1965,19 @@ export default function ChatPage() {
     const userMsgIndex = messages.findIndex((m) => m.id === precedingUserMessage.id);
     const validHistory = messages.slice(0, userMsgIndex).filter((m) => !m.isError);
 
-    const chosenProvider = targetProvider;
+    const chosenProvider = typeof targetProvider === 'object' && targetProvider?.provider
+      ? targetProvider.provider
+      : targetProvider;
+    const chosenModel = typeof targetProvider === 'object' && targetProvider?.model
+      ? targetProvider.model
+      : (chosenProvider === 'groq'
+          ? 'openai/gpt-oss-120b'
+          : chosenProvider === 'openrouter'
+          ? 'openrouter/free'
+          : chosenProvider === 'cloudflare'
+          ? '@cf/meta/llama-3.1-8b-instruct'
+          : 'gemini-3.1-flash-lite');
+
     const targetAssistantId = assistantMessage.id;
     const requestStartTime = performance.now();
 
@@ -2028,7 +2009,7 @@ export default function ChatPage() {
     const newAlternative = createAlternativeRecord({
       parentMessageId: precedingUserMessage.id,
       provider: chosenProvider,
-      modelUsed: null,
+      modelUsed: chosenModel,
       content: '',
       isStreaming: true,
       timestamp: new Date().toLocaleTimeString([], {
@@ -2061,7 +2042,8 @@ export default function ChatPage() {
       chosenProvider,
       precedingAttachments,
       {},
-      requestStartTime
+      requestStartTime,
+      chosenModel
     );
   };
 

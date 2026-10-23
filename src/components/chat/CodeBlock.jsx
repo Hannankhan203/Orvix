@@ -45,13 +45,9 @@ const LANGUAGE_META = {
   shell: { id: 'bash', label: 'Shell' },
   zsh: { id: 'bash', label: 'Zsh' },
 
-  yaml: { id: 'yaml', label: 'YAML' },
-  yml: { id: 'yaml', label: 'YAML' },
+  java: { id: 'java', label: 'Java' },
 
-  markdown: { id: 'markdown', label: 'Markdown' },
-  md: { id: 'markdown', label: 'Markdown' },
-
-  c: { id: 'c', label: 'C' },
+  c: { id: 'cpp', label: 'C' },
   cpp: { id: 'cpp', label: 'C++' },
   'c++': { id: 'cpp', label: 'C++' },
   cc: { id: 'cpp', label: 'C++' },
@@ -61,11 +57,19 @@ const LANGUAGE_META = {
   'c#': { id: 'csharp', label: 'C#' },
   cs: { id: 'csharp', label: 'C#' },
 
-  java: { id: 'java', label: 'Java' },
+  php: { id: 'php', label: 'PHP' },
+
   go: { id: 'go', label: 'Go' },
   golang: { id: 'go', label: 'Go' },
+
   rust: { id: 'rust', label: 'Rust' },
   rs: { id: 'rust', label: 'Rust' },
+
+  yaml: { id: 'universal', label: 'YAML' },
+  yml: { id: 'universal', label: 'YAML' },
+
+  markdown: { id: 'universal', label: 'Markdown' },
+  md: { id: 'universal', label: 'Markdown' },
 
   plaintext: { id: 'plaintext', label: 'Plain Text' },
   text: { id: 'plaintext', label: 'Plain Text' },
@@ -115,31 +119,41 @@ function renderHighlightedTokens(tokens) {
 /**
  * Developer-friendly Code Block Component
  * Features:
- * - Real-time syntax highlighting for major languages without external CJS/ESM dependencies
+ * - Professional VS Code-inspired styling and layout
+ * - Real-time syntax highlighting for major languages without external dependencies
  * - Fallback to readable interim rendering during streaming or syntax glitches
  * - Strict text-only handling (no execution, zero XSS vulnerability)
- * - Copy Code button with success/error state feedback
- * - Horizontal scrolling for long lines without stretching page
- * - Line numbers for multiline code
- * - Preserves indentation, whitespace, and special characters
+ * - Copy Code button copying only pure source code with clear feedback
+ * - Strict 1-to-1 sequential line numbers without drift, gaps, or wrapping corruption
+ * - Tabular digit alignment supporting 1 to 10,000+ lines (beyond line 99)
+ * - Sticky gutter pinning during horizontal scrolling
+ * - Synchronized vertical scrolling for large code blocks
+ * - Preserves tabs, spaces, blank lines, and special characters
  */
-export default function CodeBlock({ code = '', language = '', isStreaming = false }) {
+export default function CodeBlock({
+  code = '',
+  language = '',
+  isStreaming = false,
+  mode = 'general'
+}) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
 
-  // Normalize code string (stripping trailing newline once)
+  // Normalize code string (stripping only single trailing newline once from markdown parser)
   const normalizedCode = useMemo(() => {
     return typeof code === 'string' ? code.replace(/\n$/, '') : String(code || '');
   }, [code]);
 
   const langInfo = useMemo(() => resolveLanguage(language), [language]);
 
-  // Compute line count for line numbers
+  // Compute lines for 1-to-1 sequential numbering
   const lines = useMemo(() => {
     return normalizedCode.split('\n');
   }, [normalizedCode]);
 
-  const showLineNumbers = lines.length > 1;
+  const isCodingMode = mode === 'coding';
+  const showLineNumbers = lines.length > 1 || isCodingMode;
+  const lineDigits = Math.max(2, String(lines.length).length);
 
   // Safe syntax highlighting via internal tokenizer
   const highlightedContent = useMemo(() => {
@@ -158,7 +172,7 @@ export default function CodeBlock({ code = '', language = '', isStreaming = fals
     }
   }, [normalizedCode, langInfo.id]);
 
-  // Safe clipboard copy handler
+  // Safe clipboard copy handler (copies purely the source code - no line numbers, no header text)
   const handleCopy = async () => {
     if (!normalizedCode) return;
 
@@ -202,21 +216,42 @@ export default function CodeBlock({ code = '', language = '', isStreaming = fals
   const isTerminalLang = ['bash', 'sh', 'shell', 'zsh'].includes(langInfo.id);
 
   return (
-    <div className={`code-block-container ${isStreaming ? 'streaming-code' : ''}`}>
-      {/* Code Block Header */}
+    <div
+      className={`code-block-container ${isCodingMode ? 'mode-coding' : ''} ${isStreaming ? 'streaming-code' : ''}`}
+      role="region"
+      aria-label={`${langInfo.label} code snippet`}
+    >
+      {/* Code Block Header (VS Code inspired) */}
       <div className="code-block-header">
         <div className="code-header-left">
+          {/* Editor window dots in Coding Mode */}
+          {isCodingMode && (
+            <div className="code-editor-dots" aria-hidden="true">
+              <span className="editor-dot dot-red" />
+              <span className="editor-dot dot-yellow" />
+              <span className="editor-dot dot-green" />
+            </div>
+          )}
+
           {isTerminalLang ? (
             <Terminal size={13} className="code-lang-icon" aria-hidden="true" />
           ) : (
             <Code2 size={13} className="code-lang-icon" aria-hidden="true" />
           )}
-          <span className="code-lang-label" title={langInfo.isSpecified ? `Language: ${langInfo.label}` : 'Code block'}>
+
+          <span
+            className="code-lang-label"
+            title={langInfo.isSpecified ? `Language: ${langInfo.label}` : 'Code block'}
+          >
             {langInfo.label}
           </span>
+
           {showLineNumbers && (
-            <span className="code-lines-count" title={`${lines.length} lines of code`}>
-              {lines.length} lines
+            <span
+              className="code-lines-count"
+              title={`${lines.length} ${lines.length === 1 ? 'line' : 'lines'} of code`}
+            >
+              {lines.length} {lines.length === 1 ? 'line' : 'lines'}
             </span>
           )}
         </div>
@@ -244,12 +279,23 @@ export default function CodeBlock({ code = '', language = '', isStreaming = fals
         </button>
       </div>
 
-      {/* Code Block Body with Optional Line Numbers and Horizontal Scrolling */}
-      <div className="code-content-wrapper">
+      {/* Code Block Body with Line Numbers Gutter and Sticky Pinning */}
+      <div
+        className="code-content-wrapper"
+        style={{ '--line-digits': lineDigits }}
+      >
         {showLineNumbers && (
-          <div className="code-line-numbers" aria-hidden="true">
+          <div
+            className="code-line-numbers"
+            aria-hidden="true"
+            style={{ minWidth: `calc(${lineDigits}ch + 1.6rem)` }}
+          >
             {lines.map((_, index) => (
-              <span key={index} className="line-number">
+              <span
+                key={index}
+                className="line-number"
+                data-line={index + 1}
+              >
                 {index + 1}
               </span>
             ))}

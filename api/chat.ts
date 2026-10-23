@@ -10,4 +10,12 @@ export default function handler(req: Request, res: Response) {
   return app(req, res);
 }
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb'
+    }
+  }
+};
+
 export { app };

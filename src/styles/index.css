@@ -3022,38 +3022,50 @@ html, body {
   line-height: 1.6;
 }
 
-/* Markdown Rendering */
+/* Markdown Rendering - Professional General Mode & Universal Chat Prose */
 .ai-markdown-container {
   width: 100%;
   color: var(--text-primary);
   font-size: 0.95rem;
-  line-height: 1.65;
+  line-height: 1.68;
   word-break: break-word;
   overflow-wrap: break-word;
+  letter-spacing: -0.005em;
+}
+
+/* Dedicated General Mode Formatting Enhancements */
+.ai-markdown-container.mode-general {
+  font-size: 0.95rem;
+  line-height: 1.7;
 }
 
 .ai-markdown-container > *:first-child {
-  margin-top: 0;
+  margin-top: 0 !important;
 }
 .ai-markdown-container > *:last-child {
-  margin-bottom: 0;
+  margin-bottom: 0 !important;
 }
 
+/* Clear Headings Visual Hierarchy */
 .markdown-h1 {
   font-size: 1.35rem;
   font-weight: 700;
   color: var(--text-primary);
-  margin-top: 16px;
-  margin-bottom: 8px;
+  margin-top: 1.5rem;
+  margin-bottom: 0.65rem;
+  line-height: 1.3;
   letter-spacing: -0.02em;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .markdown-h2 {
   font-size: 1.2rem;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--text-primary);
-  margin-top: 14px;
-  margin-bottom: 6px;
+  margin-top: 1.35rem;
+  margin-bottom: 0.5rem;
+  line-height: 1.35;
   letter-spacing: -0.015em;
 }
 
@@ -3061,59 +3073,207 @@ html, body {
   font-size: 1.05rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin-top: 12px;
-  margin-bottom: 4px;
+  margin-top: 1.15rem;
+  margin-bottom: 0.4rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
 }
 
 .markdown-h4 {
-  font-size: 0.95rem;
+  font-size: 0.96rem;
   font-weight: 600;
   color: var(--text-primary);
-  margin-top: 10px;
-  margin-bottom: 4px;
+  margin-top: 1rem;
+  margin-bottom: 0.35rem;
+  line-height: 1.45;
 }
 
+.markdown-h5 {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-top: 0.85rem;
+  margin-bottom: 0.25rem;
+  line-height: 1.45;
+}
+
+.markdown-h6 {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 0.75rem;
+  margin-bottom: 0.2rem;
+  line-height: 1.45;
+}
+
+/* Collapse excessive double gap when headings are directly adjacent */
+.markdown-h1 + .markdown-h2,
+.markdown-h2 + .markdown-h3,
+.markdown-h3 + .markdown-h4,
+.markdown-h4 + .markdown-h5,
+.markdown-h5 + .markdown-h6 {
+  margin-top: 0.4rem;
+}
+
+/* Responsive Headings on Narrow / Mobile Viewports */
+@media (max-width: 640px) {
+  .markdown-h1 {
+    font-size: 1.25rem;
+    margin-top: 1.3rem;
+  }
+  .markdown-h2 {
+    font-size: 1.125rem;
+    margin-top: 1.15rem;
+  }
+  .markdown-h3 {
+    font-size: 1rem;
+    margin-top: 1rem;
+  }
+}
+
+/* Paragraphs & Text Rhythm */
 .markdown-p {
-  margin-bottom: 10px;
-  line-height: 1.6;
+  margin-top: 0;
+  margin-bottom: 0.85rem;
+  line-height: 1.68;
 }
 
-.markdown-ul, .markdown-ol {
-  margin-bottom: 10px;
-  padding-left: 20px;
+.markdown-strong {
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.markdown-em {
+  font-style: italic;
+  color: inherit;
+}
+
+.markdown-del {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* Lists and Numbering Architecture */
+.markdown-ul,
+.markdown-ol {
+  margin-top: 0.35rem;
+  margin-bottom: 0.85rem;
 }
 
 .markdown-ul {
   list-style-type: disc;
+  padding-left: 1.55rem;
 }
 
 .markdown-ol {
   list-style-type: decimal;
+  padding-left: 1.7rem;
 }
 
+/* Nested Lists */
+.markdown-ul .markdown-ul,
+.markdown-ol .markdown-ul {
+  list-style-type: circle;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+  padding-left: 1.35rem;
+}
+
+.markdown-ul .markdown-ul .markdown-ul,
+.markdown-ol .markdown-ul .markdown-ul {
+  list-style-type: square;
+}
+
+.markdown-ol .markdown-ol,
+.markdown-ul .markdown-ol {
+  list-style-type: lower-alpha;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+  padding-left: 1.35rem;
+}
+
+.markdown-ol .markdown-ol .markdown-ol,
+.markdown-ul .markdown-ol .markdown-ol {
+  list-style-type: lower-roman;
+}
+
+/* List Items with Text Wrapping and Clean Spacing */
 .markdown-li {
-  margin-bottom: 4px;
-  line-height: 1.55;
+  margin-bottom: 0.35rem;
+  line-height: 1.6;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
-.markdown-li::marker {
-  color: var(--accent-primary);
+.markdown-li:last-child {
+  margin-bottom: 0;
 }
 
+.markdown-ul > .markdown-li::marker {
+  color: var(--accent-primary, #3b82f6);
+}
+
+.markdown-ol > .markdown-li::marker {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* Balanced paragraph flow inside list items */
+.markdown-li > p:first-child {
+  margin-top: 0;
+}
+.markdown-li > p:last-child {
+  margin-bottom: 0;
+}
+.markdown-li > p + p {
+  margin-top: 0.35rem;
+}
+
+/* GFM Task List Checkboxes */
+.markdown-task-item {
+  list-style-type: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-left: -1.25rem;
+}
+
+.markdown-task-checkbox {
+  margin-top: 4px;
+  accent-color: var(--accent-primary);
+  width: 14px;
+  height: 14px;
+  cursor: default;
+  flex-shrink: 0;
+}
+
+.markdown-task-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Blockquotes - Elegant Hairline Border */
 .markdown-blockquote {
-  border-left: 3px solid var(--accent-primary);
-  padding: 8px 12px;
-  margin: 10px 0;
-  background-color: rgba(37, 99, 235, 0.06);
+  border-left: 2px solid var(--border-medium);
+  padding: 0.6rem 1rem;
+  margin: 1rem 0;
+  background-color: rgba(255, 255, 255, 0.025);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   color: var(--text-secondary);
-  font-style: italic;
+  font-style: normal;
 }
 
+.markdown-blockquote > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Links */
 .markdown-link {
   color: #60a5fa;
   text-decoration: underline;
   text-underline-offset: 3px;
+  font-weight: 500;
   transition: color var(--transition-fast);
 }
 
@@ -3121,19 +3281,20 @@ html, body {
   color: #93c5fd;
 }
 
+/* Separator / Divider */
 .markdown-divider {
   border: none;
   border-top: 1px solid var(--border-subtle);
-  margin: 16px 0;
+  margin: 1.5rem 0;
 }
 
-/* Tables */
+/* Tables - Responsive Horizontal Scrolling & Aligned Data */
 .table-responsive-wrapper {
   width: 100%;
   max-width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  margin: 12px 0;
+  margin: 1.15rem 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background-color: var(--bg-card);
@@ -3141,66 +3302,1426 @@ html, body {
 
 .markdown-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.875rem;
   text-align: left;
 }
 
 .markdown-thead {
   background-color: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid var(--border-medium);
 }
 
 .markdown-th {
-  padding: 8px 12px;
+  padding: 10px 14px;
   font-weight: 600;
   color: var(--text-primary);
+  border-bottom: 1px solid var(--border-medium);
   white-space: nowrap;
 }
 
 .markdown-td {
-  padding: 8px 12px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .markdown-tr:last-child .markdown-td {
   border-bottom: none;
 }
 
+.markdown-tr:hover .markdown-td {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Inline Code - Refined Typographic Framing */
 .inline-code {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  padding: 1px 5px;
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.15em 0.45em;
   border-radius: var(--radius-xs);
   color: #93c5fd;
   word-break: break-word;
 }
 
-/* Code Blocks */
+/* Light Theme Overrides for Markdown Elements */
+[data-theme="light"] .markdown-link {
+  color: #2563eb;
+}
+[data-theme="light"] .markdown-link:hover {
+  color: #1d4ed8;
+}
+
+[data-theme="light"] .inline-code {
+  background-color: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.12);
+  color: #1e40af;
+}
+
+[data-theme="light"] .markdown-blockquote {
+  background-color: rgba(0, 0, 0, 0.025);
+  border-left-color: rgba(0, 0, 0, 0.2);
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .markdown-ul > .markdown-li::marker {
+  color: #2563eb;
+}
+
+[data-theme="light"] .markdown-ol > .markdown-li::marker {
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .table-responsive-wrapper {
+  background-color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .markdown-thead {
+  background-color: rgba(0, 0, 0, 0.035);
+}
+
+[data-theme="light"] .markdown-th {
+  color: var(--text-primary);
+  border-bottom-color: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .markdown-td {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .markdown-tr:hover .markdown-td {
+  background-color: rgba(0, 0, 0, 0.015);
+}
+
+/* ==========================================================================
+   Learning Mode — Professional Educational Response Formatting
+   ========================================================================== */
+
+.ai-markdown-container.mode-learning {
+  font-size: 0.95rem;
+  line-height: 1.72;
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+
+.ai-markdown-container.mode-learning > *:first-child {
+  margin-top: 0 !important;
+}
+
+.ai-markdown-container.mode-learning > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* Learning Mode Headings & Hierarchy (Topic → Concept → Subconcept → Step) */
+.ai-markdown-container.mode-learning .markdown-h1,
+.ai-markdown-container.mode-learning .educational-topic-heading {
+  font-size: 1.38rem;
+  font-weight: 750;
+  color: var(--text-primary);
+  margin-top: 1.65rem;
+  margin-bottom: 0.75rem;
+  line-height: 1.32;
+  letter-spacing: -0.02em;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid rgba(139, 92, 246, 0.35);
+  display: block;
+}
+
+.ai-markdown-container.mode-learning .markdown-h2,
+.ai-markdown-container.mode-learning .educational-concept-heading {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 1.45rem;
+  margin-bottom: 0.55rem;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+  border-left: 3.5px solid #8b5cf6;
+  padding-left: 11px;
+  border-radius: 1px;
+}
+
+.ai-markdown-container.mode-learning .markdown-h3,
+.ai-markdown-container.mode-learning .educational-subconcept-heading {
+  font-size: 1.06rem;
+  font-weight: 650;
+  color: #c4b5fd;
+  margin-top: 1.25rem;
+  margin-bottom: 0.45rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+.ai-markdown-container.mode-learning .markdown-h4,
+.ai-markdown-container.mode-learning .educational-step-heading {
+  font-size: 0.96rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 1.05rem;
+  margin-bottom: 0.35rem;
+  line-height: 1.45;
+}
+
+.ai-markdown-container.mode-learning .markdown-h5,
+.ai-markdown-container.mode-learning .markdown-h6 {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-top: 0.9rem;
+  margin-bottom: 0.3rem;
+  line-height: 1.45;
+}
+
+/* Learning Mode Paragraph Rhythm & Readability */
+.ai-markdown-container.mode-learning .markdown-p {
+  margin-top: 0;
+  margin-bottom: 0.95rem;
+  line-height: 1.72;
+}
+
+/* Learning Mode Educational Steps & Sequential Procedures */
+.ai-markdown-container.mode-learning .markdown-ol {
+  margin-top: 0.45rem;
+  margin-bottom: 1rem;
+  padding-left: 2.15rem;
+  list-style-type: decimal;
+}
+
+.ai-markdown-container.mode-learning .markdown-ol > .markdown-li {
+  margin-bottom: 0.48rem;
+  line-height: 1.66;
+  padding-left: 3px;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.ai-markdown-container.mode-learning .markdown-ol > .markdown-li::marker {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #a78bfa;
+}
+
+/* Learning Mode Educational Bullets */
+.ai-markdown-container.mode-learning .markdown-ul {
+  margin-top: 0.45rem;
+  margin-bottom: 1rem;
+  padding-left: 1.75rem;
+  list-style-type: disc;
+}
+
+.ai-markdown-container.mode-learning .markdown-ul > .markdown-li {
+  margin-bottom: 0.42rem;
+  line-height: 1.64;
+  padding-left: 2px;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.ai-markdown-container.mode-learning .markdown-ul > .markdown-li::marker {
+  color: #8b5cf6;
+}
+
+/* Multi-Tier Nested Lists */
+.ai-markdown-container.mode-learning .markdown-li > .markdown-ol,
+.ai-markdown-container.mode-learning .markdown-li > .markdown-ul {
+  margin-top: 0.35rem;
+  margin-bottom: 0.45rem;
+  padding-left: 1.55rem;
+}
+
+/* Tier 2 Nested Ordered Lists */
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ol,
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ol {
+  list-style-type: lower-alpha;
+}
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ol > .markdown-li::marker,
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ol > .markdown-li::marker {
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+/* Tier 3 Nested Ordered Lists */
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ol .markdown-ol,
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ol .markdown-ol {
+  list-style-type: lower-roman;
+}
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ol .markdown-ol > .markdown-li::marker,
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ol .markdown-ol > .markdown-li::marker {
+  font-weight: 500;
+  color: #ddd6fe;
+}
+
+/* Tier 2 Nested Unordered Lists */
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ul,
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ul {
+  list-style-type: circle;
+}
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ul > .markdown-li::marker,
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ul > .markdown-li::marker {
+  color: #a78bfa;
+}
+
+/* Tier 3 Nested Unordered Lists */
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ul .markdown-ul,
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ul .markdown-ul {
+  list-style-type: square;
+}
+.ai-markdown-container.mode-learning .markdown-ul .markdown-ul .markdown-ul > .markdown-li::marker,
+.ai-markdown-container.mode-learning .markdown-ol .markdown-ul .markdown-ul > .markdown-li::marker {
+  color: #c4b5fd;
+}
+
+/* Balanced paragraph flow inside list items */
+.ai-markdown-container.mode-learning .markdown-li > p:first-child {
+  margin-top: 0;
+}
+.ai-markdown-container.mode-learning .markdown-li > p:last-child {
+  margin-bottom: 0;
+}
+.ai-markdown-container.mode-learning .markdown-li > p + p {
+  margin-top: 0.35rem;
+}
+
+/* Term definitions inside bulleted list items */
+.ai-markdown-container.mode-learning .markdown-li > .markdown-strong:first-child,
+.ai-markdown-container.mode-learning .markdown-li > b:first-child {
+  color: #c4b5fd;
+  font-weight: 680;
+}
+
+/* Learning Mode Inline Code & Technical Notation */
+.ai-markdown-container.mode-learning .inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background-color: rgba(139, 92, 246, 0.12);
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  padding: 0.15em 0.45em;
+  border-radius: var(--radius-xs);
+  color: #c4b5fd;
+  word-break: break-word;
+}
+
+/* Learning Mode Educational Tables & Comparison Matrices */
+.ai-markdown-container.mode-learning .table-responsive-wrapper {
+  margin: 1.35rem 0;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  border-radius: var(--radius-md);
+  background-color: rgba(20, 27, 36, 0.85);
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.3);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ai-markdown-container.mode-learning .markdown-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.ai-markdown-container.mode-learning .markdown-thead {
+  background-color: rgba(139, 92, 246, 0.14);
+  border-bottom: 2px solid rgba(139, 92, 246, 0.35);
+}
+
+.ai-markdown-container.mode-learning .markdown-th {
+  color: #f8fafc;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+  padding: 11px 16px;
+  border-bottom: 2px solid rgba(139, 92, 246, 0.3);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ai-markdown-container.mode-learning .markdown-th:last-child {
+  border-right: none;
+}
+
+.ai-markdown-container.mode-learning .markdown-td {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-markdown-container.mode-learning .markdown-td:last-child {
+  border-right: none;
+}
+
+.ai-markdown-container.mode-learning .markdown-tr:last-child .markdown-td {
+  border-bottom: none;
+}
+
+.ai-markdown-container.mode-learning .markdown-tr:nth-child(even) .markdown-td {
+  background-color: rgba(139, 92, 246, 0.04);
+}
+
+.ai-markdown-container.mode-learning .markdown-tr:hover .markdown-td {
+  background-color: rgba(139, 92, 246, 0.08);
+}
+
+/* Learning Mode Default Blockquotes */
+.ai-markdown-container.mode-learning .markdown-blockquote:not(.educational-callout) {
+  border-left: 3.5px solid #8b5cf6;
+  background-color: rgba(139, 92, 246, 0.07);
+  color: var(--text-primary);
+  padding: 0.8rem 1.15rem;
+  margin: 1rem 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+/* ==========================================================================
+   Educational Callout Blocks (Important, Note, Warning, Tip, Takeaway, Definition, Example, Comparison)
+   ========================================================================== */
+
+.educational-callout-block,
+.markdown-blockquote.educational-callout {
+  display: block;
+  border-radius: var(--radius-md);
+  margin: 1.1rem 0;
+  padding: 11px 16px;
+  border-left-width: 4px;
+  border-left-style: solid;
+  box-sizing: border-box;
+  width: 100%;
+  text-align: left;
+}
+
+.educational-callout-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  user-select: none;
+}
+
+.educational-callout-icon {
+  flex-shrink: 0;
+}
+
+.educational-callout-label {
+  line-height: 1;
+}
+
+.educational-callout-text {
+  margin: 0 !important;
+  font-size: 0.93rem;
+  line-height: 1.64;
+  color: var(--text-primary);
+}
+
+.educational-callout-body {
+  font-size: 0.93rem;
+  line-height: 1.64;
+  color: var(--text-primary);
+}
+
+.educational-callout-body > *:first-child {
+  margin-top: 0 !important;
+}
+
+.educational-callout-body > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.educational-callout-body .markdown-ul,
+.educational-callout-body .markdown-ol {
+  margin-top: 0.35rem;
+  margin-bottom: 0.45rem;
+}
+
+/* Prevent duplicate borders or broken table cells if callouts appear inside a table */
+.markdown-table .educational-callout-block,
+.markdown-table .markdown-blockquote.educational-callout {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+}
+
+/* Callout Variant Themes (Dark Mode defaults) */
+
+/* 1. Important / Crucial / Critical */
+.callout-important {
+  background-color: rgba(244, 63, 94, 0.08);
+  border-left-color: #f43f5e;
+  border-top: 1px solid rgba(244, 63, 94, 0.18);
+  border-right: 1px solid rgba(244, 63, 94, 0.18);
+  border-bottom: 1px solid rgba(244, 63, 94, 0.18);
+}
+.callout-important .educational-callout-header {
+  color: #fb7185;
+}
+
+/* 2. Warning / Pitfall / Caution */
+.callout-warning {
+  background-color: rgba(245, 158, 11, 0.08);
+  border-left-color: #f59e0b;
+  border-top: 1px solid rgba(245, 158, 11, 0.18);
+  border-right: 1px solid rgba(245, 158, 11, 0.18);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.18);
+}
+.callout-warning .educational-callout-header {
+  color: #fbbf24;
+}
+
+/* 3. Note / Information */
+.callout-note {
+  background-color: rgba(56, 189, 248, 0.08);
+  border-left-color: #38bdf8;
+  border-top: 1px solid rgba(56, 189, 248, 0.18);
+  border-right: 1px solid rgba(56, 189, 248, 0.18);
+  border-bottom: 1px solid rgba(56, 189, 248, 0.18);
+}
+.callout-note .educational-callout-header {
+  color: #38bdf8;
+}
+
+/* 4. Tip / Study Tip */
+.callout-tip {
+  background-color: rgba(16, 185, 129, 0.08);
+  border-left-color: #10b981;
+  border-top: 1px solid rgba(16, 185, 129, 0.18);
+  border-right: 1px solid rgba(16, 185, 129, 0.18);
+  border-bottom: 1px solid rgba(16, 185, 129, 0.18);
+}
+.callout-tip .educational-callout-header {
+  color: #34d399;
+}
+
+/* 5. Key Takeaway / Summary */
+.callout-takeaway {
+  background-color: rgba(139, 92, 246, 0.09);
+  border-left-color: #8b5cf6;
+  border-top: 1px solid rgba(139, 92, 246, 0.2);
+  border-right: 1px solid rgba(139, 92, 246, 0.2);
+  border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+}
+.callout-takeaway .educational-callout-header {
+  color: #a78bfa;
+}
+
+/* 6. Definition / Key Term */
+.callout-definition {
+  background-color: rgba(99, 102, 241, 0.08);
+  border-left-color: #6366f1;
+  border-top: 1px solid rgba(99, 102, 241, 0.18);
+  border-right: 1px solid rgba(99, 102, 241, 0.18);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.18);
+}
+.callout-definition .educational-callout-header {
+  color: #818cf8;
+}
+
+/* 7. Example / Analogy / Worked Example */
+.callout-example {
+  background-color: rgba(6, 182, 212, 0.08);
+  border-left-color: #06b6d4;
+  border-top: 1px solid rgba(6, 182, 212, 0.18);
+  border-right: 1px solid rgba(6, 182, 212, 0.18);
+  border-bottom: 1px solid rgba(6, 182, 212, 0.18);
+}
+.callout-example .educational-callout-header {
+  color: #22d3ee;
+}
+
+/* 8. Comparison / Contrast / Trade-offs */
+.callout-comparison {
+  background-color: rgba(139, 92, 246, 0.08);
+  border-left-color: #a855f7;
+  border-top: 1px solid rgba(139, 92, 246, 0.18);
+  border-right: 1px solid rgba(139, 92, 246, 0.18);
+  border-bottom: 1px solid rgba(139, 92, 246, 0.18);
+}
+.callout-comparison .educational-callout-header {
+  color: #c084fc;
+}
+
+/* Light Theme Overrides for Learning Mode & Callouts */
+[data-theme="light"] .ai-markdown-container.mode-learning {
+  color: #0f172a;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-h1,
+[data-theme="light"] .ai-markdown-container.mode-learning .educational-topic-heading {
+  border-bottom-color: rgba(139, 92, 246, 0.38);
+  color: #1e1b4b;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-h2,
+[data-theme="light"] .ai-markdown-container.mode-learning .educational-concept-heading {
+  border-left-color: #7c3aed;
+  color: #1e1b4b;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-h3,
+[data-theme="light"] .ai-markdown-container.mode-learning .educational-subconcept-heading {
+  color: #6d28d9;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-h4,
+[data-theme="light"] .ai-markdown-container.mode-learning .educational-step-heading {
+  color: #1e1b4b;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ol > .markdown-li::marker {
+  color: #7c3aed;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ul > .markdown-li::marker {
+  color: #8b5cf6;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ol .markdown-ol > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ul .markdown-ol > .markdown-li::marker {
+  color: #6d28d9;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ol .markdown-ol .markdown-ol > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ul .markdown-ol .markdown-ol > .markdown-li::marker {
+  color: #7c3aed;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ul .markdown-ul > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ol .markdown-ul > .markdown-li::marker {
+  color: #7c3aed;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ul .markdown-ul .markdown-ul > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-ol .markdown-ul .markdown-ul > .markdown-li::marker {
+  color: #8b5cf6;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-li > .markdown-strong:first-child,
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-li > b:first-child {
+  color: #5b21b6;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .inline-code {
+  background-color: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #5b21b6;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .table-responsive-wrapper {
+  background-color: #ffffff;
+  border-color: rgba(139, 92, 246, 0.25);
+  box-shadow: 0 4px 12px -2px rgba(139, 92, 246, 0.08);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-thead {
+  background-color: #f5f3ff;
+  border-bottom-color: #ddd6fe;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-th {
+  color: #3b0764;
+  border-bottom-color: #ddd6fe;
+  border-right-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-td {
+  color: #334155;
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+  border-right-color: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-tr:nth-child(even) .markdown-td {
+  background-color: rgba(245, 243, 255, 0.55);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-tr:hover .markdown-td {
+  background-color: rgba(245, 243, 255, 0.95);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-learning .markdown-blockquote:not(.educational-callout) {
+  background-color: #f5f3ff;
+  border-left-color: #7c3aed;
+  color: #334155;
+}
+
+/* Light Theme Callouts */
+[data-theme="light"] .callout-important {
+  background-color: #fff1f2;
+  border-left-color: #e11d48;
+  border-top-color: #fecdd3;
+  border-right-color: #fecdd3;
+  border-bottom-color: #fecdd3;
+}
+[data-theme="light"] .callout-important .educational-callout-header {
+  color: #be123c;
+}
+[data-theme="light"] .callout-important .educational-callout-text,
+[data-theme="light"] .callout-important .educational-callout-body {
+  color: #4c0519;
+}
+
+[data-theme="light"] .callout-warning {
+  background-color: #fffbeb;
+  border-left-color: #d97706;
+  border-top-color: #fde68a;
+  border-right-color: #fde68a;
+  border-bottom-color: #fde68a;
+}
+[data-theme="light"] .callout-warning .educational-callout-header {
+  color: #b45309;
+}
+[data-theme="light"] .callout-warning .educational-callout-text,
+[data-theme="light"] .callout-warning .educational-callout-body {
+  color: #78350f;
+}
+
+[data-theme="light"] .callout-note {
+  background-color: #f0f9ff;
+  border-left-color: #0284c7;
+  border-top-color: #bae6fd;
+  border-right-color: #bae6fd;
+  border-bottom-color: #bae6fd;
+}
+[data-theme="light"] .callout-note .educational-callout-header {
+  color: #0369a1;
+}
+[data-theme="light"] .callout-note .educational-callout-text,
+[data-theme="light"] .callout-note .educational-callout-body {
+  color: #0c4a6e;
+}
+
+[data-theme="light"] .callout-tip {
+  background-color: #ecfdf5;
+  border-left-color: #059669;
+  border-top-color: #a7f3d0;
+  border-right-color: #a7f3d0;
+  border-bottom-color: #a7f3d0;
+}
+[data-theme="light"] .callout-tip .educational-callout-header {
+  color: #047857;
+}
+[data-theme="light"] .callout-tip .educational-callout-text,
+[data-theme="light"] .callout-tip .educational-callout-body {
+  color: #064e3b;
+}
+
+[data-theme="light"] .callout-takeaway {
+  background-color: #f5f3ff;
+  border-left-color: #7c3aed;
+  border-top-color: #ddd6fe;
+  border-right-color: #ddd6fe;
+  border-bottom-color: #ddd6fe;
+}
+[data-theme="light"] .callout-takeaway .educational-callout-header {
+  color: #6d28d9;
+}
+[data-theme="light"] .callout-takeaway .educational-callout-text,
+[data-theme="light"] .callout-takeaway .educational-callout-body {
+  color: #3b0764;
+}
+
+[data-theme="light"] .callout-definition {
+  background-color: #eef2ff;
+  border-left-color: #4f46e5;
+  border-top-color: #c7d2fe;
+  border-right-color: #c7d2fe;
+  border-bottom-color: #c7d2fe;
+}
+[data-theme="light"] .callout-definition .educational-callout-header {
+  color: #4338ca;
+}
+[data-theme="light"] .callout-definition .educational-callout-text,
+[data-theme="light"] .callout-definition .educational-callout-body {
+  color: #1e1b4b;
+}
+
+[data-theme="light"] .callout-example {
+  background-color: #ecfeff;
+  border-left-color: #0891b2;
+  border-top-color: #a5f3fc;
+  border-right-color: #a5f3fc;
+  border-bottom-color: #a5f3fc;
+}
+[data-theme="light"] .callout-example .educational-callout-header {
+  color: #0e7490;
+}
+[data-theme="light"] .callout-example .educational-callout-text,
+[data-theme="light"] .callout-example .educational-callout-body {
+  color: #164e63;
+}
+
+[data-theme="light"] .callout-comparison {
+  background-color: #faf5ff;
+  border-left-color: #9333ea;
+  border-top-color: #f3e8ff;
+  border-right-color: #f3e8ff;
+  border-bottom-color: #f3e8ff;
+}
+[data-theme="light"] .callout-comparison .educational-callout-header {
+  color: #7e22ce;
+}
+[data-theme="light"] .callout-comparison .educational-callout-text,
+[data-theme="light"] .callout-comparison .educational-callout-body {
+  color: #3b0764;
+}
+
+/* Mobile responsive adjustments for Learning Mode */
+@media (max-width: 640px) {
+  .ai-markdown-container.mode-learning {
+    font-size: 0.925rem;
+    line-height: 1.66;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-h1,
+  .ai-markdown-container.mode-learning .educational-topic-heading {
+    font-size: 1.25rem;
+    margin-top: 1.3rem;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-h2,
+  .ai-markdown-container.mode-learning .educational-concept-heading {
+    font-size: 1.125rem;
+    margin-top: 1.2rem;
+    padding-left: 9px;
+    border-left-width: 3px;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-h3,
+  .ai-markdown-container.mode-learning .educational-subconcept-heading {
+    font-size: 1.02rem;
+    margin-top: 1.05rem;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-h4,
+  .ai-markdown-container.mode-learning .educational-step-heading {
+    font-size: 0.92rem;
+    margin-top: 0.9rem;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-ol {
+    padding-left: 1.75rem;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-ul {
+    padding-left: 1.45rem;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-li > .markdown-ol,
+  .ai-markdown-container.mode-learning .markdown-li > .markdown-ul {
+    padding-left: 1.25rem;
+  }
+
+  .educational-callout-block,
+  .markdown-blockquote.educational-callout {
+    padding: 9px 13px;
+    margin: 0.9rem 0;
+  }
+
+  .educational-callout-text,
+  .educational-callout-body {
+    font-size: 0.88rem;
+  }
+
+  .ai-markdown-container.mode-learning .markdown-th,
+  .ai-markdown-container.mode-learning .markdown-td {
+    padding: 8px 12px;
+    font-size: 0.83rem;
+  }
+}
+
+/* Tablet responsive adjustments for Learning Mode */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .ai-markdown-container.mode-learning {
+    font-size: 0.94rem;
+  }
+  .ai-markdown-container.mode-learning .markdown-ol {
+    padding-left: 1.95rem;
+  }
+}
+
+/* ==========================================================================
+   Writing Mode — Professional Writing Response Formatting
+   Refined typography, editorial visual hierarchy, relaxed reading cadence,
+   balanced spacing, multi-tier lists, elegant blockquotes, and tables
+   ========================================================================== */
+
+.ai-markdown-container.mode-writing {
+  max-width: 76ch;
+  font-size: 0.975rem;
+  line-height: 1.78;
+  letter-spacing: -0.006em;
+  color: var(--text-primary);
+}
+
+.ai-markdown-container.mode-writing > *:first-child {
+  margin-top: 0 !important;
+}
+
+.ai-markdown-container.mode-writing > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* Headings Hierarchy (Title -> Section -> Subsection -> Minor Heading) */
+.ai-markdown-container.mode-writing .markdown-h1,
+.ai-markdown-container.mode-writing .writing-h1 {
+  font-size: 1.48rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 1.75rem;
+  margin-bottom: 0.85rem;
+  line-height: 1.28;
+  letter-spacing: -0.022em;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid rgba(217, 119, 6, 0.25);
+  display: block;
+  text-wrap: balance;
+}
+
+.ai-markdown-container.mode-writing .markdown-h2,
+.ai-markdown-container.mode-writing .writing-h2 {
+  font-size: 1.24rem;
+  font-weight: 650;
+  color: var(--text-primary);
+  margin-top: 1.6rem;
+  margin-bottom: 0.65rem;
+  line-height: 1.34;
+  letter-spacing: -0.016em;
+  text-wrap: balance;
+}
+
+.ai-markdown-container.mode-writing .markdown-h3,
+.ai-markdown-container.mode-writing .writing-h3 {
+  font-size: 1.08rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 1.35rem;
+  margin-bottom: 0.45rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+.ai-markdown-container.mode-writing .markdown-h4,
+.ai-markdown-container.mode-writing .writing-h4 {
+  font-size: 0.98rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 1.15rem;
+  margin-bottom: 0.35rem;
+  line-height: 1.45;
+}
+
+.ai-markdown-container.mode-writing .markdown-h5,
+.ai-markdown-container.mode-writing .writing-h5,
+.ai-markdown-container.mode-writing .markdown-h6,
+.ai-markdown-container.mode-writing .writing-h6 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-top: 0.95rem;
+  margin-bottom: 0.25rem;
+  line-height: 1.45;
+}
+
+/* Adjacency Margin Collapse for Title + Subtitle or Section + Subsection */
+.ai-markdown-container.mode-writing .markdown-h1 + .markdown-h2,
+.ai-markdown-container.mode-writing .writing-h1 + .writing-h2 {
+  margin-top: 0.45rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-h2 + .markdown-h3,
+.ai-markdown-container.mode-writing .writing-h2 + .writing-h3 {
+  margin-top: 0.4rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-h3 + .markdown-h4,
+.ai-markdown-container.mode-writing .writing-h3 + .writing-h4 {
+  margin-top: 0.35rem;
+}
+
+/* Paragraphs & Reading Cadence */
+.ai-markdown-container.mode-writing .markdown-p,
+.ai-markdown-container.mode-writing .writing-p {
+  margin-top: 0;
+  margin-bottom: 1.15rem;
+  line-height: 1.78;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Formal Memo / Email Header Fields */
+.ai-markdown-container.mode-writing .writing-memo-field {
+  padding: 0.4rem 0.85rem;
+  background-color: rgba(217, 119, 6, 0.05);
+  border-left: 2px solid #d97706;
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  margin-bottom: 0.5rem;
+  font-size: 0.93rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.ai-markdown-container.mode-writing .writing-memo-field + .markdown-p:not(.writing-memo-field) {
+  margin-top: 1rem;
+}
+
+/* Editorial Blockquotes & Excerpts */
+.ai-markdown-container.mode-writing .markdown-blockquote,
+.ai-markdown-container.mode-writing .writing-blockquote {
+  margin: 1.35rem 0;
+  padding: 0.85rem 1.25rem;
+  border-left: 3px solid #d97706;
+  background-color: rgba(217, 119, 6, 0.04);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-style: italic;
+  color: var(--text-secondary);
+  line-height: 1.74;
+}
+
+.ai-markdown-container.mode-writing .writing-blockquote > p {
+  margin-bottom: 0.65rem;
+}
+
+.ai-markdown-container.mode-writing .writing-blockquote > p:last-child {
+  margin-bottom: 0;
+}
+
+/* Multi-Tier Ordered Lists */
+.ai-markdown-container.mode-writing .markdown-ol,
+.ai-markdown-container.mode-writing .writing-ol {
+  margin-top: 0.45rem;
+  margin-bottom: 1.15rem;
+  padding-left: 2.15rem;
+  list-style-type: decimal;
+}
+
+.ai-markdown-container.mode-writing .markdown-ol > .markdown-li,
+.ai-markdown-container.mode-writing .writing-ol > .markdown-li {
+  margin-bottom: 0.45rem;
+  line-height: 1.68;
+  padding-left: 2px;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.ai-markdown-container.mode-writing .markdown-ol > .markdown-li::marker,
+.ai-markdown-container.mode-writing .writing-ol > .markdown-li::marker {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #f59e0b;
+}
+
+/* Multi-Tier Unordered Lists */
+.ai-markdown-container.mode-writing .markdown-ul,
+.ai-markdown-container.mode-writing .writing-ul {
+  margin-top: 0.45rem;
+  margin-bottom: 1.15rem;
+  padding-left: 1.75rem;
+  list-style-type: disc;
+}
+
+.ai-markdown-container.mode-writing .markdown-ul > .markdown-li,
+.ai-markdown-container.mode-writing .writing-ul > .markdown-li {
+  margin-bottom: 0.42rem;
+  line-height: 1.66;
+  padding-left: 2px;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.ai-markdown-container.mode-writing .markdown-ul > .markdown-li::marker,
+.ai-markdown-container.mode-writing .writing-ul > .markdown-li::marker {
+  color: #f59e0b;
+}
+
+/* Nested Ordered Lists - 3 Tiers */
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ol,
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ol {
+  list-style-type: lower-alpha;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
+  padding-left: 1.45rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ol > .markdown-li::marker,
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ol > .markdown-li::marker {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ol .markdown-ol,
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ol .markdown-ol {
+  list-style-type: lower-roman;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+  padding-left: 1.45rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ol .markdown-ol > .markdown-li::marker,
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ol .markdown-ol > .markdown-li::marker {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Nested Unordered Lists - 3 Tiers */
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ul,
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ul {
+  list-style-type: circle;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
+  padding-left: 1.45rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ul > .markdown-li::marker,
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ul > .markdown-li::marker {
+  color: var(--text-secondary);
+}
+
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ul .markdown-ul,
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ul .markdown-ul {
+  list-style-type: square;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+  padding-left: 1.45rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-ul .markdown-ul .markdown-ul > .markdown-li::marker,
+.ai-markdown-container.mode-writing .markdown-ol .markdown-ul .markdown-ul > .markdown-li::marker {
+  color: var(--text-muted);
+}
+
+/* Flow Inside List Items */
+.ai-markdown-container.mode-writing .markdown-li > p:first-child {
+  margin-top: 0;
+}
+
+.ai-markdown-container.mode-writing .markdown-li > p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-markdown-container.mode-writing .markdown-li > p + p {
+  margin-top: 0.4rem;
+}
+
+.ai-markdown-container.mode-writing .markdown-li > .markdown-strong:first-child,
+.ai-markdown-container.mode-writing .markdown-li > b:first-child {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+/* Writing Mode Tables & Structured Data */
+.ai-markdown-container.mode-writing .table-responsive-wrapper,
+.ai-markdown-container.mode-writing .writing-table-wrapper {
+  margin: 1.35rem 0;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-card);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ai-markdown-container.mode-writing .markdown-table,
+.ai-markdown-container.mode-writing .writing-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.88rem;
+  text-align: left;
+}
+
+.ai-markdown-container.mode-writing .markdown-thead {
+  background-color: rgba(217, 119, 6, 0.08);
+}
+
+.ai-markdown-container.mode-writing .markdown-th {
+  padding: 10px 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+  border-bottom: 2px solid rgba(217, 119, 6, 0.25);
+  white-space: nowrap;
+}
+
+.ai-markdown-container.mode-writing .markdown-td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-markdown-container.mode-writing .markdown-tr:last-child .markdown-td {
+  border-bottom: none;
+}
+
+.ai-markdown-container.mode-writing .markdown-tr:nth-child(even) .markdown-td {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+
+.ai-markdown-container.mode-writing .markdown-tr:hover .markdown-td {
+  background-color: rgba(217, 119, 6, 0.04);
+}
+
+/* Writing Mode Thematic Breaks / Dividers */
+.ai-markdown-container.mode-writing .markdown-divider,
+.ai-markdown-container.mode-writing .writing-divider {
+  border: none;
+  border-top: 1px solid var(--border-medium);
+  margin: 2rem 0;
+}
+
+/* Writing Mode Inline Code */
+.ai-markdown-container.mode-writing .inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background-color: rgba(217, 119, 6, 0.08);
+  border: 1px solid rgba(217, 119, 6, 0.18);
+  padding: 0.15em 0.45em;
+  border-radius: var(--radius-xs);
+  color: #fbbf24;
+}
+
+/* Writing Mode Links */
+.ai-markdown-container.mode-writing .markdown-link {
+  color: #f59e0b;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color var(--transition-fast);
+}
+
+.ai-markdown-container.mode-writing .markdown-link:hover {
+  color: #fbbf24;
+}
+
+/* Light Theme Overrides for Writing Mode */
+[data-theme="light"] .ai-markdown-container.mode-writing {
+  color: #0f172a;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-p,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-p {
+  color: #334155;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-h1,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-h1 {
+  color: #0f172a;
+  border-bottom-color: rgba(180, 83, 9, 0.2);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-h2,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-h2,
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-h3,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-h3,
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-h4,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-h4 {
+  color: #0f172a;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-memo-field {
+  background-color: rgba(217, 119, 6, 0.06);
+  border-left-color: #b45309;
+  color: #0f172a;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-blockquote,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-blockquote {
+  background-color: rgba(217, 119, 6, 0.04);
+  border-left-color: #b45309;
+  color: #475569;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-ol > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-ol > .markdown-li::marker {
+  color: #b45309;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-ul > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-ul > .markdown-li::marker {
+  color: #b45309;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-ol .markdown-ol > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-ul .markdown-ol > .markdown-li::marker {
+  color: #475569;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-ul .markdown-ul > .markdown-li::marker,
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-ol .markdown-ul > .markdown-li::marker {
+  color: #475569;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .table-responsive-wrapper,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-table-wrapper {
+  background-color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-thead {
+  background-color: rgba(217, 119, 6, 0.06);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-th {
+  color: #0f172a;
+  border-bottom-color: rgba(180, 83, 9, 0.2);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-td {
+  color: #334155;
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-tr:nth-child(even) .markdown-td {
+  background-color: rgba(0, 0, 0, 0.015);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-tr:hover .markdown-td {
+  background-color: rgba(217, 119, 6, 0.05);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-divider,
+[data-theme="light"] .ai-markdown-container.mode-writing .writing-divider {
+  border-top-color: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .inline-code {
+  background-color: rgba(180, 83, 9, 0.06);
+  border-color: rgba(180, 83, 9, 0.16);
+  color: #92400e;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-link {
+  color: #b45309;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing .markdown-link:hover {
+  color: #92400e;
+}
+
+/* Mobile responsive adjustments for Writing Mode */
+@media (max-width: 640px) {
+  .ai-markdown-container.mode-writing {
+    max-width: 100%;
+    font-size: 0.925rem;
+    line-height: 1.68;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-h1,
+  .ai-markdown-container.mode-writing .writing-h1 {
+    font-size: 1.28rem;
+    margin-top: 1.35rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-h2,
+  .ai-markdown-container.mode-writing .writing-h2 {
+    font-size: 1.15rem;
+    margin-top: 1.25rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-h3,
+  .ai-markdown-container.mode-writing .writing-h3 {
+    font-size: 1.02rem;
+    margin-top: 1.05rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-h4,
+  .ai-markdown-container.mode-writing .writing-h4 {
+    font-size: 0.94rem;
+    margin-top: 0.9rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-p,
+  .ai-markdown-container.mode-writing .writing-p {
+    margin-bottom: 0.95rem;
+  }
+
+  .ai-markdown-container.mode-writing .writing-memo-field {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.88rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-blockquote,
+  .ai-markdown-container.mode-writing .writing-blockquote {
+    padding: 0.7rem 0.95rem;
+    font-size: 0.9rem;
+    margin: 1rem 0;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-ol,
+  .ai-markdown-container.mode-writing .writing-ol {
+    padding-left: 1.75rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-ul,
+  .ai-markdown-container.mode-writing .writing-ul {
+    padding-left: 1.45rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-th,
+  .ai-markdown-container.mode-writing .markdown-td {
+    padding: 8px 10px;
+    font-size: 0.82rem;
+  }
+}
+
+/* Tablet responsive adjustments for Writing Mode */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .ai-markdown-container.mode-writing {
+    max-width: 100%;
+    font-size: 0.95rem;
+  }
+
+  .ai-markdown-container.mode-writing .markdown-ol,
+  .ai-markdown-container.mode-writing .writing-ol {
+    padding-left: 1.95rem;
+  }
+}
+
+/* ==========================================================================
+   Code Blocks (Professional Modern Code Editor / VS Code Inspired)
+   ========================================================================== */
 .code-block-container {
   background-color: var(--bg-code);
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-md);
   overflow: hidden;
-  margin: 14px 0;
+  margin: 16px 0;
   font-family: var(--font-mono);
-  font-size: 0.825rem;
+  font-size: 0.8125rem;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .code-block-container:hover {
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.code-block-container.mode-coding {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38);
+}
+
+.code-block-container.mode-coding:hover {
+  border-color: rgba(16, 185, 129, 0.4);
 }
 
 .code-block-header {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 100%);
   border-bottom: 1px solid var(--border-subtle);
   padding: 8px 12px;
   display: flex;
@@ -3213,13 +4734,47 @@ html, body {
 .code-header-left {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
+}
+
+/* VS Code / macOS Window Controls in Coding Mode */
+.code-editor-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 4px;
+}
+
+.editor-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.editor-dot.dot-red {
+  background-color: #ef4444;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4);
+}
+
+.editor-dot.dot-yellow {
+  background-color: #f59e0b;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4);
+}
+
+.editor-dot.dot-green {
+  background-color: #10b981;
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.4);
 }
 
 .code-lang-icon {
   color: #60a5fa;
   flex-shrink: 0;
+}
+
+.mode-coding .code-lang-icon {
+  color: #34d399;
 }
 
 .code-lang-label {
@@ -3229,6 +4784,11 @@ html, body {
   color: #e2e8f0;
 }
 
+.mode-coding .code-lang-label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
 .code-lines-count {
   font-size: 0.68rem;
   color: var(--text-muted);
@@ -3236,6 +4796,7 @@ html, body {
   padding: 1px 6px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
 }
 
 .code-copy-btn {
@@ -3276,7 +4837,7 @@ html, body {
   color: #34d399;
 }
 
-/* Code Content Body with Optional Line Numbers and Horizontal Scrolling */
+/* Code Content Body with Gutter and Sticky Pinning during Horizontal Scroll */
 .code-content-wrapper {
   display: flex;
   position: relative;
@@ -3284,7 +4845,9 @@ html, body {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow: hidden;
+  max-height: 640px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
   --code-font-size: 0.8125rem;
   --code-line-height: 22px;
 }
@@ -3292,16 +4855,21 @@ html, body {
 .code-line-numbers {
   display: flex;
   flex-direction: column;
-  padding: 12px 10px 12px 12px;
+  padding: 12px 10px 12px 14px;
   user-select: none;
   pointer-events: none;
   text-align: right;
   font-family: var(--font-mono);
   font-size: var(--code-font-size);
   line-height: var(--code-line-height);
-  color: #475569;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  color: #4b5563;
+  background-color: rgba(9, 13, 19, 0.98);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 4;
   box-sizing: border-box;
   margin: 0;
 }
@@ -3310,9 +4878,8 @@ html, body {
   display: block;
   height: var(--code-line-height);
   line-height: var(--code-line-height);
-  min-width: 2.25rem;
   text-align: right;
-  opacity: 0.65;
+  opacity: 0.75;
   font-variant-numeric: tabular-nums;
   box-sizing: border-box;
   margin: 0;
@@ -3322,17 +4889,17 @@ html, body {
 
 .code-content {
   flex: 1;
-  min-width: 0;
-  padding: 12px 16px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  color: #e2e8f0;
+  min-width: max-content;
+  padding: 12px 18px;
+  color: #f1f5f9;
   font-family: var(--font-mono);
   font-size: var(--code-font-size);
   line-height: var(--code-line-height);
-  white-space: pre;
-  word-break: normal;
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
   tab-size: 2;
+  -moz-tab-size: 2;
   margin: 0;
   outline: none;
   box-sizing: border-box;
@@ -3357,27 +4924,27 @@ html, body {
 }
 
 /* Custom Scrollbar for Code Content */
-.code-content::-webkit-scrollbar {
+.code-content-wrapper::-webkit-scrollbar {
   height: 6px;
   width: 6px;
 }
-.code-content::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.2);
+.code-content-wrapper::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25);
 }
-.code-content::-webkit-scrollbar-thumb {
+.code-content-wrapper::-webkit-scrollbar-thumb {
   background: var(--border-medium);
   border-radius: var(--radius-full);
 }
-.code-content::-webkit-scrollbar-thumb:hover {
+.code-content-wrapper::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
 
-/* Syntax Highlighting Colors (VS Code / One Dark inspired) */
+/* Syntax Highlighting Colors (VS Code Dark+ inspired) */
 .code-syntax .token.comment,
 .code-syntax .token.prolog,
 .code-syntax .token.doctype,
 .code-syntax .token.cdata {
-  color: #64748b;
+  color: #6a9955;
   font-style: italic;
 }
 
@@ -3390,51 +4957,66 @@ html, body {
 }
 
 .code-syntax .token.property,
-.code-syntax .token.tag,
-.code-syntax .token.constant,
 .code-syntax .token.symbol,
 .code-syntax .token.deleted {
-  color: #f43f5e;
+  color: #9cdcfe;
+}
+
+.code-syntax .token.tag {
+  color: #569cd6;
 }
 
 .code-syntax .token.boolean,
 .code-syntax .token.number {
-  color: #fb923c;
+  color: #b5cea8;
 }
 
 .code-syntax .token.selector,
 .code-syntax .token.attr-name,
-.code-syntax .token.string,
 .code-syntax .token.char,
 .code-syntax .token.builtin,
 .code-syntax .token.inserted {
-  color: #4ade80;
+  color: #9cdcfe;
+}
+
+.code-syntax .token.string {
+  color: #ce9178;
 }
 
 .code-syntax .token.operator,
 .code-syntax .token.entity,
-.code-syntax .token.url,
-.code-syntax .language-css .token.string,
-.code-syntax .style .token.string {
-  color: #38bdf8;
+.code-syntax .token.url {
+  color: #d4d4d4;
 }
 
 .code-syntax .token.atrule,
 .code-syntax .token.attr-value,
 .code-syntax .token.keyword {
-  color: #c084fc;
+  color: #c586c0;
   font-weight: 500;
 }
 
-.code-syntax .token.function,
+.code-syntax .token.type,
 .code-syntax .token.class-name {
-  color: #60a5fa;
+  color: #4ec9b0;
+  font-weight: 500;
+}
+
+.code-syntax .token.function {
+  color: #dcdcaa;
+}
+
+.code-syntax .token.constant {
+  color: #4fc1ff;
+}
+
+.code-syntax .token.directive {
+  color: #9cdcfe;
 }
 
 .code-syntax .token.regex,
-.code-syntax .token.important,
 .code-syntax .token.variable {
-  color: #facc15;
+  color: #9cdcfe;
 }
 
 .code-syntax .token.important,
@@ -3444,6 +5026,27 @@ html, body {
 
 .code-syntax .token.italic {
   font-style: italic;
+}
+
+/* Light Theme Code Block Overrides */
+[data-theme="light"] .code-block-container {
+  background-color: #0d1117;
+  border-color: rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 16px -2px rgba(15, 23, 42, 0.15);
+}
+
+[data-theme="light"] .code-content-wrapper {
+  background-color: #0d1117;
+}
+
+[data-theme="light"] .code-line-numbers {
+  background-color: rgba(9, 13, 19, 0.98);
+  color: #64748b;
+  border-right-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .code-content {
+  color: #f1f5f9;
 }
 
 .message-action-bar {
@@ -4095,16 +5698,252 @@ html, body {
   margin-left: 4px;
 }
 
-.ai-markdown-container.is-streaming > *:last-child::after {
+/* Progressive Streaming Cursor - Stable Inline Placement Without Layout Jumping */
+.ai-markdown-container.is-streaming > p:last-child::after,
+.ai-markdown-container.is-streaming > :is(h1, h2, h3, h4, h5, h6):last-child::after,
+.ai-markdown-container.is-streaming > blockquote:last-child > *:last-child::after,
+.ai-markdown-container.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
+.ai-markdown-container.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
+.ai-markdown-container.is-streaming > .educational-callout-block:last-child .educational-callout-text::after,
+.ai-markdown-container.is-streaming > blockquote.educational-callout:last-child .educational-callout-body > *:last-child::after,
+.ai-markdown-container.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote):not(.educational-callout-block)::after {
   content: '';
   display: inline-block;
-  width: 7px;
-  height: 15px;
+  width: 6px;
+  height: 14px;
   background-color: var(--accent-primary, #3b82f6);
   margin-left: 4px;
-  vertical-align: -2px;
+  vertical-align: -1px;
   border-radius: 1px;
   animation: streamingCursorBlink 0.8s infinite;
+}
+
+/* Learning Mode Distinctive Purple Cursor During Streaming */
+.ai-markdown-container.mode-learning.is-streaming > p:last-child::after,
+.ai-markdown-container.mode-learning.is-streaming > :is(h1, h2, h3, h4, h5, h6):last-child::after,
+.ai-markdown-container.mode-learning.is-streaming > blockquote:last-child > *:last-child::after,
+.ai-markdown-container.mode-learning.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
+.ai-markdown-container.mode-learning.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
+.ai-markdown-container.mode-learning.is-streaming > .educational-callout-block:last-child .educational-callout-text::after,
+.ai-markdown-container.mode-learning.is-streaming > blockquote.educational-callout:last-child .educational-callout-body > *:last-child::after,
+.ai-markdown-container.mode-learning.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote):not(.educational-callout-block)::after {
+  background-color: #8b5cf6;
+}
+
+/* Writing Mode Distinctive Warm Amber Cursor During Streaming */
+.ai-markdown-container.mode-writing.is-streaming > p:last-child::after,
+.ai-markdown-container.mode-writing.is-streaming > :is(h1, h2, h3, h4, h5, h6):last-child::after,
+.ai-markdown-container.mode-writing.is-streaming > blockquote:last-child > *:last-child::after,
+.ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
+.ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
+.ai-markdown-container.mode-writing.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote)::after {
+  background-color: #d97706;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > p:last-child::after,
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > :is(h1, h2, h3, h4, h5, h6):last-child::after,
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > blockquote:last-child > *:last-child::after,
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote)::after {
+  background-color: #b45309;
+}
+
+/* Coding Mode Distinctive Emerald Cursor During Streaming */
+.ai-markdown-container.mode-coding.is-streaming > p:last-child::after,
+.ai-markdown-container.mode-coding.is-streaming > :is(h1, h2, h3, h4, h5, h6):last-child::after,
+.ai-markdown-container.mode-coding.is-streaming > blockquote:last-child > *:last-child::after,
+.ai-markdown-container.mode-coding.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
+.ai-markdown-container.mode-coding.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
+.ai-markdown-container.mode-coding.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote)::after {
+  background-color: #10b981;
+}
+
+.code-block-container.mode-coding.streaming-code .code-content code::after {
+  background-color: #10b981;
+}
+
+/* Streaming cursor inside active CodeBlock */
+.code-block-container.streaming-code .code-content code::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background-color: var(--accent-primary, #3b82f6);
+  margin-left: 2px;
+  vertical-align: -2px;
+  animation: streamingCursorBlink 0.8s infinite;
+}
+
+/* ==========================================================================
+   Coding Mode Response Formatting (Developer-Grade Technical Material)
+   ========================================================================== */
+.ai-markdown-container.mode-coding {
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+.ai-markdown-container.mode-coding .coding-h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin-top: 1.25rem;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ai-markdown-container.mode-coding .coding-h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+  margin-top: 1.15rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-markdown-container.mode-coding .coding-h2::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  background-color: #10b981;
+  border-radius: 2px;
+}
+
+.ai-markdown-container.mode-coding .coding-h3 {
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: #34d399;
+  margin-top: 1rem;
+  margin-bottom: 0.45rem;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-coding .coding-h3 {
+  color: #059669;
+}
+
+.ai-markdown-container.mode-coding .coding-h4 {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-top: 0.85rem;
+  margin-bottom: 0.35rem;
+}
+
+/* Coding Mode Inline Code */
+.ai-markdown-container.mode-coding .coding-inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.825em;
+  background-color: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #34d399;
+  padding: 0.15em 0.45em;
+  border-radius: var(--radius-xs);
+  vertical-align: 0.05em;
+}
+
+[data-theme="light"] .ai-markdown-container.mode-coding .coding-inline-code {
+  background-color: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #047857;
+}
+
+/* Coding Mode Technical Tables */
+.coding-table-wrapper {
+  margin: 14px 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-medium);
+  overflow-x: auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.coding-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+  text-align: left;
+}
+
+.coding-table th {
+  background-color: rgba(16, 185, 129, 0.08);
+  color: #34d399;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-medium);
+}
+
+[data-theme="light"] .coding-table th {
+  color: #047857;
+  background-color: rgba(16, 185, 129, 0.1);
+}
+
+.coding-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.coding-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Mobile & Tablet Responsive Adjustments for Code Blocks & Coding Mode */
+@media (max-width: 640px) {
+  .code-block-container {
+    margin: 12px 0;
+    border-radius: var(--radius-sm);
+  }
+
+  .code-block-header {
+    padding: 6px 10px;
+  }
+
+  .code-content-wrapper {
+    --code-font-size: 0.775rem;
+    --code-line-height: 20px;
+    max-height: 480px;
+  }
+
+  .code-line-numbers {
+    padding: 10px 8px 10px 10px;
+  }
+
+  .code-content {
+    padding: 10px 14px;
+  }
+
+  .code-editor-dots {
+    display: none;
+  }
+
+  .ai-markdown-container.mode-coding .coding-h1 {
+    font-size: 1.2rem;
+  }
+
+  .ai-markdown-container.mode-coding .coding-h2 {
+    font-size: 1.05rem;
+  }
+
+  .ai-markdown-container.mode-coding .coding-h3 {
+    font-size: 0.95rem;
+  }
+
+  .ai-markdown-container.mode-coding .coding-h4 {
+    font-size: 0.88rem;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  .code-content-wrapper {
+    max-height: 560px;
+  }
 }
 
 @keyframes streamingCursorBlink {
@@ -4117,7 +5956,10 @@ html, body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ai-markdown-container.is-streaming > *:last-child::after {
+  .ai-markdown-container.is-streaming > *:last-child::after,
+  .ai-markdown-container.is-streaming > .educational-callout-block:last-child .educational-callout-text::after,
+  .ai-markdown-container.is-streaming > blockquote.educational-callout:last-child .educational-callout-body > *:last-child::after,
+  .code-block-container.streaming-code .code-content code::after {
     animation: none;
     opacity: 0.9;
   }

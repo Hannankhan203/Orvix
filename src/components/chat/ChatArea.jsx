@@ -1024,6 +1024,7 @@ Transcript:
               onCancelEdit={onCancelEdit}
               showTimestamps={showTimestamps}
               selectedProvider={selectedProvider}
+              activeMode={activeMode}
             />
           )}
         </div>
@@ -1590,9 +1591,11 @@ Transcript:
 
           <p className="composer-footnote">
             {selectedProvider === 'groq'
-              ? 'Orvix is powered by Groq (Llama 3.3 70B). Ultra-fast inference — verify important facts independently.'
+              ? 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.'
               : selectedProvider === 'openrouter'
               ? 'Orvix is powered by OpenRouter (Llama 3.3 70B Free). Multi-model gateway — verify important facts independently.'
+              : selectedProvider === 'cloudflare'
+              ? 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.'
               : 'Orvix is powered by Google Gemini (Gemini 3.1 Flash Lite). Client integration — verify important facts independently.'}
           </p>
         </div>
