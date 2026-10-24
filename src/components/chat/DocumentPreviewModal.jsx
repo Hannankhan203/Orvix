@@ -307,21 +307,21 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="preview-modal-header flex items-center justify-between px-5 py-3.5 border-b border-white/10 bg-[#141b24]/80">
-          <div className="preview-modal-title-group flex items-center gap-3 min-w-0 flex-1">
-            <div className="preview-modal-icon-badge p-2 rounded-lg bg-blue-500/10 text-blue-400 flex-shrink-0">
+        <div className="preview-modal-header">
+          <div className="preview-modal-title-group">
+            <div className="preview-modal-icon-badge" aria-hidden="true">
               <IconComponent size={18} />
             </div>
-            <div className="min-w-0 flex-1">
+            <div className="preview-modal-title-wrap">
               <h2
                 id="preview-modal-title"
-                className="preview-modal-title text-sm font-semibold text-slate-100 truncate"
+                className="preview-modal-title"
                 title={filename}
               >
                 {filename}
               </h2>
-              <div className="preview-modal-meta flex items-center gap-2 text-xs text-slate-400 mt-0.5">
-                <span className="preview-modal-ext-pill uppercase font-semibold tracking-wider text-[11px] px-1.5 py-0.5 rounded bg-white/5">
+              <div className="preview-modal-meta">
+                <span className="preview-modal-ext-pill">
                   {ext || 'FILE'}
                 </span>
                 {sizeText && <span>• {sizeText}</span>}
@@ -329,36 +329,32 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             </div>
           </div>
 
-          <div className="preview-modal-controls flex items-center gap-2 flex-shrink-0 ml-4">
+          <div className="preview-modal-desktop-controls">
             {isImage && !isUnsubmittedComposerFile && (
-              <div className="preview-view-tabs flex items-center rounded-lg bg-black/40 p-0.5 border border-white/10 text-xs mr-1">
+              <div className="preview-view-tabs" role="tablist" aria-label="Preview modes">
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={activeView === 'image'}
                   onClick={() => setActiveView('image')}
-                  className={`preview-tab-btn px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
-                    activeView === 'image'
-                      ? 'bg-blue-600 text-white shadow-xs active'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
+                  className={`preview-tab-btn ${activeView === 'image' ? 'active' : ''}`}
                   title="View original image"
                 >
-                  <FileImage size={13} />
+                  <FileImage size={13} aria-hidden="true" />
                   <span>Image</span>
                 </button>
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={activeView === 'ocr'}
                   onClick={() => setActiveView('ocr')}
-                  className={`preview-tab-btn px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
-                    activeView === 'ocr'
-                      ? 'bg-blue-600 text-white shadow-xs active'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
+                  className={`preview-tab-btn ${activeView === 'ocr' ? 'active' : ''}`}
                   title="View OCR extracted text"
                 >
-                  <FileText size={13} />
+                  <FileText size={13} aria-hidden="true" />
                   <span>Extracted Text</span>
                   {ocrData?.status === 'ready' && ocrData?.hasText ? (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Text detected"></span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Text detected" />
                   ) : null}
                 </button>
               </div>
@@ -368,8 +364,9 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               <button
                 type="button"
                 onClick={handleCopyText}
-                className="preview-copy-btn inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 transition-colors"
-                title="Copy extracted text"
+                className="preview-copy-btn"
+                title="Copy extracted text to clipboard"
+                aria-label="Copy extracted text"
               >
                 {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
                 <span>{copied ? 'Copied' : 'Copy Text'}</span>
@@ -380,22 +377,83 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               type="button"
               onClick={handleDownloadOriginal}
               disabled={downloading}
-              className="preview-download-btn inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+              className="preview-download-btn"
               title="Download original file"
+              aria-label={`Download original file ${filename}`}
             >
               {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
               <span>Download</span>
             </button>
+          </div>
+
+          <button
+            ref={closeBtnRef}
+            type="button"
+            onClick={onClose}
+            className="preview-close-btn"
+            aria-label="Close preview"
+            title="Close preview (Esc)"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Mobile Dedicated Toolbar for Tabs and Actions */}
+        <div className="preview-modal-mobile-toolbar">
+          {isImage && !isUnsubmittedComposerFile && (
+            <div className="preview-view-tabs" role="tablist" aria-label="Preview modes">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeView === 'image'}
+                onClick={() => setActiveView('image')}
+                className={`preview-tab-btn ${activeView === 'image' ? 'active' : ''}`}
+                title="View original image"
+              >
+                <FileImage size={13} aria-hidden="true" />
+                <span>Image</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeView === 'ocr'}
+                onClick={() => setActiveView('ocr')}
+                className={`preview-tab-btn ${activeView === 'ocr' ? 'active' : ''}`}
+                title="View OCR extracted text"
+              >
+                <FileText size={13} aria-hidden="true" />
+                <span>Extracted Text</span>
+                {ocrData?.status === 'ready' && ocrData?.hasText ? (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Text detected" />
+                ) : null}
+              </button>
+            </div>
+          )}
+
+          <div className="preview-modal-mobile-actions">
+            {hasCopyableText && (
+              <button
+                type="button"
+                onClick={handleCopyText}
+                className="preview-copy-btn"
+                title="Copy extracted text to clipboard"
+                aria-label="Copy extracted text"
+              >
+                {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                <span>{copied ? 'Copied' : 'Copy'}</span>
+              </button>
+            )}
 
             <button
-              ref={closeBtnRef}
               type="button"
-              onClick={onClose}
-              className="preview-close-btn p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
-              aria-label="Close preview"
-              title="Close preview (Esc)"
+              onClick={handleDownloadOriginal}
+              disabled={downloading}
+              className="preview-download-btn"
+              title="Download original file"
+              aria-label={`Download original file ${filename}`}
             >
-              <X size={18} />
+              {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              <span>Download</span>
             </button>
           </div>
         </div>

@@ -181,13 +181,16 @@ export default function SettingsModal() {
         aria-labelledby="settings-dialog-title"
         ref={modalRef}
       >
+        {/* Mobile Drag Handle Affordance */}
+        <div className="settings-drag-handle" aria-hidden="true" />
+
         {/* Modal Header */}
         <div className="settings-modal-header">
           <div className="settings-header-title-block">
             <div className="settings-header-icon-wrap" aria-hidden="true">
               <Sliders size={18} />
             </div>
-            <div>
+            <div className="settings-header-titles">
               <h2 id="settings-dialog-title" className="settings-modal-title">
                 Personalization Settings
               </h2>

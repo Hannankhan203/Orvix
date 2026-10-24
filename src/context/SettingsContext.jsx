@@ -60,6 +60,17 @@ export function SettingsProvider({ children }) {
       root.classList.add('theme-dark');
     }
 
+    // Synchronize mobile browser chrome theme-color meta tags
+    try {
+      const themeColor = themeName === 'light' ? '#ffffff' : '#090d16';
+      const metas = document.querySelectorAll('meta[name="theme-color"]');
+      metas.forEach((m) => {
+        if (!m.hasAttribute('media')) {
+          m.setAttribute('content', themeColor);
+        }
+      });
+    } catch (_) {}
+
     try {
       localStorage.setItem('orvix_active_theme', themeName);
     } catch (_) {}

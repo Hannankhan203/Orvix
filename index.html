@@ -15,7 +15,9 @@
     <link rel="alternate icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#2563eb" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#090d16" />
+    <meta name="theme-color" content="#090d16" id="theme-color-meta" />
     <meta name="application-name" content="Orvix" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Orvix" />
@@ -40,6 +42,13 @@
           if (!theme && window.matchMedia) {
             theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
           }
+          var color = theme === 'light' ? '#ffffff' : '#090d16';
+          var metas = document.querySelectorAll('meta[name="theme-color"]');
+          metas.forEach(function(m) {
+            if (!m.hasAttribute('media')) {
+              m.setAttribute('content', color);
+            }
+          });
           if (theme === 'light') {
             document.documentElement.setAttribute('data-theme', 'light');
             document.documentElement.classList.add('theme-light');
