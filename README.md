@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.9.2** *(Application Package: v0.9.0)*
+**Current Version: Orvix v0.9.3** *(Application Package: v0.9.0)*
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, High-Accuracy Voice Dictation with Server Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
+  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
 </p>
 
 ---
@@ -25,7 +25,11 @@
    - [Activation Thresholds & Quick Flick Detection](#activation-thresholds--quick-flick-detection)
    - [Dual Touch and Pointer Event Architecture](#dual-touch-and-pointer-event-architecture)
 5. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
-   - [Hybrid & Direct-Audio Browser Engine Support](#hybrid--direct-audio-browser-engine-support)
+   - [Cross-Platform Hybrid & Direct-Audio Engine Support](#cross-platform-hybrid--direct-audio-engine-support)
+   - [Mobile & PWA Live Speech Recognition](#mobile--pwa-live-speech-recognition)
+   - [Correct Interim Transcript Handling & Snapshot Replacement](#correct-interim-transcript-handling--snapshot-replacement)
+   - [Concurrent Live Recognition & Server Whisper Refinement](#concurrent-live-recognition--server-whisper-refinement)
+   - [Desktop Dictation Regression Protection](#desktop-dictation-regression-protection)
    - [Real-Time Audio Capture & Visualizer](#real-time-audio-capture--visualizer)
    - [Smart Punctuation & Typography Formatting](#smart-punctuation--typography-formatting)
    - [High-Accuracy Whisper Transcription Pipeline](#high-accuracy-whisper-transcription-pipeline)
@@ -84,7 +88,7 @@ Engineered as a full-stack Node.js application, Orvix pairs a responsive React 1
 
 - **Dual-Format Table & Message Copying**: Copies assistant responses as both rich `text/html` and optimized `text/plain`. Tables pasted into messaging apps (such as WhatsApp) render as clear, structured field-value records so values never lose their column associations, while rich destinations (Google Docs, Word, Slack) receive formatted HTML tables with borders and backgrounds.
 - **Main Conversation Mobile Swipe Navigation**: Fluid swipe-right gesture active across the main conversation area on mobile and tablet screens to open chat history, with exclusions for the top header, bottom composer, interactive buttons, code blocks, and an iOS-safe margin (>16px) to avoid native edge navigation conflicts.
-- **High-Accuracy Voice Dictation**: Dual-engine dictation combining progressive browser Web Speech recognition with server-side Whisper Large v3 Turbo audio refinement, multi-language support (9 locales), silence restart auto-recovery, and context-aware technical vocabulary polishing.
+- **High-Accuracy Voice Dictation**: Cross-platform dual-engine dictation combining mobile/PWA and desktop live browser speech recognition with server-side Whisper Large v3 Turbo audio refinement. Features real-time interim transcript rendering with deduplication, continuous audio buffering, 9 supported locales, silence restart recovery, and context-aware technical polishing.
 - **Four Specialized Chatbot Modes**: Purpose-built modes for **General Assistant**, **Learning**, **Writing**, and **Coding** with custom system prompts, specialized typography, educational callouts, editorial layouts, and VS Code-style code blocks.
 - **Multi-Model Response Alternatives**: Compare outputs across different AI providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI) without overwriting existing messages, navigable via an interactive `< X of Y >` pager.
 - **Automatic Chat-Input Focus**: Type naturally from anywhere on the page to immediately activate the message composer without losing the first keystroke, with complete protection for text selection, keyboard shortcuts, and modal dialogs.
@@ -244,24 +248,96 @@ Orvix features a robust voice dictation engine implemented in `src/hooks/useVoic
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                      ORVIX DICTATION PIPELINE                          │
-├───────────────────────────────────┬────────────────────────────────────┤
-│ 1. AUDIO CAPTURE & LIVE SPEECH    │ 2. SERVER REFINEMENT & POLISHING   │
-│ - Shared MediaStream capture      │ - Upload captured Blob to server   │
-│ - Web Speech interim/final words  │ - Groq Whisper Large v3 Turbo      │
-│ - Real-time 5-bar visualizer      │ - Gemini Audio transcription backup│
-│ - Silence restart auto-recovery   │ - Contextual technical polishing   │
-│ - Firefox direct-audio fallback   │ - Non-destructive reconciliation   │
-└───────────────────────────────────┴────────────────────────────────────┘
+│                   ORVIX UNIFIED DICTATION ARCHITECTURE                 │
+├────────────────────────────────────────────────────────────────────────┤
+│                       Mobile / Desktop Microphone                      │
+│                                    ↓                                   │
+│                     Live Browser Speech Recognition                    │
+│                                    ↓                                   │
+│        Live Words Appear in Composer (Interim Snapshot Replacement)    │
+│                                    ↓                                   │
+│                           User Presses Stop / Done                     │
+│                                    ↓                                   │
+│                   Recorded MediaStream Audio Finalized                 │
+│                                    ↓                                   │
+│             Server-Side Whisper Large v3 Turbo Refinement              │
+│                                    ↓                                   │
+│               Reconciled High-Accuracy Final Transcription             │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Hybrid & Direct-Audio Browser Engine Support
+### Cross-Platform Hybrid & Direct-Audio Engine Support
 
-Orvix dynamically detects browser capabilities (`detectDictationCapabilities`) to provide optimal dictation across desktop and mobile platforms:
-- **Hybrid Mode (Chrome, Edge, Safari macOS & iOS)**: Runs native `SpeechRecognition` in parallel with `MediaRecorder` audio buffering. Recognized words appear progressively in the composer in real time. Upon tapping **Done**, the captured audio is refined by Whisper on the server.
-- **Direct-Audio Mode (Mozilla Firefox on Windows, macOS & Android)**: Firefox disables the Web Speech API by default. Orvix captures audio directly via `MediaRecorder` and `getUserMedia`, providing full audio visualizer feedback and delivering high-accuracy Whisper transcription upon tapping **Done**.
-- **Native-Only Mode**: Graceful fallback for environments with SpeechRecognition but restricted MediaRecorder access.
-- **iOS Safari Lifecycle Management**: Automatically detects audio session pauses after silence timeouts and gracefully transitions to a paused state, allowing users to tap **Resume** without permission errors.
+Orvix dynamically evaluates browser and platform capabilities via `detectDictationCapabilities()` to route each client to its optimal dictation engine:
+- **Hybrid Desktop Mode (Chrome, Edge, Safari macOS)**: Runs native `SpeechRecognition` in parallel with `MediaRecorder` audio buffering on a single shared `MediaStream`. Spoken words render progressively into the composer in real time. Upon tapping **Done**, the captured audio is refined on the server by Whisper Large v3 Turbo.
+- **Mobile & PWA Live Mode (Android Chrome, iOS Safari, PWA)**: Runs live browser speech recognition with immediate interim composer rendering while concurrently recording audio. Continuous recognition parameters are tuned for mobile devices (`continuous = false` with silence restart auto-recovery) to ensure rapid interim frame dispatch without speech cutoffs. Upon tapping **Done**, recorded audio is finalized and submitted for server Whisper refinement.
+- **Direct-Audio Mode (Mozilla Firefox & Standalone iOS PWA)**: Mozilla Firefox disables the Web Speech API by default, and standalone iOS home-screen PWAs restrict WebKit SpeechRecognition. In these environments, Orvix captures audio directly via `MediaRecorder` and `getUserMedia`, providing real-time audio visualizer feedback and delivering complete, high-accuracy Whisper transcription upon tapping **Done**.
+- **Native-Only Fallback**: Graceful operating mode for restricted environments where speech recognition is available but `MediaRecorder` hardware access is constrained.
+- **iOS Safari Lifecycle Management**: Automatically detects audio session pauses following silence timeouts, transitioning gracefully to a paused state so users can tap **Resume** without permission errors.
+
+### Mobile & PWA Live Speech Recognition
+
+On mobile devices and installed Progressive Web Apps (PWAs), Orvix provides immediate, responsive visual feedback:
+- **Live Recognition While Speaking**: When the user taps the microphone and speaks, speech recognition activates instantly. Words stream directly into the composer textarea while speech is occurring.
+- **No Waiting for Stop**: Users do not have to wait until tapping **Stop** or **Done** to see what has been recognized; the text appears fluidly in real time.
+- **Visual Confidence**: Immediate word rendering gives mobile users instant confirmation that their microphone is active, properly authorized, and picking up clear audio.
+
+### Correct Interim Transcript Handling & Snapshot Replacement
+
+A major architectural challenge in browser speech recognition is handling interim (unfinalized) recognition results without duplicating words.
+
+**The Interim Duplication Problem:**  
+When speaking continuously, the browser's speech recognition engine emits successive interim snapshots representing its evolving hypothesis of the current phrase. Previously, naive listeners would append each interim emission sequentially:
+
+```text
+I
+I want
+I want you
+I want you to
+```
+
+If appended rather than replaced, this produced repetitive accumulation: `I I want I want you I want you to`.
+
+**The Orvix Architectural Solution:**  
+Orvix strictly separates finalized text from interim hypotheses:
+1. **Finalized Speech (`event.results[i].isFinal`)**: When the speech engine confirms an utterance boundary, the segment is formatted and committed to `committedSegmentsRef` as permanent, immutable text.
+2. **Interim Speech (`!event.results[i].isFinal`)**: Unfinalized results are treated strictly as an ephemeral, temporary snapshot of the current unfinished phrase.
+3. **Snapshot Replacement**: The latest interim hypothesis unconditionally replaces the previous interim candidate buffer (`interimTranscriptRef`), never appending to it.
+4. **Deterministic Merging**: At any moment, the composer displays:
+   $$\text{Composer Text} = \text{Base Text} + \sum \text{Committed Final Segments} + \text{Active Interim Snapshot}$$
+5. When the user finishes speaking or pauses, the interim snapshot either finalizes into a permanent segment or is replaced by the refined server transcript upon session completion.
+
+### Concurrent Live Recognition & Server Whisper Refinement
+
+Live browser speech recognition and high-accuracy server-side Whisper refinement are no longer mutually exclusive. Orvix unifies both into a single seamless workflow:
+
+```text
+Mobile microphone
+      ↓
+Live browser speech recognition
+      ↓
+Live words appear in composer
+      ↓
+User presses Stop
+      ↓
+Recorded audio finalized
+      ↓
+Whisper refinement
+      ↓
+Final transcription
+```
+
+1. **During Speech**: The user benefits from zero-latency live browser speech recognition, viewing their spoken words in real time with correct interim snapshot replacement.
+2. **On Stop**: Tapping **Done** cleanly disconnects the live recognition engine to prevent trailing duplicate events, finalizes the recorded audio chunks into an audio `Blob`, and submits the recording to `/api/transcribe`.
+3. **Whisper Refinement**: The server processes the audio using Groq Whisper Large v3 Turbo (or fallback Gemini audio recognition) with domain-specific technical vocabulary conditioning.
+4. **Non-Destructive Reconciliation**: The server transcript replaces the rough live preview, correcting phonetic slips, technical abbreviations, and punctuation. If the user made manual edits or cleared the composer during the session, their manual input is strictly preserved.
+
+### Desktop Dictation Regression Protection
+
+All existing desktop dictation capabilities remain fully preserved and protected against regressions:
+- Desktop Chrome, Edge, and Safari continue to use the concurrent hybrid pipeline with synchronized `SpeechRecognition` and `MediaRecorder` audio buffering.
+- The 5-bar Web Audio API visualizer (`AnalyserNode`) operates seamlessly across all platforms without audio pipeline contention.
+- Desktop users continue to enjoy real-time word streaming, smart punctuation commands, and Whisper refinement.
 
 ### Real-Time Audio Capture & Visualizer
 
@@ -729,9 +805,27 @@ Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`):
 - **MINOR**: Substantial new feature additions and multi-component workflows.
 - **PATCH**: Bug fixes, performance optimizations, and reliability enhancements.
 
-> **Version Alignment Note**: The application package metadata in `package.json` specifies version `0.9.0`. The release notes below document the recent enhancements through **v0.9.2**.
+> **Version Alignment Note**: The application package metadata in `package.json` specifies version `0.9.0`. The release notes below document the recent enhancements through **v0.9.3**.
 
-### v0.9.2 — Table Copying, Mobile Swipe Navigation & Dictation Hardening (October 2026) *(Current Codebase)*
+### v0.9.3 — Mobile PWA Live Dictation & Interim Transcript Deduplication (October 2026) *(Current Codebase)*
+
+**Newly Added & Enhanced**
+
+- **A. Mobile & PWA Live Speech Recognition (`useVoiceDictation.js`, `ChatArea.jsx`)**:
+  - **Real-Time Word Rendering on Mobile**: Initiating voice dictation in mobile browsers and PWA standalone mode now renders recognized words live into the message composer as the user speaks, eliminating the previous delay where mobile users had to wait until pressing Stop to view transcribed text.
+  - **Coexistence of Live Recognition and Whisper Refinement**: Mobile dictation no longer forces an exclusive choice between live preview and server Whisper refinement. Live speech recognition provides immediate progressive feedback during speech, while the audio stream is concurrently recorded and finalized upon pressing Stop to trigger high-accuracy Groq Whisper Large v3 Turbo refinement.
+  - **Corrected Interim Transcript Duplication**: Eliminated the critical interim result duplication bug where successive evolving hypotheses (`"I"`, `"I want"`, `"I want you"`) were being repeatedly concatenated into composer text. The engine strictly distinguishes finalized text (persistent, committed segments) from interim candidates (replaceable, temporary snapshots), guaranteeing that each incoming interim snapshot cleanly replaces the prior interim buffer.
+  - **Seamless End-of-Session Reconciliation**: When Whisper completes its final pass, the refined transcription smoothly reconciles with the live preview, enhancing spelling, capitalization, and punctuation while strictly preserving any manual user edits made in the composer.
+
+- **B. Cross-Platform Dictation Consistency & Desktop Regression Protection**:
+  - **Desktop Hybrid Pipeline Preserved**: Maintained full desktop support across Chrome, Edge, and Safari with synchronized `SpeechRecognition`, `MediaRecorder` audio buffering, and reactive 5-bar Web Audio `AnalyserNode` visualizer feedback.
+  - **Direct-Audio Fallback Maintained**: Preserved direct `MediaRecorder` audio capture and Whisper transcription for Mozilla Firefox (which lacks native Web Speech support by default) and standalone iOS PWAs.
+  - **Silence Restart & Audio Continuity**: Retained robust stream reuse across natural pauses and silence restarts, preventing audio hardware drops or dropped opening words.
+  - **Strict Session Isolation**: Preserves composer clear guards (`Ctrl+A` + `Backspace`), session counters, and stale asynchronous response discard guarantees.
+
+---
+
+### v0.9.2 — Table Copying, Mobile Swipe Navigation & Dictation Hardening (October 2026)
 
 **Newly Added & Enhanced**
 
