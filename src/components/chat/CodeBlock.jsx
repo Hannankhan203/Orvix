@@ -130,7 +130,7 @@ function renderHighlightedTokens(tokens) {
  * - Synchronized vertical scrolling for large code blocks
  * - Preserves tabs, spaces, blank lines, and special characters
  */
-export default function CodeBlock({
+function CodeBlock({
   code = '',
   language = '',
   isStreaming = false,
@@ -318,3 +318,5 @@ export default function CodeBlock({
     </div>
   );
 }
+
+export default React.memo(CodeBlock);

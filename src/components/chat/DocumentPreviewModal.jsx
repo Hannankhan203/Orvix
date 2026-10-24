@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Download,
@@ -217,9 +217,14 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     };
   }, [blobUrl]);
 
-  // Handle ESC key to close
+  // Handle ESC key to close and focus close button on open
+  const closeBtnRef = useRef(null);
+
   useEffect(() => {
     if (!isOpen) return;
+    const focusTimer = setTimeout(() => {
+      closeBtnRef.current?.focus();
+    }, 50);
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -227,7 +232,10 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      clearTimeout(focusTimer);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, [isOpen, onClose]);
 
   if (!isOpen || !attachment) return null;
@@ -271,19 +279,19 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         {/* Modal Header */}
         <div className="preview-modal-header flex items-center justify-between px-5 py-3.5 border-b border-white/10 bg-[#141b24]/80">
           <div className="flex items-center gap-3 min-w-0 flex-1">
-            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400 flex-shrink-0">
+            <div className="preview-modal-icon-badge p-2 rounded-lg bg-blue-500/10 text-blue-400 flex-shrink-0">
               <IconComponent size={18} />
             </div>
             <div className="min-w-0 flex-1">
               <h2
                 id="preview-modal-title"
-                className="text-sm font-semibold text-slate-100 truncate"
+                className="preview-modal-title text-sm font-semibold text-slate-100 truncate"
                 title={filename}
               >
                 {filename}
               </h2>
-              <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
-                <span className="uppercase font-semibold tracking-wider text-[11px] px-1.5 py-0.5 rounded bg-white/5">
+              <div className="preview-modal-meta flex items-center gap-2 text-xs text-slate-400 mt-0.5">
+                <span className="preview-modal-ext-pill uppercase font-semibold tracking-wider text-[11px] px-1.5 py-0.5 rounded bg-white/5">
                   {ext || 'FILE'}
                 </span>
                 {sizeText && <span>• {sizeText}</span>}
@@ -293,13 +301,13 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
 
           <div className="flex items-center gap-2 flex-shrink-0 ml-4">
             {isImage && (
-              <div className="flex items-center rounded-lg bg-black/40 p-0.5 border border-white/10 text-xs mr-1">
+              <div className="preview-view-tabs flex items-center rounded-lg bg-black/40 p-0.5 border border-white/10 text-xs mr-1">
                 <button
                   type="button"
                   onClick={() => setActiveView('image')}
-                  className={`px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
+                  className={`preview-tab-btn px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
                     activeView === 'image'
-                      ? 'bg-blue-600 text-white shadow-xs'
+                      ? 'bg-blue-600 text-white shadow-xs active'
                       : 'text-slate-400 hover:text-slate-200'
                   }`}
                   title="View original image"
@@ -310,9 +318,9 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                 <button
                   type="button"
                   onClick={() => setActiveView('ocr')}
-                  className={`px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
+                  className={`preview-tab-btn px-2.5 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
                     activeView === 'ocr'
-                      ? 'bg-blue-600 text-white shadow-xs'
+                      ? 'bg-blue-600 text-white shadow-xs active'
                       : 'text-slate-400 hover:text-slate-200'
                   }`}
                   title="View OCR extracted text"
@@ -330,7 +338,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               <button
                 type="button"
                 onClick={handleCopyText}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 transition-colors"
+                className="preview-copy-btn inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 transition-colors"
                 title="Copy extracted text"
               >
                 {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
@@ -342,7 +350,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               type="button"
               onClick={handleDownloadOriginal}
               disabled={downloading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+              className="preview-download-btn inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
               title="Download original file"
             >
               {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
@@ -350,9 +358,10 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             </button>
 
             <button
+              ref={closeBtnRef}
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+              className="preview-close-btn p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Close preview"
               title="Close preview (Esc)"
             >

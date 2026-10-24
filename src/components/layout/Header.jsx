@@ -77,9 +77,15 @@ export default function Header({
 
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
-        setAccountMenuOpen(false);
-        setIsEditingUsername(false);
-        setEditError('');
+        if (isEditingUsername) {
+          e.preventDefault();
+          setIsEditingUsername(false);
+          setEditError('');
+        } else {
+          setAccountMenuOpen(false);
+          setIsEditingUsername(false);
+          setEditError('');
+        }
       }
     };
 
@@ -92,7 +98,7 @@ export default function Header({
       document.removeEventListener('touchstart', handleClickOutside);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [accountMenuOpen]);
+  }, [accountMenuOpen, isEditingUsername]);
 
   const handleLogout = async () => {
     try {

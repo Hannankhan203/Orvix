@@ -172,6 +172,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
               handleCardClick(e);

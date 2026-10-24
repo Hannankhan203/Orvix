@@ -115,6 +115,8 @@ export default function ExportChatMenu({
               role="menuitem"
               className="export-dropdown-item"
               onClick={handleSelectMarkdown}
+              disabled={!hasMessages}
+              aria-disabled={!hasMessages}
             >
               <div className="export-item-icon-wrap markdown">
                 <FileCode size={16} />
@@ -132,6 +134,8 @@ export default function ExportChatMenu({
               role="menuitem"
               className="export-dropdown-item"
               onClick={handleSelectText}
+              disabled={!hasMessages}
+              aria-disabled={!hasMessages}
             >
               <div className="export-item-icon-wrap text">
                 <FileText size={16} />

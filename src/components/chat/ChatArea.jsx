@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   ArrowUp,
   ArrowDown,
@@ -247,10 +247,15 @@ export default function ChatArea({
     return () => clearTimeout(timer);
   }, [attachmentNotice]);
 
-  // Revoke object URLs on component unmount to prevent memory leaks
+  // Track unsubmitted attachments in a ref so object URLs are revoked only on component unmount
+  // (individual removal is handled in handleRemoveAttachment; revoking on every attachments array change
+  // would prematurely revoke previewUrl when attachments are cleared upon message submission)
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
   useEffect(() => {
     return () => {
-      attachments.forEach((att) => {
+      attachmentsRef.current.forEach((att) => {
         if (att.previewUrl) {
           try {
             URL.revokeObjectURL(att.previewUrl);
@@ -258,7 +263,7 @@ export default function ChatArea({
         }
       });
     };
-  }, [attachments]);
+  }, []);
 
   const handleAttachClick = () => {
     if (attachments.length > 0) {
@@ -582,6 +587,11 @@ export default function ChatArea({
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+    });
   };
 
   // Floating scroll-to-bottom button visibility
@@ -600,6 +610,60 @@ export default function ChatArea({
   const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
   const [suggestedRefinement, setSuggestedRefinement] = useState(null);
 
+  // Dismiss transcript refinement review dialog on Escape
+  useEffect(() => {
+    if (!suggestedRefinement) return;
+    const handleRefinementEsc = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSuggestedRefinement(null);
+      }
+    };
+    window.addEventListener('keydown', handleRefinementEsc);
+    return () => window.removeEventListener('keydown', handleRefinementEsc);
+  }, [suggestedRefinement]);
+
+  // Stabilize message action callbacks passed to MessageList and ChatMessage so typing in
+  // the composer or streaming tokens does not force full-thread re-renders
+  const messageCallbacksRef = useRef({
+    onRetry,
+    onSwitchProvider,
+    onRestorePrompt,
+    onRegenerate,
+    onGenerateAlternative,
+    onSwitchAlternative,
+    onStopGenerating,
+    onStartEdit,
+    onCancelEdit,
+    onEditResend
+  });
+  messageCallbacksRef.current = {
+    onRetry,
+    onSwitchProvider,
+    onRestorePrompt,
+    onRegenerate,
+    onGenerateAlternative,
+    onSwitchAlternative,
+    onStopGenerating,
+    onStartEdit,
+    onCancelEdit,
+    onEditResend
+  };
+
+  const stableOnRetry = useCallback((...args) => messageCallbacksRef.current.onRetry?.(...args), []);
+  const stableOnSwitchProvider = useCallback((...args) => messageCallbacksRef.current.onSwitchProvider?.(...args), []);
+  const stableOnRestorePrompt = useCallback((...args) => messageCallbacksRef.current.onRestorePrompt?.(...args), []);
+  const stableOnRegenerate = useCallback((...args) => messageCallbacksRef.current.onRegenerate?.(...args), []);
+  const stableOnGenerateAlternative = useCallback((...args) => messageCallbacksRef.current.onGenerateAlternative?.(...args), []);
+  const stableOnSwitchAlternative = useCallback((...args) => messageCallbacksRef.current.onSwitchAlternative?.(...args), []);
+  const stableOnStopGenerating = useCallback((...args) => messageCallbacksRef.current.onStopGenerating?.(...args), []);
+  const stableOnStartEdit = useCallback((...args) => messageCallbacksRef.current.onStartEdit?.(...args), []);
+  const stableOnCancelEdit = useCallback((...args) => messageCallbacksRef.current.onCancelEdit?.(...args), []);
+  const stableOnEditResend = useCallback((...args) => messageCallbacksRef.current.onEditResend?.(...args), []);
+
+  const messagesLengthRef = useRef(messages.length);
+  messagesLengthRef.current = messages.length;
+
   // Check if the most recent message ended with an invitation to continue a partitioned response
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
   const canContinueLastMessage =
@@ -611,7 +675,7 @@ export default function ChatArea({
     responseHasContinuationNotice(lastMessage.content);
 
   // Computes distance from bottom and updates floating button visibility
-  const updateScrollButtonVisibility = () => {
+  const updateScrollButtonVisibility = useCallback(() => {
     const scrollContainer = scrollViewportRef.current;
     if (!scrollContainer) return;
 
@@ -626,9 +690,9 @@ export default function ChatArea({
     }
 
     // Show button only if there are messages and user is sufficiently far (> 120px) from bottom
-    const shouldShow = messages.length > 0 && distanceFromBottom > 120;
-    setShowScrollBottom(shouldShow);
-  };
+    const shouldShow = messagesLengthRef.current > 0 && distanceFromBottom > 120;
+    setShowScrollBottom((prev) => (prev === shouldShow ? prev : shouldShow));
+  }, []);
 
   // Smoothly scrolls viewport to bottom
   const handleScrollToBottom = () => {
@@ -654,7 +718,7 @@ export default function ChatArea({
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [messages.length]);
+  }, [updateScrollButtonVisibility]);
 
   // Handle conversation switching / opening:
   // Starts each opened conversation at the top (scrollTop = 0)
@@ -826,7 +890,7 @@ export default function ChatArea({
     }
   };
 
-  // Close language menu when clicking outside
+  // Close language menu when clicking outside or pressing Escape
   useEffect(() => {
     if (!langMenuOpen) return;
     const handleClickOutside = (e) => {
@@ -834,16 +898,29 @@ export default function ChatArea({
         setLangMenuOpen(false);
       }
     };
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setLangMenuOpen(false);
+      }
+    };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }, [langMenuOpen]);
 
   // Auto-resize textarea according to text length and follow speech stream
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      const newHeight = Math.min(textareaRef.current.scrollHeight, 180);
-      textareaRef.current.style.height = `${Math.max(newHeight, 44)}px`;
+      const scrollHeight = textareaRef.current.scrollHeight;
+      const newHeight = inputValue
+        ? Math.min(Math.max(scrollHeight, 36), 180)
+        : 36;
+      textareaRef.current.style.height = `${newHeight}px`;
       if (recordingState === 'listening' || recordingState === 'paused') {
         textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
       }
@@ -901,12 +978,17 @@ export default function ChatArea({
 
         // If a button or link is focused, let it retain focus for standard accessibility navigation
         // unless it's an ordinary character key (letters, numbers, symbols)
+        const role = activeEl.getAttribute?.('role');
         const isInteractive =
           tagName === 'button' ||
           tagName === 'a' ||
-          activeEl.getAttribute?.('role') === 'button' ||
-          activeEl.getAttribute?.('role') === 'menuitem' ||
-          activeEl.getAttribute?.('role') === 'option';
+          role === 'button' ||
+          role === 'menuitem' ||
+          role === 'option' ||
+          role === 'radio' ||
+          role === 'tab' ||
+          role === 'switch' ||
+          role === 'checkbox';
 
         if (isInteractive && (e.key === 'Enter' || e.key === ' ' || e.key === 'Tab' || e.key === 'Escape')) {
           return;
@@ -916,7 +998,7 @@ export default function ChatArea({
       // 6. Check if any modal or dialog is currently open
       if (
         document.querySelector(
-          '[role="dialog"], .modal-backdrop, .settings-modal-backdrop, .document-preview-overlay, .auth-modal-backdrop'
+          '[role="dialog"], [role="alertdialog"], .modal-backdrop, .settings-modal-backdrop, .document-preview-overlay, .auth-modal-backdrop'
         )
       ) {
         return;
@@ -944,7 +1026,7 @@ export default function ChatArea({
       try {
         textareaRef.current.style.height = 'auto';
         const newHeight = Math.min(textareaRef.current.scrollHeight, 180);
-        textareaRef.current.style.height = `${Math.max(newHeight, 44)}px`;
+        textareaRef.current.style.height = `${Math.max(newHeight, 36)}px`;
       } catch (_) {}
 
       // Focus the textarea and set cursor directly after the inserted character
@@ -972,6 +1054,12 @@ export default function ChatArea({
   };
 
   const handleKeyDown = (e) => {
+    if (e.key === 'Escape' && langMenuOpen) {
+      e.preventDefault();
+      setLangMenuOpen(false);
+      return;
+    }
+
     if (e.key === 'Escape' && isLoading && onStopGenerating) {
       e.preventDefault();
       onStopGenerating();
@@ -1184,17 +1272,17 @@ Transcript:
             <MessageList
               messages={messages}
               isLoading={isLoading}
-              onRetry={onRetry}
-              onSwitchProvider={onSwitchProvider}
-              onRestorePrompt={onRestorePrompt}
-              onRegenerate={onRegenerate}
-              onGenerateAlternative={onGenerateAlternative}
-              onSwitchAlternative={onSwitchAlternative}
-              onStopGenerating={onStopGenerating}
-              onEditResend={onEditResend}
+              onRetry={onRetry ? stableOnRetry : undefined}
+              onSwitchProvider={onSwitchProvider ? stableOnSwitchProvider : undefined}
+              onRestorePrompt={onRestorePrompt ? stableOnRestorePrompt : undefined}
+              onRegenerate={onRegenerate ? stableOnRegenerate : undefined}
+              onGenerateAlternative={onGenerateAlternative ? stableOnGenerateAlternative : undefined}
+              onSwitchAlternative={onSwitchAlternative ? stableOnSwitchAlternative : undefined}
+              onStopGenerating={onStopGenerating ? stableOnStopGenerating : undefined}
+              onEditResend={onEditResend ? stableOnEditResend : undefined}
               editingMessageId={editingMessageId}
-              onStartEdit={onStartEdit}
-              onCancelEdit={onCancelEdit}
+              onStartEdit={onStartEdit ? stableOnStartEdit : undefined}
+              onCancelEdit={onCancelEdit ? stableOnCancelEdit : undefined}
               showTimestamps={showTimestamps}
               selectedProvider={selectedProvider}
               activeMode={activeMode}
@@ -1282,16 +1370,19 @@ Transcript:
 
           {/* Voice Dictation High-Accuracy / Fallback Notification (Phase 5.3) */}
           {transcriptionNotice && !isRecordingActive && (
-            <div className={`composer-dictation-notice ${transcriptionNotice.type}`} role="status">
-              <div className="dictation-notice-content">
+            <div
+              className={`composer-dictation-notice notice-${transcriptionNotice.type} ${transcriptionNotice.type}`}
+              role="status"
+            >
+              <div className="notice-left dictation-notice-content">
                 {transcriptionNotice.type === 'success' ? (
                   <Sparkles size={13} className="notice-icon success" aria-hidden="true" />
                 ) : (
                   <AlertCircle size={13} className="notice-icon fallback" aria-hidden="true" />
                 )}
-                <span>{transcriptionNotice.message}</span>
+                <span className="notice-text">{transcriptionNotice.message}</span>
               </div>
-              <div className="dictation-notice-actions">
+              <div className="notice-actions dictation-notice-actions">
                 {transcriptionNotice.canRetry && hasRecordedAudio && (
                   <button
                     type="button"
@@ -1352,10 +1443,10 @@ Transcript:
                       : recordingState === 'paused'
                       ? 'Paused'
                       : recordingState === 'transcribing'
-                      ? 'Whisper refining...'
+                      ? 'Refining...'
                       : recordingState === 'finalizing'
                       ? 'Finishing...'
-                      : 'Dictating...'}
+                      : 'Recording'}
                   </span>
                 </div>
 
@@ -1410,14 +1501,14 @@ Transcript:
                     {recordingState === 'requesting'
                       ? 'Connecting to microphone...'
                       : recordingState === 'paused'
-                      ? 'Speech paused'
+                      ? 'Dictation paused'
                       : recordingState === 'transcribing'
-                      ? 'Transcribing audio with Whisper Large v3...'
+                      ? 'Transcribing audio...'
                       : recordingState === 'finalizing'
                       ? 'Finishing...'
                       : engineMode === 'direct-audio'
-                      ? 'Recording audio (Direct Whisper mode)... Tap Done when finished'
-                      : 'Speak to dictate...'}
+                      ? 'Recording audio — click Done when finished'
+                      : 'Speak naturally...'}
                   </span>
                 )}
               </div>
@@ -1429,8 +1520,8 @@ Transcript:
                     type="button"
                     className="dictation-strip-btn cancel-btn text-btn"
                     onClick={keepLiveTranscript}
-                    title="Keep live transcript and cancel Whisper refinement"
-                    aria-label="Keep live transcript and cancel Whisper refinement"
+                    title="Keep live transcript and skip Whisper refinement"
+                    aria-label="Keep live transcript and skip Whisper refinement"
                   >
                     <span className="btn-label">Keep live</span>
                     <X size={12} />
@@ -1465,8 +1556,8 @@ Transcript:
                       type="button"
                       className="dictation-strip-btn stop-btn"
                       onClick={handleStopListening}
-                      title="Finish dictation and refine with Whisper"
-                      aria-label="Finish dictation and refine with Whisper"
+                      title="Finish dictation"
+                      aria-label="Finish dictation"
                     >
                       <Check size={14} strokeWidth={2.5} />
                       <span className="btn-label">Done</span>
@@ -1493,9 +1584,9 @@ Transcript:
             <div className="transcript-cleanup-banner" role="region" aria-label="Transcript helper">
               <div className="cleanup-banner-left">
                 <Sparkles size={13} className="cleanup-icon" />
-                <span className="cleanup-hint">Dictated speech recorded:</span>
+                <span className="cleanup-hint">Dictated speech:</span>
                 <span className="cleanup-snippet">
-                  "{lastSessionTranscript.length > 46 ? lastSessionTranscript.slice(0, 46) + '...' : lastSessionTranscript}"
+                  "{lastSessionTranscript.length > 52 ? lastSessionTranscript.slice(0, 52) + '...' : lastSessionTranscript}"
                 </span>
               </div>
               <div className="cleanup-banner-actions">
@@ -1504,14 +1595,14 @@ Transcript:
                   className="cleanup-action-trigger"
                   onClick={handleImproveTranscript}
                   disabled={isCleaningTranscript}
-                  title="Use AI to polish punctuation and capitalization without changing words or translating"
+                  title="Polish punctuation and capitalization without changing words"
                 >
                   {isCleaningTranscript ? (
                     <Loader2 size={12} className="spin-icon" />
                   ) : (
                     <Sparkles size={12} />
                   )}
-                  <span>{isCleaningTranscript ? 'Polishing...' : 'Improve transcript'}</span>
+                  <span>{isCleaningTranscript ? 'Polishing...' : 'Polish text'}</span>
                 </button>
                 <button
                   type="button"
@@ -1620,7 +1711,7 @@ Transcript:
             <div className="composer-drop-banner" role="status" aria-live="polite">
               <div className="composer-drop-content">
                 <Paperclip size={15} className="composer-drop-icon" aria-hidden="true" />
-                <span className="composer-drop-text">Drop file to attach</span>
+                <span className="composer-drop-text">Drop file or image to attach</span>
               </div>
             </div>
           )}
@@ -1628,7 +1719,7 @@ Transcript:
           <form
             onSubmit={handleSubmit}
             onPaste={handlePaste}
-            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''}`}
+            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''} ${isRecordingActive ? 'is-recording' : ''}`}
             aria-label="Message composer"
           >
             {/* Native file input strictly supporting one document or image at a time */}
@@ -1643,19 +1734,15 @@ Transcript:
               aria-hidden="true"
             />
 
-            {/* Selected attachment preview strip with explicit "One attachment maximum per message" badge */}
+            {/* Selected attachment preview strip */}
             {attachments.length > 0 && (
-              <div className="composer-attachments-preview" role="region" aria-label="Attached file or image">
-                <div className="attachment-limit-banner">
-                  <Paperclip size={12} className="attachment-limit-icon" aria-hidden="true" />
-                  <span className="attachment-limit-text">One attachment maximum per message</span>
-                </div>
+              <div className="composer-attachments-preview" role="region" aria-label="Selected attachment">
                 {attachments.map((att) =>
                   att.isImage ? (
                     <div
                       key={att.id}
                       className="composer-attachment-chip composer-image-chip"
-                      title={`${att.name} (${att.formattedSize})`}
+                      title={`${att.name} (${att.extension || 'IMG'} • ${att.formattedSize})`}
                     >
                       <div className="composer-image-thumb-wrap">
                         {att.previewUrl ? (
@@ -1684,35 +1771,40 @@ Transcript:
                         <span className="attachment-chip-name" title={att.name}>
                           {att.name}
                         </span>
-                        <span className="attachment-chip-size">{att.formattedSize}</span>
+                        <div className="attachment-chip-submeta">
+                          <span className="attachment-chip-badge">{att.extension || 'IMG'}</span>
+                          <span className="attachment-chip-size">{att.formattedSize}</span>
+                        </div>
                       </div>
                       <button
                         type="button"
                         className="attachment-chip-remove"
                         onClick={() => handleRemoveAttachment(att.id)}
                         title={`Remove ${att.name}`}
-                        aria-label={`Remove ${att.name}`}
+                        aria-label={`Remove attachment ${att.name}`}
                       >
-                        <X size={12} />
+                        <X size={13} />
                       </button>
                     </div>
                   ) : (
                     <div
                       key={att.id}
                       className="composer-attachment-chip"
-                      title={`${att.name} (${att.formattedSize})`}
+                      title={`${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
                     >
                       <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
-                      <span className="attachment-chip-name">{att.name}</span>
+                      <span className="attachment-chip-name" title={att.name}>
+                        {att.name}
+                      </span>
                       <span className="attachment-chip-size">{att.formattedSize}</span>
                       <button
                         type="button"
                         className="attachment-chip-remove"
                         onClick={() => handleRemoveAttachment(att.id)}
                         title={`Remove ${att.name}`}
-                        aria-label={`Remove ${att.name}`}
+                        aria-label={`Remove attachment ${att.name}`}
                       >
-                        <X size={12} />
+                        <X size={13} />
                       </button>
                     </div>
                   )
@@ -1730,10 +1822,14 @@ Transcript:
                 onClick={handleAttachClick}
                 title={
                   attachments.length > 0
-                    ? 'Only one attachment can be added per message. Click to view notification.'
-                    : 'Attach document or image — One attachment maximum per message (PDF, DOCX, TXT, PPTX, JPG, PNG, etc.)'
+                    ? `Attached: ${attachments[0].name} (1 file max per message)`
+                    : 'Attach file or image (PDF, DOCX, TXT, CSV, PNG, JPG — max 25MB)'
                 }
-                ariaLabel="Attach document or image (One attachment maximum per message)"
+                ariaLabel={
+                  attachments.length > 0
+                    ? `Attachment selected: ${attachments[0].name}. Maximum one attachment per message.`
+                    : 'Attach document or image'
+                }
                 className={`composer-attach-btn ${attachments.length > 0 ? 'has-attachment' : ''}`}
                 icon={<Paperclip size={18} />}
               />
@@ -1743,37 +1839,28 @@ Transcript:
                 className="composer-textarea"
                 placeholder={
                   isListening
-                    ? 'Listening... Speak naturally (tap Done when finished)'
+                    ? 'Listening — speak naturally or type...'
                     : isPaused
-                    ? 'Dictation paused — speak or type...'
+                    ? 'Dictation paused — resume or type...'
                     : isRequesting
                     ? 'Connecting microphone...'
                     : isLoading
-                    ? 'Orvix is responding...'
+                    ? 'Generating response — press Esc to stop...'
                     : activeMode === 'coding'
                     ? 'Ask a coding question, debug an error, or request code...'
                     : activeMode === 'writing'
                     ? 'Draft an email, polish prose, or rewrite content...'
                     : activeMode === 'learning'
                     ? 'Ask to explain a concept, break down a topic, or quiz you...'
-                    : 'Ask Orvix anything...'
+                    : 'Message Orvix...'
                 }
                 value={inputValue}
                 rows={1}
                 onChange={(e) => onInputChange && onInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                aria-label="Message input text"
+                aria-label="Message input"
               />
-
-              {/* Real-time live speech hearing indicator inside composer */}
-              {isRecordingActive && interimTranscript && (
-                <div className="composer-live-speech-pill" role="status" aria-live="polite">
-                  <span className="live-speech-pulse-dot" aria-hidden="true" />
-                  <span className="live-speech-tag">Hearing:</span>
-                  <span className="live-speech-words">"{interimTranscript}"</span>
-                </div>
-              )}
 
               <div className="composer-actions">
                 {/* Recognition Language Selector (pre-recording) */}
@@ -1783,9 +1870,10 @@ Transcript:
                       type="button"
                       className="dictation-lang-btn composer-lang-btn"
                       onClick={() => setLangMenuOpen((prev) => !prev)}
-                      title={`Dictation language: ${activeLang.label}. Click to switch.`}
+                      title={`Dictation language: ${activeLang.label}. Click to change.`}
                       aria-label={`Dictation language: ${activeLang.label}`}
                       aria-expanded={langMenuOpen}
+                      aria-haspopup="menu"
                     >
                       <span className="lang-flag">{activeLang.flag}</span>
                       <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
@@ -1793,8 +1881,8 @@ Transcript:
                     </button>
 
                     {langMenuOpen && (
-                      <div className="dictation-lang-dropdown" role="menu">
-                        <div className="lang-dropdown-header">Recognition Language</div>
+                      <div className="dictation-lang-dropdown" role="menu" aria-label="Dictation recognition language">
+                        <div className="lang-dropdown-header">Dictation Language</div>
                         {supportedLanguages.map((lang) => (
                           <button
                             key={lang.code}
@@ -1804,6 +1892,9 @@ Transcript:
                             onClick={() => {
                               setSelectedLanguage(lang.code);
                               setLangMenuOpen(false);
+                              if (textareaRef.current) {
+                                textareaRef.current.focus();
+                              }
                             }}
                           >
                             <span className="lang-opt-flag">{lang.flag}</span>
@@ -1828,34 +1919,28 @@ Transcript:
                   onClick={handleToggleListening}
                   title={
                     !isSupported
-                      ? 'Microphone recording is not supported in this browser environment.'
+                      ? 'Voice dictation is not supported in this browser.'
                       : isTranscribing
-                      ? 'Enhancing transcript with Whisper Large v3...'
+                      ? 'Transcribing recorded audio...'
                       : isListening
-                      ? engineMode === 'direct-audio'
-                        ? 'Finish audio recording and transcribe with Whisper'
-                        : 'Finish dictation and refine with Whisper'
+                      ? 'Finish dictation'
                       : isRequesting
                       ? 'Connecting microphone... Click to cancel'
                       : isPaused
-                      ? 'Resume listening (Voice dictation paused)'
-                      : engineMode === 'direct-audio'
-                      ? `Record voice message (${activeLang.label}) — Transcribed by Whisper`
-                      : `Dictate message (${activeLang.label})`
+                      ? 'Resume voice dictation'
+                      : `Voice dictation (${activeLang.label})`
                   }
                   ariaLabel={
                     !isSupported
                       ? 'Voice dictation not supported'
                       : isTranscribing
-                      ? 'Enhancing transcript with Whisper'
+                      ? 'Transcribing audio'
                       : isListening
                       ? 'Finish voice dictation'
                       : isRequesting
                       ? 'Connecting microphone'
                       : isPaused
                       ? 'Resume dictation'
-                      : engineMode === 'direct-audio'
-                      ? 'Start voice recording for Whisper transcription'
                       : 'Start voice dictation'
                   }
                   className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing ? 'transcribing' : ''}`}
@@ -1876,24 +1961,32 @@ Transcript:
                 {isLoading ? (
                   <Button
                     type="button"
-                    variant="outline"
-                    size="icon-round"
+                    variant="danger"
+                    size="sm"
                     onClick={onStopGenerating}
                     title="Stop generating response (Esc)"
                     ariaLabel="Stop generating response"
                     className="composer-stop-btn"
-                    icon={<Square size={13} fill="currentColor" />}
-                  />
+                    icon={<Square size={11} fill="currentColor" />}
+                  >
+                    <span className="composer-stop-label">Stop</span>
+                  </Button>
                 ) : (
                   <Button
                     type="submit"
                     variant={hasContent ? 'primary' : 'ghost'}
                     size="icon-round"
                     disabled={!hasContent}
-                    title={enterToSend ? 'Send message (Enter)' : 'Send message (⌘/Ctrl+Enter)'}
+                    title={
+                      !hasContent
+                        ? 'Type a message or attach a file to send'
+                        : enterToSend
+                        ? 'Send message (Enter)'
+                        : 'Send message (Ctrl+Enter / ⌘+Enter)'
+                    }
                     ariaLabel="Send message"
-                    className="composer-send-btn"
-                    icon={<ArrowUp size={18} />}
+                    className={`composer-send-btn ${hasContent ? 'is-ready' : 'is-empty'}`}
+                    icon={<ArrowUp size={18} strokeWidth={2.25} />}
                   />
                 )}
               </div>
@@ -1902,9 +1995,6 @@ Transcript:
 
           <p className="composer-footnote">
             {getProviderFootnote(selectedProvider, webllmModelId)}
-            {engineMode === 'direct-audio'
-              ? ' • Dictation powered by direct audio capture with Whisper Large v3 server transcription.'
-              : ' • Dictation combines live browser speech with Whisper Large v3 refinement via server API.'}
           </p>
         </div>
       </div>

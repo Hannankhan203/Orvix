@@ -159,28 +159,45 @@ export default function SidebarChatItem({
   // State B: Inline Deletion Confirmation Mode
   if (isConfirmingDelete) {
     return (
-      <div className="recent-chat-item-confirm-delete" onClick={(e) => e.stopPropagation()}>
-        <span className="confirm-delete-label">Delete chat?</span>
+      <div
+        className="recent-chat-item-confirm-delete"
+        role="group"
+        aria-label={`Confirm deletion of ${chat.title || 'conversation'}`}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            handleCancelDelete(e);
+          }
+        }}
+      >
+        <span className="confirm-delete-label" title={chat.title}>
+          Delete chat?
+        </span>
         <div className="chat-item-actions visible">
           <button
             type="button"
             className="chat-action-btn danger-confirm-btn"
             onClick={handleConfirmDelete}
             disabled={isBusy}
-            title="Confirm deletion"
-            aria-label="Confirm deletion"
+            title="Confirm permanent deletion"
+            aria-label={`Confirm delete ${chat.title || 'conversation'}`}
           >
-            <Check size={13} />
+            <Check size={12} />
+            <span className="confirm-action-text">Delete</span>
           </button>
           <button
             type="button"
             className="chat-action-btn cancel-btn"
             onClick={handleCancelDelete}
             disabled={isBusy}
-            title="Cancel"
+            title="Cancel deletion (Esc)"
             aria-label="Cancel deletion"
+            autoFocus
           >
-            <X size={13} />
+            <X size={12} />
+            <span className="confirm-action-text">Cancel</span>
           </button>
         </div>
       </div>

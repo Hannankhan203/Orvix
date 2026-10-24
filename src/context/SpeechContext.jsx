@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { cleanTextForSpeech, splitTextIntoSpeechChunks, getWordBoundaryOffset } from '../utils/speechTextCleaner.js';
 
 const SpeechContext = createContext(null);
@@ -684,7 +684,7 @@ export function SpeechProvider({ children }) {
 
   // Safe non-destructive Watchdog: detects stalled mobile TTS queues or dropped onend
   useEffect(() => {
-    if (!isSupported) return;
+    if (!isSupported || speakingState !== 'speaking') return;
 
     const watchdogInterval = setInterval(() => {
       if (speakingStateRef.current !== 'speaking') return;
@@ -709,7 +709,7 @@ export function SpeechProvider({ children }) {
     }, 1000);
 
     return () => clearInterval(watchdogInterval);
-  }, [isSupported, speakChunk, handleNaturalCompletion]);
+  }, [isSupported, speakingState, speakChunk, handleNaturalCompletion]);
 
   // Mobile PWA Lifecycle: Pause speech when app is backgrounded or screen locked
   useEffect(() => {
@@ -772,29 +772,51 @@ export function SpeechProvider({ children }) {
     voices[0] ||
     null;
 
-  const value = {
-    isSupported,
-    speakingState, // 'idle' | 'speaking' | 'paused' | 'completed' | 'error'
-    currentMessageId,
-    speechError,
-    voices,
-    activeVoice,
-    selectedVoiceURI,
-    setSelectedVoiceURI,
-    speechRate,
-    setSpeechRate,
-    playMessage,
-    pauseSpeech,
-    resumeSpeech,
-    stopSpeech,
-    toggleSpeech,
-    resetMessageSpeech,
-    hasSavedPosition,
-    readingPositions,
-    // Convenience flags for backwards compatibility
-    isPlaying: speakingState === 'speaking',
-    isPaused: speakingState === 'paused'
-  };
+  const value = useMemo(
+    () => ({
+      isSupported,
+      speakingState, // 'idle' | 'speaking' | 'paused' | 'completed' | 'error'
+      currentMessageId,
+      speechError,
+      voices,
+      activeVoice,
+      selectedVoiceURI,
+      setSelectedVoiceURI,
+      speechRate,
+      setSpeechRate,
+      playMessage,
+      pauseSpeech,
+      resumeSpeech,
+      stopSpeech,
+      toggleSpeech,
+      resetMessageSpeech,
+      hasSavedPosition,
+      readingPositions,
+      // Convenience flags for backwards compatibility
+      isPlaying: speakingState === 'speaking',
+      isPaused: speakingState === 'paused'
+    }),
+    [
+      isSupported,
+      speakingState,
+      currentMessageId,
+      speechError,
+      voices,
+      activeVoice,
+      selectedVoiceURI,
+      setSelectedVoiceURI,
+      speechRate,
+      setSpeechRate,
+      playMessage,
+      pauseSpeech,
+      resumeSpeech,
+      stopSpeech,
+      toggleSpeech,
+      resetMessageSpeech,
+      hasSavedPosition,
+      readingPositions
+    ]
+  );
 
   return <SpeechContext.Provider value={value}>{children}</SpeechContext.Provider>;
 }

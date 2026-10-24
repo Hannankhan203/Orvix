@@ -15,7 +15,7 @@ import TypingIndicator from './TypingIndicator.jsx';
  * @param {(assistantMessage: Object) => void} [props.onRegenerate]
  * @param {() => void} [props.onStopGenerating]
  */
-export default function MessageList({
+function MessageList({
   messages = [],
   isLoading = false,
   onRetry,
@@ -52,7 +52,7 @@ export default function MessageList({
           onStopGenerating={onStopGenerating}
           isLoading={isLoading}
           isEditing={editingMessageId === msg.id}
-          onStartEdit={onStartEdit ? () => onStartEdit(msg.id) : undefined}
+          onStartEdit={onStartEdit}
           onCancelEdit={onCancelEdit}
           onEditResend={onEditResend}
           showTimestamps={showTimestamps}
@@ -67,3 +67,5 @@ export default function MessageList({
     </div>
   );
 }
+
+export default React.memo(MessageList);

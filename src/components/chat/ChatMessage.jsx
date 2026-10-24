@@ -498,7 +498,7 @@ function LiveResponseTimer({ startTime }) {
   );
 }
 
-export default function ChatMessage({
+function ChatMessage({
   message,
   onRetry,
   onSwitchProvider,
@@ -530,6 +530,21 @@ export default function ChatMessage({
 
   useEffect(() => {
     if (!showAltMenu) return;
+
+    const focusMenuItem = (index) => {
+      if (!altMenuRef.current) return;
+      const items = Array.from(
+        altMenuRef.current.querySelectorAll('.alternative-provider-option:not(:disabled)')
+      );
+      if (items.length === 0) return;
+      const bounded = ((index % items.length) + items.length) % items.length;
+      items[bounded].focus();
+    };
+
+    const rafId = requestAnimationFrame(() => {
+      focusMenuItem(0);
+    });
+
     const handleClickOutside = (e) => {
       if (altMenuRef.current && !altMenuRef.current.contains(e.target)) {
         setShowAltMenu(false);
@@ -537,13 +552,37 @@ export default function ChatMessage({
     };
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
+        e.preventDefault();
         setShowAltMenu(false);
+        const triggerBtn = altMenuRef.current?.querySelector('.alternative-trigger-btn');
+        triggerBtn?.focus();
+        return;
+      }
+      if (!altMenuRef.current) return;
+      const items = Array.from(
+        altMenuRef.current.querySelectorAll('.alternative-provider-option:not(:disabled)')
+      );
+      if (items.length === 0) return;
+      const currentIdx = items.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        focusMenuItem(currentIdx === -1 ? 0 : currentIdx + 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        focusMenuItem(currentIdx === -1 ? items.length - 1 : currentIdx - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        focusMenuItem(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        focusMenuItem(items.length - 1);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('touchstart', handleClickOutside);
     window.addEventListener('keydown', handleKeyDown);
     return () => {
+      cancelAnimationFrame(rafId);
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('touchstart', handleClickOutside);
       window.removeEventListener('keydown', handleKeyDown);
@@ -1094,7 +1133,7 @@ export default function ChatMessage({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={onStartEdit}
+                onClick={() => onStartEdit(message.id)}
                 disabled={isLoading}
                 className="message-action-btn edit-message-btn"
                 title={isLoading ? 'Generation in progress...' : 'Edit and resend this message'}
@@ -1414,3 +1453,5 @@ export default function ChatMessage({
     </article>
   );
 }
+
+export default React.memo(ChatMessage);

@@ -11,22 +11,9 @@ import { getChatMode } from '../config/chatModes.js';
 import { prepareDocumentContext, adaptDocumentContextForProvider } from './documentContextService.js';
 
 export function getOpenRouterApiKey() {
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_OPENROUTER_API_KEY) {
-      return import.meta.env.VITE_OPENROUTER_API_KEY;
-    }
-  } catch (_) {
-    // Ignore error in non-Vite environments
-  }
-
-  if (typeof process !== 'undefined' && process.env) {
-    return process.env.VITE_OPENROUTER_API_KEY || '';
-  }
-
   return '';
 }
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // OpenRouter free model
 const DEFAULT_MODEL = 'openrouter/free';
 
@@ -109,95 +96,53 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
 }
 
 /**
- * Sends a conversation to the OpenRouter API and returns the generated text.
+ * Sends a conversation to the OpenRouter API via the server-side proxy and returns the generated text.
  * @param {Object} params
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
  * @param {Array} [params.attachments=[]]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general', attachments = [] }) {
-  if (Array.isArray(attachments) && attachments.length > 0) {
-    const docs = normalizeAttachments(attachments);
-    if (docs.length > 0) {
-      const prepDoc = prepareDocumentContext(prompt, docs);
-      if (prepDoc?.directAnswer) {
-        return {
-          text: prepDoc.directAnswer,
-          modelUsed: 'Document Analyzer'
-        };
-      }
-    }
-  }
-
-  const apiKey = getOpenRouterApiKey();
-
-  if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-    throw new Error(
-      'OpenRouter is not configured yet. Please add VITE_OPENROUTER_API_KEY to your environment configuration.'
-    );
-  }
-
-  const messages = formatOpenRouterMessages(history, prompt, 12, mode, attachments);
-
-  let response;
-  try {
-    response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
-        'X-Title': 'Orvix AI Companion'
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages,
-        max_tokens: 4096,
-        temperature: 0.7
-      })
-    });
-  } catch (netErr) {
-    throw new Error('Network connection error while contacting OpenRouter. Please check your internet connection.');
-  }
+export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general', attachments = [], conversationId = null }) {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      provider: 'openrouter',
+      mode,
+      prompt,
+      history,
+      conversationId: conversationId || null,
+      attachments: Array.isArray(attachments) ? attachments : []
+    })
+  });
 
   if (!response.ok) {
     let errorDetail = '';
     try {
       const errJson = await response.json();
-      errorDetail = errJson?.error?.message || '';
+      errorDetail = errJson?.error || '';
     } catch (_) {
       errorDetail = await response.text();
     }
-
-    if (response.status === 401 || response.status === 403) {
-      throw new Error('Invalid or unauthorized OpenRouter API key. Please check VITE_OPENROUTER_API_KEY.');
-    }
-    if (response.status === 429) {
-      throw new Error('OpenRouter rate limit or credit limit reached. Please wait a moment before trying again.');
-    }
-    if (response.status === 503) {
-      throw new Error('OpenRouter service is temporarily unavailable. Please retry shortly.');
-    }
-
-    throw new Error(`OpenRouter request failed (${response.status}): ${errorDetail || response.statusText}`);
+    throw new Error(errorDetail || `OpenRouter request failed (${response.status})`);
   }
 
   const data = await response.json();
-  const choice = data?.choices?.[0];
-
-  if (!choice || !choice.message || !choice.message.content) {
+  if (!data?.text) {
     throw new Error('Received an empty response from OpenRouter.');
   }
 
   return {
-    text: choice.message.content,
-    modelUsed: data.model || DEFAULT_MODEL
+    text: data.text,
+    modelUsed: data.modelUsed || DEFAULT_MODEL
   };
 }
 
 /**
- * Streams conversation responses from OpenRouter API incrementally.
+ * Streams conversation responses from OpenRouter API via the server-side SSE endpoint.
  * @param {Object} params
  * @param {string} params.prompt
  * @param {Array} [params.history=[]]
@@ -205,125 +150,94 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [] }) {
-  if (Array.isArray(attachments) && attachments.length > 0) {
-    const docs = normalizeAttachments(attachments);
-    if (docs.length > 0) {
-      const prepDoc = prepareDocumentContext(prompt, docs);
-      if (prepDoc?.directAnswer) {
-        onChunk?.(prepDoc.directAnswer, prepDoc.directAnswer);
-        return {
-          text: prepDoc.directAnswer,
-          modelUsed: 'Document Analyzer'
-        };
-      }
-    }
-  }
-
-  const apiKey = getOpenRouterApiKey();
-
-  if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
-    throw new Error(
-      'OpenRouter is not configured yet. Please add VITE_OPENROUTER_API_KEY to your environment configuration.'
-    );
-  }
-
-  const messages = formatOpenRouterMessages(history, prompt, 12, mode, attachments);
-
-  let response;
-  try {
-    response = await fetch(OPENROUTER_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
-        'X-Title': 'Orvix AI Companion'
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages,
-        max_tokens: 4096,
-        temperature: 0.7,
-        stream: true
-      }),
-      signal
-    });
-  } catch (netErr) {
-    if (signal?.aborted) throw netErr;
-    throw new Error('Network connection error while contacting OpenRouter. Please check your internet connection.');
-  }
+export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [], conversationId = null }) {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      provider: 'openrouter',
+      mode,
+      prompt,
+      history,
+      stream: true,
+      conversationId: conversationId || null,
+      attachments: Array.isArray(attachments) ? attachments : []
+    }),
+    signal
+  });
 
   if (!response.ok) {
     let errorDetail = '';
     try {
       const errJson = await response.json();
-      errorDetail = errJson?.error?.message || '';
+      errorDetail = errJson?.error || '';
     } catch (_) {
       errorDetail = await response.text();
     }
-    throw new Error(`OpenRouter request failed (${response.status}): ${errorDetail || response.statusText}`);
+    throw new Error(errorDetail || `OpenRouter request failed (${response.status})`);
   }
 
-  if (!response.body) {
-    throw new Error('No readable response body received from OpenRouter.');
-  }
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/event-stream') && response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let modelUsed = DEFAULT_MODEL;
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let accumulated = '';
-  let modelUsed = DEFAULT_MODEL;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data:')) continue;
-      const dataStr = trimmed.slice(5).trim();
-      if (dataStr === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(dataStr);
-        if (parsed.model) modelUsed = parsed.model;
-        const delta = parsed.choices?.[0]?.delta?.content;
-        if (delta) {
-          accumulated += delta;
-          onChunk?.(delta, accumulated);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const dataStr = trimmed.slice(6);
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+          if (parsed.type === 'chunk' && parsed.text) {
+            accumulated += parsed.text;
+            onChunk?.(parsed.text, accumulated);
+          } else if (parsed.type === 'done') {
+            if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+            return {
+              text: parsed.text || accumulated,
+              modelUsed
+            };
+          } else if (parsed.type === 'error') {
+            throw new Error(parsed.error || 'OpenRouter stream failed.');
+          }
+        } catch (jsonErr) {
+          if (jsonErr.message && !jsonErr.message.includes('JSON')) {
+            throw jsonErr;
+          }
         }
-      } catch (_) {}
+      }
     }
+
+    return {
+      text: accumulated,
+      modelUsed
+    };
   }
 
-  const finalDecoded = decoder.decode();
-  if (finalDecoded) buffer += finalDecoded;
-  if (buffer) {
-    const trailingLines = buffer.split('\n');
-    for (const line of trailingLines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data:')) continue;
-      const dataStr = trimmed.slice(5).trim();
-      if (dataStr === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(dataStr);
-        if (parsed.model) modelUsed = parsed.model;
-        const delta = parsed.choices?.[0]?.delta?.content;
-        if (delta) {
-          accumulated += delta;
-          onChunk?.(delta, accumulated);
-        }
-      } catch (_) {}
-    }
+  const data = await response.json();
+  if (!data?.text) {
+    throw new Error('Received an empty response from OpenRouter.');
   }
 
+  onChunk?.(data.text, data.text);
   return {
-    text: accumulated,
-    modelUsed
+    text: data.text,
+    modelUsed: data.modelUsed || DEFAULT_MODEL
   };
 }
 

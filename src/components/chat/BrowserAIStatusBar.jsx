@@ -63,55 +63,80 @@ export default function BrowserAIStatusBar({
   const isGenerating = status === 'generating';
   const isBusy = isChecking || isDownloading || isInitializingGpu || isGenerating;
   const isGpuUnsupported = gpuCheck?.supported === false;
+  const isCached = Boolean(webllmState?.isCached);
+  const isUncachedOffline = isOffline && !isCached && !loadedMatchesSelected;
 
   let tone = 'neutral';
+  let statusBadge = null;
   let headline = `${selectedCatalog.shortLabel} — Browser AI`;
   let detail = '';
 
   if (isGpuUnsupported) {
     tone = 'error';
+    statusBadge = { label: 'Unavailable', variant: 'error' };
     headline = 'WebGPU unavailable on this browser or device';
     detail =
       gpuCheck?.message ||
       'Use Chrome 113+, Edge 113+, or Safari 18+ with hardware acceleration enabled, or switch providers.';
   } else if (isChecking) {
     tone = 'active';
+    statusBadge = { label: 'Checking GPU', variant: 'active' };
     headline = 'Checking browser WebGPU compatibility...';
     detail = 'Verifying graphics adapter support on your device.';
   } else if (isDownloading) {
     tone = 'active';
+    statusBadge = { label: 'Downloading', variant: 'active' };
     headline = `Downloading ${activeCatalog.shortLabel} to browser cache`;
     detail =
       rawProgressText ||
       `Downloading model weights (~${activeCatalog.estimatedDownloadMB} MB) directly to your browser...`;
   } else if (isInitializingGpu) {
     tone = 'active';
+    statusBadge = { label: 'Loading GPU', variant: 'active' };
     headline = `Initializing ${activeCatalog.shortLabel} in GPU memory`;
     detail = rawProgressText || 'Compiling WebGPU shaders and loading cached weights...';
   } else if (status === 'error') {
     tone = 'error';
+    statusBadge = { label: 'Error', variant: 'error' };
     headline = 'Browser AI failed to initialize';
     detail =
       errorMessage ||
       'Model download or WebGPU initialization failed. Check storage/GPU memory or try the 0.5B lightweight model.';
   } else if (loadedMatchesSelected) {
     tone = 'ready';
+    statusBadge = {
+      label: isGenerating ? 'Generating' : isOffline ? 'Offline Ready' : 'Ready',
+      variant: isGenerating ? 'active' : 'ready'
+    };
     headline = `${activeCatalog.shortLabel} — Ready on device`;
     detail = isGenerating
       ? 'Generating response locally via WebGPU (no server or API calls).'
       : 'Running locally in your browser via WebGPU. Cached for repeat use.';
   } else if (status === 'ready' && !loadedMatchesSelected) {
-    tone = 'neutral';
+    tone = isUncachedOffline ? 'warning' : 'neutral';
+    statusBadge = isCached
+      ? { label: 'Cached', variant: 'ready' }
+      : isOffline
+      ? { label: 'Offline • Not Cached', variant: 'warning' }
+      : { label: 'Switch Model', variant: 'neutral' };
     headline = `${selectedCatalog.shortLabel} selected`;
     detail = `${activeCatalog.shortLabel} is currently loaded in GPU memory. Load now or send a message to switch.`;
+  } else if (isUncachedOffline) {
+    tone = 'warning';
+    statusBadge = { label: 'Offline • Not Cached', variant: 'warning' };
+    headline = `${selectedCatalog.shortLabel} — Browser AI`;
+    detail = `Offline — Initial download (~${selectedCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`;
   } else {
-    tone = 'neutral';
+    tone = isCached ? 'ready' : 'neutral';
+    statusBadge = isCached
+      ? { label: isOffline ? 'Offline Cached' : 'Cached', variant: 'ready' }
+      : { label: 'Not Downloaded', variant: 'neutral' };
     headline = `${selectedCatalog.shortLabel} — Browser AI`;
     detail = isOffline
-      ? webllmState?.isCached
-        ? 'Offline — Model is cached locally. Ready to run on your device via WebGPU.'
-        : `Offline — Initial download (~${selectedCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`
-      : `Runs locally via WebGPU (no API key). First use caches ~${selectedCatalog.estimatedDownloadMB} MB on your device.`;
+      ? 'Offline — Model is cached locally. Click Load Model or send a message to run on your device via WebGPU.'
+      : isCached
+      ? 'Model weights are cached in your browser. Click Load Model or send a message to initialize WebGPU.'
+      : `Runs locally via WebGPU (no API key). First use downloads and caches ~${selectedCatalog.estimatedDownloadMB} MB on your device.`;
   }
 
   const showProgressBar = isDownloading || isInitializingGpu;
@@ -129,7 +154,7 @@ export default function BrowserAIStatusBar({
               <Loader2 size={14} className="spin-icon" />
             ) : isDownloading ? (
               <Download size={14} />
-            ) : tone === 'error' ? (
+            ) : tone === 'error' || tone === 'warning' ? (
               <AlertCircle size={14} />
             ) : tone === 'ready' ? (
               <Check size={14} />
@@ -141,6 +166,11 @@ export default function BrowserAIStatusBar({
           <div className="browser-ai-copy">
             <div className="browser-ai-headline-row">
               <span className="browser-ai-headline">{headline}</span>
+              {statusBadge && (
+                <span className={`browser-ai-status-badge badge-${statusBadge.variant}`}>
+                  {statusBadge.label}
+                </span>
+              )}
               {showProgressBar && progressPercent !== null && (
                 <span className="browser-ai-percent" aria-label={`${progressPercent} percent`}>
                   {progressPercent}%
@@ -197,7 +227,12 @@ export default function BrowserAIStatusBar({
               type="button"
               className="browser-ai-action-btn primary"
               onClick={onLoadModel}
-              title="Retry Browser AI initialization"
+              disabled={isUncachedOffline}
+              title={
+                isUncachedOffline
+                  ? 'Connect to the internet to download model weights'
+                  : 'Retry Browser AI initialization'
+              }
             >
               <RotateCcw size={12} />
               <span>Retry</span>
@@ -209,10 +244,17 @@ export default function BrowserAIStatusBar({
               type="button"
               className="browser-ai-action-btn primary"
               onClick={onLoadModel}
-              title={`Download/load ${selectedCatalog.shortLabel} into browser WebGPU memory`}
+              disabled={isUncachedOffline}
+              title={
+                isUncachedOffline
+                  ? `Connect to the internet once to download ${selectedCatalog.shortLabel} (~${selectedCatalog.estimatedDownloadMB} MB)`
+                  : isCached
+                  ? `Load cached ${selectedCatalog.shortLabel} into browser WebGPU memory`
+                  : `Download and load ${selectedCatalog.shortLabel} (~${selectedCatalog.estimatedDownloadMB} MB) into browser WebGPU memory`
+              }
             >
               <Download size={12} />
-              <span>Load Model</span>
+              <span>{isCached ? 'Load Model' : isOffline ? 'Requires Internet' : 'Download & Load'}</span>
             </button>
           )}
 

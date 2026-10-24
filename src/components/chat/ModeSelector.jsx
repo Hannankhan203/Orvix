@@ -37,9 +37,28 @@ export default function ModeSelector({
   const currentMode = getChatMode(activeMode);
   const ActiveIcon = ICON_COMPONENTS[currentMode.iconName] || Sparkles;
 
-  // Close dropdown on outside click or Escape
+  // Close dropdown on outside click or Escape, and handle arrow navigation
   useEffect(() => {
     if (!isOpen) return;
+
+    const focusMenuItem = (index) => {
+      if (!containerRef.current) return;
+      const items = Array.from(
+        containerRef.current.querySelectorAll('.mode-dropdown-item:not(:disabled)')
+      );
+      if (items.length === 0) return;
+      const bounded = ((index % items.length) + items.length) % items.length;
+      items[bounded].focus();
+    };
+
+    const rafId = requestAnimationFrame(() => {
+      if (!containerRef.current) return;
+      const items = Array.from(
+        containerRef.current.querySelectorAll('.mode-dropdown-item:not(:disabled)')
+      );
+      const selectedIdx = items.findIndex((el) => el.getAttribute('aria-checked') === 'true');
+      focusMenuItem(selectedIdx >= 0 ? selectedIdx : 0);
+    });
 
     const handleClickOutside = (e) => {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
@@ -49,7 +68,30 @@ export default function ModeSelector({
 
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
+        e.preventDefault();
         setIsOpen(false);
+        const triggerBtn = containerRef.current?.querySelector('.mode-compact-trigger');
+        triggerBtn?.focus();
+        return;
+      }
+      if (!containerRef.current) return;
+      const items = Array.from(
+        containerRef.current.querySelectorAll('.mode-dropdown-item:not(:disabled)')
+      );
+      if (items.length === 0) return;
+      const currentIdx = items.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        focusMenuItem(currentIdx === -1 ? 0 : currentIdx + 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        focusMenuItem(currentIdx === -1 ? items.length - 1 : currentIdx - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        focusMenuItem(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        focusMenuItem(items.length - 1);
       }
     };
 
@@ -58,6 +100,7 @@ export default function ModeSelector({
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
+      cancelAnimationFrame(rafId);
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('touchstart', handleClickOutside);
       window.removeEventListener('keydown', handleKeyDown);
@@ -74,10 +117,36 @@ export default function ModeSelector({
 
   // Variant A: Interactive Mode Pills Row (Welcome / New Chat screen)
   if (variant === 'pills') {
+    const handlePillKeyDown = (e, index) => {
+      if (disabled) return;
+      const total = CHAT_MODE_LIST.length;
+      let nextIdx = -1;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        nextIdx = (index + 1) % total;
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        nextIdx = (index - 1 + total) % total;
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        nextIdx = 0;
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        nextIdx = total - 1;
+      }
+      if (nextIdx !== -1) {
+        const nextMode = CHAT_MODE_LIST[nextIdx];
+        handleSelect(nextMode.id);
+        const groupEl = e.currentTarget.closest('.mode-pills-row');
+        const buttons = groupEl?.querySelectorAll('.mode-pill-btn');
+        buttons?.[nextIdx]?.focus();
+      }
+    };
+
     return (
       <div className={`mode-selector-pills-wrap ${className}`} role="radiogroup" aria-label="Select conversation mode">
         <div className="mode-pills-row">
-          {CHAT_MODE_LIST.map((mode) => {
+          {CHAT_MODE_LIST.map((mode, idx) => {
             const IconComp = ICON_COMPONENTS[mode.iconName] || Sparkles;
             const isSelected = mode.id === currentMode.id;
 
@@ -89,6 +158,7 @@ export default function ModeSelector({
                 aria-checked={isSelected}
                 disabled={disabled}
                 onClick={() => handleSelect(mode.id)}
+                onKeyDown={(e) => handlePillKeyDown(e, idx)}
                 className={`mode-pill-btn ${isSelected ? 'active' : ''} mode-${mode.id}`}
                 title={mode.description}
               >
