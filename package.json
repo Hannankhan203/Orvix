@@ -2,7 +2,7 @@
   "name": "orvix",
   "description": "Orvix - A modern, lightweight AI chatbot web application.",
   "private": true,
-  "version": "0.9.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
