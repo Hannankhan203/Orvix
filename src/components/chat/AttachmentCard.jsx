@@ -133,11 +133,17 @@ export default function AttachmentCard({
   if (!attachment) return null;
 
   const filename = attachment.name || attachment.originalName || 'Document';
-  const ext = (attachment.extension || '').toUpperCase() || 'FILE';
+  const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toUpperCase() : '';
+  const rawExt =
+    (filenameExt && filenameExt !== 'FILE' ? filenameExt : null) ||
+    (attachment.extension ? String(attachment.extension).replace('.', '').toUpperCase() : null) ||
+    (attachment.format ? String(attachment.format).replace('.', '').toUpperCase() : null) ||
+    'FILE';
+  const ext = rawExt.toUpperCase();
   const sizeText = formatSize(attachment.size, attachment.formattedSize);
-  const canPreview = isFormatPreviewable(attachment.extension, attachment.type || attachment.mimeType);
-  const IconComponent = getFormatIcon(attachment.extension);
-  const formatBadgeClass = getFormatBadgeClass(attachment.extension);
+  const canPreview = isFormatPreviewable(ext, attachment.type || attachment.mimeType);
+  const IconComponent = getFormatIcon(ext);
+  const formatBadgeClass = getFormatBadgeClass(ext);
 
   // Auto-dismiss transient notice
   useEffect(() => {

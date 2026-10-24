@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Layout from '../components/layout/Layout.jsx';
 import ChatArea from '../components/chat/ChatArea.jsx';
 import { SAMPLE_CHATS } from '../config/sampleData.js';
-import { streamAIMessage, DEFAULT_PROVIDER } from '../services/aiRouter.js';
+import { streamAIMessage, DEFAULT_PROVIDER, PROVIDER_OPTIONS } from '../services/aiRouter.js';
 import {
   createChatDocument,
   saveChatMessage,
@@ -776,10 +776,7 @@ export default function ChatPage() {
               responseTimeMs: typeof finalResponseTime === 'number' ? finalResponseTime : normalized.responseTimeMs,
               isStreaming: false,
               isStopped: Boolean(isStopped),
-              referencedAttachments:
-                currentAttachments && currentAttachments.length > 0
-                  ? currentAttachments
-                  : normalized.referencedAttachments
+              referencedAttachments: undefined
             });
             completedMessage = finalized;
             return finalized;
@@ -801,10 +798,7 @@ export default function ChatPage() {
           isStreaming: false,
           isStopped: Boolean(isStopped),
           responseTimeMs: typeof finalResponseTime === 'number' ? finalResponseTime : undefined,
-          referencedAttachments:
-            currentAttachments && currentAttachments.length > 0
-              ? currentAttachments
-              : undefined
+          referencedAttachments: undefined
         });
       }
 
@@ -869,10 +863,7 @@ export default function ChatPage() {
               modelUsed: activeModel || message.modelUsed,
               provider: finalProvider || message.provider,
               isStreaming: true,
-              referencedAttachments:
-                currentAttachments && currentAttachments.length > 0
-                  ? currentAttachments
-                  : message.referencedAttachments
+              referencedAttachments: undefined
             });
           })
         );
@@ -946,10 +937,7 @@ export default function ChatPage() {
                 return updateActiveAlternativeInMessage(normalized, {
                   modelUsed: activeModel,
                   provider: finalProvider,
-                  referencedAttachments:
-                    currentAttachments && currentAttachments.length > 0
-                      ? currentAttachments
-                      : message.referencedAttachments
+                  referencedAttachments: undefined
                 });
               })
             );
@@ -1023,10 +1011,7 @@ export default function ChatPage() {
           provider: finalProvider || providerToUse,
           isStreaming: false,
           responseTimeMs: measuredResponseTimeMs,
-          referencedAttachments:
-            currentAttachments && currentAttachments.length > 0
-              ? currentAttachments
-              : undefined
+          referencedAttachments: undefined
         });
 
         if (targetChatId) {
@@ -1095,10 +1080,7 @@ export default function ChatPage() {
                 provider: finalProvider || providerToUse,
                 isStreaming: false,
                 isStopped: true,
-                referencedAttachments:
-                  currentAttachments && currentAttachments.length > 0
-                    ? currentAttachments
-                    : undefined
+                referencedAttachments: undefined
               });
               stoppedMessage = finalized;
               return finalized;
@@ -1138,6 +1120,17 @@ export default function ChatPage() {
         } catch (_) {}
       }
 
+      const effectiveProvider = error?.provider || finalProvider || providerToUse;
+      const currentProviderConfig = Array.isArray(PROVIDER_OPTIONS)
+        ? PROVIDER_OPTIONS.find((p) => p.id === effectiveProvider)
+        : null;
+      const providerDisplayName =
+        currentProviderConfig?.name ||
+        (effectiveProvider ? effectiveProvider.charAt(0).toUpperCase() + effectiveProvider.slice(1) : 'AI Provider');
+
+      const isOllama = effectiveProvider === 'ollama';
+      const isGemini = effectiveProvider === 'gemini';
+
       const is503 =
         (error?.code === 503 ||
           error?.status === 'UNAVAILABLE' ||
@@ -1164,25 +1157,42 @@ export default function ChatPage() {
         rawMsg.toLowerCase().includes('retired');
 
       let friendlyMsg = rawMsg;
-      if (is503) {
-        friendlyMsg =
-          'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq or OpenRouter below.';
+      if (isOllama) {
+        // Ollama errors are local, specific, and actionable. Never rewrite into cloud provider demand errors.
+        if (rawMsg) {
+          friendlyMsg = rawMsg;
+        } else if (isNotFound) {
+          friendlyMsg = `Local AI (Ollama) model 'qwen2.5:1.5b' was not found. Please pull the model locally using 'ollama pull qwen2.5:1.5b'.`;
+        } else if (is503) {
+          friendlyMsg = `Local AI (Ollama) is unavailable: could not connect to Ollama at http://127.0.0.1:11434. Make sure Ollama is running locally ('ollama serve').`;
+        } else {
+          friendlyMsg = `An error occurred with Local AI (Ollama). Please make sure Ollama is running locally and model 'qwen2.5:1.5b' is installed.`;
+        }
+      } else if (is503) {
+        if (isGemini) {
+          friendlyMsg =
+            'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq, OpenRouter, or Local AI below.';
+        } else {
+          friendlyMsg =
+            `${providerDisplayName} is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to another provider below.`;
+        }
       } else if (isNotFound) {
         friendlyMsg =
-          `The requested model for ${providerToUse} is unavailable or retired (${rawMsg || 'Model not found'}). Please choose another model or provider below.`;
+          rawMsg ||
+          `The requested model for ${providerDisplayName} is unavailable or retired. Please choose another model or provider below.`;
       } else if (is500) {
         friendlyMsg =
           rawMsg && !rawMsg.includes('Server request failed') && !rawMsg.includes('Internal Server Error')
-            ? `The AI service encountered an internal error: ${rawMsg}. You can retry or switch to another provider below.`
-            : `The AI service encountered an internal error (HTTP 500). Please try again in a moment, or switch to Groq or OpenRouter below.`;
+            ? `${providerDisplayName} encountered an internal error: ${rawMsg}. You can retry or switch to another provider below.`
+            : `${providerDisplayName} encountered an internal error (HTTP 500). Please try again in a moment, or switch to another provider below.`;
       } else if (isAuthError) {
         friendlyMsg =
-          `Authentication or permission error with ${providerToUse}. Please check your API key configuration or switch providers below.`;
+          `Authentication or permission error with ${providerDisplayName}. Please check your API key configuration or switch providers below.`;
       } else if (isRateLimit) {
         friendlyMsg =
-          'AI rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.';
+          `${providerDisplayName} rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.`;
       } else if (!friendlyMsg) {
-        friendlyMsg = `An unexpected error occurred while communicating with ${providerToUse}.`;
+        friendlyMsg = `An unexpected error occurred while communicating with ${providerDisplayName}.`;
       }
 
       const isInterrupted = targetText.trim().length > 0;
@@ -1199,17 +1209,14 @@ export default function ChatPage() {
             const updated = updateActiveAlternativeInMessage(normalized, {
               content: errorContent,
               modelUsed: activeModel || normalized.modelUsed,
-              provider: finalProvider || providerToUse || normalized.provider,
+              provider: effectiveProvider || finalProvider || providerToUse || normalized.provider,
               isStreaming: false,
               isError: !isInterrupted,
               isInterrupted,
               failedPrompt: promptText,
-              failedProvider: finalProvider || providerToUse,
+              failedProvider: effectiveProvider || finalProvider || providerToUse,
               canSwitchProvider: true,
-              referencedAttachments:
-                currentAttachments && currentAttachments.length > 0
-                  ? currentAttachments
-                  : normalized.referencedAttachments
+              referencedAttachments: undefined
             });
             finalizedErrorMessage = updated;
             return updated;
@@ -1231,7 +1238,7 @@ export default function ChatPage() {
         const normalized = normalizeAssistantMessage(existingTargetMsg || {
           id: assistantMessageId,
           sender: 'assistant',
-          provider: finalProvider || providerToUse,
+          provider: effectiveProvider || finalProvider || providerToUse,
           modelUsed: activeModel,
           content: errorContent
         });
@@ -1239,17 +1246,14 @@ export default function ChatPage() {
         const updated = updateActiveAlternativeInMessage(normalized, {
           content: errorContent,
           modelUsed: activeModel || normalized.modelUsed,
-          provider: finalProvider || providerToUse || normalized.provider,
+          provider: effectiveProvider || finalProvider || providerToUse || normalized.provider,
           isStreaming: false,
           isError: !isInterrupted,
           isInterrupted,
           failedPrompt: promptText,
-          failedProvider: finalProvider || providerToUse,
+          failedProvider: effectiveProvider || finalProvider || providerToUse,
           canSwitchProvider: true,
-          referencedAttachments:
-            currentAttachments && currentAttachments.length > 0
-              ? currentAttachments
-              : normalized.referencedAttachments
+          referencedAttachments: undefined
         });
 
         await persistMessageSafe(targetChatId, updated, true);
@@ -1588,10 +1592,7 @@ export default function ChatPage() {
           content: '',
           isStreaming: true,
           requestStartTime,
-          referencedAttachments:
-            activeAttachments && activeAttachments.length > 0
-              ? activeAttachments
-              : undefined
+          referencedAttachments: undefined
         },
         userMessage
       );
@@ -1698,10 +1699,7 @@ export default function ChatPage() {
       content: '',
       isStreaming: true,
       requestStartTime,
-      referencedAttachments:
-        retryAttachments && retryAttachments.length > 0
-          ? retryAttachments
-          : undefined
+      referencedAttachments: undefined
     };
 
     setMessages([
@@ -1790,10 +1788,7 @@ export default function ChatPage() {
       content: '',
       isStreaming: true,
       requestStartTime,
-      referencedAttachments:
-        switchAttachments && switchAttachments.length > 0
-          ? switchAttachments
-          : undefined
+      referencedAttachments: undefined
     };
 
     setMessages([
@@ -1913,10 +1908,7 @@ export default function ChatPage() {
           isStreaming: true,
           isError: false,
           isStopped: false,
-          referencedAttachments:
-            precedingAttachments.length > 0
-              ? precedingAttachments
-              : m.referencedAttachments
+          referencedAttachments: undefined
         });
         return {
           ...updated,
@@ -1970,7 +1962,9 @@ export default function ChatPage() {
       : targetProvider;
     const chosenModel = typeof targetProvider === 'object' && targetProvider?.model
       ? targetProvider.model
-      : (chosenProvider === 'groq'
+      : (chosenProvider === 'ollama'
+          ? 'qwen2.5:1.5b'
+          : chosenProvider === 'groq'
           ? 'openai/gpt-oss-120b'
           : chosenProvider === 'openrouter'
           ? 'openrouter/free'
@@ -2016,7 +2010,7 @@ export default function ChatPage() {
         hour: '2-digit',
         minute: '2-digit'
       }),
-      referencedAttachments: precedingAttachments
+      referencedAttachments: undefined
     });
 
     setMessages((previous) =>
@@ -2205,10 +2199,7 @@ export default function ChatPage() {
         content: '',
         isStreaming: true,
         requestStartTime,
-        referencedAttachments:
-          updatedUserMessage.attachments && updatedUserMessage.attachments.length > 0
-            ? updatedUserMessage.attachments
-            : undefined
+        referencedAttachments: undefined
       },
       updatedUserMessage
     );

@@ -21,9 +21,33 @@ import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
-import { sendAIMessage } from '../../services/aiRouter.js';
+import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
+
+function getProviderFootnote(providerId) {
+  if (providerId === 'ollama') {
+    return 'Orvix is powered by Local AI (Ollama) (qwen2.5:1.5b). Local offline inference — verify important facts independently.';
+  }
+  if (providerId === 'groq') {
+    return 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.';
+  }
+  if (providerId === 'openrouter') {
+    return 'Orvix is powered by OpenRouter (Llama 3.3 70B Free). Multi-model gateway — verify important facts independently.';
+  }
+  if (providerId === 'cloudflare') {
+    return 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.';
+  }
+  if (providerId === 'gemini') {
+    return 'Orvix is powered by Google Gemini (Gemini 3.8 Flash). Client integration — verify important facts independently.';
+  }
+  const config = Array.isArray(PROVIDER_OPTIONS) ? PROVIDER_OPTIONS.find((p) => p.id === providerId) : null;
+  if (config) {
+    const model = config.defaultModel || config.modelTag || 'AI Model';
+    return `Orvix is powered by ${config.name} (${model}). ${config.description || 'Inference'} — verify important facts independently.`;
+  }
+  return 'Orvix is powered by Google Gemini (Gemini 3.8 Flash). Client integration — verify important facts independently.';
+}
 
 // Whitelist of supported image extensions
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([
@@ -1829,13 +1853,7 @@ Transcript:
           </form>
 
           <p className="composer-footnote">
-            {selectedProvider === 'groq'
-              ? 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.'
-              : selectedProvider === 'openrouter'
-              ? 'Orvix is powered by OpenRouter (Llama 3.3 70B Free). Multi-model gateway — verify important facts independently.'
-              : selectedProvider === 'cloudflare'
-              ? 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.'
-              : 'Orvix is powered by Google Gemini (Gemini 3.1 Flash Lite). Client integration — verify important facts independently.'}
+            {getProviderFootnote(selectedProvider)}
             {engineMode === 'direct-audio'
               ? ' • Dictation powered by direct audio capture with Whisper Large v3 server transcription.'
               : ' • Dictation combines live browser speech with Whisper Large v3 refinement via server API.'}

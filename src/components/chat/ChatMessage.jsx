@@ -57,8 +57,17 @@ function extractNodeText(node) {
  */
 function getErrorTitle(content = '') {
   const text = String(content || '').toLowerCase();
+  if (text.includes('ollama') && (text.includes('not found') || text.includes('pull'))) {
+    return 'Local Model Not Found';
+  }
+  if (text.includes('ollama') || text.includes('11434')) {
+    return 'Local AI Unavailable';
+  }
   if (text.includes('rate limit') || text.includes('quota') || text.includes('429') || text.includes('resource_exhausted')) {
     return 'Rate Limit or Quota Exceeded';
+  }
+  if (text.includes('not found') || text.includes('does not exist') || text.includes('decommissioned') || text.includes('retired')) {
+    return 'Model Unavailable';
   }
   if (text.includes('high demand') || text.includes('503') || text.includes('spikes in demand') || text.includes('overloaded') || text.includes('unavailable')) {
     return 'Service Temporarily Busy';

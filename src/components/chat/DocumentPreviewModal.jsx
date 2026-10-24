@@ -67,7 +67,8 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [ocrLoading, setOcrLoading] = useState(false);
 
   const filename = attachment?.name || attachment?.originalName || 'Document';
-  const ext = (attachment?.extension || '').replace('.', '').toLowerCase();
+  const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() : '';
+  const ext = (filenameExt || attachment?.extension || attachment?.format || '').replace('.', '').toLowerCase();
   const mime = attachment?.type || attachment?.mimeType || '';
   const IconComponent = getModalFormatIcon(ext);
 

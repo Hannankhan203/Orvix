@@ -392,8 +392,11 @@ export function prepareDocumentContext(prompt, docs) {
       const requestedPages = intent.targetPages || [];
 
       // Check if document format has reliable physical pages (PDF)
-      if (format === 'PDF' && Array.isArray(doc.pages) && doc.pages.length > 0) {
-        const totalPages = doc.pageCount || doc.pages.length;
+      if (format === 'PDF') {
+        const pagesList = Array.isArray(doc.pages) && doc.pages.length > 0
+          ? doc.pages
+          : (doc.text ? [{ pageNumber: 1, text: doc.text }] : []);
+        const totalPages = doc.pageCount || pagesList.length || 1;
         const validPages = requestedPages.filter((p) => p >= 1 && p <= totalPages);
         const outOfBoundsPages = requestedPages.filter((p) => p < 1 || p > totalPages);
 
@@ -412,7 +415,7 @@ export function prepareDocumentContext(prompt, docs) {
         }
 
         for (const pNum of validPages) {
-          const pageObj = doc.pages.find((p) => p.pageNumber === pNum);
+          const pageObj = pagesList.find((p) => p.pageNumber === pNum);
           const pageText = pageObj ? pageObj.text.trim() : '';
           pageContent += `--- Page ${pNum} of ${totalPages} ---\n${pageText || '[This page is blank or contains no readable text]'}\n\n`;
         }
@@ -422,7 +425,7 @@ export function prepareDocumentContext(prompt, docs) {
       } else {
         // Document format does NOT have reliable physical page boundaries
         const formatLimitationNotice =
-          `Notice regarding format limitations: '${docName}' is in ${format} format. Word documents (.docx), Markdown (.md), plain text (.txt), and tabular files do not have fixed physical page numbers because their pagination depends on layout, margins, and device rendering.\n` +
+          `Notice regarding format limitations: '${docName}' is in ${format} format. This format does not have fixed physical page numbers because pagination depends on layout, margins, and device rendering.\n` +
           `Instead, the complete structured content and available sections/headings for '${docName}' are provided below:`;
 
         let structuredContent = `=== DOCUMENT: "${docName}" (${format}) ===\n${formatLimitationNotice}\n\n`;
@@ -901,6 +904,15 @@ export const PROVIDER_PROFILES = {
     supportsSystemInstruction: true,
     messageFormat: 'cloudflare',
     notes: 'Serverless Llama 3.1 8B inference with 8k token context window'
+  },
+  ollama: {
+    id: 'ollama',
+    name: 'Local AI (Ollama)',
+    modelTag: 'qwen2.5:1.5b',
+    maxDocChars: 16_000,
+    supportsSystemInstruction: true,
+    messageFormat: 'openai',
+    notes: 'Local offline Ollama instance with Qwen 2.5 1.5B'
   }
 };
 
@@ -961,7 +973,34 @@ export function adaptDocumentContextForProvider({
     finalDocContext = `${providerNotice}\n\n${headPortion}${tailSummary}`;
   }
 
-  // Build provider-tailored system instructions
+  // For Local AI (Ollama), ensure extracted document content is placed directly in the user prompt.
+  // Local models (like Qwen 2.5, Llama, Mistral) heavily attend to user turn content, avoiding hallucinations
+  // or claiming that no text/file was provided.
+  if (normProvider === 'ollama') {
+    const effectivePromptForOllama = `[ATTACHED DOCUMENT CONTEXT]
+The user attached the following extracted document/file content:
+${finalDocContext}
+[END OF ATTACHED DOCUMENT CONTEXT]
+
+User Question: ${prompt}`;
+
+    const effectiveSystemInstruction = baseSystemInstruction
+      ? `${baseSystemInstruction}\n\nYou have access to the attached document context provided in the user's message. Answer the user's question accurately and thoroughly based directly on the attached content. Do not hallucinate or guess details not present in the document.`
+      : 'You are a helpful, accurate AI assistant. You have access to the attached document context provided in the user\'s message. Answer the user\'s question thoroughly and accurately based directly on the attached content. Do not hallucinate or guess details not present in the document.';
+
+    return {
+      provider: normProvider,
+      providerProfile: profile,
+      effectiveSystemInstruction,
+      effectivePrompt: effectivePromptForOllama,
+      formattedDocContext: finalDocContext,
+      isBoundedForProvider,
+      providerLimitChars: charBudget,
+      providerNotice
+    };
+  }
+
+  // Build provider-tailored system instructions for cloud providers
   const groundingInstructions = `
 
 [ATTACHED DOCUMENT & IMAGE CONTEXT]
@@ -977,7 +1016,7 @@ INSTRUCTIONS FOR DOCUMENT & IMAGE-BASED ANSWERS:
 4. If the user asks about a specific portion of an image (such as "top section", "bottom section", "first line", or "header"), focus on the corresponding lines/portions of the extracted text.
 5. If an image is noted as having no readable text detected, accurately report: "No readable text detected in this image." Do not invent or fabricate text.
 6. If the user asked about specific page(s) (e.g., "Explain page 5", "pages 3 to 7") or slide(s) (e.g., "slide 4"), focus on the requested pages/slides and cite the page/slide numbers.
-7. If the document format lacks physical page numbers (Word .docx, Markdown, plain text), note the pagination limitation and answer using the provided section headings and content.
+7. If the document format lacks physical page numbers, note the pagination limitation and answer using the provided section headings and content.
 8. Never invent or extrapolate facts not present in the provided extracted text.`;
 
   const effectiveSystemInstruction = baseSystemInstruction

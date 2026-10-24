@@ -12,7 +12,8 @@ export const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
   OPENROUTER: 'openrouter',
-  CLOUDFLARE: 'cloudflare'
+  CLOUDFLARE: 'cloudflare',
+  OLLAMA: 'ollama'
 };
 
 export const PROVIDER_OPTIONS = [
@@ -44,6 +45,15 @@ export const PROVIDER_OPTIONS = [
     modelTag: 'Llama 3.1 8B',
     description: 'Serverless inference',
     label: 'Cloudflare Workers AI — Llama 3.1 8B'
+  },
+  {
+    id: AI_PROVIDERS.OLLAMA,
+    name: 'Local AI (Ollama)',
+    shortName: 'Ollama',
+    modelTag: 'Qwen 2.5 1.5B',
+    defaultModel: 'qwen2.5:1.5b',
+    description: 'Local offline inference',
+    label: 'Local AI (Ollama) — Qwen 2.5 1.5B'
   }
 ];
 
@@ -56,6 +66,10 @@ export const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
  */
 export function isProviderConfigured(provider) {
   switch (provider) {
+    case AI_PROVIDERS.OLLAMA: {
+      // Local Ollama instance requires no cloud API key
+      return true;
+    }
     case AI_PROVIDERS.GROQ: {
       const key = getGroqApiKey();
       return Boolean(key && key !== 'YOUR_GROQ_API_KEY');
@@ -133,7 +147,25 @@ function parseRouterError(rawError, statusCode = 500) {
     upperStatus === 'NETWORK_FAILURE' ||
     upperStatus === 'NETWORK_ERROR';
 
-  if (isNetwork) {
+  // Dedicated Ollama local connection & missing model handling
+  if (lowerMsg.includes('11434') || lowerMsg.includes('ollama')) {
+    code = code === 404 ? 404 : 503;
+    status = code === 404 ? 'NOT_FOUND' : 'NETWORK_ERROR';
+    retryable = false;
+    if (
+      !cleanMsg ||
+      cleanMsg === 'Service Unavailable' ||
+      cleanMsg === 'Bad Gateway' ||
+      cleanMsg === 'Not Found' ||
+      cleanMsg.includes('Server request failed')
+    ) {
+      if (code === 404 || lowerMsg.includes('not found') || lowerMsg.includes('model')) {
+        cleanMsg = 'The requested Ollama model was not found. Please ensure it is installed using "ollama pull qwen2.5:1.5b".';
+      } else {
+        cleanMsg = 'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running ("ollama serve") and model "qwen2.5:1.5b" is installed.';
+      }
+    }
+  } else if (isNetwork) {
     code = code === 500 ? 503 : code;
     status = 'NETWORK_ERROR';
     retryable = true;
@@ -202,6 +234,9 @@ function parseRouterError(rawError, statusCode = 500) {
   err.code = code;
   err.status = status;
   err.retryable = retryable ?? (code === 503 || code === 429);
+  if (lowerMsg.includes('ollama') || lowerMsg.includes('11434')) {
+    err.provider = 'ollama';
+  }
   return err;
 }
 
@@ -265,7 +300,7 @@ export async function streamAIMessage({
         if (errJson?.code) parsedErr.code = errJson.code;
         if (errJson?.status) parsedErr.status = errJson.status;
         if (typeof errJson?.retryable === 'boolean') parsedErr.retryable = errJson.retryable;
-        if (errJson?.provider) parsedErr.provider = errJson.provider;
+        parsedErr.provider = errJson?.provider || errJson?.error?.provider || normalizedProvider;
         if (typeof errJson?.canFallback === 'boolean') parsedErr.canFallback = errJson.canFallback;
         if (Array.isArray(errJson?.suggestedProviders)) parsedErr.suggestedProviders = errJson.suggestedProviders;
 
@@ -319,6 +354,7 @@ export async function streamAIMessage({
               if (data.code) streamErr.code = data.code;
               if (data.status) streamErr.status = data.status;
               if (typeof data.retryable === 'boolean') streamErr.retryable = data.retryable;
+              streamErr.provider = data.provider || normalizedProvider;
               throw streamErr;
             }
           } catch (jsonErr) {
@@ -477,9 +513,21 @@ export async function streamAIMessage({
     }
 
     case AI_PROVIDERS.CLOUDFLARE: {
-      throw new Error(
+      const err = new Error(
         'Cloudflare Workers AI requires the backend server. Please verify the server is running and configured with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.'
       );
+      err.provider = AI_PROVIDERS.CLOUDFLARE;
+      err.code = 503;
+      throw err;
+    }
+
+    case AI_PROVIDERS.OLLAMA: {
+      const err = new Error(
+        'Local AI (Ollama) requires the backend server. Please verify the server is running and Ollama is active on http://127.0.0.1:11434.'
+      );
+      err.provider = AI_PROVIDERS.OLLAMA;
+      err.code = 503;
+      throw err;
     }
 
     case AI_PROVIDERS.GEMINI:

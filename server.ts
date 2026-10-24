@@ -983,6 +983,8 @@ app.get(['/api/config', '/config'], (_req, res) => {
       cfToken &&
       cfToken !== 'YOUR_CLOUDFLARE_API_TOKEN'
     ),
+    ollamaConfigured: true,
+    ollamaSupported: true,
     whisperConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') || Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
     whisperProvider: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') ? 'groq' : (Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') ? 'gemini' : null)
   });
@@ -1910,6 +1912,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
           originalName: r.originalName,
           name: r.originalName,
           extension: r.extension,
+          format: r.extraction?.format || r.extension,
           mimeType: r.mimeType,
           type: r.mimeType,
           size: r.size,
@@ -1930,7 +1933,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
                 name: r.originalName,
                 status: r.extraction.status,
                 success: r.extraction.success,
-                format: r.extraction.format,
+                format: r.extraction.format || r.extension,
                 isImage: Boolean(r.extraction.isImage || isImg),
                 hasText: Boolean(r.extraction.hasText),
                 text: r.extraction.text || '',
@@ -1941,8 +1944,14 @@ app.post(['/api/upload', '/upload'], (req, res) => {
                 confidence: r.extraction.confidence,
                 summaryText: r.extraction.summaryText,
                 pageCount: r.extraction.pageCount,
+                pages: r.extraction.pages,
                 slideCount: r.extraction.slideCount,
+                slides: r.extraction.slides,
                 sectionCount: r.extraction.sectionCount,
+                sections: r.extraction.sections,
+                table: r.extraction.table,
+                headings: (r.extraction as any).headings,
+                metadata: (r.extraction as any).metadata,
                 isScanned: r.extraction.isScanned,
                 isTruncated: r.extraction.isTruncated,
                 warning: r.extraction.warning,
@@ -2582,12 +2591,23 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
         const rawExtraction = record?.extraction || att.extraction;
         if (rawExtraction) {
+          const originalName = record?.originalName || att.originalName || att.name || (rawExtraction as any).originalName || 'document';
+          const extName = path.extname(originalName).toLowerCase();
+          const detectedFormat =
+            (rawExtraction as any).format ||
+            record?.extension ||
+            att.format ||
+            att.extension ||
+            (extName === '.pdf' ? 'PDF' : extName === '.docx' ? 'DOCX' : extName === '.pptx' ? 'PPTX' : extName === '.txt' ? 'TXT' : undefined);
+
           const docData: DocumentData = {
             ...(rawExtraction as DocumentData),
             id: att.id,
             fileId: att.id,
-            originalName: record?.originalName || att.originalName || att.name || (rawExtraction as any).originalName || 'image',
-            filename: record?.diskFilename || att.name || att.originalName || (rawExtraction as any).filename || 'image',
+            originalName,
+            filename: record?.diskFilename || att.name || att.originalName || (rawExtraction as any).filename || originalName,
+            format: detectedFormat || (rawExtraction as any).format,
+            pages: (rawExtraction as any).pages || record?.extraction?.pages,
             isImage: Boolean((rawExtraction as any).isImage || record?.isImage || att.isImage)
           };
           addDocIfValid(docData, record?.conversationId || conversationId || undefined);
@@ -4386,6 +4406,422 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               status: 'STREAM_FAILED',
               provider: 'cloudflare',
               retryable: false
+            });
+            res.end();
+          }
+          return;
+        }
+      }
+    }
+
+    // 5. Local AI (Ollama) Provider
+    if (normalizedProvider === 'ollama') {
+      let ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim();
+      // Sanitize URL: strip wrapping quotes, CRLF, trailing slashes, and paths
+      ollamaBaseUrl = ollamaBaseUrl.replace(/^["']+|["']+$/g, '').trim();
+      ollamaBaseUrl = ollamaBaseUrl.replace(/[\r\n]/g, '').trim();
+      if (!/^https?:\/\//i.test(ollamaBaseUrl)) {
+        ollamaBaseUrl = `http://${ollamaBaseUrl}`;
+      }
+      ollamaBaseUrl = ollamaBaseUrl.replace(/\/v1\/chat\/completions\/?$/i, '');
+      ollamaBaseUrl = ollamaBaseUrl.replace(/\/(v1|api)\/?$/i, '');
+      ollamaBaseUrl = ollamaBaseUrl.replace(/\/+$/, '');
+      // Normalize localhost to 127.0.0.1 to avoid Windows IPv6 (::1) ECONNREFUSED mismatch
+      ollamaBaseUrl = ollamaBaseUrl.replace(/^(https?:\/\/)localhost(:\d+)?/i, '$1127.0.0.1$2');
+
+      let selectedModel = 'qwen2.5:1.5b';
+      if (typeof clientModel === 'string' && clientModel.trim()) {
+        const trimmed = clientModel.trim();
+        if (/qwen/i.test(trimmed)) {
+          selectedModel = 'qwen2.5:1.5b';
+        } else if (!/demo|analyzer/i.test(trimmed)) {
+          selectedModel = trimmed;
+        }
+      }
+
+      // Verify Vercel serverless / cloud execution environment isolation
+      const isLocalhostTarget = /^(https?:\/\/)?(127\.0\.0\.1|localhost)(:\d+)?/i.test(ollamaBaseUrl);
+      if (isServerless && isLocalhostTarget) {
+        const serverlessMsg =
+          "Local AI (Ollama) requires running Orvix locally on your computer. When hosted on Vercel, serverless cloud functions cannot reach localhost (http://127.0.0.1:11434) on your device. Please clone and run Orvix locally using 'npm run dev'.";
+        logAIDiagnostic({
+          category: 'provider configuration error',
+          provider: 'ollama',
+          model: selectedModel,
+          phase: 'validation',
+          upstreamStatus: 503,
+          sanitizedMessage: serverlessMsg
+        });
+
+        if (res.headersSent) {
+          sendSSE(res, {
+            type: 'error',
+            error: serverlessMsg,
+            code: 503,
+            status: 'UNAVAILABLE',
+            provider: 'ollama',
+            retryable: false,
+            canFallback: false
+          });
+          if (!res.writableEnded) res.end();
+        } else {
+          return res.status(503).json({
+            error: serverlessMsg,
+            code: 503,
+            status: 'UNAVAILABLE',
+            provider: 'ollama',
+            model: selectedModel,
+            retryable: false,
+            canFallback: false
+          });
+        }
+        return;
+      }
+
+      const messages = formatOpenAIMessages({
+        systemInstruction: effectiveSystemInstruction,
+        history,
+        prompt: effectivePrompt
+      });
+
+      const ollamaEndpoint = `${ollamaBaseUrl}/v1/chat/completions`;
+
+      if (!shouldStream) {
+        try {
+          const ollamaRes = await fetch(ollamaEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages,
+              temperature: 0.7,
+              stream: false
+            })
+          });
+
+          if (!ollamaRes.ok) {
+            const errText = await ollamaRes.text().catch(() => '');
+            let friendlyError: string;
+            const isMissingModel =
+              ollamaRes.status === 404 ||
+              errText.toLowerCase().includes('not found') ||
+              errText.toLowerCase().includes('model');
+
+            if (isMissingModel) {
+              friendlyError = `The requested Ollama model '${selectedModel}' was not found. Please install it in your terminal using: ollama pull ${selectedModel}`;
+            } else {
+              friendlyError = `Ollama returned HTTP ${ollamaRes.status}: ${errText.slice(0, 200) || ollamaRes.statusText}`;
+            }
+
+            logAIDiagnostic({
+              category: 'provider API error',
+              provider: 'ollama',
+              model: selectedModel,
+              phase: 'non-streaming',
+              upstreamStatus: ollamaRes.status,
+              sanitizedMessage: friendlyError
+            });
+
+            return res.status(ollamaRes.status).json({
+              error: friendlyError,
+              code: ollamaRes.status,
+              status: isMissingModel ? 'NOT_FOUND' : 'INTERNAL',
+              provider: 'ollama',
+              model: selectedModel,
+              retryable: false,
+              canFallback: false
+            });
+          }
+
+          const data: any = await ollamaRes.json();
+          let finalText = data?.choices?.[0]?.message?.content || '';
+
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+            finalText += CONTINUATION_NOTICES.PART_1;
+          }
+
+          return res.json({
+            text: finalText,
+            modelUsed: data.model || selectedModel,
+            provider: 'ollama'
+          });
+        } catch (fetchErr: any) {
+          if (isClientClosed) return;
+          const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
+          const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
+          const isConnRefused =
+            causeCode === 'ECONNREFUSED' ||
+            causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
+            rawMsg.includes('econnrefused');
+
+          let friendlyError: string;
+          if (isConnRefused) {
+            friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}. Please ensure Ollama is running ('ollama serve') on your computer and that model '${selectedModel}' is available ('ollama list').`;
+          } else {
+            friendlyError = `Failed to communicate with Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}.`;
+          }
+
+          logAIDiagnostic({
+            category: 'provider network failure',
+            provider: 'ollama',
+            model: selectedModel,
+            phase: 'non-streaming',
+            upstreamStatus: 503,
+            sanitizedMessage: friendlyError
+          });
+
+          return res.status(503).json({
+            error: friendlyError,
+            code: 503,
+            status: 'NETWORK_FAILURE',
+            provider: 'ollama',
+            model: selectedModel,
+            retryable: false,
+            canFallback: false
+          });
+        }
+      } else {
+        // Genuine streaming via Ollama OpenAI-compatible SSE
+        let ollamaRes: Response | null = null;
+        let isStreamMode = true;
+
+        try {
+          ollamaRes = await fetch(ollamaEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: selectedModel,
+              messages,
+              temperature: 0.7,
+              stream: true
+            })
+          });
+        } catch (fetchErr: any) {
+          // If stream: true failed, attempt immediate local non-streaming request before reporting failure
+          try {
+            const fallbackRes = await fetch(ollamaEndpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model: selectedModel,
+                messages,
+                temperature: 0.7,
+                stream: false
+              })
+            });
+            if (fallbackRes.ok) {
+              ollamaRes = fallbackRes;
+              isStreamMode = false;
+            }
+          } catch (_) {}
+
+          if (!ollamaRes) {
+            if (isClientClosed) return;
+            const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
+            const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
+            const isConnRefused =
+              causeCode === 'ECONNREFUSED' ||
+              causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
+              rawMsg.includes('econnrefused');
+
+            let friendlyError: string;
+            if (isConnRefused) {
+              friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}. Please ensure Ollama is running ('ollama serve') on your computer and that model '${selectedModel}' is available ('ollama list').`;
+            } else {
+              friendlyError = `Failed to connect to Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}.`;
+            }
+
+            logAIDiagnostic({
+              category: 'provider network failure',
+              provider: 'ollama',
+              model: selectedModel,
+              phase: 'pre-stream',
+              upstreamStatus: 503,
+              sanitizedMessage: friendlyError
+            });
+
+            return res.status(503).json({
+              error: friendlyError,
+              code: 503,
+              status: 'NETWORK_FAILURE',
+              provider: 'ollama',
+              model: selectedModel,
+              retryable: false,
+              canFallback: false
+            });
+          }
+        }
+
+        if (!ollamaRes.ok) {
+          const errText = await ollamaRes.text().catch(() => '');
+          let friendlyError: string;
+          const isMissingModel =
+            ollamaRes.status === 404 ||
+            errText.toLowerCase().includes('not found') ||
+            errText.toLowerCase().includes('model');
+
+          if (isMissingModel) {
+            friendlyError = `The requested Ollama model '${selectedModel}' was not found. Please install it in your terminal using: ollama pull ${selectedModel}`;
+          } else {
+            friendlyError = `Ollama returned HTTP ${ollamaRes.status}: ${errText.slice(0, 200) || ollamaRes.statusText}`;
+          }
+
+          logAIDiagnostic({
+            category: 'provider API error',
+            provider: 'ollama',
+            model: selectedModel,
+            phase: 'pre-stream',
+            upstreamStatus: ollamaRes.status,
+            sanitizedMessage: friendlyError
+          });
+
+          return res.status(ollamaRes.status).json({
+            error: friendlyError,
+            code: ollamaRes.status,
+            status: isMissingModel ? 'NOT_FOUND' : 'INTERNAL',
+            provider: 'ollama',
+            model: selectedModel,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res);
+        sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'ollama' });
+
+        // If non-streaming response was obtained from local fallback
+        if (!isStreamMode || !ollamaRes.body) {
+          try {
+            const data: any = await ollamaRes.json();
+            let finalText = data?.choices?.[0]?.message?.content || '';
+            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+              finalText += CONTINUATION_NOTICES.PART_1;
+            }
+            if (finalText) {
+              sendSSE(res, { type: 'chunk', text: finalText });
+            }
+            stopHeartbeat();
+            sendSSE(res, {
+              type: 'done',
+              text: finalText,
+              modelUsed: data?.model || selectedModel,
+              provider: 'ollama'
+            });
+            res.end();
+            return;
+          } catch (jsonErr: any) {
+            stopHeartbeat();
+            if (!res.writableEnded) {
+              sendSSE(res, {
+                type: 'error',
+                error: 'Failed to parse response from Local AI (Ollama).',
+                code: 500,
+                status: 'PARSE_ERROR',
+                provider: 'ollama',
+                retryable: false,
+                canFallback: false
+              });
+              res.end();
+            }
+            return;
+          }
+        }
+
+        try {
+          const reader = ollamaRes.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let fullText = '';
+          let modelUsed = selectedModel;
+          let lastFinishReason: string | null = null;
+
+          while (true) {
+            if (isClientClosed || res.writableEnded) {
+              try {
+                await reader.cancel();
+              } catch (_) {}
+              break;
+            }
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (dataStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.model) modelUsed = parsed.model;
+                const finishReason = parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) lastFinishReason = finishReason;
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Process trailing bytes and buffer
+          const finalBytes = decoder.decode();
+          if (finalBytes) buffer += finalBytes;
+          if (buffer && buffer.trim().startsWith('data:')) {
+            const dataStr = buffer.trim().slice(5).trim();
+            if (dataStr !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.model) modelUsed = parsed.model;
+                const finishReason = parsed?.choices?.[0]?.finish_reason;
+                if (finishReason) lastFinishReason = finishReason;
+                const delta = parsed?.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullText += delta;
+                  sendSSE(res, { type: 'chunk', text: delta });
+                }
+              } catch (_) {}
+            }
+          }
+
+          stopHeartbeat();
+          if (!res.writableEnded) {
+            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+              sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+              fullText += CONTINUATION_NOTICES.PART_1;
+            }
+            sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'ollama' });
+            res.end();
+          }
+          return;
+        } catch (streamErr: any) {
+          stopHeartbeat();
+          logAIDiagnostic({
+            category: 'streaming failure',
+            provider: 'ollama',
+            model: selectedModel,
+            phase: 'mid-stream',
+            sanitizedMessage: streamErr?.message || 'Ollama stream read interrupted'
+          });
+          if (!res.writableEnded) {
+            sendSSE(res, {
+              type: 'error',
+              error: 'Ollama streaming connection interrupted. Please ensure the local Ollama daemon remains running.',
+              code: 503,
+              status: 'STREAM_FAILED',
+              provider: 'ollama',
+              retryable: false,
+              canFallback: false
             });
             res.end();
           }
