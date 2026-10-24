@@ -203,7 +203,7 @@ function detectCalloutType(text = '') {
 function createMarkdownComponents(isStreaming = false, effectiveMode = 'general') {
   return {
     // Pass-through wrapper for pre so inner code block receives isBlock flag
-    pre: ({ children, ...props }) => {
+    pre: ({ node, children, ...props }) => {
       if (React.isValidElement(children)) {
         return React.cloneElement(children, { isBlock: true });
       }
@@ -211,7 +211,7 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
     },
 
     // Fenced code block or inline code
-    code: ({ className, children, isBlock, ...props }) => {
+    code: ({ node, className, children, isBlock, ...props }) => {
       const match = /language-([\w-]+)/.exec(className || '');
       const codeString = extractNodeText(children);
       const isFenced = Boolean(isBlock) || Boolean(match) || (typeof codeString === 'string' && codeString.includes('\n'));
@@ -236,7 +236,7 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
     },
 
     // Safe external links (prevents javascript: URLs and opens external links safely)
-    a: ({ href, children, ...props }) => {
+    a: ({ node, href, children, ...props }) => {
       const isSafeHref = href && /^(https?:\/\/|mailto:)/i.test(href);
       return (
         <a
@@ -252,22 +252,27 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
       );
     },
 
-    // Responsive scrollable tables
-    table: ({ children, ...props }) => (
-      <div className={`table-responsive-wrapper ${effectiveMode === 'writing' ? 'writing-table-wrapper' : ''} ${effectiveMode === 'coding' ? 'coding-table-wrapper' : ''}`}>
+    // Responsive scrollable tables with keyboard accessibility
+    table: ({ node, children, ...props }) => (
+      <div
+        className={`table-responsive-wrapper ${effectiveMode === 'writing' ? 'writing-table-wrapper' : ''} ${effectiveMode === 'coding' ? 'coding-table-wrapper' : ''}`}
+        tabIndex={0}
+        role="region"
+        aria-label="Scrollable data table"
+      >
         <table className={`markdown-table ${effectiveMode === 'writing' ? 'writing-table' : ''} ${effectiveMode === 'coding' ? 'coding-table' : ''}`} {...props}>
           {children}
         </table>
       </div>
     ),
-    thead: ({ children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
-    tbody: ({ children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
-    tr: ({ children, ...props }) => <tr className="markdown-tr" {...props}>{children}</tr>,
-    th: ({ children, ...props }) => <th className="markdown-th" {...props}>{children}</th>,
-    td: ({ children, ...props }) => <td className="markdown-td" {...props}>{children}</td>,
+    thead: ({ node, children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
+    tbody: ({ node, children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
+    tr: ({ node, children, ...props }) => <tr className="markdown-tr" {...props}>{children}</tr>,
+    th: ({ node, children, ...props }) => <th className="markdown-th" {...props}>{children}</th>,
+    td: ({ node, children, ...props }) => <td className="markdown-td" {...props}>{children}</td>,
 
     // Semantic headings establishing visual hierarchy
-    h1: ({ children, ...props }) => (
+    h1: ({ node, children, ...props }) => (
       <h1
         className={`markdown-h1 ${effectiveMode === 'learning' ? 'educational-topic-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h1' : ''} ${effectiveMode === 'coding' ? 'coding-h1' : ''}`}
         {...props}
@@ -275,7 +280,7 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
         {children}
       </h1>
     ),
-    h2: ({ children, ...props }) => (
+    h2: ({ node, children, ...props }) => (
       <h2
         className={`markdown-h2 ${effectiveMode === 'learning' ? 'educational-concept-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h2' : ''} ${effectiveMode === 'coding' ? 'coding-h2' : ''}`}
         {...props}
@@ -283,7 +288,7 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
         {children}
       </h2>
     ),
-    h3: ({ children, ...props }) => (
+    h3: ({ node, children, ...props }) => (
       <h3
         className={`markdown-h3 ${effectiveMode === 'learning' ? 'educational-subconcept-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h3' : ''} ${effectiveMode === 'coding' ? 'coding-h3' : ''}`}
         {...props}
@@ -291,7 +296,7 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
         {children}
       </h3>
     ),
-    h4: ({ children, ...props }) => (
+    h4: ({ node, children, ...props }) => (
       <h4
         className={`markdown-h4 ${effectiveMode === 'learning' ? 'educational-step-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h4' : ''} ${effectiveMode === 'coding' ? 'coding-h4' : ''}`}
         {...props}
@@ -299,19 +304,19 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
         {children}
       </h4>
     ),
-    h5: ({ children, ...props }) => (
+    h5: ({ node, children, ...props }) => (
       <h5 className={`markdown-h5 ${effectiveMode === 'writing' ? 'writing-h5' : ''} ${effectiveMode === 'coding' ? 'coding-h5' : ''}`} {...props}>
         {children}
       </h5>
     ),
-    h6: ({ children, ...props }) => (
+    h6: ({ node, children, ...props }) => (
       <h6 className={`markdown-h6 ${effectiveMode === 'writing' ? 'writing-h6' : ''} ${effectiveMode === 'coding' ? 'coding-h6' : ''}`} {...props}>
         {children}
       </h6>
     ),
 
     // Text formatting with Learning Mode Educational Callout recognition
-    p: ({ children, ...props }) => {
+    p: ({ node, children, ...props }) => {
       const isInsideCallout = React.useContext(CalloutContext);
 
       if (effectiveMode === 'learning') {
@@ -371,13 +376,13 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
 
       return <p className="markdown-p" {...props}>{children}</p>;
     },
-    strong: ({ children, ...props }) => <strong className="markdown-strong" {...props}>{children}</strong>,
-    b: ({ children, ...props }) => <b className="markdown-strong" {...props}>{children}</b>,
-    em: ({ children, ...props }) => <em className="markdown-em" {...props}>{children}</em>,
-    i: ({ children, ...props }) => <i className="markdown-em" {...props}>{children}</i>,
-    del: ({ children, ...props }) => <del className="markdown-del" {...props}>{children}</del>,
-    s: ({ children, ...props }) => <s className="markdown-del" {...props}>{children}</s>,
-    blockquote: ({ children, ...props }) => {
+    strong: ({ node, children, ...props }) => <strong className="markdown-strong" {...props}>{children}</strong>,
+    b: ({ node, children, ...props }) => <b className="markdown-strong" {...props}>{children}</b>,
+    em: ({ node, children, ...props }) => <em className="markdown-em" {...props}>{children}</em>,
+    i: ({ node, children, ...props }) => <i className="markdown-em" {...props}>{children}</i>,
+    del: ({ node, children, ...props }) => <del className="markdown-del" {...props}>{children}</del>,
+    s: ({ node, children, ...props }) => <s className="markdown-del" {...props}>{children}</s>,
+    blockquote: ({ node, children, ...props }) => {
       if (effectiveMode === 'learning') {
         const textContent = extractNodeText(children);
         const callout = detectCalloutType(textContent);
@@ -407,17 +412,17 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
         </blockquote>
       );
     },
-    ul: ({ children, ...props }) => (
+    ul: ({ node, children, ...props }) => (
       <ul className={`markdown-ul ${effectiveMode === 'writing' ? 'writing-ul' : ''}`} {...props}>
         {children}
       </ul>
     ),
-    ol: ({ children, start, ...props }) => (
+    ol: ({ node, children, start, ...props }) => (
       <ol className={`markdown-ol ${effectiveMode === 'writing' ? 'writing-ol' : ''}`} start={start} {...props}>
         {children}
       </ol>
     ),
-    li: ({ children, checked, ...props }) => {
+    li: ({ node, children, checked, ...props }) => {
       if (typeof checked === 'boolean') {
         return (
           <li className="markdown-li markdown-task-item" {...props}>
@@ -439,7 +444,7 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
         </li>
       );
     },
-    hr: (props) => (
+    hr: ({ node, ...props }) => (
       <hr className={`markdown-divider ${effectiveMode === 'writing' ? 'writing-divider' : ''}`} {...props} />
     )
   };

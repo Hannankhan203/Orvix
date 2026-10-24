@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot } from 'lucide-react';
+import OrvixLogo from '../ui/OrvixLogo.jsx';
 
 /**
  * TypingIndicator Component
@@ -9,7 +9,7 @@ export default function TypingIndicator() {
   return (
     <div className="message-wrapper assistant-wrapper loading-wrapper" role="status" aria-label="Orvix is thinking">
       <div className="message-avatar assistant-avatar" aria-hidden="true">
-        <Bot size={16} />
+        <OrvixLogo size={18} />
       </div>
 
       <div className="message-body assistant-body">

@@ -221,12 +221,15 @@ export default function SidebarChatItem({
             )}
             <span className="chat-item-title">{chat.title}</span>
           </div>
-          <div className="flex items-center gap-1.5 min-w-0">
+          <div className="flex items-center gap-1 min-w-0">
             <span className="chat-item-meta">{chat.timestamp}</span>
             {chatMode !== 'general' && (
-              <span className={`chat-item-mode-tag mode-${chatMode}`}>
-                {chatMode}
-              </span>
+              <>
+                <span className="chat-item-meta-dot" aria-hidden="true">·</span>
+                <span className={`chat-item-mode-text mode-${chatMode}`}>
+                  {chatMode}
+                </span>
+              </>
             )}
           </div>
         </div>

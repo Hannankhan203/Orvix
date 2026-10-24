@@ -19,6 +19,7 @@ const ICON_COMPONENTS = {
  * @param {string} props.activeMode - Currently active mode ID ('general' | 'coding' | 'writing' | 'learning')
  * @param {(modeId: string) => void} props.onSelectMode - Callback when mode changes
  * @param {'pills' | 'compact'} [props.variant='compact']
+ * @param {'left' | 'right' | 'auto'} [props.dropdownAlign='auto']
  * @param {boolean} [props.disabled=false]
  * @param {string} [props.className='']
  */
@@ -26,6 +27,7 @@ export default function ModeSelector({
   activeMode = 'general',
   onSelectMode,
   variant = 'compact',
+  dropdownAlign = 'auto',
   disabled = false,
   className = ''
 }) {
@@ -134,7 +136,7 @@ export default function ModeSelector({
 
       {isOpen && (
         <div
-          className="mode-dropdown-menu"
+          className={`mode-dropdown-menu align-${dropdownAlign}`}
           role="menu"
           aria-label="Conversation modes"
         >

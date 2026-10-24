@@ -145,7 +145,7 @@ export default function Header({
   const userDisplayEmail = currentUser?.email || (currentUser?.isAnonymous ? 'guest@orvix.ai' : '');
 
   return (
-    <header className="chatora-header-wrapper" ref={accountMenuRef}>
+    <header className={`chatora-header-wrapper ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`} ref={accountMenuRef}>
       {/* ====================================================================
           Desktop Header Layout (Visible on width >= 768px)
           ==================================================================== */}
@@ -192,6 +192,7 @@ export default function Header({
               activeMode={activeMode}
               onSelectMode={onSelectMode}
               className="header-mode-selector"
+              dropdownAlign="right"
             />
           )}
 
@@ -219,25 +220,27 @@ export default function Header({
             />
           )}
 
-          {/* New Chat Primary Trigger */}
+          {/* New Chat Trigger */}
           <Button
             variant="secondary"
             size="sm"
             onClick={onNewChat}
             icon={<Plus size={15} />}
             title="Start a new chat"
+            className="header-new-chat-btn"
           >
-            New Chat
+            <span className="header-new-chat-label">New Chat</span>
           </Button>
 
-          {/* User Account Controls */}
+          {/* Consolidated User Account Menu Trigger */}
           {currentUser && (
             <div className="header-user-block">
               <button
                 type="button"
                 className="desktop-user-trigger"
                 onClick={() => setAccountMenuOpen((prev) => !prev)}
-                title={`Account: ${userDisplayName}`}
+                title={`Account & Settings: ${userDisplayName}`}
+                aria-label={`Account & Settings menu for ${userDisplayName}`}
                 aria-expanded={accountMenuOpen}
                 aria-haspopup="dialog"
               >
@@ -249,29 +252,6 @@ export default function Header({
                 </span>
                 <ChevronDown size={12} className="desktop-user-chevron" />
               </button>
-
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={openSettingsModal}
-                icon={<Sliders size={14} />}
-                title="Personalization Settings"
-                ariaLabel="Personalization Settings"
-              >
-                Settings
-              </Button>
-
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleLogout}
-                disabled={actionLoading}
-                icon={<LogOut size={14} />}
-                title="Sign out of Orvix"
-                ariaLabel="Sign out of Orvix"
-              >
-                Sign out
-              </Button>
             </div>
           )}
         </div>

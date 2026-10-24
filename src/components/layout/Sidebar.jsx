@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, CloudOff, Pin, Sliders } from 'lucide-react';
+import { Bot, Plus, ChevronLeft, X, MessageSquare, LogOut, Loader2, Cloud, CloudOff, Pin, Sliders } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import SidebarChatItem from './SidebarChatItem.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -40,7 +40,7 @@ export default function Sidebar({
       className={`chatora-sidebar ${!isOpen ? 'collapsed' : ''}`}
       aria-label="Sidebar navigation"
     >
-      {/* Branding & Close Toggle */}
+      {/* Branding & Collapse Toggle */}
       <div className="sidebar-header">
         <div className="sidebar-brand">
           <OrvixLogo size={28} />
@@ -51,9 +51,10 @@ export default function Sidebar({
           variant="ghost"
           size="icon"
           onClick={onClose}
-          title="Close sidebar"
-          ariaLabel="Close sidebar"
-          icon={<X size={18} />}
+          title="Collapse sidebar"
+          ariaLabel="Collapse sidebar"
+          className="sidebar-collapse-btn"
+          icon={<ChevronLeft size={18} />}
         />
       </div>
 
@@ -119,17 +120,17 @@ export default function Sidebar({
                   {pinnedChats.length > 0 ? 'Recent' : 'Conversations'}
                 </span>
                 {isCloudSynced && !isOffline ? (
-                  <span className="demo-data-badge synced-badge" title="Conversations are saved to Cloud Firestore">
+                  <span className="sidebar-sync-indicator text-emerald-400" title="Conversations are saved to Cloud Firestore">
                     <Cloud size={11} className="inline mr-1" />
                     Synced
                   </span>
                 ) : isCloudSynced && isOffline ? (
-                  <span className="demo-data-badge" title="Offline: conversations are saved locally and will sync when internet reconnects">
+                  <span className="sidebar-sync-indicator text-amber-400" title="Offline: conversations are saved locally and will sync when internet reconnects">
                     <CloudOff size={11} className="inline mr-1" />
                     Offline
                   </span>
                 ) : (
-                  <span className="demo-data-badge" title="Conversations are stored locally on this device">
+                  <span className="sidebar-sync-indicator text-muted" title="Conversations are stored locally on this device">
                     Local
                   </span>
                 )}

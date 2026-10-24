@@ -456,7 +456,7 @@ export default function Layout({
   };
 
   return (
-    <div className="chatora-app">
+    <div className={`chatora-app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`}>
       {/* Mobile backdrop */}
       {sidebarOpen && (
         <div

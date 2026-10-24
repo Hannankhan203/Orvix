@@ -1211,12 +1211,15 @@ Transcript:
             <div className="scroll-to-bottom-dock">
               <button
                 type="button"
-                className="scroll-to-bottom-btn"
+                className={`scroll-to-bottom-btn ${lastMessage?.isStreaming ? 'has-streaming-activity' : ''}`}
                 onClick={handleScrollToBottom}
-                aria-label="Scroll to bottom"
-                title="Scroll to bottom"
+                aria-label={lastMessage?.isStreaming ? 'Scroll to streaming response' : 'Scroll to newest message'}
+                title={lastMessage?.isStreaming ? 'Scroll to streaming response' : 'Scroll to newest message'}
               >
                 <ArrowDown size={18} aria-hidden="true" />
+                {lastMessage?.isStreaming && (
+                  <span className="scroll-btn-activity-dot" aria-hidden="true" />
+                )}
               </button>
             </div>
           )}
