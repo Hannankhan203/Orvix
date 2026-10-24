@@ -150,7 +150,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 // Helper to pause execution with backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1608,13 +1608,17 @@ app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, re
 
     if (inputSource) {
       if (isImg) {
+        const isOfflineReq = req.query?.offline === 'true';
+        const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
         const imgExtraction = await extractImageText(
           inputSource,
           record.originalName,
           ext,
           record.mimeType,
           record.id,
-          record.dimensions
+          record.dimensions,
+          geminiKey,
+          { offline: isOfflineReq }
         );
         record.extraction = imgExtraction;
         return res.json(imgExtraction);
@@ -1888,6 +1892,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
 
         if (isImg) {
           rec.isImage = true;
+          const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
           const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
           const imgExtraction = (await extractImageText(
             inputSource,
@@ -1896,10 +1901,11 @@ app.post(['/api/upload', '/upload'], (req, res) => {
             rec.mimeType,
             rec.id,
             rec.dimensions,
-            geminiKey
+            geminiKey,
+            { offline: isOfflineUpload }
           )) as any;
           rec.extraction = imgExtraction;
-          rec.status = 'ready';
+          rec.status = imgExtraction?.status === 'error' ? 'error' : 'ready';
         } else {
           const extraction = (await extractDocumentContent(
             inputSource,
@@ -2587,6 +2593,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
             if (inputSource) {
               if (isImg) {
+                const isOfflineChat =
+                  Boolean(req.body?.offline) ||
+                  String(req.body?.provider || '').toLowerCase() === 'ollama';
                 const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
                 record.extraction = (await extractImageText(
                   inputSource,
@@ -2595,9 +2604,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   record.mimeType,
                   record.id,
                   record.dimensions,
-                  geminiKey
+                  geminiKey,
+                  { offline: isOfflineChat }
                 )) as any;
-                record.status = 'ready';
+                record.status = record.extraction?.status === 'error' ? 'error' : 'ready';
               } else {
                 record.extraction = (await extractDocumentContent(
                   inputSource,

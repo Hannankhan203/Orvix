@@ -264,10 +264,13 @@ export function prepareDocumentContext(prompt, docs) {
   const anyImageHasText = allImageDocs.some(
     (d) => Boolean(d.hasText || (d.text && d.text.trim().length > 0))
   );
+  const anyImageHasError = allImageDocs.some(
+    (d) => d.status === 'error' || d.status === 'unsupported_format'
+  );
 
-  // Requirements 6 & 7: If all attached images have NO_TEXT_DETECTED, do not send fabricated text to AI
-  // Instead, return the exact required message: "No readable text detected in this image."
-  if (isOnlyImages && !anyImageHasText) {
+  // Requirements 6 & 7: If all attached images have NO_TEXT_DETECTED (and none failed with an OCR error),
+  // do not send fabricated text to AI; return the exact required message: "No readable text detected in this image."
+  if (isOnlyImages && !anyImageHasText && !anyImageHasError) {
     return {
       formattedContext: '',
       hasErrorsOrWarnings: true,
@@ -289,15 +292,17 @@ export function prepareDocumentContext(prompt, docs) {
       if (doc.status === 'unsupported_format') {
         const issue = doc.error || `OCR text extraction is not supported for ${format} images in this environment.`;
         unreadableDocNotes.push(issue);
-        if (selectedDocs.length === 1) directAnswer = issue;
+        if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) directAnswer = issue;
         docBlocks.push(`[ATTACHED IMAGE ${docIdx + 1}: "${docName}" (${format}) - STATUS: UNSUPPORTED]\n${issue}`);
         continue;
       }
 
       if (doc.status === 'error' && doc.error) {
-        const issue = `The image '${docName}' could not be processed: ${doc.error}`;
+        const issue = String(doc.error).includes('Offline image text extraction is unavailable')
+          ? String(doc.error)
+          : `The image '${docName}' could not be processed: ${doc.error}`;
         unreadableDocNotes.push(issue);
-        if (selectedDocs.length === 1) directAnswer = issue;
+        if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) directAnswer = issue;
         docBlocks.push(`[ATTACHED IMAGE ${docIdx + 1}: "${docName}" (${format}) - STATUS: ERROR]\n${issue}`);
         continue;
       }
@@ -973,20 +978,31 @@ export function adaptDocumentContextForProvider({
     finalDocContext = `${providerNotice}\n\n${headPortion}${tailSummary}`;
   }
 
-  // For Local AI (Ollama), ensure extracted document content is placed directly in the user prompt.
+  // For Local AI (Ollama), ensure extracted document and image OCR content is placed directly in the user prompt.
   // Local models (like Qwen 2.5, Llama, Mistral) heavily attend to user turn content, avoiding hallucinations
-  // or claiming that no text/file was provided.
+  // or claiming that no text/file/image was provided.
   if (normProvider === 'ollama') {
-    const effectivePromptForOllama = `[ATTACHED DOCUMENT CONTEXT]
-The user attached the following extracted document/file content:
-${finalDocContext}
-[END OF ATTACHED DOCUMENT CONTEXT]
+    const isAutoAttachmentPrompt = /^\[User attached \d+ files?:/.test((prompt || '').trim());
+    const userQuestionText = isAutoAttachmentPrompt
+      ? `${prompt}\nRead the extracted text above and clearly summarize or transcribe what is written in the attachment.`
+      : prompt;
 
-User Question: ${prompt}`;
+    const effectivePromptForOllama = `[ATTACHED DOCUMENT & IMAGE OCR CONTEXT]
+The user attached the following extracted document/image OCR text:
+${finalDocContext}
+[END OF ATTACHED DOCUMENT & IMAGE OCR CONTEXT]
+
+User Question: ${userQuestionText}`;
+
+    const ollamaGroundingAddon =
+      'You have access to the attached document and image OCR text provided directly in the user\'s message. ' +
+      'When the user asks about an attached image (e.g., what text is written in the image, summarizing or explaining the image), ' +
+      'answer directly and accurately using the extracted OCR text provided in the message — do not claim you cannot view or read images. ' +
+      'Do not hallucinate or invent details not present in the extracted text.';
 
     const effectiveSystemInstruction = baseSystemInstruction
-      ? `${baseSystemInstruction}\n\nYou have access to the attached document context provided in the user's message. Answer the user's question accurately and thoroughly based directly on the attached content. Do not hallucinate or guess details not present in the document.`
-      : 'You are a helpful, accurate AI assistant. You have access to the attached document context provided in the user\'s message. Answer the user\'s question thoroughly and accurately based directly on the attached content. Do not hallucinate or guess details not present in the document.';
+      ? `${baseSystemInstruction}\n\n${ollamaGroundingAddon}`
+      : `You are a helpful, accurate AI assistant. ${ollamaGroundingAddon}`;
 
     return {
       provider: normProvider,

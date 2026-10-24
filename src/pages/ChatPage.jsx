@@ -214,15 +214,25 @@ export default function ChatPage() {
 
   const saveGuestChats = (chats) => {
     try {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(
-          'orvix_guest_chats',
-          JSON.stringify(chats)
-        );
-        localStorage.setItem(
-          'chatora_guest_chats',
-          JSON.stringify(chats)
-        );
+      if (typeof window !== 'undefined' && Array.isArray(chats)) {
+        // Strip heavy raw File/base64/dataUrl payloads before saving to 5MB localStorage
+        // (full image blobs are already persisted in IndexedDB via saveAttachmentBlob, and OCR text lives in extraction)
+        const sanitizedChats = chats.map((chat) => {
+          if (!chat || !Array.isArray(chat.messages)) return chat;
+          return {
+            ...chat,
+            messages: chat.messages.map((msg) => {
+              if (!msg || !Array.isArray(msg.attachments) || msg.attachments.length === 0) return msg;
+              return {
+                ...msg,
+                attachments: msg.attachments.map(({ file, base64, dataUrl, previewUrl, ...rest }) => rest)
+              };
+            })
+          };
+        });
+        const serialized = JSON.stringify(sanitizedChats);
+        localStorage.setItem('orvix_guest_chats', serialized);
+        localStorage.setItem('chatora_guest_chats', serialized);
       }
     } catch (error) {
       console.warn('Could not save guest chats:', error);
@@ -1409,6 +1419,8 @@ export default function ChatPage() {
           if (activeChatIdRef.current) {
             formData.append('conversationId', activeChatIdRef.current);
           }
+          formData.append('provider', selectedProvider || DEFAULT_PROVIDER);
+          formData.append('offline', String(!isBrowserOnline()));
           filesToUpload.forEach((att) => {
             formData.append('files', att.file, att.name);
           });

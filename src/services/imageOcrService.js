@@ -1,22 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import Tesseract from 'tesseract.js';
 
-// Reasonable processing limits
-const OCR_WORKER_TIMEOUT_MS = 4000; // 4s worker initialization limit
-const OCR_RECOGNIZE_TIMEOUT_MS = 6000; // 6s recognition limit
-const VISION_TIMEOUT_MS = 6000; // 6s Gemini Vision limit
-const MAX_PREVIEW_LENGTH = 350;
-const MAX_IMAGE_FILE_SIZE = 25 * 1024 * 1024; // 25MB
-
+const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-let workerInstance = null;
-let initializingPromise = null;
-let ocrQueue = Promise.resolve();
 
 /**
  * Detects whether running in a serverless cloud environment (Vercel, AWS Lambda)
@@ -28,30 +18,163 @@ export const isServerlessRuntime = Boolean(
   process.env.SERVERLESS
 );
 
+// Reasonable processing limits: generous locally (when CPU is shared with Ollama), bounded in serverless
+const OCR_WORKER_TIMEOUT_MS = isServerlessRuntime ? 8000 : 30000;
+const OCR_RECOGNIZE_TIMEOUT_MS = isServerlessRuntime ? 15000 : 60000;
+const VISION_TIMEOUT_MS = 4000; // Fast 4s Gemini Vision limit so offline fallback is immediate
+const MAX_PREVIEW_LENGTH = 350;
+const MAX_IMAGE_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+const MIN_VALID_TRAINEDDATA_BYTES = 100 * 1024; // >100KB sanity check (eng.traineddata is ~5.2MB)
+
+export const LOCAL_OCR_INIT_ERROR_MESSAGE =
+  'Offline image text extraction is unavailable because the local OCR engine could not be initialized.';
+
+let workerInstance = null;
+let initializingPromise = null;
+let ocrQueue = Promise.resolve();
+let activeWorkerErrorReject = null;
+
 /**
- * Resolves the directory where local eng.traineddata is stored.
- * Checks project root, parent directories, and common container paths.
+ * Resolves local traineddata file info (directory + whether file is gzipped).
+ * Checks project root, parent directories, public assets, and container root.
+ * Validates file size so corrupted/0-byte files are never treated as valid.
+ *
+ * @returns {{ dir: string, gzip: boolean } | null}
  */
-export function findLocalTrainedDataDir() {
-  const possiblePaths = [
-    path.resolve(process.cwd(), 'eng.traineddata'),
-    path.resolve(__dirname, '../../eng.traineddata'),
-    path.resolve(__dirname, '../eng.traineddata'),
-    '/eng.traineddata'
+export function resolveLocalTrainedDataInfo() {
+  const candidateDirs = [
+    process.cwd(),
+    path.resolve(__dirname, '../..'),
+    path.resolve(__dirname, '..'),
+    path.resolve(process.cwd(), 'public'),
+    '/'
   ];
-  for (const p of possiblePaths) {
+
+  const seenDirs = new Set();
+  for (const dir of candidateDirs) {
+    const resolvedDir = path.resolve(dir);
+    if (seenDirs.has(resolvedDir)) continue;
+    seenDirs.add(resolvedDir);
+
+    const rawPath = path.join(resolvedDir, 'eng.traineddata');
     try {
-      if (fs.existsSync(p)) {
-        return path.dirname(p);
+      if (fs.existsSync(rawPath)) {
+        const stat = fs.statSync(rawPath);
+        if (stat.isFile() && stat.size >= MIN_VALID_TRAINEDDATA_BYTES) {
+          return { dir: resolvedDir, gzip: false };
+        }
+      }
+    } catch (_) {}
+
+    const gzPath = path.join(resolvedDir, 'eng.traineddata.gz');
+    try {
+      if (fs.existsSync(gzPath)) {
+        const stat = fs.statSync(gzPath);
+        if (stat.isFile() && stat.size >= MIN_VALID_TRAINEDDATA_BYTES) {
+          return { dir: resolvedDir, gzip: true };
+        }
       }
     } catch (_) {}
   }
+
   return null;
 }
 
 /**
- * Initializes and returns a shared, managed Tesseract worker instance with strict timeout.
- * Points to local eng.traineddata if present to avoid remote network downloads.
+ * Resolves the directory where local eng.traineddata is stored.
+ * Preserved for backwards compatibility.
+ */
+export function findLocalTrainedDataDir() {
+  const info = resolveLocalTrainedDataInfo();
+  return info ? info.dir : null;
+}
+
+/**
+ * Resolves and verifies all local Tesseract.js runtime assets (worker script, WASM core directory,
+ * and local English traineddata) so Tesseract NEVER attempts any remote CDN or network download.
+ *
+ * @returns {{ workerPath: string, corePath: string, langPath: string, gzip: boolean }}
+ */
+export function resolveLocalTesseractAssets() {
+  // 1. Resolve local language data (eng.traineddata)
+  const trainedData = resolveLocalTrainedDataInfo();
+  if (!trainedData) {
+    const err = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
+    err.code = 'LOCAL_OCR_INIT_FAILED';
+    err.cause = 'Local eng.traineddata was not found or is invalid.';
+    throw err;
+  }
+
+  // 2. Resolve local Node worker script from installed tesseract.js package
+  let workerPath = null;
+  const workerCandidates = [];
+  try {
+    workerCandidates.push(require.resolve('tesseract.js/src/worker-script/node/index.js'));
+  } catch (_) {}
+  workerCandidates.push(
+    path.resolve(process.cwd(), 'node_modules/tesseract.js/src/worker-script/node/index.js'),
+    path.resolve(__dirname, '../../node_modules/tesseract.js/src/worker-script/node/index.js')
+  );
+
+  for (const candidate of workerCandidates) {
+    try {
+      if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        workerPath = candidate;
+        break;
+      }
+    } catch (_) {}
+  }
+
+  if (!workerPath) {
+    const err = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
+    err.code = 'LOCAL_OCR_INIT_FAILED';
+    err.cause = 'Local tesseract.js worker script was not found.';
+    throw err;
+  }
+
+  // 3. Resolve local WASM core directory from installed tesseract.js-core package
+  let corePath = null;
+  const coreCandidates = [];
+  try {
+    coreCandidates.push(path.dirname(require.resolve('tesseract.js-core/package.json')));
+  } catch (_) {}
+  coreCandidates.push(
+    path.resolve(process.cwd(), 'node_modules/tesseract.js-core'),
+    path.resolve(__dirname, '../../node_modules/tesseract.js-core')
+  );
+
+  for (const candidate of coreCandidates) {
+    try {
+      if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        const files = fs.readdirSync(candidate);
+        const hasWasm = files.some((f) => f.startsWith('tesseract-core') && (f.endsWith('.wasm') || f.endsWith('.wasm.js')));
+        if (hasWasm) {
+          corePath = candidate;
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (!corePath) {
+    const err = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
+    err.code = 'LOCAL_OCR_INIT_FAILED';
+    err.cause = 'Local tesseract.js-core WASM files were not found.';
+    throw err;
+  }
+
+  return {
+    workerPath,
+    corePath,
+    langPath: trainedData.dir,
+    gzip: trainedData.gzip
+  };
+}
+
+/**
+ * Initializes and returns a shared, managed local Tesseract worker instance with strict offline asset paths.
+ * Uses local workerPath, local corePath, local langPath, gzip=false (for raw eng.traineddata),
+ * and cacheMethod='none' to avoid remote CDN requests and avoid temp-cache corruption.
  */
 export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {
   if (workerInstance) {
@@ -62,59 +185,67 @@ export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {
     return initializingPromise;
   }
 
-  const localDir = findLocalTrainedDataDir();
-
-  // If in serverless and no local trained data is present, do not attempt to download
-  // a 15MB file over the network inside a serverless lambda with strict execution limits
-  if (isServerlessRuntime && !localDir) {
-    throw new Error('Local OCR trained data not found in serverless environment.');
-  }
+  const assets = resolveLocalTesseractAssets();
 
   initializingPromise = (async () => {
     let timeoutId = null;
+    let candidateWorker = null;
+
     try {
-      const tessCacheDir = path.join(os.tmpdir(), 'tess_cache');
-      try {
-        if (!fs.existsSync(tessCacheDir)) {
-          fs.mkdirSync(tessCacheDir, { recursive: true });
-        }
-      } catch (_) {}
-
-      const localFile = localDir ? path.join(localDir, 'eng.traineddata') : null;
-      const targetInCache = path.join(tessCacheDir, 'eng.traineddata');
-
-      if (localFile && fs.existsSync(localFile) && !fs.existsSync(targetInCache)) {
-        try {
-          fs.copyFileSync(localFile, targetInCache);
-        } catch (_) {}
-      }
-
-      const langPath = fs.existsSync(targetInCache)
-        ? tessCacheDir
-        : (localDir || undefined);
+      const workerErrorPromise = new Promise((_, reject) => {
+        activeWorkerErrorReject = (rawErr) => {
+          const initErr = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
+          initErr.code = 'LOCAL_OCR_INIT_FAILED';
+          initErr.cause = rawErr?.message || String(rawErr || 'Worker reported an error during initialization');
+          reject(initErr);
+        };
+      });
 
       const workerPromise = Tesseract.createWorker('eng', 1, {
-        langPath,
-        cachePath: tessCacheDir,
+        workerPath: assets.workerPath,
+        corePath: assets.corePath,
+        langPath: assets.langPath,
+        gzip: assets.gzip,
+        cacheMethod: 'none',
         errorHandler: (err) => {
-          console.warn('[Image OCR Worker Warning]', err?.message || err);
+          console.warn('[Image OCR Worker Error]', err?.message || err);
+          if (typeof activeWorkerErrorReject === 'function') {
+            const rejectFn = activeWorkerErrorReject;
+            activeWorkerErrorReject = null;
+            rejectFn(err);
+          }
         }
+      }).then((w) => {
+        candidateWorker = w;
+        return w;
       });
 
       const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
-          reject(new Error(`Tesseract worker initialization timed out (${timeoutMs}ms limit).`));
+          const timeoutErr = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
+          timeoutErr.code = 'LOCAL_OCR_INIT_FAILED';
+          timeoutErr.cause = `Tesseract worker initialization timed out (${timeoutMs}ms limit).`;
+          reject(timeoutErr);
         }, timeoutMs);
       });
 
-      const worker = await Promise.race([workerPromise, timeoutPromise]);
+      const worker = await Promise.race([workerPromise, workerErrorPromise, timeoutPromise]);
       workerInstance = worker;
       return workerInstance;
     } catch (workerErr) {
-      console.warn('[Image OCR Worker Init Error]:', workerErr?.message || workerErr);
-      throw workerErr;
+      console.warn('[Image OCR Worker Init Error]:', workerErr?.cause || workerErr?.message || workerErr);
+      if (candidateWorker) {
+        try {
+          await candidateWorker.terminate();
+        } catch (_) {}
+      }
+      const wrapped = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
+      wrapped.code = 'LOCAL_OCR_INIT_FAILED';
+      wrapped.cause = workerErr?.cause || workerErr?.message || String(workerErr);
+      throw wrapped;
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
+      activeWorkerErrorReject = null;
       initializingPromise = null;
     }
   })();
@@ -126,6 +257,7 @@ export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {
  * Safely discards the worker instance if it becomes unresponsive or corrupted.
  */
 export async function discardOcrWorker() {
+  activeWorkerErrorReject = null;
   if (workerInstance) {
     const worker = workerInstance;
     workerInstance = null;
@@ -216,8 +348,52 @@ export function detectReadableText(text, confidence = 0) {
 }
 
 /**
+ * Checks whether an error from Gemini Vision indicates offline / unreachable network / timeout
+ * so we break immediately and fall through to local Tesseract OCR without retrying extra cloud models.
+ */
+function isNetworkOrOfflineVisionError(err) {
+  const errMsg = String(err?.message || err || '').toLowerCase();
+  const causeMsg = String(err?.cause?.message || '').toLowerCase();
+  const combined = `${errMsg} ${causeMsg}`;
+  const causeCode = String(err?.cause?.code || err?.code || '').toUpperCase();
+
+  if (
+    combined.includes('fetch failed') ||
+    combined.includes('enotfound') ||
+    combined.includes('eai_again') ||
+    combined.includes('enetunreach') ||
+    combined.includes('ehostunreach') ||
+    combined.includes('econnrefused') ||
+    combined.includes('econnreset') ||
+    combined.includes('econnaborted') ||
+    combined.includes('etimedout') ||
+    combined.includes('err_internet_disconnected') ||
+    combined.includes('timed out') ||
+    combined.includes('abort') ||
+    combined.includes('network') ||
+    combined.includes('socket') ||
+    [
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'ENETUNREACH',
+      'EHOSTUNREACH',
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'ECONNABORTED',
+      'ETIMEDOUT',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_SOCKET'
+    ].includes(causeCode)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Vision-capable AI extraction using Gemini Vision.
- * Extremely fast, highly accurate, and eliminates native WebAssembly/worker_threads constraints in serverless.
+ * Extremely fast and accurate when online; aborts immediately on offline/network errors.
  *
  * @param {Buffer} imageBuffer
  * @param {string} mimeType
@@ -248,6 +424,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
 
     for (const model of candidateModels) {
       let timer = null;
+      const abortController = new AbortController();
       try {
         const visionPromise = ai.models.generateContent({
           model,
@@ -265,11 +442,17 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
                 }
               ]
             }
-          ]
+          ],
+          config: {
+            abortSignal: abortController.signal
+          }
         });
 
         const timeoutPromise = new Promise((_, reject) => {
           timer = setTimeout(() => {
+            try {
+              abortController.abort();
+            } catch (_) {}
             reject(new Error(`Vision call timed out after ${VISION_TIMEOUT_MS / 1000}s`));
           }, VISION_TIMEOUT_MS);
         });
@@ -293,18 +476,12 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
         };
       } catch (err) {
         if (timer) clearTimeout(timer);
-        const errMsg = String(err?.message || err || '').toLowerCase();
-        const causeCode = String(err?.cause?.code || err?.code || '').toUpperCase();
+        try {
+          abortController.abort();
+        } catch (_) {}
         console.warn(`[Gemini Vision candidate ${model}]:`, err?.message || err);
-        if (
-          errMsg.includes('fetch failed') ||
-          errMsg.includes('enotfound') ||
-          errMsg.includes('eai_again') ||
-          errMsg.includes('econnrefused') ||
-          errMsg.includes('network') ||
-          ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode)
-        ) {
-          // Offline / DNS unreachable: fall through immediately to local Tesseract OCR
+        if (isNetworkOrOfflineVisionError(err)) {
+          // Offline / DNS unreachable / connection timeout: fall through immediately to local Tesseract OCR
           break;
         }
       }
@@ -317,12 +494,12 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
 }
 
 /**
- * Executes server-side OCR on an image file with intelligent Vision priority and graceful fallback.
+ * Executes server-side OCR on an image file with online Gemini Vision priority and
+ * fully offline-capable local Tesseract.js fallback.
  *
- * Guarantees:
- * - Never hangs or exceeds serverless execution limits
- * - Always succeeds for valid JPG, JPEG, and PNG images (returns status: 'ready', hasText: boolean)
- * - Returns structured ImageOcrResult matching Orvix document context architecture
+ * Priority:
+ * 1. Online + Gemini Vision configured/reachable (and not explicitly offline) -> Gemini Vision OCR
+ * 2. Offline or Gemini Vision unreachable/unavailable -> Local Tesseract.js OCR using bundled assets
  *
  * @param {string|Buffer} filePathOrBuffer - Absolute path or Buffer of image bytes
  * @param {string} originalName - Original filename for metadata
@@ -331,6 +508,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
  * @param {string} [fileId] - Unique attachment ID
  * @param {{ width?: number, height?: number }} [dimensions] - Pre-parsed dimensions
  * @param {string|null} [apiKey] - Optional Gemini API key for vision
+ * @param {{ offline?: boolean, preferLocal?: boolean }} [options] - Optional execution hints
  * @returns {Promise<Object>}
  */
 export async function extractImageText(
@@ -340,8 +518,10 @@ export async function extractImageText(
   mimeType = 'image/jpeg',
   fileId = '',
   dimensions = undefined,
-  apiKey = null
+  apiKey = null,
+  options = {}
 ) {
+  const isOfflineHint = Boolean(options?.offline || options?.preferLocal);
   const isBuf = Buffer.isBuffer(filePathOrBuffer);
   const displayFilename = isBuf
     ? originalName || 'image'
@@ -359,14 +539,15 @@ export async function extractImageText(
       format: formatName,
       mimeType,
       dimensions,
-      status: 'ready',
-      success: true,
+      status: 'unsupported_format',
+      success: false,
       isImage: true,
       hasText: false,
       text: '',
       totalCharacters: 0,
       totalWords: 0,
-      warning: 'HEIC/HEIF uploaded. OCR text extraction requires standard JPEG/PNG format.',
+      error: 'HEIC/HEIF format cannot be processed for OCR offline. Please convert the image to PNG or JPEG.',
+      warning: 'HEIC/HEIF uploaded. OCR text extraction requires standard JPEG/PNG/WebP format.',
       extractedAt: nowIso
     };
   }
@@ -391,14 +572,14 @@ export async function extractImageText(
         format: formatName,
         mimeType,
         dimensions,
-        status: 'ready',
-        success: true,
+        status: 'error',
+        success: false,
         isImage: true,
         hasText: false,
         text: '',
         totalCharacters: 0,
         totalWords: 0,
-        warning: `Could not read image file: ${err?.message || 'File not found'}`,
+        error: `Could not read image file: ${err?.message || 'File not found'}`,
         extractedAt: nowIso
       };
     }
@@ -434,21 +615,22 @@ export async function extractImageText(
       mimeType,
       sizeBytes: imageSize,
       dimensions,
-      status: 'ready',
-      success: true,
+      status: 'error',
+      success: false,
       isImage: true,
       hasText: false,
       text: '',
       totalCharacters: 0,
       totalWords: 0,
-      warning: `Image exceeds ${Math.round(MAX_IMAGE_FILE_SIZE / (1024 * 1024))}MB limit for OCR extraction.`,
+      error: `Image exceeds ${Math.round(MAX_IMAGE_FILE_SIZE / (1024 * 1024))}MB limit for OCR extraction.`,
       extractedAt: nowIso
     };
   }
 
-  // 3. PRIORITY 1: Gemini Vision AI (fastest, serverless-native, < 1s execution)
+  // 3. PRIORITY 1: Gemini Vision AI when online and configured
+  // Skipped immediately when client reports offline/preferLocal so zero cloud calls are made offline.
   const geminiKey = apiKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-  if (geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
+  if (!isOfflineHint && geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
     try {
       const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, geminiKey);
       if (visionResult) {
@@ -467,6 +649,7 @@ export async function extractImageText(
             isImage: true,
             hasText: true,
             text: vText,
+            ocrEngine: 'gemini-vision',
             summaryText: generateSummaryPreview(vText),
             totalCharacters: vText.length,
             totalWords: countWords(vText),
@@ -488,6 +671,7 @@ export async function extractImageText(
             isImage: true,
             hasText: false,
             text: '',
+            ocrEngine: 'gemini-vision',
             summaryText: '',
             totalCharacters: 0,
             totalWords: 0,
@@ -499,11 +683,11 @@ export async function extractImageText(
         }
       }
     } catch (visionErr) {
-      console.warn('[Gemini Vision Priority Error, continuing to OCR]:', visionErr?.message || visionErr);
+      console.warn('[Gemini Vision Priority Error, falling back to local Tesseract OCR]:', visionErr?.message || visionErr);
     }
   }
 
-  // 4. PRIORITY 2: Local Tesseract OCR with strict timeout safeguards
+  // 4. PRIORITY 2: Local Tesseract.js OCR using strictly bundled local assets (100% offline)
   return new Promise((resolve) => {
     ocrQueue = ocrQueue
       .catch(() => {})
@@ -513,16 +697,23 @@ export async function extractImageText(
         try {
           const worker = await getWorker(OCR_WORKER_TIMEOUT_MS);
 
+          const recognizeErrorPromise = new Promise((_, reject) => {
+            activeWorkerErrorReject = (rawErr) => {
+              reject(new Error(rawErr?.message || String(rawErr || 'Local OCR worker recognition error')));
+            };
+          });
+
           const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
-              reject(new Error(`Tesseract recognition timed out (${OCR_RECOGNIZE_TIMEOUT_MS / 1000}s limit).`));
+              reject(new Error(`Local OCR recognition timed out (${Math.round(OCR_RECOGNIZE_TIMEOUT_MS / 1000)}s limit).`));
             }, OCR_RECOGNIZE_TIMEOUT_MS);
           });
 
           const recognitionPromise = worker.recognize(imageBuffer);
-          const ocrResult = await Promise.race([recognitionPromise, timeoutPromise]);
+          const ocrResult = await Promise.race([recognitionPromise, recognizeErrorPromise, timeoutPromise]);
 
           if (timeoutId) clearTimeout(timeoutId);
+          activeWorkerErrorReject = null;
 
           const rawText = ocrResult?.data?.text || '';
           const confidence = Math.round(ocrResult?.data?.confidence || 0);
@@ -548,6 +739,7 @@ export async function extractImageText(
               isImage: true,
               hasText: true,
               text: normalizedText,
+              ocrEngine: 'tesseract-local',
               summaryText,
               totalCharacters,
               totalWords,
@@ -557,7 +749,7 @@ export async function extractImageText(
             });
           }
 
-          // Confirmed no text in image
+          // Confirmed no readable text in image
           return resolve({
             fileId,
             filename: displayFilename,
@@ -571,6 +763,7 @@ export async function extractImageText(
             isImage: true,
             hasText: false,
             text: '',
+            ocrEngine: 'tesseract-local',
             summaryText: '',
             totalCharacters: 0,
             totalWords: 0,
@@ -581,40 +774,20 @@ export async function extractImageText(
           });
         } catch (ocrErr) {
           if (timeoutId) clearTimeout(timeoutId);
+          activeWorkerErrorReject = null;
           await discardOcrWorker();
-          console.warn('[Image OCR Fallback Notice]:', ocrErr?.message || ocrErr);
+          console.warn('[Local Tesseract OCR Error]:', ocrErr?.cause || ocrErr?.message || ocrErr);
 
-          // If Tesseract worker failed or timed out, attempt Gemini Vision fallback if available
-          if (geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
-            try {
-              const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, geminiKey);
-              if (visionResult && visionResult.hasText) {
-                const vText = visionResult.text;
-                return resolve({
-                  fileId,
-                  filename: displayFilename,
-                  originalName,
-                  format: formatName,
-                  mimeType,
-                  sizeBytes: imageSize,
-                  dimensions,
-                  status: 'ready',
-                  success: true,
-                  isImage: true,
-                  hasText: true,
-                  text: vText,
-                  summaryText: generateSummaryPreview(vText),
-                  totalCharacters: vText.length,
-                  totalWords: countWords(vText),
-                  lineCount: vText.split('\n').filter((l) => l.trim().length > 0).length,
-                  confidence: 95,
-                  extractedAt: nowIso
-                });
-              }
-            } catch (_) {}
-          }
+          // In serverless runtime when no Gemini key was configured and local OCR cannot run,
+          // keep serverless image upload non-fatal while surfacing a clear OCR notice if queried.
+          const isInitFailure =
+            ocrErr?.code === 'LOCAL_OCR_INIT_FAILED' ||
+            String(ocrErr?.message || '').includes(LOCAL_OCR_INIT_ERROR_MESSAGE);
 
-          // The image upload must ALWAYS succeed cleanly for valid images
+          const clearErrorMessage = isInitFailure
+            ? LOCAL_OCR_INIT_ERROR_MESSAGE
+            : `${LOCAL_OCR_INIT_ERROR_MESSAGE} (${ocrErr?.message || 'Recognition failed'})`;
+
           return resolve({
             fileId,
             filename: displayFilename,
@@ -623,17 +796,19 @@ export async function extractImageText(
             mimeType,
             sizeBytes: imageSize,
             dimensions,
-            status: 'ready',
-            success: true,
+            status: 'error',
+            success: false,
             isImage: true,
             hasText: false,
             text: '',
+            ocrEngine: 'tesseract-local',
             summaryText: '',
             totalCharacters: 0,
             totalWords: 0,
             lineCount: 0,
             confidence: 0,
-            message: 'Image uploaded successfully.',
+            error: clearErrorMessage,
+            message: clearErrorMessage,
             extractedAt: nowIso
           });
         }
