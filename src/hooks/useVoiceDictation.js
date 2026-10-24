@@ -75,13 +75,14 @@ export function detectDictationCapabilities() {
   const hasMediaRecorder = Boolean(window.MediaRecorder);
 
   // Engine mode resolution:
-  // - 'hybrid': Desktop & Mobile browsers with both Web Speech API and MediaRecorder (Concurrent live preview + Whisper refinement)
+  // - 'hybrid': Desktop browsers with both Web Speech API and MediaRecorder (Concurrent live preview + Whisper refinement)
+  // - 'native-live': Mobile browsers with Web Speech API (Exclusive SpeechRecognition to prevent Android hardware mic lock, with Whisper refinement on Stop)
   // - 'direct-audio': Firefox, iOS standalone PWAs, & browsers without functional SpeechRecognition (Direct MediaRecorder capture + Whisper transcription)
   // - 'native-only': Browsers with SpeechRecognition but missing MediaRecorder
   // - 'unsupported': Neither capability available
   let engineMode = 'unsupported';
   if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
-    engineMode = 'hybrid';
+    engineMode = isMobile ? 'native-live' : 'hybrid';
   } else if (hasGetUserMedia && hasMediaRecorder) {
     engineMode = 'direct-audio';
   } else if (!isFirefox && hasSpeechRecognition) {
@@ -915,11 +916,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       isStartingRef.current = true;
 
       // 1. In parallel for fresh sessions (isNewSession), initialize microphone stream for audio visualizer & MediaRecorder
+      // Desktop 'hybrid' mode records concurrent audio for Whisper.
+      // Mobile 'native-live' mode provides exclusive microphone access to SpeechRecognition to avoid Android hardware mic lock conflicts.
       const shouldRecordConcurrentAudio =
         isNewSession &&
         caps.hasGetUserMedia &&
         caps.hasMediaRecorder &&
-        (caps.engineMode === 'hybrid' || caps.engineMode === 'native-live');
+        caps.engineMode === 'hybrid';
 
       if (shouldRecordConcurrentAudio) {
         acquireMicrophoneStream()
@@ -955,13 +958,14 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       // 2. Synchronously instantiate and start SpeechRecognition under the active user activation
       try {
         const recognition = new SpeechRecognition();
-        recognition.continuous = true;
+        // On mobile Android, continuous = false guarantees immediate progressive interim results without holding frames until speech pauses
+        recognition.continuous = !caps.isMobile;
         recognition.interimResults = true;
         recognition.maxAlternatives = 1;
         recognition.lang = selectedLanguageRef.current;
 
         console.log(
-          `[Dictation] Initializing recognition (continuous: true, interimResults: true, lang: ${selectedLanguageRef.current})`
+          `[Dictation] Initializing recognition (continuous: ${!caps.isMobile}, interimResults: true, lang: ${selectedLanguageRef.current})`
         );
 
         hasFatalErrorRef.current = false;
@@ -1000,6 +1004,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           if (instanceCounterRef.current !== currentInstanceId) return;
           if (isExplicitStopRef.current) return;
           consecutiveErrorsRef.current = 0;
+          consecutiveSilenceRestartsRef.current = 0;
 
           // 1. Process all newly finalized results
           for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -1633,12 +1638,15 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       nativeSessionTranscriptRef.current = currentNativeSpeech;
       expectedEmittedBeforeTranscribeRef.current = preTranscribeValue;
 
-      // Only submit to Whisper endpoint if non-trivial audio was recorded (>= 300 bytes)
-      if (finalBlob && finalBlob.size >= 300) {
+      const hasRecordedBlob = Boolean(finalBlob && finalBlob.size >= 300);
+      const hasSpeechToRefine = Boolean(totalSessionSpeech && totalSessionSpeech.trim());
+
+      // Trigger Whisper refinement if audio was recorded (>= 300 bytes) OR if live speech was dictated
+      if (hasRecordedBlob || hasSpeechToRefine) {
         console.log(
-          `[Dictation] Submitting audio for transcription (${finalBlob.size} bytes, type: ${
-            finalBlob.type || 'unknown'
-          }, lang: ${selectedLanguageRef.current})`
+          `[Dictation] Submitting for Whisper transcription (hasBlob: ${hasRecordedBlob}, speech: "${
+            (totalSessionSpeech || '').slice(0, 30)
+          }...", lang: ${selectedLanguageRef.current})`
         );
         transcriptionSessionCounterRef.current += 1;
         const currentSessionId = transcriptionSessionCounterRef.current;
@@ -1655,7 +1663,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
         try {
           const result = await transcribeAudioBlob({
-            audioBlob: finalBlob,
+            audioBlob: hasRecordedBlob ? finalBlob : null,
+            transcript: totalSessionSpeech,
             language: selectedLanguageRef.current,
             prompt: 'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, palindrome, algorithms, async await, promises, functions, objects, arrays, code',
             signal: abortCtrl.signal

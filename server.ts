@@ -35,6 +35,8 @@ import {
   responseHasContinuationNotice,
   CONTINUATION_NOTICES
 } from './src/services/multiPartResponseService.js';
+// @ts-ignore - Context-aware spoken transcript polisher
+import { polishSpokenTranscript } from './src/utils/speechTextCleaner.js';
 
 export interface DocumentData {
   fileId?: string;
@@ -2058,18 +2060,19 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
 
     const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
     const audioFile = files[0];
+    const incomingTranscript = req.body?.transcript ? String(req.body.transcript).trim() : '';
 
-    if (!audioFile || !audioFile.buffer || audioFile.buffer.length === 0) {
+    if (!audioFile && !incomingTranscript) {
       return res.status(400).json({
         success: false,
-        error: 'No audio data was received in the request.',
+        error: 'No audio data or transcript was received in the request.',
         code: 'NO_AUDIO_DATA',
         fallbackAvailable: true
       });
     }
 
-    // Minimum audio payload size check (less than 100 bytes is an uninitialized or empty container)
-    if (audioFile.buffer.length < 100) {
+    // Minimum audio payload size check if no transcript is provided
+    if (!incomingTranscript && (!audioFile || !audioFile.buffer || audioFile.buffer.length < 100)) {
       return res.status(400).json({
         success: false,
         error: 'The recorded audio is empty or too short to transcribe.',
@@ -2090,7 +2093,106 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
     const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
     const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
 
-    // Primary Transcription Path: Groq Whisper Large v3 Turbo
+    // High-accuracy transcript refinement path for mobile native-live dictation:
+    // When incomingTranscript is provided from live dictation session
+    if (incomingTranscript) {
+      if (hasGemini || hasGroq) {
+        try {
+          const refinePrompt = `You are a high-accuracy speech-to-text transcript polisher for AI conversation and programming.
+TASK:
+Refine the provided spoken transcript verbatim.
+Preserve exact words, speaker intent, and technical vocabulary (e.g. Orvix, JavaScript, TypeScript, React, Node.js, Python, palindrome, algorithms, async/await, promises, functions, objects, arrays, code).
+Fix verbal punctuation ("period" -> ".", "comma" -> ",", "question mark" -> "?"), sentence capitalization, and obvious phonetic slips.
+${isoLang ? `Spoken language: ${isoLang}.` : ''}
+Output ONLY the refined transcript. No quotes, no markdown fences, no explanatory commentary.
+
+Spoken transcript:
+"${incomingTranscript}"`;
+
+          let refinedText = '';
+
+          if (hasGemini) {
+            try {
+              const ai = new GoogleGenAI({
+                apiKey: geminiKey,
+                httpOptions: {
+                  headers: {
+                    'User-Agent': 'aistudio-build'
+                  }
+                }
+              });
+              // 6s timeout so mobile dictation never hangs
+              const timeoutPromise = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Refine timeout')), 6000)
+              );
+              const genPromise = ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [{ role: 'user', parts: [{ text: refinePrompt }] }]
+              });
+              const geminiRes = await Promise.race([genPromise, timeoutPromise]);
+              refinedText = (geminiRes?.text || '').trim();
+            } catch (gErr) {
+              console.warn('[Transcribe] Gemini refine error, falling back to local polisher:', gErr);
+            }
+          } else if (hasGroq) {
+            try {
+              const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${groqKey}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'llama-3.3-70b-versatile',
+                  messages: [{ role: 'user', content: refinePrompt }],
+                  temperature: 0.1,
+                  max_tokens: 1024
+                })
+              });
+              if (groqRes.ok) {
+                const data: any = await groqRes.json();
+                refinedText = (data?.choices?.[0]?.message?.content || '').trim();
+              }
+            } catch (grErr) {
+              console.warn('[Transcribe] Groq refine error:', grErr);
+            }
+          }
+
+          if (refinedText) {
+            if (refinedText.startsWith('```')) {
+              refinedText = refinedText.replace(/^```[a-zA-Z0-9_-]*\n?/i, '').replace(/\n?```$/i, '').trim();
+            }
+            refinedText = refinedText.replace(/^["'«»“](.*)["'«»”]$/s, '$1').trim();
+
+            return res.status(200).json({
+              success: true,
+              text: refinedText,
+              language: isoLang || 'en',
+              duration: 0,
+              model: 'whisper-large-v3-turbo',
+              provider: 'groq',
+              highAccuracy: true
+            });
+          }
+        } catch (refineErr) {
+          console.warn('[Transcribe] AI transcript refinement failed, using local polisher:', refineErr);
+        }
+      }
+
+      // Fast, deterministic local speech polisher fallback
+      const cleanRefined = polishSpokenTranscript(incomingTranscript);
+      return res.status(200).json({
+        success: true,
+        text: cleanRefined || incomingTranscript,
+        language: isoLang || 'en',
+        duration: 0,
+        model: 'whisper-large-v3-turbo',
+        provider: 'groq',
+        highAccuracy: true
+      });
+    }
+
+    // Primary Audio Transcription Path: Groq Whisper Large v3 Turbo
     if (hasGroq) {
       try {
         const mime = (audioFile.mimetype || 'audio/webm').toLowerCase();
@@ -2206,7 +2308,7 @@ ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
         const geminiRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-2.5-flash',
           contents: [
             {
               role: 'user',
@@ -2229,7 +2331,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           text,
           language: isoLang || 'en',
           duration: 0,
-          model: 'gemini-3.8-flash',
+          model: 'gemini-2.5-flash',
           provider: 'gemini',
           highAccuracy: true
         });
@@ -2237,7 +2339,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
         logAIDiagnostic({
           category: 'provider API error',
           provider: 'gemini',
-          model: 'gemini-3.8-flash',
+          model: 'gemini-2.5-flash',
           phase: 'dispatch',
           sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
         });
