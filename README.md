@@ -1,9 +1,9 @@
 # Orvix
 
-**Current Version: Orvix v0.9.3** *(Application Package: v0.9.0)*
+**Current Version: Orvix v0.9.4** *(Application Package: v0.9.0)*
 
 <p align="center">
-  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
+  <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring On-Device Browser AI (WebLLM & WebGPU), Offline PWA App-Shell Caching, Client-Side Document Extraction, Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
 </p>
 
 ---
@@ -12,19 +12,36 @@
 
 1. [Project Overview](#project-overview)
 2. [Key Features](#key-features)
-3. [Message Copying, Markdown Rendering & Table Formatting](#message-copying-markdown-rendering--table-formatting)
+3. [Browser AI (WebLLM) & On-Device WebGPU Inference](#browser-ai-webllm--on-device-webgpu-inference)
+   - [Strictly Local Browser Execution & Zero-API Privacy](#strictly-local-browser-execution--zero-api-privacy)
+   - [Configured Qwen 2.5 Model Variants & Quantization Tiers](#configured-qwen-25-model-variants--quantization-tiers)
+   - [Dedicated Web Worker Architecture](#dedicated-web-worker-architecture)
+   - [Browser AI Status Bar & Interactive Controls](#browser-ai-status-bar--interactive-controls)
+4. [Offline Functionality & PWA Caching Architecture](#offline-functionality--pwa-caching-architecture)
+   - [App Shell Precache vs. Model Weight Cache](#app-shell-precache-vs-model-weight-cache)
+   - [Prerequisites for Reliable Offline Use](#prerequisites-for-reliable-offline-use)
+   - [Model Weight Retention & Storage Lifecycle](#model-weight-retention--storage-lifecycle)
+   - [Behavior of Cloud Providers & Local Ollama When Offline](#behavior-of-cloud-providers--local-ollama-when-offline)
+   - [Mobile Device Hardware Realities](#mobile-device-hardware-realities)
+5. [Browser-Side Document Extraction (Offline & Local)](#browser-side-document-extraction-offline--local)
+   - [Supported Offline Document Formats](#supported-offline-document-formats)
+   - [Document Structure Preservation & Context Formatting](#document-structure-preservation--context-formatting)
+   - [Scanned PDF & Image OCR Limitations Offline](#scanned-pdf--image-ocr-limitations-offline)
+   - [IndexedDB Binary Attachment Caching](#indexeddb-binary-attachment-caching)
+6. [Step-by-Step Guide: Using Browser AI Offline](#step-by-step-guide-using-browser-ai-offline)
+7. [Message Copying, Markdown Rendering & Table Formatting](#message-copying-markdown-rendering--table-formatting)
    - [Dual-Format Clipboard Generation (`text/html` and `text/plain`)](#dual-format-clipboard-generation-texthtml-and-textplain)
    - [Plain-Text Record Layout for Messaging Applications (WhatsApp, Telegram)](#plain-text-record-layout-for-messaging-applications-whatsapp-telegram)
    - [Rich HTML Table Styling for Documents & Workspaces](#rich-html-table-styling-for-documents--workspaces)
    - [Mixed-Content Parsing & Code Block Protection](#mixed-content-parsing--code-block-protection)
    - [Three-Tier Clipboard Writing Strategy & Fallbacks](#three-tier-clipboard-writing-strategy--fallbacks)
-4. [Mobile Responsiveness & Swipe Navigation](#mobile-responsiveness--swipe-navigation)
+8. [Mobile Responsiveness & Swipe Navigation](#mobile-responsiveness--swipe-navigation)
    - [Main Conversation Area Swipe-Right Activation](#main-conversation-area-swipe-right-activation)
    - [Excluded Zones & Interaction Safeguards](#excluded-zones--interaction-safeguards)
    - [Horizontal Intent Disambiguation vs. Vertical Scroll](#horizontal-intent-disambiguation-vs-vertical-scroll)
    - [Activation Thresholds & Quick Flick Detection](#activation-thresholds--quick-flick-detection)
    - [Dual Touch and Pointer Event Architecture](#dual-touch-and-pointer-event-architecture)
-5. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
+9. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
    - [Cross-Platform Hybrid & Direct-Audio Engine Support](#cross-platform-hybrid--direct-audio-engine-support)
    - [Mobile & PWA Live Speech Recognition](#mobile--pwa-live-speech-recognition)
    - [Correct Interim Transcript Handling & Snapshot Replacement](#correct-interim-transcript-handling--snapshot-replacement)
@@ -36,61 +53,64 @@
    - [Context-Aware Technical Polishing](#context-aware-technical-polishing)
    - [Session Isolation & Stale Result Protection](#session-isolation--stale-result-protection)
    - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
-6. [Chatbot Modes](#chatbot-modes)
-   - [1. General Assistant Mode](#1-general-assistant-mode)
-   - [2. Learning Mode](#2-learning-mode)
-   - [3. Writing Mode](#3-writing-mode)
-   - [4. Coding Mode](#4-coding-mode)
-7. [AI Providers & Supported Models](#ai-providers--supported-models)
-   - [Supported Providers & Models](#supported-providers--models)
-   - [Provider Context Budgets](#provider-context-budgets)
-   - [Streaming & Fallback System](#streaming--fallback-system)
-   - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
-8. [Attachments & Deep Document Understanding](#attachments--deep-document-understanding)
-   - [Three Multimodal Attachment Methods](#three-multimodal-attachment-methods)
-   - [Attachment Constraints & Rules](#attachment-constraints--rules)
-   - [Supported Document Formats](#supported-document-formats)
-   - [Targeted Questioning & Presenter Notes](#targeted-questioning--presenter-notes)
-9. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
-   - [Supported Image Formats & Binary Verification](#supported-image-formats--binary-verification)
-   - [Server-Side OCR Engine](#server-side-ocr-engine)
-   - [Honest No-Readable-Text Handling](#honest-no-readable-text-handling)
-   - [Dual-Tab Preview Modal](#dual-tab-preview-modal)
-10. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
+10. [Chatbot Modes](#chatbot-modes)
+    - [1. General Assistant Mode](#1-general-assistant-mode)
+    - [2. Learning Mode](#2-learning-mode)
+    - [3. Writing Mode](#3-writing-mode)
+    - [4. Coding Mode](#4-coding-mode)
+11. [AI Providers & Supported Models](#ai-providers--supported-models)
+    - [Supported Providers & Models](#supported-providers--models)
+    - [Provider Context Budgets](#provider-context-budgets)
+    - [Streaming & Fallback System](#streaming--fallback-system)
+    - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
+12. [Attachments & Deep Document Understanding](#attachments--deep-document-understanding)
+    - [Three Multimodal Attachment Methods](#three-multimodal-attachment-methods)
+    - [Attachment Constraints & Rules](#attachment-constraints--rules)
+    - [Supported Document Formats](#supported-document-formats)
+    - [Targeted Questioning & Presenter Notes](#targeted-questioning--presenter-notes)
+13. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
+    - [Supported Image Formats & Binary Verification](#supported-image-formats--binary-verification)
+    - [Server-Side OCR Engine](#server-side-ocr-engine)
+    - [Honest No-Readable-Text Handling](#honest-no-readable-text-handling)
+    - [Dual-Tab Preview Modal](#dual-tab-preview-modal)
+14. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
     - [Multi-Model Alternative Response Regeneration](#multi-model-alternative-response-regeneration)
     - [Automatic Chat-Input Focus](#automatic-chat-input-focus)
     - [Live Response-Time Measurement](#live-response-time-measurement)
     - [Controlled Large-Response Continuation](#controlled-large-response-continuation)
     - [Conversation Pinning & Client-Side Export](#conversation-pinning--client-side-export)
-11. [Architecture & Technology Stack](#architecture--technology-stack)
-12. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
-13. [Project Structure](#project-structure)
-14. [Environment Variables & Configuration](#environment-variables--configuration)
-15. [Installation & Running Locally](#installation--running-locally)
-16. [Build & Deployment Instructions](#build--deployment-instructions)
-17. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
-18. [Security Architecture](#security-architecture)
-19. [Current Limitations](#current-limitations)
-20. [Version History & Detailed Changelog](#version-history--detailed-changelog)
-21. [Future Roadmap](#future-roadmap)
+15. [Architecture & Technology Stack](#architecture--technology-stack)
+16. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
+17. [Project Structure](#project-structure)
+18. [Environment Variables & Configuration](#environment-variables--configuration)
+19. [Installation & Running Locally](#installation--running-locally)
+20. [Build & Deployment Instructions](#build--deployment-instructions)
+21. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
+22. [Security Architecture](#security-architecture)
+23. [Current Limitations](#current-limitations)
+24. [Version History & Detailed Changelog](#version-history--detailed-changelog)
+25. [Future Roadmap](#future-roadmap)
 
 ---
 
 ## Project Overview
 
-**Orvix** is an intelligent, multi-model AI conversational workspace built to deliver production-grade text generation, specialized conversational modes, multi-provider model comparisons, keyboard-first interaction, precision code rendering, transparent latency tracking, fluid mobile touch gestures, voice dictation, dual-format table copying, and multi-format document analysis.
+**Orvix** is an intelligent, multi-model AI conversational workspace built to deliver production-grade text generation, specialized conversational modes, multi-provider model comparisons, keyboard-first interaction, precision code rendering, transparent latency tracking, fluid mobile touch gestures, voice dictation, dual-format table copying, multi-format document analysis, and **fully offline on-device AI generation via WebGPU and WebLLM**.
 
-Engineered as a full-stack Node.js application, Orvix pairs a responsive React 19 single-page application with an Express proxy backend running Vite in middleware mode. All AI completions, speech transcriptions, file uploads, and OCR operations are executed server-side to guarantee that API credentials, tokens, and storage paths remain strictly private.
+Engineered as a full-stack Node.js application, Orvix pairs a responsive React 19 single-page application with an Express proxy backend running Vite in middleware mode. When connected to the internet, all cloud AI completions, speech transcriptions, file uploads, and OCR operations are executed server-side to guarantee that API credentials, tokens, and storage paths remain strictly private. When offline, Orvix leverages Workbox PWA app-shell precaching, on-device WebLLM inference, and browser-side document extraction to allow visitors to reopen the application and chat with locally running models without any network connection.
 
 ---
 
 ## Key Features
 
+- **On-Device Browser AI (WebLLM)**: Run verified Qwen 2.5 Instruct models (`0.5B` lightweight and `1.5B` standard) directly inside the browser using WebGPU and a dedicated Web Worker off the main thread. Delivers completely private, zero-API local inference without sending prompts or documents to external servers.
+- **Offline PWA App-Shell & Model Caching**: Workbox service worker precaches all production code, styles, WebLLM workers, and client document parsers. Reopen and use the deployed Orvix application completely offline after initial setup, with independent model weight caching in browser Cache Storage.
+- **Client-Side Document Parsing for Offline Context**: Offline text extraction for TXT, Markdown, CSV, TSV, JSON, XML, Word (`.docx` via `mammoth`), PDF (`.pdf` via `unpdf`), and PowerPoint (`.pptx` via `jszip` with speaker notes), enabling grounded, local document Q&A without cloud dependencies.
 - **Dual-Format Table & Message Copying**: Copies assistant responses as both rich `text/html` and optimized `text/plain`. Tables pasted into messaging apps (such as WhatsApp) render as clear, structured field-value records so values never lose their column associations, while rich destinations (Google Docs, Word, Slack) receive formatted HTML tables with borders and backgrounds.
 - **Main Conversation Mobile Swipe Navigation**: Fluid swipe-right gesture active across the main conversation area on mobile and tablet screens to open chat history, with exclusions for the top header, bottom composer, interactive buttons, code blocks, and an iOS-safe margin (>16px) to avoid native edge navigation conflicts.
 - **High-Accuracy Voice Dictation**: Cross-platform dual-engine dictation combining mobile/PWA and desktop live browser speech recognition with server-side Whisper Large v3 Turbo audio refinement. Features real-time interim transcript rendering with deduplication, continuous audio buffering, 9 supported locales, silence restart recovery, and context-aware technical polishing.
 - **Four Specialized Chatbot Modes**: Purpose-built modes for **General Assistant**, **Learning**, **Writing**, and **Coding** with custom system prompts, specialized typography, educational callouts, editorial layouts, and VS Code-style code blocks.
-- **Multi-Model Response Alternatives**: Compare outputs across different AI providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI) without overwriting existing messages, navigable via an interactive `< X of Y >` pager.
+- **Multi-Model Response Alternatives**: Compare outputs across different AI providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI, Browser AI) without overwriting existing messages, navigable via an interactive `< X of Y >` pager.
 - **Automatic Chat-Input Focus**: Type naturally from anywhere on the page to immediately activate the message composer without losing the first keystroke, with complete protection for text selection, keyboard shortcuts, and modal dialogs.
 - **Pixel-Perfect Code Blocks**: Mathematically locked 22px line height with zero vertical line-number drift over 500+ lines, syntax highlighting for 20+ languages, sticky line number gutter, and clean source code clipboard copying.
 - **Live Response-Time Tracking**: Real-time elapsed duration timer (`Thinking... X.Xs`) updating every 100ms during streaming, transitioning to an immutable duration badge (`Response time: X.Xs`) saved across sessions and exports.
@@ -100,6 +120,269 @@ Engineered as a full-stack Node.js application, Orvix pairs a responsive React 1
 - **Server-Side OCR Engine**: Powered by `tesseract.js` with binary magic number verification, image metadata inspection, and honest "No readable text detected" handling.
 - **Flexible Data Persistence**: Browser IndexedDB for raw binary attachment caching, Cloud Firestore for authenticated cross-device sync, and `localStorage` for complete Guest Mode usage.
 - **Zero-Key Simulation Mode**: Runs immediately out-of-the-box without requiring API keys, providing realistic local responses for testing all UI workflows, attachments, and exports.
+
+---
+
+## Browser AI (WebLLM) & On-Device WebGPU Inference
+
+Orvix features an on-device local AI engine implemented in `src/services/webllmService.js` and executed inside a dedicated background worker (`src/workers/webllmWorker.js`). Powered by `@mlc-ai/web-llm` and the browser's native **WebGPU API**, Browser AI allows visitors to run compact, highly capable open-weight language models directly on their own device's graphics processor.
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   ORVIX ON-DEVICE BROWSER AI ARCHITECTURE              │
+├────────────────────────────────────────────────────────────────────────┤
+│ 1. VISITOR'S BROWSER (Main UI Thread)                                  │
+│    • React 19 UI & Composer                                            │
+│    • Browser AI Status Bar (progress %, memory state, model picker)    │
+│    • Client-Side Document Extractor (PDF, DOCX, PPTX, TXT, CSV, JSON)  │
+│                                    ↕                                   │
+│ 2. DEDICATED WEB WORKER (`src/workers/webllmWorker.js`)               │
+│    • WebWorkerMLCEngineHandler off the main thread (zero UI stutter)   │
+│    • Tokenizer & SentencePiece decoding                                │
+│    • WASM shader compiler & prefill/decode pipeline                    │
+│                                    ↕                                   │
+│ 3. HARDWARE & CACHE APIS                                               │
+│    • WebGPU Device Pipeline (GPU VRAM allocation & shader execution)   │
+│    • Browser Cache Storage (`webllm/model`, `webllm/config`, etc.)     │
+│    • 100% On-Device — 0 bytes sent to external AI servers or proxies   │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Strictly Local Browser Execution & Zero-API Privacy
+
+Unlike cloud-based providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI) that transmit prompts, conversation history, and document contents across the internet to external datacenters, **Browser AI executes entirely within the visitor's local browser context**:
+
+- **No API Keys or Cloud Accounts Required**: Browser AI requires zero credentials, billing accounts, or proxy tokens.
+- **Complete Data Confidentiality**: Input prompts, system instructions, conversation context, and extracted file attachments remain on the user's physical machine. Prompts are never logged, routed through server endpoints, or used for model training.
+- **Zero Server Infrastructure Dependencies**: Token generation runs on the client's local graphics processor (GPU). Even if the Orvix backend server is unreachable or offline, on-device generation continues without interruption.
+- **Companion Provider Option**: Browser AI is integrated as a peer option alongside Orvix's cloud providers and Local AI (Ollama). Users can switch between cloud models and Browser AI at any time using the model selector dropdown in the navigation header.
+
+### Configured Qwen 2.5 Model Variants & Quantization Tiers
+
+Orvix packages verified model configurations from the prebuilt **Qwen 2.5 Instruct** series, quantized for WebGPU execution:
+
+| Model Option | Model Identifier | Quantization | Est. Download | Required VRAM | Context Window | Target Devices |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Qwen 2.5 0.5B Instruct (Lightweight)** | `Qwen2.5-0.5B-Instruct-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~420 MB | ~945 MB | 4,096 tokens | Mobile phones, tablets, laptops, integrated GPUs |
+| **Qwen 2.5 0.5B (FP32 Fallback)** | `Qwen2.5-0.5B-Instruct-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~490 MB | ~1,060 MB | 4,096 tokens | Devices without native `shader-f16` support |
+| **Qwen 2.5 1.5B Instruct (Standard)** | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~960 MB | ~1,630 MB | 4,096 tokens | Modern desktop GPUs, high-memory laptops |
+| **Qwen 2.5 1.5B (FP32 Fallback)** | `Qwen2.5-1.5B-Instruct-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~1,120 MB | ~1,890 MB | 4,096 tokens | Desktop GPUs without `shader-f16` |
+
+- **Mobile-Friendly Default**: To maximize compatibility on resource-constrained mobile hardware, battery-powered laptops, and integrated GPUs, Orvix provides the lightweight **Qwen 2.5 0.5B** variant, which downloads in roughly half the time and requires less than 1 GB of GPU memory.
+- **Automatic Shader-F16 Compatibility Fallback**: Before loading model weights, `checkWebGPUSupport()` inspects the active graphics adapter for the WebGPU 16-bit floating point extension (`shader-f16`). If the visitor's hardware does not support `shader-f16`, `resolveWebLLMModelId()` automatically routes to the compatible `q4f32_1` variant, preventing initialization crashes.
+- **Browser-Managed Weight Storage**: Model weights are stored in browser Cache Storage across partitioned tensor shards. They are never downloaded in a single monolithic file. If a network interruption occurs during download, already-cached shards are preserved and resume automatically on the next attempt.
+
+### Dedicated Web Worker Architecture
+
+To prevent heavy tokenization and WebGPU shader compilation from locking the user interface:
+- **Dedicated Worker Thread (`src/workers/webllmWorker.js`)**: All WebLLM runtime code, tensor operations, tokenizer lookups, and WebGPU queue dispatches run off the main DOM thread inside a dedicated Web Worker instantiated via `CreateWebWorkerMLCEngine`.
+- **Fluid UI Interaction**: Animations, typing into the composer, scrolling chat history, switching tabs, and opening modals remain smooth at 60 FPS while the model compiles or streams tokens.
+- **Strict Serialization**: Model generation calls are serialized through a generation queue (`generationQueuePromise`) so concurrent requests or rapid clicks do not corrupt the WebGPU command buffers.
+- **Clean Cancellation**: Users can click the **Stop** button (`Square` icon) at any time. Orvix calls `engine.interruptGenerate()` in the worker, instantly halting token generation and preserving the partial response generated so far without reloading the engine.
+
+### Browser AI Status Bar & Interactive Controls
+
+When Browser AI is selected in the provider dropdown, an interactive status and progress dock (`src/components/chat/BrowserAIStatusBar.jsx`) mounts directly above the message composer:
+
+- **Hardware Compatibility Indicator**: Surfaces immediate feedback if WebGPU is unsupported, hardware acceleration is disabled, or an insecure (non-HTTPS) context is detected.
+- **Granular Shard Download Progress**: Displays active download percentage (`0–100%`), total elapsed time, and human-readable progress descriptions (`"Fetching param_shard_3.bin (45%)..."`).
+- **GPU Memory Compilation State**: Indicates when weights are being loaded from browser disk cache into GPU VRAM (`"Compiling WebGPU shaders and loading cached weights..."`).
+- **Interactive Controls**:
+  - **Model Selector Dropdown**: Switch between the 0.5B Lightweight model and the 1.5B Standard model.
+  - **Load Model**: Triggers on-demand download and initialization without requiring a message submission.
+  - **Cancel (`✕`)**: Halts an active model download or initialization attempt cleanly.
+  - **Retry (`RotateCcw`)**: Appears on connection or GPU initialization errors to retry with a single click.
+  - **Unload (`Trash2`)**: Releases the model from GPU VRAM when finished to free device memory for other tabs, while **keeping all downloaded model shards intact in browser disk cache** for instant reloading later.
+
+---
+
+## Offline Functionality & PWA Caching Architecture
+
+Orvix is built with Progressive Web App (PWA) compliance and offline resilience, allowing users to reopen the deployed application and engage with Browser AI even when completely disconnected from the internet.
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   ORVIX TWO-TIER OFFLINE CACHING MODEL                 │
+├───────────────────────────────────┬────────────────────────────────────┤
+│ TIER 1: APP-SHELL PRECACHE        │ TIER 2: MODEL WEIGHT CACHE         │
+│ (Managed via Workbox / VitePWA)   │ (Managed via WebLLM Cache Storage) │
+├───────────────────────────────────┼────────────────────────────────────┤
+│ • Production HTML (`index.html`)  │ • Quantized Model Weight Shards    │
+│ • Application JS & CSS Bundles    │ • Model Configuration JSON         │
+│ • WebLLM Web Worker (`webllmWorker`)│ • Model WASM Runtime Binary      │
+│ • WebLLM Library Chunk (`lib-*.js`)│ • Tokenizer Vocabulary            │
+│ • Client Parsers (PDF, DOCX, PPTX)│                                    │
+│ • App Icons & PWA Webmanifest     │ • Size: ~420 MB – 1.15 GB          │
+│ • Size: ~15.4 MB total            │ • Scope: Device storage            │
+└───────────────────────────────────┴────────────────────────────────────┘
+```
+
+### App Shell Precache vs. Model Weight Cache
+
+A fundamental design principle in Orvix is the strict separation between the **Application Shell Precache** and the **AI Model Weight Cache**:
+
+1. **Application Shell Precache (Workbox / Service Worker)**:
+   - Configured in `vite.config.ts` via `vite-plugin-pwa` with `maximumFileSizeToCacheInBytes: 8 * 1024 * 1024` (8 MB).
+   - Precaches the production HTML, CSS stylesheets, application JavaScript chunks, icon assets, web app manifest, the dedicated WebLLM Web Worker, and lazy-loaded document parsing libraries (`mammoth`, `unpdf`, `jszip`).
+   - Ensures the entire user interface, composer, sidebar, settings, and offline parsers load instantly offline.
+   - **Excludes API endpoints**: Explicitly excludes `/api/*`, `/health`, `/chat`, `/config`, `/transcribe`, and `/upload` from the SPA navigation fallback denylist (`navigateFallbackDenylist`) and enforces `NetworkOnly` runtime caching so API requests never accidentally return cached HTML.
+2. **AI Model Weight Cache (WebLLM / Cache API)**:
+   - WebLLM manages its own model shards inside dedicated Cache Storage buckets (`webllm/model`, `webllm/config`, `webllm/wasm`).
+   - **Model weights (~420 MB to ~1.15 GB) are NEVER precached via Workbox**. Storing ~1 GB of model weights in the service worker precache manifest would cause excessive network bloat, slow down initial page loads, and fail service worker installations on slower connections.
+   - Model weights are downloaded strictly on demand when the user requests or loads Browser AI.
+
+### Prerequisites for Reliable Offline Use
+
+To use Orvix offline, two prerequisites must be completed while an internet connection is available:
+
+1. **Initial Online Visit**: The visitor must open the deployed Orvix website (over HTTPS or localhost) while connected to the internet. The service worker installs and precaches the application shell in the background.
+2. **Model Download Completion**: The visitor must select **Browser AI (WebLLM)** and download their preferred model (either by clicking **Load Model** in the status bar or by sending a first prompt). The status bar must reach `"Ready on device"`.
+
+Once both conditions are fulfilled, the visitor can disconnect from the internet, close the tab or PWA, reopen Orvix offline at any time, and generate AI responses locally.
+
+> **Important**: Do not expect an uncached visitor to open the deployed website offline for the very first time. An initial online visit is mathematically required for the browser to download the code, service worker, and model weights.
+
+### Model Weight Retention & Storage Lifecycle
+
+- **Closing the Browser / PWA**: Closing the browser window, closing the installed PWA, or shutting down the device **does not delete the cached model**. Shards remain stored in the browser's Cache Storage.
+- **Reopening Offline**: When reopening Orvix offline, `isWebLLMModelCached()` checks the local cache. If the model shards, config, and WASM binary are present, Orvix displays:  
+  `"Offline mode — App shell & Qwen 2.5 0.5B are cached on this device."`  
+  Clicking **Load Model** or sending a prompt loads the cached model directly into GPU memory without touching the network.
+- **What Causes Model Eviction?**:
+  - Manually clearing browser site data, cookies, or cache in browser settings.
+  - Using **Private Browsing / Incognito Mode** (browsers discard Cache Storage when the private window closes).
+  - Browser storage pressure eviction (if device free disk space drops critically low, browsers may evict non-persistent caches). Orvix proactively requests `navigator.storage.persist()` to minimize eviction risk.
+  - Switching to an entirely different web browser or operating system profile (browser caches are isolated per browser).
+
+### Behavior of Cloud Providers & Local Ollama When Offline
+
+When Orvix detects that the browser is offline (`!navigator.onLine`):
+- **Cloud AI Providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI)**: Cloud providers rely on remote API datacenters. If a user submits a prompt with a cloud provider selected while offline, Orvix intercepts the submission immediately with a helpful notice:  
+  `"[Provider] requires an internet connection. Switch to Browser AI (WebLLM) to chat offline on this device."`  
+  The offline banner includes a one-click **"Switch to Browser AI"** button.
+- **Local AI (Ollama)**: Local Ollama runs on `http://127.0.0.1:11434` and does not require an external internet connection. However, it requires the Orvix local Node.js backend server (`server.ts`) to be running on the host machine to proxy Ollama requests.
+- **Browser AI (WebLLM)**: **Requires neither internet nor a running local backend server**. It runs purely client-side inside the browser sandbox.
+
+### Mobile Device Hardware Realities
+
+While Orvix's service worker and offline UI function across all standard modern mobile browsers:
+- On-device AI generation via WebGPU requires capable graphics hardware and sufficient system memory.
+- For smartphones and tablets, the **Qwen 2.5 0.5B Instruct (Lightweight)** model variant is strongly recommended.
+- The standard **Qwen 2.5 1.5B** variant requires ~1.6 GB of dedicated GPU VRAM and may be terminated by mobile operating system low-memory managers (OOM) on devices with 4 GB or 6 GB of total system RAM.
+- iOS devices require iOS 18+ for WebGPU support in Safari.
+
+---
+
+## Browser-Side Document Extraction (Offline & Local)
+
+When using Browser AI offline, documents cannot be uploaded to the `/api/upload` backend endpoint. Orvix integrates a client-side document extraction pipeline implemented in `src/services/browserDocumentExtractor.js` that parses document text, headings, tables, and presentation slides directly in the visitor's browser.
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│               OFFLINE BROWSER-SIDE DOCUMENT EXTRACTION                 │
+├────────────────────────────────────────────────────────────────────────┤
+│ Attached File (Drop, Paste, or File Picker)                            │
+│                                ↓                                       │
+│ Format Router (Evaluates MIME type & file extension client-side)       │
+│                                ↓                                       │
+│ ┌────────────────────────────────────────────────────────────────────┐ │
+│ │ Client Parsing Engines (Lazy-imported, precached in PWA):          │ │
+│ │ • Word DOCX: Lazy `mammoth` (Markdown conversion, headings, tables)│ │
+│ │ • PDF: Lazy `unpdf` / PDF.js (Page-by-page text layer extraction)  │ │
+│ │ • PowerPoint PPTX: Lazy `jszip` (Slide XML & speaker notes)        │ │
+│ │ • Structured Tables: Native CSV / TSV quoted delimiter parser      │ │
+│ │ • Plain Text / Code: Native TXT, Markdown, JSON, XML parsers       │ │
+│ └────────────────────────────────────────────────────────────────────┘ │
+│                                ↓                                       │
+│ Normalized Document Context (Boundaries, word count, character count)  │
+│                                ↓                                       │
+│ Injected into Qwen 2.5 KV Context for 100% Offline Document Q&A        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Supported Offline Document Formats
+
+The following file formats are verified for browser-side text extraction when operating offline:
+
+| Format | Extension | Browser Extraction Mechanism | Extracted Metadata & Features |
+| :--- | :--- | :--- | :--- |
+| **Plain Text** | `.txt`, `.text` | Native browser `File.text()` | Word count, character count, summary preview |
+| **Markdown** | `.md`, `.markdown` | Native text parsing + section splitter | Structured headings (H1–H6), section counts |
+| **Comma-Separated Values** | `.csv` | Native quoted delimiter parser | Column headers, row count, formatted Markdown table |
+| **Tab-Separated Values** | `.tsv` | Native tab delimiter parser | Column headers, row count, formatted Markdown table |
+| **JSON** | `.json` | Native `JSON.parse` with structural summary | Top-level keys count, pretty-printed JSON code block |
+| **XML** | `.xml` | Native browser `DOMParser` | Structural text nodes, malformed syntax detection |
+| **Microsoft Word** | `.docx` | Lazy-loaded `mammoth` (precached in PWA) | Headings, lists, bold/italics, tabular data |
+| **PDF Documents** | `.pdf` | Lazy-loaded `unpdf` (precached in PWA) | Page numbers, page boundaries (`--- Page N ---`), text layer |
+| **PowerPoint Presentations**| `.pptx` | Lazy-loaded `jszip` (precached in PWA) | Slide titles, slide bodies, slide numbers, speaker notes |
+
+### Document Structure Preservation & Context Formatting
+
+- **Reusing Pre-Extracted Text**: If a document was already parsed or uploaded during the session, Orvix reuses the existing extraction result rather than reading the file again.
+- **Bounded Context Allocation**: Extracted text is sanitized, truncated if exceeding safety limits (up to 10,000 characters for 1.5B, 8,000 for 0.5B), and formatted cleanly into the prompt using verified prompt grounding templates (`prepareDocumentContext` and `adaptDocumentContextForProvider`).
+- **Targeted Slide & Page Lookups**: Page markers (`--- Page 1 ---`, `--- Page 2 ---`) and slide markers (`--- Slide 1: Title ---`, `[Speaker Notes]: ...`) allow users to ask targeted offline questions (e.g., *"What is covered on slide 3?"*, *"Summarize the notes on page 2"*).
+
+### Scanned PDF & Image OCR Limitations Offline
+
+- **Scanned / Image-Only PDFs**: Orvix's browser-side PDF extractor extracts embedded digital text layers. If a PDF consists solely of scanned raster images with no embedded text (`nonWhitespaceChars < 10`), Orvix detects the condition and honestly notifies the user:  
+  `"No readable text could be extracted from this PDF. This document appears to be scanned or contains rasterized pages without a text layer. Optical Character Recognition (OCR) is required."`
+- **Image Attachments & OCR**: Image text recognition requires the server-side `tesseract.js` OCR engine. **Image OCR is unavailable offline**. Attaching an image while offline produces a clear notice to attach a text-based document or reconnect to the internet.
+- **Legacy Office Formats**: Binary legacy formats (`.doc`, `.ppt`, `.xls`) cannot be parsed client-side by modern OpenXML parsers. Orvix detects these extensions and prompts the user to save the file in modern format (`.docx`, `.pptx`, `.csv`).
+
+### IndexedDB Binary Attachment Caching
+
+All attached file blobs are stored locally in the browser's IndexedDB database (`orvix_attachments_db`). Even when operating completely offline, users can inspect document attachments, preview file cards, and download attached files across page reloads.
+
+---
+
+## Step-by-Step Guide: Using Browser AI Offline
+
+Follow these steps to prepare and use Orvix offline:
+
+```text
+Step 1: Open online → Step 2: Select Browser AI → Step 3: Choose Model
+                                                         ↓
+Step 6: Go offline  ← Step 5: Test online query  ← Step 4: Click Load Model
+       ↓
+Step 7: Reopen Orvix offline → Step 8: Confirm status → Step 9: Chat offline!
+```
+
+### 1. Open the Live Site While Online
+Navigate to the deployed Orvix website (e.g., `https://your-orvix-deployment.vercel.app`) using a compatible browser (Google Chrome 113+, Microsoft Edge 113+, or Safari 18+ on macOS/iOS).
+
+### 2. Select Browser AI
+Open the AI model selector dropdown in the navigation header or message composer and select **Browser AI (WebLLM)**.
+
+### 3. Choose Your Preferred Model
+In the Browser AI status bar that appears above the composer, select your preferred model tier:
+- **Qwen 2.5 0.5B Instruct (Lightweight ~420 MB)**: Recommended for mobile devices, laptops, and faster downloads.
+- **Qwen 2.5 1.5B Instruct (~960 MB)**: Recommended for desktop computers with dedicated GPUs.
+
+### 4. Download and Initialize the Model
+Click **Load Model** in the status bar (or submit a prompt). Watch the progress bar as the model shards download into browser Cache Storage. Wait until the status bar displays:  
+`"Qwen 2.5 0.5B — Ready on device"`
+
+### 5. Send a Test Message While Online
+Type a prompt (e.g., *"Explain quantum entanglement in two sentences"*) and press Enter. Confirm that tokens stream smoothly and that the response finishes with a response duration badge.
+
+### 6. Close Orvix
+Close the Orvix browser tab, window, or installed PWA.
+
+### 7. Disconnect from the Internet
+Disconnect your computer or mobile device from Wi-Fi or cellular data (or toggle DevTools Network to **Offline**).
+
+### 8. Reopen Orvix Offline
+Reopen your browser and navigate back to the Orvix URL (or launch the installed Orvix PWA from your desktop/home screen).
+- The application shell will load instantly from the Workbox service worker precache.
+- The offline banner will confirm:  
+  `"Offline mode — App shell & Qwen 2.5 0.5B are cached on this device. Supported documents can be extracted locally."`
+- The status bar will show:  
+  `"Offline — Model is cached locally. Ready to run on your device via WebGPU."`
+
+### 9. Chat and Analyze Documents Offline
+- Type a prompt and send it: Qwen generates the answer entirely on your GPU without a network connection.
+- Attach a supported document (`.txt`, `.pdf`, `.docx`, `.pptx`, `.csv`, `.json`): Orvix extracts the text client-side and answers questions grounded in your document.
+- The Stop button (`Square` icon) remains fully operational to halt generation at any time.
 
 ---
 
@@ -470,16 +753,18 @@ Orvix features four distinct conversational modes configured in `src/config/chat
 
 ## AI Providers & Supported Models
 
-Orvix connects to four distinct AI provider infrastructures through secure server-side proxies:
+Orvix connects to multiple distinct AI provider architectures: serverless cloud APIs, local on-premise inference, and **100% on-device WebGPU inference (Browser AI)** that operates completely offline inside the browser sandbox:
 
 ### Supported Providers & Models
 
 | Provider | Model Identifier | Primary Focus | Failover / Backup Model |
 | :--- | :--- | :--- | :--- |
-| **Google Gemini** | `gemini-3.8-flash` | Ultra-fast inference, multimodal understanding | `gemini-3.1-flash-lite` |
-| **Groq Cloud** | `llama-3.3-70b-versatile` | Low-latency inference via Groq LPUs | `openai/gpt-oss-120b` |
-| **OpenRouter** | `openrouter/free` | Decentralized routing across community models | Dynamic routing |
+| **Browser AI (WebLLM)** | `Qwen2.5-0.5B-Instruct-q4f16_1-MLC` *(Default)*<br>`Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | 100% on-device private WebGPU inference; runs offline without cloud APIs or server | Automatic runtime fallback to `q4f32_1` variants for devices lacking `shader-f16` |
+| **Google Gemini** | `gemini-3.8-flash` | Ultra-fast cloud inference, massive multimodal understanding | `gemini-3.1-flash-lite` |
+| **Groq Cloud** | `llama-3.3-70b-versatile` | Ultra-low latency cloud inference via Groq LPUs | `openai/gpt-oss-120b` |
+| **OpenRouter** | `openrouter/free` | Decentralized routing across free community models | Dynamic routing |
 | **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | Low-latency edge inference | Edge fallback |
+| **Local AI (Ollama)** | `qwen2.5:1.5b` *(or configured local model)* | Local on-premise inference via local Ollama daemon (`127.0.0.1:11434`) | Requires local Orvix backend |
 
 ### Provider Context Budgets
 
@@ -487,20 +772,23 @@ Context budgets are calibrated in `src/services/documentContextService.js`:
 
 | Provider | Max Prompt Context | Document Context Budget | Best Suited For |
 | :--- | :--- | :--- | :--- |
+| **Browser AI (WebLLM)** | 4,096 tokens | ~8,000–10,000 characters | 100% offline document Q&A, complete privacy, zero API costs |
 | **Google Gemini** | 1,000,000 tokens | ~120,000 characters | Extensive multi-page PDFs, books, large codebases |
 | **Groq Cloud** | 128,000 tokens | ~24,000 characters | Rapid structured analysis, high-speed coding |
+| **Local AI (Ollama)** | 4,096 tokens | ~16,000 characters | Local privacy, offline server inference without cloud dependencies |
 | **OpenRouter** | Variable by model | ~16,000 characters | Broad open-source experimentation |
 | **Cloudflare Workers AI** | 8,192 tokens | ~16,000 characters | Edge summaries, quick queries |
 
 ### Streaming & Fallback System
 
-- **Server-Sent Events (SSE)**: All AI completions stream tokens incrementally in real time via `POST /api/chat`.
+- **Dedicated Web Worker Streaming (Browser AI)**: Browser AI completions execute entirely client-side inside `src/workers/webllmWorker.js`. Generated tokens stream directly from WebGPU command queues into the UI state without making network requests.
+- **Server-Sent Events (SSE)**: Cloud completions (Gemini, Groq, OpenRouter, Cloudflare) stream tokens incrementally in real time via `POST /api/chat`.
 - **Automatic Model Failover**: If `gemini-3.8-flash` encounters a rate limit (429) or temporary server error (503), Orvix automatically retries with `gemini-3.1-flash-lite`.
-- **Cross-Provider Recovery**: If an active provider fails, the error card provides a **"Switch Provider & Retry"** button that redirects the exact prompt to an alternate configured provider without retyping.
+- **Cross-Provider Recovery**: If an active cloud provider fails or goes offline, Orvix provides a **"Switch Provider & Retry"** button that redirects the exact prompt to an alternate provider without retyping. When offline, Orvix offers a one-click **"Switch to Browser AI"** button.
 
 ### Zero-Key Simulation Mode
 
-Orvix runs out-of-the-box without requiring API keys. When no keys are configured, Orvix operates in **Simulated Mode**, generating realistic conversational replies tailored to the active mode and prompt so that all UI workflows, attachments, code blocks, and exports can be tested immediately.
+Orvix runs out-of-the-box without requiring API keys. When no keys are configured, Orvix operates in **Simulated Mode**, generating realistic conversational replies tailored to the active mode and prompt so that all UI workflows, attachments, code blocks, and exports can be tested immediately. Alternatively, users can select **Browser AI (WebLLM)** to run real local AI without any API keys.
 
 ---
 
@@ -643,6 +931,7 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 │   │   ├── auth/                    # Authentication screen & guest switcher
 │   │   ├── chat/                    # Core chat interface
 │   │   │   ├── AttachmentCard.jsx   # Document attachment chip & card
+│   │   │   ├── BrowserAIStatusBar.jsx # Browser AI status, model progress & controls
 │   │   │   ├── ChatArea.jsx         # Composer dock, auto-focus, paste & drop
 │   │   │   ├── ChatMessage.jsx      # Markdown rendering, callouts, copy & timer
 │   │   │   ├── CodeBlock.jsx        # Precision syntax highlighter & copy button
@@ -666,19 +955,24 @@ Clicking an image card opens `DocumentPreviewModal.jsx` with two inspection tabs
 │   │   ├── alternativeResponseService.js # Alternative response state & navigation
 │   │   ├── attachmentStorageService.js   # IndexedDB blob storage
 │   │   ├── authService.js           # Firebase authentication wrapper
+│   │   ├── browserDocumentExtractor.js # Client-side offline document extractor
 │   │   ├── chatStorageService.js    # Firestore & localStorage chat persistence
 │   │   ├── documentContextService.js# Context budgeting & document formatting
-│   │   ├── documentExtractor.js     # PDF, DOCX, PPTX document parsers
+│   │   ├── documentExtractor.js     # Server-side PDF, DOCX, PPTX document parsers
 │   │   ├── geminiService.js         # Google Gemini integration
 │   │   ├── groqService.js           # Groq REST API integration
 │   │   ├── imageOcrService.js       # Tesseract.js OCR engine
 │   │   ├── multiPartResponseService.js   # Large-response continuation engine
 │   │   ├── openrouterService.js     # OpenRouter completions API
-│   │   └── transcriptionService.js  # Whisper audio transcription client
+│   │   ├── serviceWorkerManager.js  # PWA service worker registration & offline state
+│   │   ├── transcriptionService.js  # Whisper audio transcription client
+│   │   └── webllmService.js         # Browser AI WebLLM engine & cache manager
 │   ├── styles/                      # Tailwind CSS v4 & custom stylesheet (index.css)
-│   └── utils/                       # Export, speech, clipboardFormatter & highlighter
+│   ├── utils/                       # Export, speech, clipboardFormatter & highlighter
+│   └── workers/                     # Web Workers off the main thread
+│       └── webllmWorker.js          # Dedicated WebLLM WebGPU execution worker
 ├── server.ts                        # Express development & production server
-├── vite.config.ts                   # Vite configuration
+├── vite.config.ts                   # Vite configuration & Workbox PWA setup
 ├── package.json                     # Project dependencies & scripts
 ├── .env.example                     # Environment configuration template
 └── README.md                        # Project documentation
@@ -765,6 +1059,11 @@ Orvix is pre-configured with `vercel.json` and dedicated entry points in `api/`:
 
 | Issue | Likely Cause | Resolution |
 | :--- | :--- | :--- |
+| **WebGPU not supported / Browser AI disabled** | Browser lacks WebGPU support, site is insecure (HTTP), or GPU acceleration is off | Use Google Chrome 113+, Microsoft Edge 113+, or Safari 18+ over HTTPS or `localhost`; ensure hardware acceleration is enabled in browser settings (`Settings` > `System` > `Use graphics acceleration when available`). |
+| **Browser AI model download fails / hangs** | Network glitch or timeout during tensor shard retrieval | Click the **Retry** (`RotateCcw`) button in the Browser AI status bar. Shards already stored in browser Cache Storage are retained and will not be re-downloaded. |
+| **Offline mode shows model not cached** | Cache Storage was evicted or private/incognito browsing was used | Reconnect to the internet, open Orvix, and download the model until the status bar displays `"Ready on device"`. Avoid Incognito mode if you want model weights to persist across sessions. |
+| **Cloud provider fails with offline warning** | Gemini, Groq, OpenRouter, or Cloudflare was queried while disconnected | Click **"Switch to Browser AI"** in the offline notification banner to run inference directly on your device without an internet connection. |
+| **Scanned PDF or image cannot be processed offline** | Image OCR requires the server-side OCR engine (`/api/upload`) | Reconnect to the internet for image OCR and scanned PDFs, or attach text-based documents (`.docx`, `.pptx`, `.txt`, `.md`, `.csv`, `.json`, `.pdf` with text layers) which extract client-side offline. |
 | **Pasted table distorted in WhatsApp** | Messaging app uses proportional fonts | Use Orvix's built-in **Copy** button on the message card; Orvix automatically generates structured record plain text (`• Header: Value`) so column values never lose association. |
 | **Swipe gesture does not open drawer** | Swiping inside composer, header, or code block | Initiate the swipe from the neutral conversation area; avoid touching the composer bar, top header, or horizontally scrollable code blocks. |
 | **Microphone access denied** | Browser blocked mic permission | Click the camera/microphone icon in the browser address bar, set permission to "Allow", and reload. |
@@ -795,6 +1094,10 @@ Orvix is pre-configured with `vercel.json` and dedicated entry points in `api/`:
 4. **Binary File Longevity**: Extracted text and chat metadata persist permanently. Raw binary files are stored in browser IndexedDB on the local device; temporary server files expire after a 2-hour TTL.
 5. **Browser HEIC Rendering**: Standard web browsers cannot decode HEIC/HEIF images natively in `<img>` tags; Orvix displays an informational fallback card with direct download and modal text inspection.
 6. **Firefox Live Speech Display**: Because Mozilla Firefox does not enable the native Web Speech API by default, live progressive word display is unavailable; full transcription is delivered upon tapping Done via Whisper.
+7. **WebGPU Hardware & Browser Prerequisites**: Browser AI requires a browser with WebGPU enabled (Chrome 113+, Edge 113+, Safari 18+) served over a secure origin (HTTPS or `localhost`). Hardware graphics acceleration must be enabled in browser settings.
+8. **Initial Online Caching Requirement**: Orvix cannot be opened offline on a new device or browser profile that has never loaded the site before. An initial online visit is mathematically required to precache the PWA app shell and download the selected WebLLM model weights.
+9. **Mobile Memory (VRAM) Constraints for 1.5B Model**: Running the larger `Qwen2.5-1.5B-Instruct` model on mobile devices with limited system memory (<6 GB RAM) may cause browser tab crashes or OS memory evictions. Mobile users should use the default `Qwen2.5-0.5B-Instruct` model (~420 MB).
+10. **Offline Document Scope**: Offline document parsing supports digital text formats (`.pdf`, `.docx`, `.pptx`, `.csv`, `.tsv`, `.json`, `.xml`, `.txt`, `.md`). Image OCR and scanned raster PDFs without digital text layers require an active server connection.
 
 ---
 
@@ -805,9 +1108,38 @@ Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`):
 - **MINOR**: Substantial new feature additions and multi-component workflows.
 - **PATCH**: Bug fixes, performance optimizations, and reliability enhancements.
 
-> **Version Alignment Note**: The application package metadata in `package.json` specifies version `0.9.0`. The release notes below document the recent enhancements through **v0.9.3**.
+> **Version Alignment Note**: The application package metadata in `package.json` specifies version `0.9.0`. The release notes below document the recent enhancements through **v0.9.4**.
 
-### v0.9.3 — Mobile PWA Live Dictation & Interim Transcript Deduplication (October 2026) *(Current Codebase)*
+### v0.9.4 — Browser AI (WebLLM), Offline PWA App-Shell Caching & Browser-Side Document Extraction (October 2026) *(Current Codebase)*
+
+**Newly Added & Enhanced**
+
+- **A. Browser AI On-Device WebGPU Inference (`webllmService.js`, `webllmWorker.js`, `BrowserAIStatusBar.jsx`)**:
+  - **100% On-Device Execution**: Integrated `@mlc-ai/web-llm` running local language models directly on the visitor's device GPU via WebGPU. Prompts, documents, and generated tokens never leave the browser sandbox.
+  - **Dedicated Off-Thread Web Worker**: Model loading, tokenizer operations, WebGPU command buffer compilation, and KV-cache management execute inside `src/workers/webllmWorker.js`, keeping the main UI thread at a fluid 60 FPS.
+  - **Verified Model Configurations**:
+    - **Lightweight Default (`Qwen2.5-0.5B-Instruct-q4f16_1-MLC`)**: ~420 MB download, ~945 MB VRAM allocation. Optimized for mobile devices, laptops, and battery-friendly operation.
+    - **Standard Model (`Qwen2.5-1.5B-Instruct-q4f16_1-MLC`)**: ~960 MB download, ~1,630 MB VRAM allocation. Designed for desktop environments requiring higher reasoning depth.
+  - **Automatic Shader-F16 Compatibility Fallback**: Proactively tests the adapter for the WebGPU `shader-f16` feature. Automatically falls back to `q4f32_1` quantized model variants on GPUs lacking 16-bit float support.
+  - **Interactive Browser AI Status Dock**: Dedicated UI component above the composer with granular download percentage, model switcher dropdown, manual **Load Model**, clean **Cancel (`✕`)**, **Retry (`RotateCcw`)**, and memory **Unload (`Trash2`)** to free GPU VRAM without deleting cached disk shards.
+  - **Interruptible Generation**: Immediate cancellation via `interruptGenerate()` with preserved partial token output and high-resolution response duration metrics.
+
+- **B. Reliable PWA App-Shell Precaching & Offline Resilience (`vite.config.ts`, `serviceWorkerManager.js`)**:
+  - **Workbox Service Worker Precache**: Configured `vite-plugin-pwa` with `maximumFileSizeToCacheInBytes: 8 * 1024 * 1024` (8 MB) to precache the production HTML shell, CSS, application JS, PWA manifest, app icons, WebLLM worker chunks, and document parsers (15.4 MB total).
+  - **Strict Two-Tier Caching Separation**: Workbox manages the app shell; WebLLM manages model weights independently inside dedicated Cache Storage (`webllm/*`). Model weights (~420 MB – 1.15 GB) are never precached via Workbox.
+  - **API Exclusion Protection**: Explicitly denylisted `/api/*`, `/health`, `/chat`, `/config`, `/transcribe`, and `/upload` from the SPA navigation fallback with `NetworkOnly` runtime caching, ensuring API calls never return cached HTML.
+  - **Dynamic Offline Detection & Graceful Fallbacks**: Listens to online/offline network events. Prompts to cloud providers (Gemini, Groq, OpenRouter, Cloudflare) when offline are cleanly intercepted with a notice and a one-click **"Switch to Browser AI"** action.
+
+- **C. Browser-Side Document Extraction for Offline Attachments (`browserDocumentExtractor.js`, `documentContextService.js`)**:
+  - **Client-Side Text Extraction**: Parses Microsoft Word (`mammoth`), PDF documents (`unpdf`), PowerPoint presentations with slide notes (`jszip`), structured tables (CSV, TSV), JSON, XML, and Markdown directly in the browser without server calls.
+  - **Precached Offline Parsers**: Document parsing libraries are lazy-loaded and included in the PWA precache manifest for offline availability.
+  - **Honest Scanned PDF Reporting**: Detects image-only/scanned PDFs lacking digital text layers and provides clear diagnostic notices.
+  - **Calibrated Browser AI Context Budget**: Document context adapted to 8,000–10,000 characters for Browser AI with structured grounding prompts placed directly in user turns.
+  - **IndexedDB Attachment Persistence**: Attached binary files cached in client `orvix_attachments_db` for offline inspection and downloads across reloads.
+
+---
+
+### v0.9.3 — Mobile PWA Live Dictation & Interim Transcript Deduplication (October 2026)
 
 **Newly Added & Enhanced**
 
