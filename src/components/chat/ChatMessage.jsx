@@ -57,12 +57,32 @@ function extractNodeText(node) {
  */
 function getErrorTitle(content = '', providerId = '') {
   const text = String(content || '').toLowerCase();
-  const isOllama = String(providerId || '').toLowerCase() === 'ollama';
+  const normalizedProvider = String(providerId || '').toLowerCase();
+  const isOllama = normalizedProvider === 'ollama';
+  const isWebLLM = normalizedProvider === 'webllm';
   if ((isOllama || text.includes('ollama')) && (text.includes('not found') || text.includes('pull'))) {
     return 'Local Model Not Found';
   }
   if (isOllama || text.includes('ollama') || text.includes('11434')) {
     return 'Local AI Unavailable';
+  }
+  if (isWebLLM || text.includes('webgpu') || text.includes('browser ai')) {
+    if (text.includes('webgpu') || text.includes('adapter') || text.includes('secure context') || text.includes('shader-f16')) {
+      return 'Browser Compatibility Issue';
+    }
+    if (text.includes('not been downloaded') || text.includes('not cached') || text.includes('connect to the internet once')) {
+      return 'Model Not Cached Offline';
+    }
+    if (text.includes('storage') || text.includes('quota')) {
+      return 'Insufficient Browser Storage';
+    }
+    if (text.includes('gpu memory') || text.includes('out of memory') || text.includes('device was lost')) {
+      return 'GPU Memory Limit Reached';
+    }
+    if (text.includes('interrupted while downloading') || text.includes('downloading')) {
+      return 'Model Download Interrupted';
+    }
+    return 'Browser AI Error';
   }
   if (text.includes('rate limit') || text.includes('quota') || text.includes('429') || text.includes('resource_exhausted')) {
     return 'Rate Limit or Quota Exceeded';
@@ -776,7 +796,11 @@ export default function ChatMessage({
               className="model-badge"
               title={`Model: ${message.modelUsed}${message.provider ? ` • Provider: ${message.provider}` : ''}`}
             >
-              {message.provider ? `${message.provider.charAt(0).toUpperCase() + message.provider.slice(1)}: ` : ''}
+              {message.provider === 'webllm'
+                ? 'Browser AI: '
+                : message.provider
+                  ? `${message.provider.charAt(0).toUpperCase() + message.provider.slice(1)}: `
+                  : ''}
               {message.modelUsed}
             </span>
           )}
@@ -858,6 +882,7 @@ export default function ChatMessage({
                 {onSwitchProvider &&
                   message.canSwitchProvider !== false &&
                   currentProviderId !== 'ollama' &&
+                  currentProviderId !== 'webllm' &&
                   fallbackProviders.map((p) => (
                     <Button
                       key={p.id}

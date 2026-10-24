@@ -19,13 +19,20 @@ import {
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
+import BrowserAIStatusBar from './BrowserAIStatusBar.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
+import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
 
-function getProviderFootnote(providerId) {
+function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
+  if (providerId === 'webllm') {
+    const modelLabel =
+      WEBLLM_MODEL_CATALOG[webllmModelId]?.shortLabel || 'Qwen 2.5 1.5B';
+    return `Orvix is powered by Browser AI (WebLLM) (${modelLabel}). On-device WebGPU inference — verify important facts independently.`;
+  }
   if (providerId === 'ollama') {
     return 'Orvix is powered by Local AI (Ollama) (qwen2.5:1.5b). Local offline inference — verify important facts independently.';
   }
@@ -208,7 +215,15 @@ export default function ChatArea({
   activeMode = 'general',
   onSelectMode,
   modeChangeNotice = null,
-  onDismissModeNotice
+  onDismissModeNotice,
+  isOffline = false,
+  webllmState = null,
+  webllmGpuCheck = null,
+  webllmModelId = DEFAULT_WEBLLM_MODEL_ID,
+  onSelectWebLLMModel,
+  onLoadWebLLMModel,
+  onCancelWebLLMLoad,
+  onUnloadWebLLMModel
 }) {
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
@@ -348,7 +363,13 @@ export default function ChatArea({
       file
     };
 
-    setAttachmentNotice(null);
+    if (isOffline && isImage && selectedProvider === 'webllm') {
+      setAttachmentNotice(
+        `Notice: Image text extraction (OCR) requires an internet connection. To chat offline with Browser AI, please attach a text-based document (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML).`
+      );
+    } else {
+      setAttachmentNotice(null);
+    }
     setAttachments([singleAttachment]);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -1054,12 +1075,18 @@ Return ONLY the polished transcript text with no explanations, no introductory p
 Transcript:
 "${lastSessionTranscript}"`;
 
-        const res = await sendAIMessage({
-          provider: selectedProvider || 'gemini',
-          prompt: cleanPrompt,
-          history: [],
-          username: null
-        });
+        const shouldUseActiveProviderForPolish =
+          selectedProvider !== 'webllm' || webllmState?.status === 'ready';
+
+        const res = shouldUseActiveProviderForPolish
+          ? await sendAIMessage({
+              provider: selectedProvider || 'gemini',
+              model: selectedProvider === 'webllm' ? webllmModelId : null,
+              prompt: cleanPrompt,
+              history: [],
+              username: null
+            })
+          : null;
 
         if (res && res.text) {
           let text = res.text.trim();
@@ -1567,6 +1594,24 @@ Transcript:
             </div>
           )}
 
+          {/* Non-blocking Browser AI (WebLLM) Status & Progress Strip */}
+          <BrowserAIStatusBar
+            visible={
+              selectedProvider === 'webllm' ||
+              webllmState?.status === 'downloading' ||
+              webllmState?.status === 'loading'
+            }
+            isSelectedProvider={selectedProvider === 'webllm'}
+            webllmState={webllmState}
+            gpuCheck={webllmGpuCheck}
+            selectedModelId={webllmModelId}
+            onSelectModel={onSelectWebLLMModel}
+            onLoadModel={onLoadWebLLMModel}
+            onCancelLoad={onCancelWebLLMLoad}
+            onUnloadModel={onUnloadWebLLMModel}
+            isOffline={isOffline}
+          />
+
           {/* Drag and Drop Visual Feedback Indicator */}
           {isDraggingOver && (
             <div className="composer-drop-banner" role="status" aria-live="polite">
@@ -1853,7 +1898,7 @@ Transcript:
           </form>
 
           <p className="composer-footnote">
-            {getProviderFootnote(selectedProvider)}
+            {getProviderFootnote(selectedProvider, webllmModelId)}
             {engineMode === 'direct-audio'
               ? ' • Dictation powered by direct audio capture with Whisper Large v3 server transcription.'
               : ' • Dictation combines live browser speech with Whisper Large v3 refinement via server API.'}

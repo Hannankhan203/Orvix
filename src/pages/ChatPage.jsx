@@ -44,6 +44,25 @@ import {
   createAlternativeRecord,
   getActiveAlternative
 } from '../services/alternativeResponseService.js';
+import {
+  DEFAULT_WEBLLM_MODEL_ID,
+  WEBLLM_MODEL_CATALOG,
+  getWebLLMState,
+  subscribeWebLLMState,
+  checkWebGPUSupport,
+  inspectWebLLMReadiness,
+  ensureWebLLMEngine,
+  stopWebLLMGeneration,
+  unloadWebLLMEngine
+} from '../services/webllmService.js';
+import {
+  extractBrowserDocument,
+  isBrowserExtractable
+} from '../services/browserDocumentExtractor.js';
+import {
+  getAppShellState,
+  subscribeAppShellState
+} from '../services/serviceWorkerManager.js';
 import { AlertCircle, X, Check, WifiOff } from 'lucide-react';
 
 export default function ChatPage() {
@@ -98,6 +117,23 @@ export default function ChatPage() {
     return DEFAULT_PROVIDER;
   });
 
+  const [webllmModelId, setWebllmModelId] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('orvix_webllm_model_id');
+      if (saved && WEBLLM_MODEL_CATALOG[saved]) {
+        return saved;
+      }
+    }
+    return DEFAULT_WEBLLM_MODEL_ID;
+  });
+  const [webllmState, setWebllmState] = useState(() => getWebLLMState());
+  const [appShellState, setAppShellState] = useState(() => getAppShellState());
+  const [webllmGpuCheck, setWebllmGpuCheck] = useState({
+    checking: false,
+    supported: null,
+    message: null
+  });
+
   const isSubmittingRef = useRef(false);
   const persistedMessageIdsRef = useRef(new Set());
   const activeChatIdRef = useRef(activeChatId);
@@ -117,6 +153,84 @@ export default function ChatPage() {
       localStorage.setItem('orvix_selected_provider', provider);
       localStorage.setItem('chatora_selected_provider', provider);
     }
+  };
+
+  const handleSelectWebLLMModel = (nextModelId) => {
+    if (!nextModelId || !WEBLLM_MODEL_CATALOG[nextModelId]) return;
+    setWebllmModelId(nextModelId);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('orvix_webllm_model_id', nextModelId);
+    }
+    void inspectWebLLMReadiness(nextModelId).catch(() => {});
+  };
+
+  // Subscribe to real Browser AI engine state updates
+  useEffect(() => {
+    return subscribeWebLLMState((snapshot) => {
+      setWebllmState(snapshot);
+    });
+  }, []);
+
+  // Subscribe to service worker app-shell offline readiness updates
+  useEffect(() => {
+    return subscribeAppShellState((state) => {
+      setAppShellState(state);
+    });
+  }, []);
+
+  // Inspect WebGPU compatibility & local model cache status when Browser AI is active
+  useEffect(() => {
+    if (selectedProvider !== 'webllm') {
+      return undefined;
+    }
+    let cancelled = false;
+    setWebllmGpuCheck((prev) => ({ ...prev, checking: true }));
+    inspectWebLLMReadiness(webllmModelId)
+      .then((res) => {
+        if (cancelled) return;
+        setWebllmGpuCheck({
+          checking: false,
+          supported: Boolean(res?.gpuSupport?.supported),
+          message: res?.gpuSupport?.message || null
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWebllmGpuCheck({
+          checking: false,
+          supported: false,
+          message: 'Unable to verify WebGPU support in this browser.'
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProvider, webllmModelId]);
+
+  const handleLoadWebLLMModel = () => {
+    if (
+      webllmState.status === 'checking' ||
+      webllmState.status === 'downloading' ||
+      webllmState.status === 'loading' ||
+      webllmState.status === 'generating'
+    ) {
+      return;
+    }
+    void ensureWebLLMEngine({ modelId: webllmModelId }).catch((err) => {
+      if (err?.name !== 'AbortError') {
+        console.warn('[Orvix Browser AI] Initialization failed:', err?.message || err);
+      }
+    });
+  };
+
+  const handleCancelWebLLMLoad = () => {
+    stopWebLLMGeneration();
+  };
+
+  const handleUnloadWebLLMModel = () => {
+    if (isLoading || webllmState.status === 'generating') return;
+    void unloadWebLLMEngine();
   };
 
   // Stop any running animation, speech synthesis, and network request when the page unmounts.
@@ -821,7 +935,9 @@ export default function ChatPage() {
 
     let targetText = '';
     let displayedText = '';
-    let activeModel = overrideModel || null;
+    const effectiveModelOverride =
+      overrideModel || (providerToUse === 'webllm' ? webllmModelId : null);
+    let activeModel = effectiveModelOverride;
     let finalProvider = providerToUse;
     let isStreamDone = false;
     let timerId = null;
@@ -1006,7 +1122,7 @@ export default function ChatPage() {
     try {
       const result = await streamAIMessage({
         provider: providerToUse,
-        model: overrideModel || null,
+        model: effectiveModelOverride,
         mode: activeMode,
         prompt: promptText,
         history: historyContext,
@@ -1228,6 +1344,8 @@ export default function ChatPage() {
         (effectiveProvider ? effectiveProvider.charAt(0).toUpperCase() + effectiveProvider.slice(1) : 'AI Provider');
 
       const isOllama = effectiveProvider === 'ollama';
+      const isWebLLM = effectiveProvider === 'webllm';
+      const isLocalProvider = isOllama || isWebLLM;
       const isGemini = effectiveProvider === 'gemini';
 
       const is503 =
@@ -1267,6 +1385,11 @@ export default function ChatPage() {
         } else {
           friendlyMsg = `An error occurred with Local AI (Ollama). Please make sure Ollama is running locally and model 'qwen2.5:1.5b' is installed.`;
         }
+      } else if (isWebLLM) {
+        // Browser AI (WebLLM) errors are local device/WebGPU/cache messages — preserve them verbatim without cloud demand rewrites.
+        friendlyMsg =
+          rawMsg ||
+          'Browser AI (WebLLM) encountered a local initialization or generation error on this device.';
       } else if (is503) {
         if (isGemini) {
           friendlyMsg =
@@ -1314,7 +1437,7 @@ export default function ChatPage() {
               isInterrupted,
               failedPrompt: promptText,
               failedProvider: effectiveProvider || finalProvider || providerToUse,
-              canSwitchProvider: !isOllama,
+              canSwitchProvider: error?.canFallback === false ? false : !isLocalProvider,
               referencedAttachments: undefined
             });
             finalizedErrorMessage = updated;
@@ -1351,7 +1474,7 @@ export default function ChatPage() {
           isInterrupted,
           failedPrompt: promptText,
           failedProvider: effectiveProvider || finalProvider || providerToUse,
-          canSwitchProvider: !isOllama,
+          canSwitchProvider: error?.canFallback === false ? false : !isLocalProvider,
           referencedAttachments: undefined
         });
 
@@ -1382,17 +1505,29 @@ export default function ChatPage() {
 
     if ((!trimmed && !hasAttachments) || isLoading || isSubmittingRef.current) return false;
 
+    // Reject offline requests for cloud providers immediately with actionable feedback
+    if (!isBrowserOnline() && selectedProvider !== 'webllm' && selectedProvider !== 'ollama') {
+      const providerConfig = Array.isArray(PROVIDER_OPTIONS)
+        ? PROVIDER_OPTIONS.find((p) => p.id === selectedProvider)
+        : null;
+      const provName = providerConfig?.name || 'Cloud AI';
+      setPersistenceError(
+        `${provName} requires an internet connection. Switch to Browser AI (WebLLM) to chat offline on this device.`
+      );
+      return false;
+    }
+
     isSubmittingRef.current = true;
     setIsLoading(true);
     setPersistenceError(null);
 
     let processedAttachments = [];
 
-    // Step 1: Upload raw file attachments securely via multipart/form-data
+    // Step 1: Upload or locally extract file attachments
     if (hasAttachments) {
       const filesToUpload = attachments.filter((att) => att.file);
       if (filesToUpload.length > 0) {
-        // Enforce maximum single file size client-side before network transmission
+        // Enforce maximum single file size client-side before processing/network transmission
         const MAX_PER_FILE_BYTES = 25 * 1024 * 1024;
         const oversized = filesToUpload.find((f) => f.file && f.file.size > MAX_PER_FILE_BYTES);
         if (oversized) {
@@ -1402,142 +1537,376 @@ export default function ChatPage() {
           return false;
         }
 
-        const uploadController = new AbortController();
-        const UPLOAD_TIMEOUT_MS = 300000;
-        let isTimeout = false;
-        const uploadTimeoutId = setTimeout(() => {
-          isTimeout = true;
-          try {
-            uploadController.abort(new DOMException('Upload timed out after 5 minutes.', 'TimeoutError'));
-          } catch (_) {
-            uploadController.abort();
-          }
-        }, UPLOAD_TIMEOUT_MS);
+        const isWebLLM = selectedProvider === 'webllm';
+        const clientOnline = isBrowserOnline();
 
-        try {
-          const formData = new FormData();
-          if (activeChatIdRef.current) {
-            formData.append('conversationId', activeChatIdRef.current);
-          }
-          formData.append('provider', selectedProvider || DEFAULT_PROVIDER);
-          formData.append('offline', String(!isBrowserOnline()));
-          filesToUpload.forEach((att) => {
-            formData.append('files', att.file, att.name);
-          });
+        // Safe browser-local path for Browser AI (WebLLM) when offline
+        if (isWebLLM && !clientOnline) {
+          const localExtractedAttachments = [];
+          for (const att of filesToUpload) {
+            // If already extracted, reuse existing extraction
+            if (att.extraction?.status === 'ready' && att.extraction?.text) {
+              await saveAttachmentBlob(att.id, att.file, {
+                name: att.name,
+                originalName: att.originalName || att.name,
+                mimeType: att.type || att.file.type,
+                size: att.size || att.file.size,
+                formattedSize: att.formattedSize,
+                extension: att.extension,
+                isImage: Boolean(att.isImage),
+                conversationId: activeChatIdRef.current || null
+              });
+              localExtractedAttachments.push({
+                ...att,
+                status: 'ready',
+                extraction: att.extraction
+              });
+              continue;
+            }
 
-          let uploadRes;
-          try {
-            uploadRes = await fetch('/api/upload', {
-              method: 'POST',
-              body: formData,
-              signal: uploadController.signal
+            // Perform browser-side extraction
+            const extResult = await extractBrowserDocument(att.file, {
+              id: att.id,
+              name: att.name,
+              originalName: att.originalName || att.name,
+              mimeType: att.type || att.file.type,
+              extension: att.extension
             });
-          } finally {
-            clearTimeout(uploadTimeoutId);
+
+            if (extResult.isImage || extResult.status === 'unsupported_offline') {
+              setPersistenceError(
+                'Image text recognition (OCR) requires an internet connection. Connect to the internet to process image text, or attach a text document (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML).'
+              );
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+
+            if (extResult.status === 'scanned_or_image_only') {
+              setPersistenceError(
+                extResult.warning ||
+                  'No readable text could be extracted from this PDF. This document appears to be scanned or contains rasterized pages without a text layer. Please attach a text-based document or connect to the internet.'
+              );
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+
+            if (extResult.status === 'empty') {
+              setPersistenceError(`The attached file '${att.name}' is empty (0 bytes). Please attach a file with content.`);
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+
+            if (extResult.status === 'encrypted') {
+              setPersistenceError(
+                extResult.error || `The attached document '${att.name}' is password-protected or encrypted.`
+              );
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+
+            if (!extResult.success || extResult.status === 'unsupported_format' || extResult.status === 'corrupted' || extResult.status === 'error') {
+              setPersistenceError(
+                extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'. Supported offline formats: PDF, DOCX, PPTX, TXT, MD, CSV, TSV, JSON, XML.`
+              );
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+
+            if (!extResult.text || !extResult.text.trim()) {
+              setPersistenceError(
+                `No readable text content was found in '${att.name}'. Please attach a document containing text.`
+              );
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+
+            // Save binary to IndexedDB
+            await saveAttachmentBlob(att.id || extResult.fileId, att.file, {
+              name: att.name,
+              originalName: att.originalName || att.name,
+              mimeType: att.type || att.file.type,
+              size: att.size || att.file.size,
+              formattedSize: att.formattedSize,
+              extension: att.extension,
+              isImage: Boolean(att.isImage),
+              conversationId: activeChatIdRef.current || null
+            });
+
+            localExtractedAttachments.push({
+              id: att.id || extResult.fileId,
+              name: att.name || extResult.originalName,
+              originalName: att.originalName || att.name,
+              size: att.size || att.file.size,
+              formattedSize: att.formattedSize,
+              type: att.type || att.file.type,
+              extension: att.extension,
+              isImage: Boolean(att.isImage),
+              status: extResult.status,
+              file: att.file,
+              previewUrl: att.previewUrl,
+              extraction: extResult
+            });
           }
 
-          if (!uploadRes.ok) {
-            let errorMsg = `Upload failed (${uploadRes.status})`;
+          processedAttachments = localExtractedAttachments;
+        } else {
+          // Online upload path (or cloud / Ollama provider)
+          const uploadController = new AbortController();
+          const UPLOAD_TIMEOUT_MS = 300000;
+          let isTimeout = false;
+          const uploadTimeoutId = setTimeout(() => {
+            isTimeout = true;
             try {
-              const errData = await uploadRes.json();
-              if (errData?.error) {
-                errorMsg = errData.error;
-              }
-            } catch (_) {}
+              uploadController.abort(new DOMException('Upload timed out after 5 minutes.', 'TimeoutError'));
+            } catch (_) {
+              uploadController.abort();
+            }
+          }, UPLOAD_TIMEOUT_MS);
 
-            setPersistenceError(errorMsg);
-            setIsLoading(false);
-            isSubmittingRef.current = false;
-            return false;
-          }
+          try {
+            const formData = new FormData();
+            if (activeChatIdRef.current) {
+              formData.append('conversationId', activeChatIdRef.current);
+            }
+            formData.append('provider', selectedProvider || DEFAULT_PROVIDER);
+            formData.append('offline', String(!isBrowserOnline()));
+            filesToUpload.forEach((att) => {
+              formData.append('files', att.file, att.name);
+            });
 
-          const uploadData = await uploadRes.json();
-          processedAttachments = Array.isArray(uploadData?.attachments)
-            ? uploadData.attachments.map((proc, idx) => {
-                const orig =
-                  filesToUpload[idx] ||
-                  filesToUpload.find(
-                    (f) => f.name === (proc.originalName || proc.name)
-                  );
-                return {
-                  ...proc,
-                  file: orig?.file,
-                  previewUrl: orig?.previewUrl || proc.dataUrl,
-                  dataUrl: proc.dataUrl,
-                  base64: proc.base64 || orig?.base64,
-                  isImage: Boolean(proc.isImage || orig?.isImage)
-                };
-              })
-            : [];
+            let uploadRes;
+            try {
+              uploadRes = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData,
+                signal: uploadController.signal
+              });
+            } finally {
+              clearTimeout(uploadTimeoutId);
+            }
 
-          // Persist file blobs into IndexedDB for robust local preview/download across reloads
-          await Promise.all(
-            filesToUpload.map(async (attItem, i) => {
-              const proc =
-                processedAttachments[i] ||
-                processedAttachments.find(
-                  (p) => (p.originalName || p.name) === attItem.name
-                );
-              if (proc && proc.id && attItem.file) {
-                try {
-                  await saveAttachmentBlob(proc.id, attItem.file, {
-                    name: proc.name || attItem.name,
-                    originalName: proc.originalName || attItem.name,
-                    mimeType: proc.type || attItem.file.type,
-                    size: proc.size || attItem.file.size,
-                    formattedSize: proc.formattedSize || attItem.formattedSize,
-                    extension: proc.extension || attItem.extension,
-                    isImage: Boolean(attItem.isImage),
+            if (!uploadRes.ok) {
+              let errorMsg = `Upload failed (${uploadRes.status})`;
+              try {
+                const errData = await uploadRes.json();
+                if (errData?.error) {
+                  errorMsg = errData.error;
+                }
+              } catch (_) {}
+
+              // If Browser AI is selected and upload returned an error, attempt browser extraction fallback!
+              if (isWebLLM) {
+                console.warn('Server upload endpoint failed for Browser AI, attempting local browser extraction fallback...');
+                const fallbackLocalAttachments = [];
+                for (const att of filesToUpload) {
+                  const extResult = await extractBrowserDocument(att.file, {
+                    id: att.id,
+                    name: att.name,
+                    originalName: att.originalName || att.name,
+                    mimeType: att.type || att.file.type,
+                    extension: att.extension
+                  });
+                  if (!extResult.success || !extResult.text) {
+                    throw new Error(extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'.`);
+                  }
+                  await saveAttachmentBlob(att.id || extResult.fileId, att.file, {
+                    name: att.name,
+                    originalName: att.originalName || att.name,
+                    mimeType: att.type || att.file.type,
+                    size: att.size || att.file.size,
+                    formattedSize: att.formattedSize,
+                    extension: att.extension,
+                    isImage: Boolean(att.isImage),
                     conversationId: activeChatIdRef.current || null
                   });
-                } catch (e) {
-                  console.warn('Could not cache blob in IndexedDB:', e);
+                  fallbackLocalAttachments.push({
+                    id: att.id || extResult.fileId,
+                    name: att.name || extResult.originalName,
+                    originalName: att.originalName || att.name,
+                    size: att.size || att.file.size,
+                    formattedSize: att.formattedSize,
+                    type: att.type || att.file.type,
+                    extension: att.extension,
+                    isImage: Boolean(att.isImage),
+                    status: extResult.status,
+                    file: att.file,
+                    previewUrl: att.previewUrl,
+                    extraction: extResult
+                  });
                 }
-
-                // Attach base64 data for images under 3MB so stateless serverless environments have direct multimodal access
-                if (attItem.isImage && attItem.file.size <= 3 * 1024 * 1024 && !proc.base64) {
-                  try {
-                    const b64 = await new Promise((resolve) => {
-                      const reader = new FileReader();
-                      reader.onload = () => resolve(reader.result);
-                      reader.onerror = () => resolve(null);
-                      reader.readAsDataURL(attItem.file);
-                    });
-                    if (b64) {
-                      proc.base64 = b64;
-                      if (!proc.dataUrl) proc.dataUrl = b64;
-                      if (!proc.previewUrl) proc.previewUrl = b64;
-                    }
-                  } catch (_) {}
-                }
+                processedAttachments = fallbackLocalAttachments;
+              } else {
+                setPersistenceError(errorMsg);
+                setIsLoading(false);
+                isSubmittingRef.current = false;
+                return false;
               }
-            })
-          );
-        } catch (uploadErr) {
-          console.error('File upload network error:', uploadErr);
-          let userMsg = uploadErr?.message || 'Network request failed';
-          if (isTimeout || uploadErr?.name === 'TimeoutError') {
-            userMsg = 'Attachment upload timed out. The file may be too large or the server is busy. Please try uploading a smaller image or retry.';
-          } else if (uploadErr?.name === 'AbortError' || uploadController.signal.aborted) {
-            const reason = uploadController.signal.reason;
-            const reasonMsg = reason?.message || (typeof reason === 'string' ? reason : null);
-            if (reasonMsg && !reasonMsg.includes('without reason')) {
-              userMsg = reasonMsg;
             } else {
-              userMsg = 'Attachment upload was cancelled or timed out. Please try again.';
-            }
-          } else if (userMsg.toLowerCase().includes('failed to fetch') || userMsg.toLowerCase().includes('networkerror')) {
-            userMsg = !isBrowserOnline() || selectedProvider === 'ollama'
-              ? 'Could not reach the local Orvix backend server (/api/upload). Please verify the local server is running.'
-              : 'Network error while connecting to upload server. Please verify the server is running and check your connection.';
-          }
+              const uploadData = await uploadRes.json();
+              processedAttachments = Array.isArray(uploadData?.attachments)
+                ? uploadData.attachments.map((proc, idx) => {
+                    const orig =
+                      filesToUpload[idx] ||
+                      filesToUpload.find(
+                        (f) => f.name === (proc.originalName || proc.name)
+                      );
+                    return {
+                      ...proc,
+                      file: orig?.file,
+                      previewUrl: orig?.previewUrl || proc.dataUrl,
+                      dataUrl: proc.dataUrl,
+                      base64: proc.base64 || orig?.base64,
+                      isImage: Boolean(proc.isImage || orig?.isImage)
+                    };
+                  })
+                : [];
 
-          setPersistenceError(
-            `Failed to upload attachments: ${userMsg}`
-          );
-          setIsLoading(false);
-          isSubmittingRef.current = false;
-          return false;
+              // Persist file blobs into IndexedDB for robust local preview/download across reloads
+              await Promise.all(
+                filesToUpload.map(async (attItem, i) => {
+                  const proc =
+                    processedAttachments[i] ||
+                    processedAttachments.find(
+                      (p) => (p.originalName || p.name) === attItem.name
+                    );
+                  if (proc && proc.id && attItem.file) {
+                    try {
+                      await saveAttachmentBlob(proc.id, attItem.file, {
+                        name: proc.name || attItem.name,
+                        originalName: proc.originalName || attItem.name,
+                        mimeType: proc.type || attItem.file.type,
+                        size: proc.size || attItem.file.size,
+                        formattedSize: proc.formattedSize || attItem.formattedSize,
+                        extension: proc.extension || attItem.extension,
+                        isImage: Boolean(attItem.isImage),
+                        conversationId: activeChatIdRef.current || null
+                      });
+                    } catch (e) {
+                      console.warn('Could not cache blob in IndexedDB:', e);
+                    }
+
+                    // Attach base64 data for images under 3MB so stateless serverless environments have direct multimodal access
+                    if (attItem.isImage && attItem.file.size <= 3 * 1024 * 1024 && !proc.base64) {
+                      try {
+                        const b64 = await new Promise((resolve) => {
+                          const reader = new FileReader();
+                          reader.onload = () => resolve(reader.result);
+                          reader.onerror = () => resolve(null);
+                          reader.readAsDataURL(attItem.file);
+                        });
+                        if (b64) {
+                          proc.base64 = b64;
+                          if (!proc.dataUrl) proc.dataUrl = b64;
+                          if (!proc.previewUrl) proc.previewUrl = b64;
+                        }
+                      } catch (_) {}
+                    }
+                  }
+                })
+              );
+            }
+          } catch (uploadErr) {
+            console.error('File upload network error:', uploadErr);
+
+            // If selectedProvider is Browser AI, gracefully fallback to browser-side text extraction!
+            if (isWebLLM) {
+              try {
+                console.warn('Network upload failed for Browser AI, attempting local browser extraction fallback...');
+                const fallbackLocalAttachments = [];
+                for (const att of filesToUpload) {
+                  if (att.extraction?.status === 'ready' && att.extraction?.text) {
+                    fallbackLocalAttachments.push({ ...att, status: 'ready' });
+                    continue;
+                  }
+
+                  const extResult = await extractBrowserDocument(att.file, {
+                    id: att.id,
+                    name: att.name,
+                    originalName: att.originalName || att.name,
+                    mimeType: att.type || att.file.type,
+                    extension: att.extension
+                  });
+
+                  if (extResult.isImage || extResult.status === 'unsupported_offline') {
+                    throw new Error('Image text recognition (OCR) requires an internet connection. Connect to the internet to process image text, or attach a text document (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML).');
+                  }
+                  if (extResult.status === 'scanned_or_image_only') {
+                    throw new Error(extResult.warning || 'No readable text could be extracted from this PDF. This document appears to be scanned without a text layer.');
+                  }
+                  if (extResult.status === 'empty') {
+                    throw new Error(`The attached file '${att.name}' is empty (0 bytes).`);
+                  }
+                  if (extResult.status === 'encrypted') {
+                    throw new Error(extResult.error || `The attached document '${att.name}' is password-protected or encrypted.`);
+                  }
+                  if (!extResult.success || !extResult.text || !extResult.text.trim()) {
+                    throw new Error(extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'.`);
+                  }
+
+                  await saveAttachmentBlob(att.id || extResult.fileId, att.file, {
+                    name: att.name,
+                    originalName: att.originalName || att.name,
+                    mimeType: att.type || att.file.type,
+                    size: att.size || att.file.size,
+                    formattedSize: att.formattedSize,
+                    extension: att.extension,
+                    isImage: Boolean(att.isImage),
+                    conversationId: activeChatIdRef.current || null
+                  });
+
+                  fallbackLocalAttachments.push({
+                    id: att.id || extResult.fileId,
+                    name: att.name || extResult.originalName,
+                    originalName: att.originalName || att.name,
+                    size: att.size || att.file.size,
+                    formattedSize: att.formattedSize,
+                    type: att.type || att.file.type,
+                    extension: att.extension,
+                    isImage: Boolean(att.isImage),
+                    status: extResult.status,
+                    file: att.file,
+                    previewUrl: att.previewUrl,
+                    extraction: extResult
+                  });
+                }
+
+                processedAttachments = fallbackLocalAttachments;
+              } catch (fallbackErr) {
+                setPersistenceError(`Failed to process attachment: ${fallbackErr?.message || 'Local extraction failed.'}`);
+                setIsLoading(false);
+                isSubmittingRef.current = false;
+                return false;
+              }
+            } else {
+              let userMsg = uploadErr?.message || 'Network request failed';
+              if (isTimeout || uploadErr?.name === 'TimeoutError') {
+                userMsg = 'Attachment upload timed out. The file may be too large or the server is busy. Please try uploading a smaller image or retry.';
+              } else if (uploadErr?.name === 'AbortError' || uploadController.signal.aborted) {
+                const reason = uploadController.signal.reason;
+                const reasonMsg = reason?.message || (typeof reason === 'string' ? reason : null);
+                if (reasonMsg && !reasonMsg.includes('without reason')) {
+                  userMsg = reasonMsg;
+                } else {
+                  userMsg = 'Attachment upload was cancelled or timed out. Please try again.';
+                }
+              } else if (userMsg.toLowerCase().includes('failed to fetch') || userMsg.toLowerCase().includes('networkerror')) {
+                userMsg = !isBrowserOnline() || selectedProvider === 'ollama'
+                  ? 'Could not reach the local Orvix backend server (/api/upload). Please verify the local server is running.'
+                  : 'Network error while connecting to upload server. Please verify the server is running and check your connection.';
+              }
+
+              setPersistenceError(`Failed to upload attachments: ${userMsg}`);
+              setIsLoading(false);
+              isSubmittingRef.current = false;
+              return false;
+            }
+          }
         }
       } else {
         processedAttachments = attachments.map((att) => ({
@@ -2074,6 +2443,8 @@ export default function ChatPage() {
       ? targetProvider.model
       : (chosenProvider === 'ollama'
           ? 'qwen2.5:1.5b'
+          : chosenProvider === 'webllm'
+          ? webllmModelId
           : chosenProvider === 'groq'
           ? 'openai/gpt-oss-120b'
           : chosenProvider === 'openrouter'
@@ -2176,6 +2547,15 @@ export default function ChatPage() {
   const handleStopGenerating = () => {
     stopSpeech();
     isUserStoppedRef.current = true;
+
+    if (
+      selectedProvider === 'webllm' ||
+      webllmState.status === 'generating' ||
+      webllmState.status === 'downloading' ||
+      webllmState.status === 'loading'
+    ) {
+      stopWebLLMGeneration();
+    }
 
     if (activeAbortControllerRef.current) {
       try {
@@ -2483,17 +2863,36 @@ export default function ChatPage() {
               ? isCloudEnabled
                 ? 'Offline mode — Local AI (Ollama) is ready. Messages are saved locally and will sync to Cloud Firestore when internet reconnects.'
                 : 'Offline mode — Local AI (Ollama) and local conversation history are active.'
-              : 'You are offline — Cloud AI providers and cloud sync require internet. Switch to Local AI (Ollama) to chat locally.'}
+              : selectedProvider === 'webllm'
+              ? (webllmState.status === 'ready' || webllmState.isCached)
+                ? (appShellState.isAppShellCached
+                    ? `Offline mode — App shell & ${webllmState.modelId ? (WEBLLM_MODEL_CATALOG[webllmState.modelId]?.shortLabel || 'Browser AI') : 'Browser AI'} are cached on this device. Supported documents (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML) can be extracted locally.`
+                    : `Offline mode — ${webllmState.modelId ? (WEBLLM_MODEL_CATALOG[webllmState.modelId]?.shortLabel || 'Browser AI') : 'Browser AI'} is cached on this device. Supported documents can be extracted locally.`)
+                : (appShellState.isAppShellCached
+                    ? `Offline mode — App shell is cached, but ${webllmState.modelId ? (WEBLLM_MODEL_CATALOG[webllmState.modelId]?.shortLabel || 'Browser AI') : 'Browser AI'} model weights have not been downloaded yet. Connect to the internet once to download and cache the model for offline use.`
+                    : 'You are offline — Connect to the internet once to download and cache Browser AI for offline use.')
+              : appShellState.isAppShellCached
+              ? 'Offline mode — App shell is available offline. Cloud AI providers require internet. Switch to Browser AI (WebLLM) to chat locally.'
+              : 'You are offline — Cloud AI providers and Firebase require internet. Switch to Browser AI (WebLLM) to chat locally.'}
           </span>
 
-          {selectedProvider !== 'ollama' && (
-            <button
-              type="button"
-              className="offline-switch-btn"
-              onClick={() => handleSelectProvider('ollama')}
-            >
-              Switch to Ollama
-            </button>
+          {selectedProvider !== 'ollama' && selectedProvider !== 'webllm' && (
+            <div className="offline-switch-actions">
+              <button
+                type="button"
+                className="offline-switch-btn"
+                onClick={() => handleSelectProvider('webllm')}
+              >
+                Switch to Browser AI
+              </button>
+              <button
+                type="button"
+                className="offline-switch-btn"
+                onClick={() => handleSelectProvider('ollama')}
+              >
+                Switch to Ollama
+              </button>
+            </div>
           )}
 
           <button
@@ -2592,6 +2991,14 @@ export default function ChatPage() {
         onSelectMode={handleSelectMode}
         modeChangeNotice={modeChangeNotice}
         onDismissModeNotice={() => setModeChangeNotice(null)}
+        isOffline={isOffline}
+        webllmState={webllmState}
+        webllmGpuCheck={webllmGpuCheck}
+        webllmModelId={webllmModelId}
+        onSelectWebLLMModel={handleSelectWebLLMModel}
+        onLoadWebLLMModel={handleLoadWebLLMModel}
+        onCancelWebLLMLoad={handleCancelWebLLMLoad}
+        onUnloadWebLLMModel={handleUnloadWebLLMModel}
       />
     </Layout>
   );

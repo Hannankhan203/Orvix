@@ -918,6 +918,15 @@ export const PROVIDER_PROFILES = {
     supportsSystemInstruction: true,
     messageFormat: 'openai',
     notes: 'Local offline Ollama instance with Qwen 2.5 1.5B'
+  },
+  webllm: {
+    id: 'webllm',
+    name: 'Browser AI (WebLLM)',
+    modelTag: 'Qwen 2.5 1.5B',
+    maxDocChars: 10_000,
+    supportsSystemInstruction: true,
+    messageFormat: 'openai',
+    notes: 'In-browser WebGPU inference with bounded 4k token context window'
   }
 };
 
@@ -978,37 +987,37 @@ export function adaptDocumentContextForProvider({
     finalDocContext = `${providerNotice}\n\n${headPortion}${tailSummary}`;
   }
 
-  // For Local AI (Ollama), ensure extracted document and image OCR content is placed directly in the user prompt.
-  // Local models (like Qwen 2.5, Llama, Mistral) heavily attend to user turn content, avoiding hallucinations
+  // For Local AI (Ollama) and Browser AI (WebLLM), place extracted document and image OCR content directly in the user prompt.
+  // Small local models (like Qwen 2.5) heavily attend to user turn content, avoiding hallucinations
   // or claiming that no text/file/image was provided.
-  if (normProvider === 'ollama') {
+  if (normProvider === 'ollama' || normProvider === 'webllm') {
     const isAutoAttachmentPrompt = /^\[User attached \d+ files?:/.test((prompt || '').trim());
     const userQuestionText = isAutoAttachmentPrompt
       ? `${prompt}\nRead the extracted text above and clearly summarize or transcribe what is written in the attachment.`
       : prompt;
 
-    const effectivePromptForOllama = `[ATTACHED DOCUMENT & IMAGE OCR CONTEXT]
+    const effectivePromptForLocal = `[ATTACHED DOCUMENT & IMAGE OCR CONTEXT]
 The user attached the following extracted document/image OCR text:
 ${finalDocContext}
 [END OF ATTACHED DOCUMENT & IMAGE OCR CONTEXT]
 
 User Question: ${userQuestionText}`;
 
-    const ollamaGroundingAddon =
+    const localGroundingAddon =
       'You have access to the attached document and image OCR text provided directly in the user\'s message. ' +
       'When the user asks about an attached image (e.g., what text is written in the image, summarizing or explaining the image), ' +
       'answer directly and accurately using the extracted OCR text provided in the message — do not claim you cannot view or read images. ' +
       'Do not hallucinate or invent details not present in the extracted text.';
 
     const effectiveSystemInstruction = baseSystemInstruction
-      ? `${baseSystemInstruction}\n\n${ollamaGroundingAddon}`
-      : `You are a helpful, accurate AI assistant. ${ollamaGroundingAddon}`;
+      ? `${baseSystemInstruction}\n\n${localGroundingAddon}`
+      : `You are a helpful, accurate AI assistant. ${localGroundingAddon}`;
 
     return {
       provider: normProvider,
       providerProfile: profile,
       effectiveSystemInstruction,
-      effectivePrompt: effectivePromptForOllama,
+      effectivePrompt: effectivePromptForLocal,
       formattedDocContext: finalDocContext,
       isBoundedForProvider,
       providerLimitChars: charBudget,

@@ -7,13 +7,15 @@
 import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './geminiService.js';
 import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
 import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
+import { streamWebLLMMessage, DEFAULT_WEBLLM_MODEL_ID } from './webllmService.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
   GROQ: 'groq',
   OPENROUTER: 'openrouter',
   CLOUDFLARE: 'cloudflare',
-  OLLAMA: 'ollama'
+  OLLAMA: 'ollama',
+  WEBLLM: 'webllm'
 };
 
 export const PROVIDER_OPTIONS = [
@@ -51,6 +53,15 @@ export const PROVIDER_OPTIONS = [
     defaultModel: 'qwen2.5:1.5b',
     description: 'Local offline inference',
     label: 'Local AI (Ollama) — Qwen 2.5 1.5B'
+  },
+  {
+    id: AI_PROVIDERS.WEBLLM,
+    name: 'Browser AI (WebLLM)',
+    shortName: 'Browser AI',
+    modelTag: 'Qwen 2.5 1.5B',
+    defaultModel: DEFAULT_WEBLLM_MODEL_ID,
+    description: 'On-device WebGPU inference',
+    label: 'Browser AI (WebLLM) — Qwen 2.5 1.5B'
   }
 ];
 
@@ -63,8 +74,9 @@ export const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
  */
 export function isProviderConfigured(provider) {
   switch (provider) {
-    case AI_PROVIDERS.OLLAMA: {
-      // Local Ollama instance requires no cloud API key
+    case AI_PROVIDERS.OLLAMA:
+    case AI_PROVIDERS.WEBLLM: {
+      // Local Ollama and Browser AI (WebLLM) require no cloud API key
       return true;
     }
     case AI_PROVIDERS.GROQ: {
@@ -270,6 +282,34 @@ export async function streamAIMessage({
 }) {
   const normalizedProvider = provider.toLowerCase();
   const normalizedMode = (mode || 'general').toLowerCase();
+
+  // Strictly local browser inference: route Browser AI (WebLLM) directly to webllmService.js.
+  // Never send Browser AI requests to /api/chat, Ollama, Firebase, or any cloud provider.
+  if (normalizedProvider === AI_PROVIDERS.WEBLLM) {
+    let effectivePrompt = prompt;
+    if (isContinuation) {
+      const contHeader = originalPrompt
+        ? `[Continuation Request — Part ${partNumber || 2} for original prompt: "${originalPrompt}"]\n`
+        : `[Continuation Request — Part ${partNumber || 2}]\n`;
+      const tailContext = previousContentSummary
+        ? `Previous section ended with:\n"""\n${previousContentSummary}\n"""\n`
+        : '';
+      effectivePrompt = `${contHeader}${tailContext}Continue directly from where the previous response stopped without repeating prior text.\n\nUser request: ${prompt}`;
+    }
+
+    return streamWebLLMMessage({
+      prompt: effectivePrompt,
+      history,
+      username: username ? String(username).trim() : null,
+      preferences: preferences || null,
+      mode: normalizedMode,
+      model: model ? String(model).trim() : null,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      onStart,
+      onChunk,
+      signal
+    });
+  }
 
   // Primary path: Use secure server-side proxy route /api/chat with SSE
   // Server executes bounded retries with jitter; avoid multiplying client-side delays
@@ -556,6 +596,21 @@ export async function streamAIMessage({
       err.code = 503;
       err.canFallback = false;
       throw err;
+    }
+
+    case AI_PROVIDERS.WEBLLM: {
+      return streamWebLLMMessage({
+        prompt,
+        history,
+        username: username ? String(username).trim() : null,
+        preferences: preferences || null,
+        mode: normalizedMode,
+        model: model ? String(model).trim() : null,
+        attachments: Array.isArray(attachments) ? attachments : [],
+        onStart,
+        onChunk,
+        signal
+      });
     }
 
     case AI_PROVIDERS.GEMINI:

@@ -15,3 +15,4 @@ export * from './openrouterService.js';
 export * from './documentContextService.js';
 export * from './alternativeResponseService.js';
 export * from './transcriptionService.js';
+export * from './browserDocumentExtractor.js';
