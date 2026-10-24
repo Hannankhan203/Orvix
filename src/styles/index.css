@@ -7802,20 +7802,30 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
     gap: 5px 6px;
     min-height: 44px;
   }
+  .listening-left-group {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .listening-text {
+    max-width: 76px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .dictation-strip-btn {
-    height: 40px;
-    min-height: 40px;
-    width: 40px;
-    min-width: 40px;
+    height: 38px;
+    min-height: 38px;
+    width: 38px;
+    min-width: 38px;
     padding: 0;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
   }
   .dictation-strip-btn.stop-btn {
     width: auto;
-    min-width: 68px;
-    padding: 0 12px;
-    gap: 5px;
+    min-width: 62px;
+    padding: 0 10px;
+    gap: 4px;
     font-size: 0.78rem;
   }
   .dictation-strip-btn:not(.stop-btn):not(.text-btn) .btn-label {
@@ -7843,6 +7853,41 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
   }
   .composer-stop-label {
     display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .composer-listening-bar {
+    padding: 5px 6px;
+    gap: 4px 5px;
+    min-height: 40px;
+  }
+  .listening-left-group {
+    gap: 4px;
+  }
+  .listening-text {
+    max-width: 60px;
+    font-size: 0.72rem;
+  }
+  .dictation-lang-btn {
+    padding: 2px 5px;
+    font-size: 0.68rem;
+    min-height: 28px;
+  }
+  .dictation-strip-btn {
+    height: 34px;
+    min-height: 34px;
+    width: 34px;
+    min-width: 34px;
+  }
+  .dictation-strip-btn.stop-btn {
+    min-width: 54px;
+    padding: 0 7px;
+    font-size: 0.72rem;
+    gap: 3px;
+  }
+  .listening-actions-group {
+    gap: 4px;
   }
 }
 
@@ -9306,6 +9351,15 @@ body.theme-light .notice-retry-btn,
     padding: 0 10px max(8px, env(safe-area-inset-bottom, 8px)) 10px;
   }
 
+  /* When dictation is active on mobile, prevent duplicate mic/stop button in composer and ensure clean spacing */
+  .chat-composer-dock.is-recording-active .composer-mic-btn {
+    display: none !important;
+  }
+
+  .chat-composer-dock.is-recording-active .chat-composer-inner {
+    gap: 8px;
+  }
+
   /* When the mobile software keyboard is open, eliminate the redundant safe-area gap and footnote */
   html.is-keyboard-open .chat-composer-dock {
     padding-bottom: 6px;
@@ -9313,6 +9367,16 @@ body.theme-light .notice-retry-btn,
 
   html.is-keyboard-open .composer-footnote {
     display: none;
+  }
+
+  html.is-keyboard-open .composer-listening-bar {
+    padding: 5px 8px;
+    gap: 4px 6px;
+    min-height: 40px;
+  }
+
+  html.is-keyboard-open .composer-listening-bar .listening-preview-area {
+    padding: 2px 0 0 0;
   }
 
   .composer-form {
@@ -9548,6 +9612,25 @@ body.theme-light .notice-retry-btn,
   }
   .sidebar-footer {
     padding: 8px 12px max(8px, env(safe-area-inset-bottom, 8px)) 12px;
+  }
+  .chat-composer-dock.is-recording-active .chat-composer-inner {
+    gap: 4px;
+  }
+  .composer-listening-bar {
+    padding: 4px 8px;
+    min-height: 36px;
+    gap: 4px 6px;
+  }
+  .dictation-strip-btn {
+    height: 32px;
+    min-height: 32px;
+  }
+  .dictation-strip-btn.stop-btn {
+    min-height: 32px;
+    padding: 0 8px;
+  }
+  .listening-preview-area {
+    padding: 2px 2px 0 2px;
   }
 }
 

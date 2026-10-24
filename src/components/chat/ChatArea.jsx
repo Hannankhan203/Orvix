@@ -239,7 +239,7 @@ export default function ChatArea({
 
   // Mobile/compact viewport & multiline expansion tracking
   const [isCompactViewport, setIsCompactViewport] = useState(
-    () => typeof window !== 'undefined' && window.innerWidth <= 640
+    () => typeof window !== 'undefined' && window.innerWidth < 768
   );
   const [isExpandedInput, setIsExpandedInput] = useState(false);
 
@@ -754,7 +754,7 @@ export default function ChatArea({
   // Window & visualViewport resize listener to keep button visibility updated and anchor bottom when mobile keyboard opens
   useEffect(() => {
     const handleResize = () => {
-      setIsCompactViewport(window.innerWidth <= 640);
+      setIsCompactViewport(window.innerWidth < 768);
       if (
         isUserFollowingBottomRef.current &&
         scrollViewportRef.current &&
@@ -1347,6 +1347,43 @@ Transcript:
     recordingState === 'finalizing' ||
     recordingState === 'transcribing';
 
+  const normalComposerPlaceholder = isCompactViewport
+    ? activeMode === 'coding'
+      ? 'Ask a coding question...'
+      : activeMode === 'writing'
+      ? 'Draft or polish text...'
+      : activeMode === 'learning'
+      ? 'Ask to explain a topic...'
+      : 'Message Orvix...'
+    : activeMode === 'coding'
+    ? 'Ask a coding question, debug an error, or request code...'
+    : activeMode === 'writing'
+    ? 'Draft an email, polish prose, or rewrite content...'
+    : activeMode === 'learning'
+    ? 'Ask to explain a concept, break down a topic, or quiz you...'
+    : 'Message Orvix...';
+
+  // Single source of truth for composer placeholder:
+  // On mobile when the expanded Recording panel is active, keep the composer displaying the normal prompt
+  // so the composer does NOT render a competing "Listening — speak or..." state underneath the Recording panel.
+  const composerPlaceholder = isLoading
+    ? isCompactViewport
+      ? 'Generating response...'
+      : 'Generating response — press Esc to stop...'
+    : isCompactViewport && isRecordingActive
+    ? normalComposerPlaceholder
+    : isListening
+    ? isCompactViewport
+      ? 'Listening — speak or type...'
+      : 'Listening — speak naturally or type...'
+    : isPaused
+    ? isCompactViewport
+      ? 'Paused — resume or type...'
+      : 'Dictation paused — resume or type...'
+    : isRequesting
+    ? 'Connecting microphone...'
+    : normalComposerPlaceholder;
+
   return (
     <main
       className={`chat-area-container ${isDraggingOver ? 'is-drag-over' : ''}`}
@@ -1402,7 +1439,7 @@ Transcript:
       </div>
 
       {/* Message Composer Dock */}
-      <div className="chat-composer-dock">
+      <div className={`chat-composer-dock ${isRecordingActive ? 'is-recording-active' : ''}`}>
         <div className="chat-composer-inner">
           {/* ChatGPT-style Floating Scroll-to-Bottom Button */}
           {showScrollBottom && (
@@ -1829,7 +1866,7 @@ Transcript:
           <form
             onSubmit={handleSubmit}
             onPaste={handlePaste}
-            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''} ${isRecordingActive ? 'is-recording' : ''} ${isExpandedInput ? 'is-expanded' : ''}`}
+            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''} ${isRecordingActive && !isCompactViewport ? 'is-recording' : ''} ${isExpandedInput ? 'is-expanded' : ''}`}
             aria-label="Message composer"
           >
             {/* Native file input strictly supporting one document or image at a time */}
@@ -1983,37 +2020,7 @@ Transcript:
               <textarea
                 ref={textareaRef}
                 className="composer-textarea"
-                placeholder={
-                  isListening
-                    ? isCompactViewport
-                      ? 'Listening — speak or type...'
-                      : 'Listening — speak naturally or type...'
-                    : isPaused
-                    ? isCompactViewport
-                      ? 'Paused — resume or type...'
-                      : 'Dictation paused — resume or type...'
-                    : isRequesting
-                    ? 'Connecting microphone...'
-                    : isLoading
-                    ? isCompactViewport
-                      ? 'Generating response...'
-                      : 'Generating response — press Esc to stop...'
-                    : isCompactViewport
-                    ? activeMode === 'coding'
-                      ? 'Ask a coding question...'
-                      : activeMode === 'writing'
-                      ? 'Draft or polish text...'
-                      : activeMode === 'learning'
-                      ? 'Ask to explain a topic...'
-                      : 'Message Orvix...'
-                    : activeMode === 'coding'
-                    ? 'Ask a coding question, debug an error, or request code...'
-                    : activeMode === 'writing'
-                    ? 'Draft an email, polish prose, or rewrite content...'
-                    : activeMode === 'learning'
-                    ? 'Ask to explain a concept, break down a topic, or quiz you...'
-                    : 'Message Orvix...'
-                }
+                placeholder={composerPlaceholder}
                 value={inputValue}
                 rows={1}
                 onChange={(e) => onInputChange && onInputChange(e.target.value)}
@@ -2079,52 +2086,54 @@ Transcript:
                   </div>
                 )}
 
-                {/* Voice Dictation Microphone Button */}
-                <Button
-                  type="button"
-                  variant={isListening ? 'primary' : (isRequesting || isTranscribing) ? 'outline' : 'ghost'}
-                  size="icon-round"
-                  disabled={isLoading || isTranscribing || isFinalizing}
-                  onClick={handleToggleListening}
-                  title={
-                    !isSupported
-                      ? 'Voice dictation is not supported in this browser.'
-                      : isTranscribing
-                      ? 'Transcribing recorded audio...'
-                      : isListening
-                      ? 'Finish dictation'
-                      : isRequesting
-                      ? 'Connecting microphone... Click to cancel'
-                      : isPaused
-                      ? 'Resume voice dictation'
-                      : `Voice dictation (${activeLang.label})`
-                  }
-                  ariaLabel={
-                    !isSupported
-                      ? 'Voice dictation not supported'
-                      : isTranscribing
-                      ? 'Transcribing audio'
-                      : isListening
-                      ? 'Finish voice dictation'
-                      : isRequesting
-                      ? 'Connecting microphone'
-                      : isPaused
-                      ? 'Resume dictation'
-                      : 'Start voice dictation'
-                  }
-                  className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing ? 'transcribing' : ''}`}
-                  icon={
-                    isListening ? (
-                      <Square size={13} fill="currentColor" />
-                    ) : (isRequesting || isTranscribing) ? (
-                      <Loader2 size={16} className="spin-icon" />
-                    ) : isPaused ? (
-                      <Play size={13} fill="currentColor" />
-                    ) : (
-                      <Mic size={18} />
-                    )
-                  }
-                />
+                {/* Voice Dictation Microphone Button (on mobile, suppressed during active recording to prevent duplicate controls) */}
+                {(!isRecordingActive || !isCompactViewport) && (
+                  <Button
+                    type="button"
+                    variant={isListening ? 'primary' : (isRequesting || isTranscribing) ? 'outline' : 'ghost'}
+                    size="icon-round"
+                    disabled={isLoading || isTranscribing || isFinalizing}
+                    onClick={handleToggleListening}
+                    title={
+                      !isSupported
+                        ? 'Voice dictation is not supported in this browser.'
+                        : isTranscribing
+                        ? 'Transcribing recorded audio...'
+                        : isListening
+                        ? 'Finish dictation'
+                        : isRequesting
+                        ? 'Connecting microphone... Click to cancel'
+                        : isPaused
+                        ? 'Resume voice dictation'
+                        : `Voice dictation (${activeLang.label})`
+                    }
+                    ariaLabel={
+                      !isSupported
+                        ? 'Voice dictation not supported'
+                        : isTranscribing
+                        ? 'Transcribing audio'
+                        : isListening
+                        ? 'Finish voice dictation'
+                        : isRequesting
+                        ? 'Connecting microphone'
+                        : isPaused
+                        ? 'Resume dictation'
+                        : 'Start voice dictation'
+                    }
+                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing ? 'transcribing' : ''}`}
+                    icon={
+                      isListening ? (
+                        <Square size={13} fill="currentColor" />
+                      ) : (isRequesting || isTranscribing) ? (
+                        <Loader2 size={16} className="spin-icon" />
+                      ) : isPaused ? (
+                        <Play size={13} fill="currentColor" />
+                      ) : (
+                        <Mic size={18} />
+                      )
+                    }
+                  />
+                )}
 
                 {/* Message Submission or Stop Generating Button */}
                 {isLoading ? (
