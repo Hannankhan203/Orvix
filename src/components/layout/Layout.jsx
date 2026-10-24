@@ -61,21 +61,143 @@ export default function Layout({
     return () => window.removeEventListener('resize', handleResize);
   }, [sidebarOpen]);
 
-  // Lock background body scrolling when mobile drawer is open
+  // Synchronize visualViewport height & virtual keyboard state on mobile/tablet browsers and PWAs
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const vv = window.visualViewport;
+    const root = document.documentElement;
+    let rafId = null;
+    let lastAppliedHeight = 0;
+    let maxObservedInnerHeight = window.innerHeight || 0;
+
+    const isEditableElement = (el) => {
+      if (!el || !el.tagName) return false;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'textarea' || tag === 'select') return true;
+      if (tag === 'input') {
+        const type = (el.getAttribute('type') || 'text').toLowerCase();
+        return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+      }
+      return Boolean(el.isContentEditable || el.getAttribute?.('contenteditable') === 'true');
+    };
+
+    const updateViewportMetrics = () => {
+      rafId = null;
+      const innerH = window.innerHeight || 0;
+      if (innerH > maxObservedInnerHeight || Math.abs(window.innerWidth - (root._lastVw || window.innerWidth)) > 80) {
+        maxObservedInnerHeight = innerH;
+        root._lastVw = window.innerWidth;
+      }
+
+      if (window.innerWidth > 1024 || !vv) {
+        if (lastAppliedHeight !== 0) {
+          root.style.removeProperty('--app-viewport-height');
+          lastAppliedHeight = 0;
+        }
+        root.classList.remove('is-keyboard-open');
+        return;
+      }
+
+      // Ignore pinch-zoom scaling so zoomed viewports do not corrupt layout height
+      if (vv.scale && vv.scale > 1.02) {
+        return;
+      }
+
+      const currentHeight = Math.round(vv.height);
+      if (currentHeight > 0 && Math.abs(currentHeight - lastAppliedHeight) >= 2) {
+        root.style.setProperty('--app-viewport-height', `${currentHeight}px`);
+        lastAppliedHeight = currentHeight;
+      }
+
+      const referenceHeight = Math.max(innerH, maxObservedInnerHeight);
+      const heightDelta = referenceHeight - currentHeight;
+      const activeFocused = isEditableElement(document.activeElement);
+      const keyboardOpen = heightDelta > 115 || (activeFocused && heightDelta > 68);
+
+      if (keyboardOpen) {
+        root.classList.add('is-keyboard-open');
+        // Prevent iOS Safari / standalone PWA from scrolling the document body upward above the viewport
+        if (window.scrollY !== 0 || window.scrollX !== 0) {
+          window.scrollTo(0, 0);
+        }
+      } else {
+        root.classList.remove('is-keyboard-open');
+      }
+    };
+
+    const scheduleViewportUpdate = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(updateViewportMetrics);
+    };
+
+    const handleFocusChange = () => {
+      scheduleViewportUpdate();
+      setTimeout(scheduleViewportUpdate, 120);
+      setTimeout(scheduleViewportUpdate, 300);
+    };
+
+    updateViewportMetrics();
+
+    if (vv) {
+      vv.addEventListener('resize', scheduleViewportUpdate);
+      vv.addEventListener('scroll', scheduleViewportUpdate);
+    }
+    window.addEventListener('resize', scheduleViewportUpdate);
+    window.addEventListener('orientationchange', scheduleViewportUpdate);
+    document.addEventListener('focusin', handleFocusChange);
+    document.addEventListener('focusout', handleFocusChange);
+
+    return () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+      if (vv) {
+        vv.removeEventListener('resize', scheduleViewportUpdate);
+        vv.removeEventListener('scroll', scheduleViewportUpdate);
+      }
+      window.removeEventListener('resize', scheduleViewportUpdate);
+      window.removeEventListener('orientationchange', scheduleViewportUpdate);
+      document.removeEventListener('focusin', handleFocusChange);
+      document.removeEventListener('focusout', handleFocusChange);
+      root.style.removeProperty('--app-viewport-height');
+      root.classList.remove('is-keyboard-open');
+    };
+  }, []);
+
+  // Lock background body scrolling when mobile drawer is open (without blocking touch scrolling inside the sidebar)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const isMobile = window.innerWidth < 768;
     if (sidebarOpen && isMobile) {
       document.body.style.overflow = 'hidden';
-      document.body.style.touchAction = 'none';
     } else {
       document.body.style.overflow = '';
-      document.body.style.touchAction = '';
     }
     return () => {
       document.body.style.overflow = '';
-      document.body.style.touchAction = '';
     };
+  }, [sidebarOpen]);
+
+  // Manage focus when opening/closing the mobile drawer on small screens
+  const prevSidebarOpenRef = useRef(sidebarOpen);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isMobile = window.innerWidth < 768;
+    if (isMobile && prevSidebarOpenRef.current !== sidebarOpen) {
+      if (sidebarOpen) {
+        requestAnimationFrame(() => {
+          const sidebarEl = document.querySelector('.chatora-sidebar');
+          const closeBtn = sidebarEl?.querySelector('.sidebar-collapse-btn');
+          closeBtn?.focus({ preventScroll: true });
+        });
+      } else {
+        requestAnimationFrame(() => {
+          const menuBtn = document.querySelector('.mobile-menu-btn');
+          menuBtn?.focus({ preventScroll: true });
+        });
+      }
+    }
+    prevSidebarOpenRef.current = sidebarOpen;
   }, [sidebarOpen]);
 
   // Handle Escape key to close mobile sidebar
@@ -95,9 +217,9 @@ export default function Layout({
     sidebarOpenRef.current = sidebarOpen;
   }, [sidebarOpen]);
 
-  // Mobile/Tablet swipe-right gesture to open previous chat list/sidebar
-  // Works across the main conversation area (center, upper, lower) while strictly excluding
-  // the top navigation header, bottom composer, interactive controls, and iOS extreme-edge back gesture.
+  // Mobile/Tablet swipe gestures:
+  // - Swipe right across main chat viewport to open sidebar when closed
+  // - Swipe left on open mobile sidebar/backdrop to dismiss drawer
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -218,15 +340,21 @@ export default function Layout({
 
     // --- Native Touch Event Handlers ---
     const handleTouchStart = (e) => {
-      // Gesture only applies when sidebar is closed and on mobile/tablet screens (width <= 1024px)
-      if (sidebarOpenRef.current || window.innerWidth > 1024) return;
+      if (window.innerWidth > 1024) return;
       if (!e.touches || e.touches.length !== 1) return;
 
       const touch = e.touches[0];
       const clientX = touch.clientX;
       const clientY = touch.clientY;
 
-      if (isExcludedSwipeTarget(e.target, clientX)) return;
+      if (sidebarOpenRef.current) {
+        // When mobile drawer is open (< 768px), allow swipe-left on sidebar or backdrop to close
+        if (window.innerWidth >= 768) return;
+        if (!e.target?.closest?.('.chatora-sidebar, .sidebar-backdrop')) return;
+        if (e.target?.closest?.('input, textarea, select')) return;
+      } else {
+        if (isExcludedSwipeTarget(e.target, clientX)) return;
+      }
 
       touchStartX = clientX;
       touchStartY = clientY;
@@ -256,11 +384,11 @@ export default function Layout({
       if (!isHorizontalTouchSwipe) {
         // Evaluate initial intent once movement exceeds INTENT_THRESHOLD_PX
         if (absX >= INTENT_THRESHOLD_PX || absY >= INTENT_THRESHOLD_PX) {
-          // Confirm horizontal rightward swipe when moving right and horizontal distance clearly dominates
-          if (deltaX > 0 && absX > absY * 1.25) {
+          const isValidDirection = sidebarOpenRef.current ? deltaX < 0 : deltaX > 0;
+          if (isValidDirection && absX > absY * 1.25) {
             isHorizontalTouchSwipe = true;
           } else {
-            // Predominantly vertical scrolling or leftward swipe:
+            // Predominantly vertical scrolling or opposite-direction swipe:
             // Release tracking immediately so native vertical scrolling continues completely uninterrupted
             resetTouchGesture();
             return;
@@ -268,7 +396,7 @@ export default function Layout({
         }
       }
 
-      // Once confirmed as an intentional horizontal right-swipe, prevent vertical scroll contention
+      // Once confirmed as an intentional horizontal drawer swipe, prevent vertical scroll contention
       if (isHorizontalTouchSwipe && e.cancelable) {
         e.preventDefault();
       }
@@ -291,14 +419,24 @@ export default function Layout({
       const duration = Math.max(Date.now() - touchStartTime, 1);
       const velocityX = deltaX / duration;
 
-      // Open sidebar if horizontal swipe crossed threshold or was a fast rightward flick
-      const isQualifyingSwipe =
-        deltaX > 0 &&
-        absX > absY &&
-        (deltaX >= MIN_SWIPE_PX || (deltaX >= FLICK_DISTANCE_PX && velocityX > FLICK_VELOCITY));
+      if (sidebarOpenRef.current) {
+        const isQualifyingCloseSwipe =
+          deltaX < 0 &&
+          absX > absY &&
+          (deltaX <= -MIN_SWIPE_PX || (deltaX <= -FLICK_DISTANCE_PX && velocityX < -FLICK_VELOCITY));
+        if (isQualifyingCloseSwipe) {
+          setSidebarOpen(false);
+        }
+      } else {
+        // Open sidebar if horizontal swipe crossed threshold or was a fast rightward flick
+        const isQualifyingOpenSwipe =
+          deltaX > 0 &&
+          absX > absY &&
+          (deltaX >= MIN_SWIPE_PX || (deltaX >= FLICK_DISTANCE_PX && velocityX > FLICK_VELOCITY));
 
-      if (isQualifyingSwipe && !sidebarOpenRef.current) {
-        setSidebarOpen(true);
+        if (isQualifyingOpenSwipe) {
+          setSidebarOpen(true);
+        }
       }
 
       resetTouchGesture();

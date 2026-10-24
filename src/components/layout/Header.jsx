@@ -279,13 +279,21 @@ export default function Header({
               onClick={onToggleSidebar}
               title={sidebarOpen ? 'Close sidebar' : 'Open chat history'}
               aria-label={sidebarOpen ? 'Close sidebar' : 'Open chat history'}
+              aria-expanded={sidebarOpen}
             >
               <Menu size={20} />
             </button>
 
             <div className="mobile-brand-badge">
               <OrvixLogo size={22} />
-              <span className="mobile-brand-title">{APP_CONFIG.name}</span>
+              <div className="mobile-brand-text">
+                <span className="mobile-brand-title">{APP_CONFIG.name}</span>
+                {activeTitle && (
+                  <span className="mobile-active-thread-subtitle" title={activeTitle}>
+                    {activeTitle}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -331,7 +339,7 @@ export default function Header({
           </div>
         </div>
 
-        {/* Tier 2: Context Bar (AI Model Selector + Chat Title / Status) */}
+        {/* Tier 2: Context Bar (AI Model Selector + Mode Selector + Status) */}
         <div className="header-mobile-sub">
           <div className="mobile-sub-left">
             {onSelectProvider && (
@@ -347,6 +355,7 @@ export default function Header({
               <ModeSelector
                 activeMode={activeMode}
                 onSelectMode={onSelectMode}
+                dropdownAlign="right"
                 className="mobile-mode-selector"
               />
             )}
@@ -480,6 +489,20 @@ export default function Header({
           <div className="account-popover-divider" />
 
           <div className="account-popover-actions">
+            {isInstallable && (
+              <button
+                type="button"
+                className="account-popover-item-btn"
+                onClick={() => {
+                  setAccountMenuOpen(false);
+                  install();
+                }}
+              >
+                <Download size={15} />
+                <span>Install Orvix App</span>
+              </button>
+            )}
+
             <button
               type="button"
               className="account-popover-item-btn"

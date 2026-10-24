@@ -15,11 +15,13 @@ import {
   Loader2,
   Globe,
   Paperclip,
-  FileImage
+  FileImage,
+  Eye
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import BrowserAIStatusBar from './BrowserAIStatusBar.jsx';
+import DocumentPreviewModal from './DocumentPreviewModal.jsx';
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
@@ -233,6 +235,13 @@ export default function ChatArea({
   // Selected file attachments state (strictly capped at 1 attachment per user message)
   const [attachments, setAttachments] = useState([]);
   const [attachmentNotice, setAttachmentNotice] = useState(null);
+  const [previewingComposerAttachment, setPreviewingComposerAttachment] = useState(null);
+
+  // Mobile/compact viewport & multiline expansion tracking
+  const [isCompactViewport, setIsCompactViewport] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth <= 640
+  );
+  const [isExpandedInput, setIsExpandedInput] = useState(false);
 
   // Drag-and-drop file attachment state
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -575,6 +584,7 @@ export default function ChatArea({
 
   const handleRemoveAttachment = (idToRemove) => {
     setAttachmentNotice(null);
+    setPreviewingComposerAttachment((prev) => (prev?.id === idToRemove ? null : prev));
     setAttachments((prev) => {
       const removed = prev.find((att) => att.id === idToRemove);
       if (removed?.previewUrl) {
@@ -602,6 +612,9 @@ export default function ChatArea({
   const prevActiveChatIdRef = useRef(activeChatId || null);
   const prevMessagesCountRef = useRef(messages.length);
   const isUserFollowingBottomRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const isAutoScrollingRef = useRef(false);
+  const isTouchScrollingRef = useRef(false);
 
   // Language dropdown toggle state
   const [langMenuOpen, setLangMenuOpen] = useState(false);
@@ -682,15 +695,8 @@ export default function ChatArea({
     const distanceFromBottom =
       scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
 
-    // Within 120px threshold is considered "at or near the bottom"
-    if (distanceFromBottom <= 120) {
-      isUserFollowingBottomRef.current = true;
-    } else {
-      isUserFollowingBottomRef.current = false;
-    }
-
-    // Show button only if there are messages and user is sufficiently far (> 120px) from bottom
-    const shouldShow = messagesLengthRef.current > 0 && distanceFromBottom > 120;
+    // Show button only if there are messages and user is sufficiently far (> 110px) from bottom
+    const shouldShow = messagesLengthRef.current > 0 && distanceFromBottom > 110;
     setShowScrollBottom((prev) => (prev === shouldShow ? prev : shouldShow));
   }, []);
 
@@ -700,33 +706,90 @@ export default function ChatArea({
     if (!scrollContainer) return;
 
     isUserFollowingBottomRef.current = true;
+    isAutoScrollingRef.current = true;
     scrollContainer.scrollTo({
       top: scrollContainer.scrollHeight,
       behavior: 'smooth'
     });
+    setTimeout(() => {
+      isAutoScrollingRef.current = false;
+      if (scrollViewportRef.current) {
+        lastScrollTopRef.current = scrollViewportRef.current.scrollTop;
+      }
+      updateScrollButtonVisibility();
+    }, 320);
   };
 
-  // Passive scroll event handler
+  // Passive scroll event handler that respects user upward scroll intent during streaming
   const handleScroll = () => {
+    const scrollContainer = scrollViewportRef.current;
+    if (!scrollContainer) return;
+
+    const currentScrollTop = scrollContainer.scrollTop;
+    const distanceFromBottom =
+      scrollContainer.scrollHeight - currentScrollTop - scrollContainer.clientHeight;
+
+    if (!isAutoScrollingRef.current) {
+      // If user scrolled upward by more than 5px, immediately stop forcing auto-scroll
+      if (currentScrollTop < lastScrollTopRef.current - 5) {
+        isUserFollowingBottomRef.current = false;
+      } else if (distanceFromBottom <= 56) {
+        // User scrolled back to the bottom
+        isUserFollowingBottomRef.current = true;
+      }
+    }
+
+    lastScrollTopRef.current = currentScrollTop;
     updateScrollButtonVisibility();
   };
 
-  // Window resize listener to keep button visibility updated
+  const handleViewportTouchStart = () => {
+    isTouchScrollingRef.current = true;
+  };
+
+  const handleViewportTouchEnd = () => {
+    isTouchScrollingRef.current = false;
+  };
+
+  // Window & visualViewport resize listener to keep button visibility updated and anchor bottom when mobile keyboard opens
   useEffect(() => {
     const handleResize = () => {
+      setIsCompactViewport(window.innerWidth <= 640);
+      if (
+        isUserFollowingBottomRef.current &&
+        scrollViewportRef.current &&
+        messagesLengthRef.current > 0 &&
+        document.documentElement.classList.contains('is-keyboard-open')
+      ) {
+        isAutoScrollingRef.current = true;
+        scrollViewportRef.current.scrollTop = scrollViewportRef.current.scrollHeight;
+        lastScrollTopRef.current = scrollViewportRef.current.scrollTop;
+        requestAnimationFrame(() => {
+          isAutoScrollingRef.current = false;
+        });
+      }
       updateScrollButtonVisibility();
     };
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', handleResize);
+    }
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (vv) {
+        vv.removeEventListener('resize', handleResize);
+      }
+    };
   }, [updateScrollButtonVisibility]);
 
   // Handle conversation switching / opening:
   // Starts each opened conversation at the top (scrollTop = 0)
   useEffect(() => {
     if (activeChatId !== prevActiveChatIdRef.current) {
-      const prevChatId = prevActiveChatIdRef.current;
       prevActiveChatIdRef.current = activeChatId;
       isUserFollowingBottomRef.current = false;
+      lastScrollTopRef.current = 0;
 
       if (activeChatId) {
         // An existing conversation was opened or switched to
@@ -757,10 +820,12 @@ export default function ChatArea({
         requestAnimationFrame(() => {
           if (scrollContainer && pendingTopScrollChatIdRef.current === activeChatId) {
             scrollContainer.scrollTop = 0;
+            lastScrollTopRef.current = 0;
           }
           requestAnimationFrame(() => {
             if (scrollContainer && pendingTopScrollChatIdRef.current === activeChatId) {
               scrollContainer.scrollTop = 0;
+              lastScrollTopRef.current = 0;
               pendingTopScrollChatIdRef.current = null;
               updateScrollButtonVisibility();
             }
@@ -779,27 +844,34 @@ export default function ChatArea({
     if (isNewMessage) {
       if (lastMessage?.sender === 'user' || lastMessage?.isStreaming) {
         isUserFollowingBottomRef.current = true;
+        isAutoScrollingRef.current = true;
         requestAnimationFrame(() => {
           if (scrollContainer) {
             scrollContainer.scrollTo({
               top: scrollContainer.scrollHeight,
               behavior: 'smooth'
             });
+            lastScrollTopRef.current = scrollContainer.scrollTop;
             updateScrollButtonVisibility();
           }
+          setTimeout(() => {
+            isAutoScrollingRef.current = false;
+          }, 260);
         });
         return;
       }
     }
 
-    // 3. AI response streaming: follow bottom ONLY if user is already at bottom or following
+    // 3. AI response streaming: follow bottom ONLY if user is actively following bottom
+    // and not currently dragging upward on a touch screen
     if (lastMessage?.isStreaming) {
-      const distanceFromBottom =
-        scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
-      const isNearBottom = distanceFromBottom < 140;
-
-      if (isUserFollowingBottomRef.current || isNearBottom) {
+      if (isUserFollowingBottomRef.current && !isTouchScrollingRef.current) {
+        isAutoScrollingRef.current = true;
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        lastScrollTopRef.current = scrollContainer.scrollTop;
+        requestAnimationFrame(() => {
+          isAutoScrollingRef.current = false;
+        });
       }
       updateScrollButtonVisibility();
       return;
@@ -807,7 +879,7 @@ export default function ChatArea({
 
     // Normal re-renders: update button state without changing scroll position
     updateScrollButtonVisibility();
-  }, [messages, messagesLoading, activeChatId]);
+  }, [messages, messagesLoading, activeChatId, updateScrollButtonVisibility]);
 
   // Hook into upgraded speech recognition engine (Phase 5.2 audio capture, Phase 5.3 Whisper transcription, Phase 5.4 cross-browser & mobile reliability)
   const {
@@ -890,7 +962,7 @@ export default function ChatArea({
     }
   };
 
-  // Close language menu when clicking outside or pressing Escape
+  // Close language menu when clicking/tapping outside or pressing Escape
   useEffect(() => {
     if (!langMenuOpen) return;
     const handleClickOutside = (e) => {
@@ -905,27 +977,51 @@ export default function ChatArea({
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside, { passive: true });
     document.addEventListener('keydown', handleEscape);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
   }, [langMenuOpen]);
 
+  // Deterministic multiline expansion hysteresis on mobile viewports so typing doesn't oscillate layout
+  useEffect(() => {
+    if (!inputValue) {
+      setIsExpandedInput(false);
+      return;
+    }
+    const hasNewline = inputValue.includes('\n');
+    const len = inputValue.length;
+    setIsExpandedInput((prev) => {
+      if (hasNewline || len >= 42) return true;
+      if (!hasNewline && len < 24) return false;
+      return prev;
+    });
+  }, [inputValue]);
+
   // Auto-resize textarea according to text length and follow speech stream
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      const scrollHeight = textareaRef.current.scrollHeight;
-      const newHeight = inputValue
-        ? Math.min(Math.max(scrollHeight, 36), 180)
-        : 36;
-      textareaRef.current.style.height = `${newHeight}px`;
-      if (recordingState === 'listening' || recordingState === 'paused') {
-        textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
-      }
+    const el = textareaRef.current;
+    if (!el) return;
+    const baseHeight = isCompactViewport ? 38 : 36;
+    if (!inputValue) {
+      el.style.height = `${baseHeight}px`;
+      return;
     }
-  }, [inputValue, recordingState]);
+    el.style.height = 'auto';
+    const scrollHeight = el.scrollHeight;
+    const isKbOpen =
+      typeof document !== 'undefined' &&
+      document.documentElement.classList.contains('is-keyboard-open');
+    const maxHeight = isCompactViewport ? (isKbOpen ? 120 : 144) : 180;
+    const newHeight = Math.min(Math.max(scrollHeight, baseHeight), maxHeight);
+    el.style.height = `${newHeight}px`;
+    if (recordingState === 'listening' || recordingState === 'paused') {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [inputValue, recordingState, isExpandedInput, isCompactViewport]);
   // Keep refs to avoid stale closures in global keydown listener
   const inputValueRef = useRef(inputValue);
   useEffect(() => {
@@ -1053,6 +1149,25 @@ export default function ChatArea({
     }
   };
 
+  const submitComposerMessage = async (textToSend) => {
+    if (!onSubmit || (!textToSend.trim() && attachments.length === 0) || isLoading) {
+      return;
+    }
+    const currentAttachments = [...attachments];
+    setPreviewingComposerAttachment(null);
+    setAttachments([]);
+    try {
+      const result = await onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
+      if (result === false && currentAttachments.length > 0) {
+        setAttachments((prev) => (prev.length === 0 ? currentAttachments : prev));
+      }
+    } catch (_) {
+      if (currentAttachments.length > 0) {
+        setAttachments((prev) => (prev.length === 0 ? currentAttachments : prev));
+      }
+    }
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Escape' && langMenuOpen) {
       e.preventDefault();
@@ -1093,11 +1208,7 @@ export default function ChatArea({
       }
       clearLastSessionTranscript();
       setSuggestedRefinement(null);
-      if (onSubmit && (textToSend.trim() || attachments.length > 0) && !isLoading) {
-        const currentAttachments = [...attachments];
-        setAttachments([]);
-        onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
-      }
+      void submitComposerMessage(textToSend);
     }
   };
 
@@ -1116,11 +1227,7 @@ export default function ChatArea({
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
-    if (onSubmit && (textToSend.trim() || attachments.length > 0) && !isLoading) {
-      const currentAttachments = [...attachments];
-      setAttachments([]);
-      onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
-    }
+    void submitComposerMessage(textToSend);
   };
 
   // Optional AI Transcript Refinement Handler (Phase 4 & Phase 6.2)
@@ -1254,6 +1361,9 @@ Transcript:
         ref={scrollViewportRef}
         className="chat-scroll-viewport"
         onScroll={handleScroll}
+        onTouchStart={handleViewportTouchStart}
+        onTouchEnd={handleViewportTouchEnd}
+        onTouchCancel={handleViewportTouchEnd}
       >
         <div className="chat-content-constrained">
           {isNewChat && !hasMessages ? (
@@ -1719,7 +1829,7 @@ Transcript:
           <form
             onSubmit={handleSubmit}
             onPaste={handlePaste}
-            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''} ${isRecordingActive ? 'is-recording' : ''}`}
+            className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''} ${isRecordingActive ? 'is-recording' : ''} ${isExpandedInput ? 'is-expanded' : ''}`}
             aria-label="Message composer"
           >
             {/* Native file input strictly supporting one document or image at a time */}
@@ -1741,8 +1851,9 @@ Transcript:
                   att.isImage ? (
                     <div
                       key={att.id}
-                      className="composer-attachment-chip composer-image-chip"
-                      title={`${att.name} (${att.extension || 'IMG'} • ${att.formattedSize})`}
+                      className="composer-attachment-chip composer-image-chip is-previewable"
+                      title={`Click to preview ${att.name} (${att.extension || 'IMG'} • ${att.formattedSize})`}
+                      onClick={() => setPreviewingComposerAttachment(att)}
                     >
                       <div className="composer-image-thumb-wrap">
                         {att.previewUrl ? (
@@ -1776,36 +1887,71 @@ Transcript:
                           <span className="attachment-chip-size">{att.formattedSize}</span>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        className="attachment-chip-remove"
-                        onClick={() => handleRemoveAttachment(att.id)}
-                        title={`Remove ${att.name}`}
-                        aria-label={`Remove attachment ${att.name}`}
-                      >
-                        <X size={13} />
-                      </button>
+                      <div className="composer-chip-actions">
+                        <button
+                          type="button"
+                          className="attachment-chip-preview"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewingComposerAttachment(att);
+                          }}
+                          title={`Preview ${att.name}`}
+                          aria-label={`Preview attachment ${att.name}`}
+                        >
+                          <Eye size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="attachment-chip-remove"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveAttachment(att.id);
+                          }}
+                          title={`Remove ${att.name}`}
+                          aria-label={`Remove attachment ${att.name}`}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div
                       key={att.id}
-                      className="composer-attachment-chip"
-                      title={`${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
+                      className="composer-attachment-chip is-previewable"
+                      title={`Click to preview ${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
+                      onClick={() => setPreviewingComposerAttachment(att)}
                     >
                       <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
                       <span className="attachment-chip-name" title={att.name}>
                         {att.name}
                       </span>
                       <span className="attachment-chip-size">{att.formattedSize}</span>
-                      <button
-                        type="button"
-                        className="attachment-chip-remove"
-                        onClick={() => handleRemoveAttachment(att.id)}
-                        title={`Remove ${att.name}`}
-                        aria-label={`Remove attachment ${att.name}`}
-                      >
-                        <X size={13} />
-                      </button>
+                      <div className="composer-chip-actions">
+                        <button
+                          type="button"
+                          className="attachment-chip-preview"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewingComposerAttachment(att);
+                          }}
+                          title={`Preview ${att.name}`}
+                          aria-label={`Preview attachment ${att.name}`}
+                        >
+                          <Eye size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="attachment-chip-remove"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveAttachment(att.id);
+                          }}
+                          title={`Remove ${att.name}`}
+                          aria-label={`Remove attachment ${att.name}`}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
                     </div>
                   )
                 )}
@@ -1839,13 +1985,27 @@ Transcript:
                 className="composer-textarea"
                 placeholder={
                   isListening
-                    ? 'Listening — speak naturally or type...'
+                    ? isCompactViewport
+                      ? 'Listening — speak or type...'
+                      : 'Listening — speak naturally or type...'
                     : isPaused
-                    ? 'Dictation paused — resume or type...'
+                    ? isCompactViewport
+                      ? 'Paused — resume or type...'
+                      : 'Dictation paused — resume or type...'
                     : isRequesting
                     ? 'Connecting microphone...'
                     : isLoading
-                    ? 'Generating response — press Esc to stop...'
+                    ? isCompactViewport
+                      ? 'Generating response...'
+                      : 'Generating response — press Esc to stop...'
+                    : isCompactViewport
+                    ? activeMode === 'coding'
+                      ? 'Ask a coding question...'
+                      : activeMode === 'writing'
+                      ? 'Draft or polish text...'
+                      : activeMode === 'learning'
+                      ? 'Ask to explain a topic...'
+                      : 'Message Orvix...'
                     : activeMode === 'coding'
                     ? 'Ask a coding question, debug an error, or request code...'
                     : activeMode === 'writing'
@@ -1857,6 +2017,15 @@ Transcript:
                 value={inputValue}
                 rows={1}
                 onChange={(e) => onInputChange && onInputChange(e.target.value)}
+                onFocus={() => {
+                  if (scrollViewportRef.current && messagesLengthRef.current > 0) {
+                    const sc = scrollViewportRef.current;
+                    const dist = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+                    if (dist <= 96) {
+                      isUserFollowingBottomRef.current = true;
+                    }
+                  }
+                }}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 aria-label="Message input"
@@ -1998,6 +2167,15 @@ Transcript:
           </p>
         </div>
       </div>
+
+      {/* Pre-Send Composer Attachment Preview Modal */}
+      {previewingComposerAttachment && (
+        <DocumentPreviewModal
+          isOpen={Boolean(previewingComposerAttachment)}
+          onClose={() => setPreviewingComposerAttachment(null)}
+          attachment={previewingComposerAttachment}
+        />
+      )}
     </main>
   );
 }

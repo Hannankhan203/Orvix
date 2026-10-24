@@ -18,6 +18,7 @@ import {
   downloadAttachmentFile,
   isFormatPreviewable
 } from '../../services/attachmentStorageService.js';
+import { extractBrowserDocument } from '../../services/browserDocumentExtractor.js';
 
 function getModalFormatIcon(ext = '') {
   const cleanExt = (ext || '').replace('.', '').toLowerCase();
@@ -65,6 +66,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [activeView, setActiveView] = useState('image'); // 'image' | 'ocr'
   const [ocrData, setOcrData] = useState(attachment?.extraction || null);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const createdObjectUrlRef = useRef(null);
 
   const filename = attachment?.name || attachment?.originalName || 'Document';
   const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() : '';
@@ -82,6 +84,8 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     mime === 'application/json' ||
     mime === 'application/xml';
   const isOffice = ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls'].includes(ext);
+  const isUnsubmittedComposerFile =
+    attachment?.file instanceof Blob && String(attachment?.id || '').startsWith('att-') && !attachment?.extraction;
 
   useEffect(() => {
     if (!isOpen || !attachment?.id) return;
@@ -95,16 +99,26 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     setActiveView('image');
     setOcrData(attachment?.extraction || null);
 
+    const registerCreatedUrl = (url) => {
+      if (createdObjectUrlRef.current && createdObjectUrlRef.current !== url) {
+        try {
+          URL.revokeObjectURL(createdObjectUrlRef.current);
+        } catch (_) {}
+      }
+      createdObjectUrlRef.current = url;
+      setBlobUrl(url);
+    };
+
     async function loadContent() {
       try {
-        // Fetch OCR extraction if not already present on image
+        // Fetch OCR extraction if not already present on image (skip for unsubmitted local composer attachments)
         if (isImage) {
           if (attachment.extraction) {
             setOcrData(attachment.extraction);
             if (attachment.extraction.text) {
               setTextContent(attachment.extraction.text);
             }
-          } else {
+          } else if (!isUnsubmittedComposerFile) {
             setOcrLoading(true);
             fetch(`/api/upload/${attachment.id}/extraction`)
               .then((r) => (r.ok ? r.json() : null))
@@ -125,18 +139,35 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         if (attachment.file instanceof Blob) {
           if (!active) return;
           const url = URL.createObjectURL(attachment.file);
-          setBlobUrl(url);
+          registerCreatedUrl(url);
           if (isTextual) {
             try {
               const text = await attachment.file.text();
               if (active) setTextContent(text);
             } catch (_) {}
+          } else if (isOffice) {
+            if (attachment.extraction?.text) {
+              if (active) setTextContent(attachment.extraction.text);
+            } else {
+              try {
+                const extracted = await extractBrowserDocument(attachment.file, {
+                  id: attachment.id,
+                  name: filename,
+                  originalName: filename,
+                  mimeType: mime,
+                  extension: ext
+                });
+                if (active && extracted?.text) {
+                  setTextContent(extracted.text);
+                }
+              } catch (_) {}
+            }
           }
           if (active) setLoading(false);
           return;
         }
 
-        // Direct previewUrl or dataUrl (data: or blob:)
+        // Direct previewUrl or dataUrl (data: or blob: owned externally — do NOT revoke on modal close)
         const directDataUri = attachment.previewUrl || attachment.dataUrl;
         if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
           if (!active) return;
@@ -150,13 +181,15 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         if (localRecord?.blob) {
           if (!active) return;
           const url = URL.createObjectURL(localRecord.blob);
-          setBlobUrl(url);
+          registerCreatedUrl(url);
 
           if (isTextual) {
             try {
               const text = await localRecord.blob.text();
               if (active) setTextContent(text);
             } catch (_) {}
+          } else if (isOffice && attachment.extraction?.text) {
+            setTextContent(attachment.extraction.text);
           }
           if (active) setLoading(false);
           return;
@@ -179,7 +212,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         const blob = await fileRes.blob();
         if (!active) return;
         const url = URL.createObjectURL(blob);
-        setBlobUrl(url);
+        registerCreatedUrl(url);
 
         if (isTextual) {
           const text = await blob.text();
@@ -205,17 +238,14 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
 
     return () => {
       active = false;
-    };
-  }, [isOpen, attachment?.id, ext, isTextual, isOffice, isImage]);
-
-  // Clean up object URLs on unmount / change
-  useEffect(() => {
-    return () => {
-      if (blobUrl) {
-        URL.revokeObjectURL(blobUrl);
+      if (createdObjectUrlRef.current) {
+        try {
+          URL.revokeObjectURL(createdObjectUrlRef.current);
+        } catch (_) {}
+        createdObjectUrlRef.current = null;
       }
     };
-  }, [blobUrl]);
+  }, [isOpen, attachment?.id, ext, isTextual, isOffice, isImage, isUnsubmittedComposerFile, filename, mime]);
 
   // Handle ESC key to close and focus close button on open
   const closeBtnRef = useRef(null);
@@ -278,7 +308,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
       >
         {/* Modal Header */}
         <div className="preview-modal-header flex items-center justify-between px-5 py-3.5 border-b border-white/10 bg-[#141b24]/80">
-          <div className="flex items-center gap-3 min-w-0 flex-1">
+          <div className="preview-modal-title-group flex items-center gap-3 min-w-0 flex-1">
             <div className="preview-modal-icon-badge p-2 rounded-lg bg-blue-500/10 text-blue-400 flex-shrink-0">
               <IconComponent size={18} />
             </div>
@@ -299,8 +329,8 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-            {isImage && (
+          <div className="preview-modal-controls flex items-center gap-2 flex-shrink-0 ml-4">
+            {isImage && !isUnsubmittedComposerFile && (
               <div className="preview-view-tabs flex items-center rounded-lg bg-black/40 p-0.5 border border-white/10 text-xs mr-1">
                 <button
                   type="button"
@@ -422,14 +452,14 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               </div>
             ) : ocrData?.status === 'ready' && ocrData?.hasText ? (
               <div className="w-full h-full max-h-[70vh] flex flex-col">
-                <div className="text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-2 rounded-md mb-3 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                <div className="preview-ocr-stats-bar text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-2 rounded-md mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold text-emerald-400">OCR Text Extracted</span>
                     {ocrData.confidence > 0 && (
                       <span className="text-slate-400">• Confidence: {ocrData.confidence}%</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 text-slate-400">
+                  <div className="flex items-center gap-3 text-slate-400 flex-wrap">
                     <span>{ocrData.totalWords || 0} words</span>
                     <span>{ocrData.totalCharacters || 0} characters</span>
                     {ocrData.lineCount ? <span>{ocrData.lineCount} lines</span> : null}

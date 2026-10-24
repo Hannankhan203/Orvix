@@ -1,11 +1,12 @@
-import React from 'react';
-import { Bot, Plus, ChevronLeft, X, MessageSquare, LogOut, Loader2, Cloud, CloudOff, Pin, Sliders } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Plus, ChevronLeft, X, MessageSquare, LogOut, Loader2, Cloud, CloudOff, Pin, Sliders, Search, Download } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import SidebarChatItem from './SidebarChatItem.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSettings } from '../../context/SettingsContext.jsx';
+import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 
 export default function Sidebar({
   isOpen,
@@ -23,6 +24,8 @@ export default function Sidebar({
 }) {
   const { currentUser, username, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
+  const { isInstallable, install } = usePWAInstall();
+  const [searchQuery, setSearchQuery] = useState('');
 
   const handleLogout = async () => {
     try {
@@ -32,13 +35,30 @@ export default function Sidebar({
     }
   };
 
-  const pinnedChats = recentChats.filter((c) => Boolean(c.isPinned));
-  const unpinnedChats = recentChats.filter((c) => !c.isPinned);
+  const handleOpenSettings = () => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768 && onClose) {
+      onClose();
+    }
+    openSettingsModal();
+  };
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+
+  const filteredChats = useMemo(() => {
+    if (!normalizedQuery) return recentChats;
+    return recentChats.filter((chat) =>
+      String(chat.title || '').toLowerCase().includes(normalizedQuery)
+    );
+  }, [recentChats, normalizedQuery]);
+
+  const pinnedChats = filteredChats.filter((c) => Boolean(c.isPinned));
+  const unpinnedChats = filteredChats.filter((c) => !c.isPinned);
 
   return (
     <aside
       className={`chatora-sidebar ${!isOpen ? 'collapsed' : ''}`}
       aria-label="Sidebar navigation"
+      aria-hidden={!isOpen ? 'true' : undefined}
     >
       {/* Branding & Collapse Toggle */}
       <div className="sidebar-header">
@@ -51,14 +71,14 @@ export default function Sidebar({
           variant="ghost"
           size="icon"
           onClick={onClose}
-          title="Collapse sidebar"
-          ariaLabel="Collapse sidebar"
+          title="Close sidebar"
+          ariaLabel="Close sidebar"
           className="sidebar-collapse-btn"
           icon={<ChevronLeft size={18} />}
         />
       </div>
 
-      {/* New Chat Primary Action */}
+      {/* New Chat Primary Action & Search Filter */}
       <div className="sidebar-actions">
         <Button
           variant="primary"
@@ -70,6 +90,31 @@ export default function Sidebar({
         >
           New Chat
         </Button>
+
+        {recentChats.length > 0 && (
+          <div className="sidebar-search-wrapper">
+            <Search size={14} className="sidebar-search-icon" aria-hidden="true" />
+            <input
+              type="search"
+              className="sidebar-search-input"
+              placeholder="Search conversations..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search conversations"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="sidebar-search-clear"
+                onClick={() => setSearchQuery('')}
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Saved Conversations Section */}
@@ -85,6 +130,19 @@ export default function Sidebar({
             <p>No saved conversations yet.</p>
             <span>Messages will be stored here automatically.</span>
           </div>
+        ) : filteredChats.length === 0 ? (
+          <div className="sidebar-empty-box">
+            <Search size={18} className="empty-icon" />
+            <p>No matching conversations</p>
+            <span>No chats match &ldquo;{searchQuery.trim()}&rdquo;.</span>
+            <button
+              type="button"
+              className="sidebar-clear-search-btn"
+              onClick={() => setSearchQuery('')}
+            >
+              Clear search
+            </button>
+          </div>
         ) : (
           <>
             {/* Dedicated Pinned Conversations Section */}
@@ -94,7 +152,7 @@ export default function Sidebar({
                   <div className="sidebar-section-title-wrapper flex items-center gap-1.5">
                     <Pin size={12} className="text-amber-400 rotate-45 inline" />
                     <span className="sidebar-section-title">Pinned</span>
-                    <span className="sidebar-pin-count">({pinnedChats.length}/5)</span>
+                    <span className="sidebar-pin-count">({recentChats.filter((c) => Boolean(c.isPinned)).length}/5)</span>
                   </div>
                 </div>
                 <nav className="recent-chats-list" aria-label="Pinned chats list">
@@ -138,7 +196,7 @@ export default function Sidebar({
 
               {unpinnedChats.length === 0 && pinnedChats.length > 0 ? (
                 <div className="sidebar-empty-subtext">
-                  <span>All conversations are pinned above.</span>
+                  <span>All matching conversations are pinned above.</span>
                 </div>
               ) : (
                 <nav className="recent-chats-list" aria-label="Recent chats list">
@@ -160,8 +218,21 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Sidebar Footer with Auth Status */}
+      {/* Sidebar Footer with Optional PWA Install & Auth Status */}
       <div className="sidebar-footer">
+        {isInstallable && (
+          <button
+            type="button"
+            className="sidebar-pwa-install-btn"
+            onClick={install}
+            title="Install Orvix on your device"
+            aria-label="Install Orvix application"
+          >
+            <Download size={14} />
+            <span>Install Orvix App</span>
+          </button>
+        )}
+
         {currentUser ? (
           <div className="sidebar-user-card">
             <div className="sidebar-user-details">
@@ -179,11 +250,11 @@ export default function Sidebar({
               <button
                 type="button"
                 className="sidebar-logout-btn sidebar-settings-trigger"
-                onClick={openSettingsModal}
+                onClick={handleOpenSettings}
                 title="Personalization Settings"
                 aria-label="Personalization Settings"
               >
-                <Sliders size={14} />
+                <Sliders size={15} />
               </button>
               <button
                 type="button"
@@ -193,7 +264,7 @@ export default function Sidebar({
                 title="Sign out"
                 aria-label="Sign out"
               >
-                <LogOut size={14} />
+                <LogOut size={15} />
               </button>
             </div>
           </div>
@@ -209,11 +280,11 @@ export default function Sidebar({
             <button
               type="button"
               className="sidebar-logout-btn sidebar-settings-trigger"
-              onClick={openSettingsModal}
+              onClick={handleOpenSettings}
               title="Personalization Settings"
               aria-label="Personalization Settings"
             >
-              <Sliders size={14} />
+              <Sliders size={15} />
             </button>
           </div>
         )}
