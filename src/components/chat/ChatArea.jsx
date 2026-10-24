@@ -1683,7 +1683,7 @@ Transcript:
                         title="Pause dictation"
                         aria-label="Pause dictation"
                       >
-                        <Pause size={12} />
+                        <Pause size={12} className="btn-icon" />
                         <span className="btn-label">Pause</span>
                       </button>
                     ) : recordingState === 'paused' ? (
@@ -1694,7 +1694,7 @@ Transcript:
                         title="Resume dictation"
                         aria-label="Resume dictation"
                       >
-                        <Play size={12} fill="currentColor" />
+                        <Play size={12} fill="currentColor" className="btn-icon" />
                         <span className="btn-label">Resume</span>
                       </button>
                     ) : null}
@@ -1706,7 +1706,7 @@ Transcript:
                       title="Finish dictation"
                       aria-label="Finish dictation"
                     >
-                      <Check size={14} strokeWidth={2.5} />
+                      <Check size={13} strokeWidth={2.5} className="btn-icon" />
                       <span className="btn-label">Done</span>
                     </button>
 
@@ -1717,8 +1717,7 @@ Transcript:
                       title="Cancel dictation (discard session)"
                       aria-label="Cancel dictation"
                     >
-                      <X size={14} />
-                      <span className="btn-label-sr">Cancel</span>
+                      <span className="btn-label">Cancel</span>
                     </button>
                   </>
                 )}
