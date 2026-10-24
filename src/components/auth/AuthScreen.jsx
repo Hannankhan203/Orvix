@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
-import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User, WifiOff } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
 import { APP_CONFIG } from '../../config/appConfig.js';
 import { USERNAME_CONSTRAINTS } from '../../services/userProfileService.js';
+import { isBrowserOnline, subscribeToNetworkStatus } from '../../config/firebaseConfig.js';
 
 /**
  * AuthScreen Component
@@ -20,6 +21,13 @@ export default function AuthScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [localValidation, setLocalValidation] = useState('');
+  const [isOffline, setIsOffline] = useState(() => !isBrowserOnline());
+
+  useEffect(() => {
+    return subscribeToNetworkStatus((online) => {
+      setIsOffline(!online);
+    });
+  }, []);
 
   const switchMode = (newMode) => {
     setMode(newMode);
@@ -31,6 +39,11 @@ export default function AuthScreen() {
     e.preventDefault();
     setLocalValidation('');
     clearError();
+
+    if (isOffline) {
+      setLocalValidation('Cloud sign-in requires an internet connection. Use Continue as Guest below to chat offline with Local AI (Ollama).');
+      return;
+    }
 
     // Sign-up specific validations: Username
     if (mode === 'signup') {
@@ -107,8 +120,23 @@ export default function AuthScreen() {
           </p>
         </div>
 
+        {/* Offline Notice */}
+        {isOffline && (
+          <div className="auth-notice-card" role="status">
+            <div className="notice-icon">
+              <WifiOff size={16} />
+            </div>
+            <div className="notice-content">
+              <strong>Offline Mode</strong>
+              <p>
+                Cloud authentication requires an internet connection. Click <strong>Continue as Guest</strong> below to use Local AI (Ollama) and local chat storage offline.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Configuration Notice (if Firebase environment variables are not set) */}
-        {!isConfigured && (
+        {!isConfigured && !isOffline && (
           <div className="auth-notice-card" role="status">
             <div className="notice-icon">
               <AlertCircle size={16} />

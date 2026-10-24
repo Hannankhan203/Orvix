@@ -9,7 +9,8 @@ import {
   saveUserProfile,
   validateUsername
 } from '../services/authService.js';
-import { isFirebaseConfigured } from '../config/firebaseConfig.js';
+import { getCachedUserProfile } from '../services/userProfileService.js';
+import { isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
 
 const AuthContext = createContext(null);
 
@@ -38,10 +39,21 @@ export function AuthProvider({ children }) {
 
   const isConfigured = isFirebaseConfigured();
 
-  // Load Firestore profile for an authenticated Firebase user
+  // Load Firestore profile for an authenticated Firebase user (hydrating local cache first)
   const loadProfileForUser = async (user) => {
     if (!user || user.isAnonymous) {
       return null;
+    }
+
+    const cachedProfile = getCachedUserProfile(user.uid);
+    if (cachedProfile && cachedProfile.username) {
+      setUserProfile(cachedProfile);
+    } else if (user.displayName) {
+      setUserProfile({
+        uid: user.uid,
+        username: user.displayName,
+        email: user.email || ''
+      });
     }
 
     try {
@@ -70,17 +82,18 @@ export function AuthProvider({ children }) {
       }
     } catch (err) {
       console.warn('Could not load user profile on auth change:', err);
-      return null;
+      return cachedProfile || null;
     }
   };
 
   // Subscribe to Firebase Auth state listener and clean up on unmount
   useEffect(() => {
-    // Check if guest mode session was active
+    // Check if guest mode session was active (sessionStorage or localStorage for offline reload continuity)
     try {
       const savedGuest =
         sessionStorage.getItem('orvix_guest_session') ||
-        sessionStorage.getItem('chatora_guest_session');
+        sessionStorage.getItem('chatora_guest_session') ||
+        localStorage.getItem('orvix_guest_session');
       if (savedGuest) {
         const parsedGuest = JSON.parse(savedGuest);
         setCurrentUser(parsedGuest);
@@ -94,22 +107,40 @@ export function AuthProvider({ children }) {
       }
     } catch (_) {}
 
-    const unsubscribe = onAuthChange(async (user) => {
+    let resolved = false;
+    const finishInitialLoading = () => {
+      if (!resolved) {
+        resolved = true;
+        setInitialLoading(false);
+      }
+    };
+
+    // Safety guard: never hang on splash screen if Firebase Auth token refresh stalls while offline
+    const fallbackTimer = setTimeout(
+      finishInitialLoading,
+      isBrowserOnline() ? 4500 : 1200
+    );
+
+    const unsubscribe = onAuthChange((user) => {
+      clearTimeout(fallbackTimer);
       if (user) {
         try {
           sessionStorage.removeItem('orvix_guest_session');
           sessionStorage.removeItem('chatora_guest_session');
+          localStorage.removeItem('orvix_guest_session');
         } catch (_) {}
         setCurrentUser(user);
-        await loadProfileForUser(user);
+        finishInitialLoading();
+        void loadProfileForUser(user);
       } else {
         setCurrentUser(null);
         setUserProfile(null);
+        finishInitialLoading();
       }
-      setInitialLoading(false);
     });
 
     return () => {
+      clearTimeout(fallbackTimer);
       unsubscribe();
     };
   }, []);
@@ -142,8 +173,10 @@ export function AuthProvider({ children }) {
     });
 
     try {
-      sessionStorage.setItem('chatora_guest_session', JSON.stringify(guestUser));
-      sessionStorage.setItem('orvix_guest_session', JSON.stringify(guestUser));
+      const serialized = JSON.stringify(guestUser);
+      sessionStorage.setItem('chatora_guest_session', serialized);
+      sessionStorage.setItem('orvix_guest_session', serialized);
+      localStorage.setItem('orvix_guest_session', serialized);
     } catch (_) {}
   };
 
@@ -239,8 +272,10 @@ export function AuthProvider({ children }) {
         email: currentUser.email || 'guest@orvix.ai'
       });
       try {
-        sessionStorage.setItem('chatora_guest_session', JSON.stringify(updatedGuest));
-        sessionStorage.setItem('orvix_guest_session', JSON.stringify(updatedGuest));
+        const serialized = JSON.stringify(updatedGuest);
+        sessionStorage.setItem('chatora_guest_session', serialized);
+        sessionStorage.setItem('orvix_guest_session', serialized);
+        localStorage.setItem('orvix_guest_session', serialized);
       } catch (_) {}
       return;
     }
@@ -282,8 +317,14 @@ export function AuthProvider({ children }) {
       try {
         sessionStorage.removeItem('orvix_guest_session');
         sessionStorage.removeItem('chatora_guest_session');
+        localStorage.removeItem('orvix_guest_session');
       } catch (_) {}
-      await authLogout();
+      try {
+        await authLogout();
+      } catch (logoutErr) {
+        // Allow sign-out to clear local state even if offline
+        console.warn('Auth logout notice:', logoutErr);
+      }
       setCurrentUser(null);
       setUserProfile(null);
     } catch (err) {

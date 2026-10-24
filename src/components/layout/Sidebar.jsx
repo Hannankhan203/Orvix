@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, Pin, Sliders } from 'lucide-react';
+import { Bot, Plus, X, MessageSquare, LogOut, Loader2, Cloud, CloudOff, Pin, Sliders } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import SidebarChatItem from './SidebarChatItem.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -7,24 +7,6 @@ import { APP_CONFIG } from '../../config/appConfig.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useSettings } from '../../context/SettingsContext.jsx';
 
-/**
- * Sidebar Component
- * Displays conversations list with Firestore synchronization, active conversation tracking,
- * rename/delete management actions, pinned conversations grouping, and user profile actions.
- *
- * @param {Object} props
- * @param {boolean} props.isOpen
- * @param {() => void} props.onClose
- * @param {() => void} props.onNewChat
- * @param {Array} [props.recentChats=[]]
- * @param {string|null} [props.activeChatId=null]
- * @param {(chatId: string) => void} [props.onSelectChat]
- * @param {(chatId: string, newTitle: string) => Promise<void>} [props.onRenameChat]
- * @param {(chatId: string) => Promise<void>} [props.onDeleteChat]
- * @param {(chatId: string) => Promise<void>} [props.onTogglePin]
- * @param {boolean} [props.chatsLoading=false]
- * @param {boolean} [props.isCloudSynced=false]
- */
 export default function Sidebar({
   isOpen,
   onClose,
@@ -36,7 +18,8 @@ export default function Sidebar({
   onDeleteChat,
   onTogglePin,
   chatsLoading = false,
-  isCloudSynced = false
+  isCloudSynced = false,
+  isOffline = false
 }) {
   const { currentUser, username, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
@@ -135,14 +118,19 @@ export default function Sidebar({
                 <span className="sidebar-section-title">
                   {pinnedChats.length > 0 ? 'Recent' : 'Conversations'}
                 </span>
-                {isCloudSynced ? (
+                {isCloudSynced && !isOffline ? (
                   <span className="demo-data-badge synced-badge" title="Conversations are saved to Cloud Firestore">
                     <Cloud size={11} className="inline mr-1" />
                     Synced
                   </span>
+                ) : isCloudSynced && isOffline ? (
+                  <span className="demo-data-badge" title="Offline: conversations are saved locally and will sync when internet reconnects">
+                    <CloudOff size={11} className="inline mr-1" />
+                    Offline
+                  </span>
                 ) : (
-                  <span className="demo-data-badge" title="Sample conversations for preview">
-                    Demo
+                  <span className="demo-data-badge" title="Conversations are stored locally on this device">
+                    Local
                   </span>
                 )}
               </div>

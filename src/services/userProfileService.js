@@ -6,7 +6,30 @@
 
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { updateProfile } from 'firebase/auth';
-import { db, auth, isFirebaseConfigured } from '../config/firebaseConfig.js';
+import { db, auth, isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
+
+function getProfileCacheKey(userId) {
+  return `orvix_user_profile_${userId}`;
+}
+
+export function getCachedUserProfile(userId) {
+  if (!userId || typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(getProfileCacheKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveCachedUserProfile(userId, profile) {
+  if (!userId || !profile || typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(getProfileCacheKey(userId), JSON.stringify(profile));
+  } catch (_) {}
+}
 
 export const USERNAME_CONSTRAINTS = {
   MIN_LENGTH: 2,
@@ -59,32 +82,46 @@ export function validateUsername(username) {
 }
 
 /**
- * Fetches the user's persistent profile document from Cloud Firestore.
+ * Fetches the user's persistent profile document from Cloud Firestore (with local offline cache).
  * @param {string} userId - Authenticated user UID
  * @returns {Promise<{ uid: string, username?: string, email?: string } | null>}
  */
 export async function getUserProfile(userId) {
-  if (!db || !isFirebaseConfigured() || !userId) {
-    return null;
+  if (!userId) return null;
+
+  const cached = getCachedUserProfile(userId);
+
+  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
+    return cached;
   }
 
   try {
     const profileRef = doc(db, 'users', userId);
-    const snap = await getDoc(profileRef);
+    let timer = null;
+    const snap = await Promise.race([
+      getDoc(profileRef),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Profile fetch timed out')), 4000);
+      })
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
 
-    if (snap.exists()) {
+    if (snap && snap.exists()) {
       const data = snap.data();
-      return {
+      const profile = {
         uid: userId,
         username: data.username || '',
         email: data.email || ''
       };
+      saveCachedUserProfile(userId, profile);
+      return profile;
     }
   } catch (err) {
-    console.warn('Could not retrieve user profile from Firestore:', err);
+    console.warn('Could not retrieve user profile from Firestore, using local cache if available:', err?.message || err);
   }
 
-  return null;
+  return cached;
 }
 
 /**
@@ -99,6 +136,18 @@ export async function saveUserProfile(userId, { username, email = '' }) {
   const { isValid, error, sanitized } = validateUsername(username);
   if (!isValid) {
     throw new Error(error);
+  }
+
+  if (userId) {
+    saveCachedUserProfile(userId, {
+      uid: userId,
+      username: sanitized,
+      email: email || ''
+    });
+  }
+
+  if (!isBrowserOnline()) {
+    return;
   }
 
   // 1. Sync with Firebase Authentication profile displayName if active

@@ -8,7 +8,7 @@
  */
 
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from '../config/firebaseConfig.js';
+import { db, isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
 
 export const DEFAULT_SETTINGS = {
   theme: 'system', // 'light' | 'dark' | 'system'
@@ -160,8 +160,8 @@ export async function loadSettings(userId = null) {
     console.warn('Could not read settings from local storage:', err);
   }
 
-  // 2. For registered users with Firebase active, attempt cloud retrieval
-  if (isRegisteredUser && isFirebaseConfigured() && db) {
+  // 2. For registered users with Firebase active and online, attempt cloud retrieval
+  if (isRegisteredUser && isFirebaseConfigured() && db && isBrowserOnline()) {
     try {
       const settingsRef = doc(db, 'users', userId, 'settings', 'preferences');
       const snap = await getDoc(settingsRef);
@@ -214,8 +214,8 @@ export async function saveSettings(userId = null, partialSettings, currentSettin
     console.warn('Could not save settings locally:', localErr);
   }
 
-  // 2. Persist to Firestore for registered users if configured
-  if (isRegisteredUser && isFirebaseConfigured() && db) {
+  // 2. Persist to Firestore for registered users if configured and online
+  if (isRegisteredUser && isFirebaseConfigured() && db && isBrowserOnline()) {
     try {
       const settingsRef = doc(db, 'users', userId, 'settings', 'preferences');
       await setDoc(

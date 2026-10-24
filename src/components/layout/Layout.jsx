@@ -38,7 +38,8 @@ export default function Layout({
   onSelectMode,
   onExportMarkdown,
   onExportText,
-  hasExportableMessages = false
+  hasExportableMessages = false,
+  isOffline = false
 }) {
   // Desktop defaults to open, mobile defaults to closed
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -478,6 +479,7 @@ export default function Layout({
         onTogglePin={onTogglePin}
         chatsLoading={chatsLoading}
         isCloudSynced={isCloudSynced}
+        isOffline={isOffline}
       />
 
       {/* Main Viewport */}

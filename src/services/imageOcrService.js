@@ -293,7 +293,20 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
         };
       } catch (err) {
         if (timer) clearTimeout(timer);
+        const errMsg = String(err?.message || err || '').toLowerCase();
+        const causeCode = String(err?.cause?.code || err?.code || '').toUpperCase();
         console.warn(`[Gemini Vision candidate ${model}]:`, err?.message || err);
+        if (
+          errMsg.includes('fetch failed') ||
+          errMsg.includes('enotfound') ||
+          errMsg.includes('eai_again') ||
+          errMsg.includes('econnrefused') ||
+          errMsg.includes('network') ||
+          ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode)
+        ) {
+          // Offline / DNS unreachable: fall through immediately to local Tesseract OCR
+          break;
+        }
       }
     }
     return null;

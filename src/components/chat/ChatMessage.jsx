@@ -55,12 +55,13 @@ function extractNodeText(node) {
 /**
  * Generates a clean, user-friendly title for the error banner based on error text
  */
-function getErrorTitle(content = '') {
+function getErrorTitle(content = '', providerId = '') {
   const text = String(content || '').toLowerCase();
-  if (text.includes('ollama') && (text.includes('not found') || text.includes('pull'))) {
+  const isOllama = String(providerId || '').toLowerCase() === 'ollama';
+  if ((isOllama || text.includes('ollama')) && (text.includes('not found') || text.includes('pull'))) {
     return 'Local Model Not Found';
   }
-  if (text.includes('ollama') || text.includes('11434')) {
+  if (isOllama || text.includes('ollama') || text.includes('11434')) {
     return 'Local AI Unavailable';
   }
   if (text.includes('rate limit') || text.includes('quota') || text.includes('429') || text.includes('resource_exhausted')) {
@@ -813,7 +814,7 @@ export default function ChatMessage({
                     <AlertCircle size={14} />
                   </span>
                   <span className="error-header-title">
-                    {getErrorTitle(message.content)}
+                    {getErrorTitle(message.content, currentProviderId)}
                   </span>
                 </div>
                 {currentProviderObj?.name && (
@@ -855,6 +856,8 @@ export default function ChatMessage({
                   </Button>
                 )}
                 {onSwitchProvider &&
+                  message.canSwitchProvider !== false &&
+                  currentProviderId !== 'ollama' &&
                   fallbackProviders.map((p) => (
                     <Button
                       key={p.id}

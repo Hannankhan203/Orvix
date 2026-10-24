@@ -21,22 +21,19 @@ export const PROVIDER_OPTIONS = [
     id: AI_PROVIDERS.GEMINI,
     name: 'Gemini',
     modelTag: 'Gemini 3.8 Flash',
-    description: 'Google Gemini',
-    envKey: 'VITE_GEMINI_API_KEY'
+    description: 'Google Gemini'
   },
   {
     id: AI_PROVIDERS.GROQ,
     name: 'Groq',
     modelTag: 'GPT OSS 120B',
-    description: 'Ultra-fast inference',
-    envKey: 'VITE_GROQ_API_KEY'
+    description: 'Ultra-fast inference'
   },
   {
     id: AI_PROVIDERS.OPENROUTER,
     name: 'OpenRouter',
     modelTag: 'Llama 3.3 70B (Free)',
-    description: 'Multi-model gateway',
-    envKey: 'VITE_OPENROUTER_API_KEY'
+    description: 'Multi-model gateway'
   },
   {
     id: AI_PROVIDERS.CLOUDFLARE,
@@ -107,11 +104,12 @@ export function isProviderConfigured(provider) {
 /**
  * Parses raw error representations into clean, friendly error objects
  */
-function parseRouterError(rawError, statusCode = 500) {
+function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   let cleanMsg = typeof rawError === 'string' ? rawError : rawError?.message || '';
   let code = Number(rawError?.code || statusCode || 500);
   let status = String(rawError?.status || '');
   let retryable = rawError?.retryable;
+  const normalizedHint = providerHint ? String(providerHint).toLowerCase() : '';
 
   // Unpack nested JSON representations if present
   for (let i = 0; i < 3; i++) {
@@ -147,20 +145,29 @@ function parseRouterError(rawError, statusCode = 500) {
     upperStatus === 'NETWORK_FAILURE' ||
     upperStatus === 'NETWORK_ERROR';
 
-  // Dedicated Ollama local connection & missing model handling
-  if (lowerMsg.includes('11434') || lowerMsg.includes('ollama')) {
-    code = code === 404 ? 404 : 503;
-    status = code === 404 ? 'NOT_FOUND' : 'NETWORK_ERROR';
+  const isOllamaContext =
+    normalizedHint === AI_PROVIDERS.OLLAMA ||
+    lowerMsg.includes('11434') ||
+    lowerMsg.includes('ollama');
+
+  // Dedicated Ollama local connection & missing model handling (never blame internet or cloud demand)
+  if (isOllamaContext) {
+    code = code === 404 ? 404 : (code === 400 ? 400 : 503);
+    status = code === 404 ? 'NOT_FOUND' : (code === 400 ? 'INVALID_ARGUMENT' : 'NETWORK_ERROR');
     retryable = false;
     if (
       !cleanMsg ||
+      isNetwork ||
       cleanMsg === 'Service Unavailable' ||
       cleanMsg === 'Bad Gateway' ||
       cleanMsg === 'Not Found' ||
-      cleanMsg.includes('Server request failed')
+      cleanMsg.includes('Server request failed') ||
+      cleanMsg.includes('Stream connection was closed')
     ) {
       if (code === 404 || lowerMsg.includes('not found') || lowerMsg.includes('model')) {
-        cleanMsg = 'The requested Ollama model was not found. Please ensure it is installed using "ollama pull qwen2.5:1.5b".';
+        cleanMsg = 'The requested Ollama model was not found. Please ensure it is installed locally using "ollama pull qwen2.5:1.5b".';
+      } else if (lowerMsg === 'failed to fetch' || lowerMsg === 'fetch failed') {
+        cleanMsg = 'Local AI (Ollama) requires the local Orvix backend server and Ollama daemon. Please verify the local server is running and Ollama is active at http://127.0.0.1:11434.';
       } else {
         cleanMsg = 'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running ("ollama serve") and model "qwen2.5:1.5b" is installed.';
       }
@@ -233,9 +240,12 @@ function parseRouterError(rawError, statusCode = 500) {
   const err = new Error(cleanMsg || 'An unexpected error occurred while communicating with the AI service.');
   err.code = code;
   err.status = status;
-  err.retryable = retryable ?? (code === 503 || code === 429);
-  if (lowerMsg.includes('ollama') || lowerMsg.includes('11434')) {
-    err.provider = 'ollama';
+  err.retryable = isOllamaContext ? false : (retryable ?? (code === 503 || code === 429));
+  if (isOllamaContext) {
+    err.provider = AI_PROVIDERS.OLLAMA;
+    err.canFallback = false;
+  } else if (normalizedHint) {
+    err.provider = normalizedHint;
   }
   return err;
 }
@@ -296,12 +306,20 @@ export async function streamAIMessage({
 
       if (!res.ok) {
         const errJson = await res.json().catch(() => null);
-        const parsedErr = parseRouterError(errJson?.error || `Server request failed (${res.status})`, res.status);
+        const parsedErr = parseRouterError(
+          errJson?.error || `Server request failed (${res.status})`,
+          res.status,
+          normalizedProvider
+        );
         if (errJson?.code) parsedErr.code = errJson.code;
         if (errJson?.status) parsedErr.status = errJson.status;
         if (typeof errJson?.retryable === 'boolean') parsedErr.retryable = errJson.retryable;
         parsedErr.provider = errJson?.provider || errJson?.error?.provider || normalizedProvider;
-        if (typeof errJson?.canFallback === 'boolean') parsedErr.canFallback = errJson.canFallback;
+        if (typeof errJson?.canFallback === 'boolean') {
+          parsedErr.canFallback = errJson.canFallback;
+        } else if (normalizedProvider === AI_PROVIDERS.OLLAMA) {
+          parsedErr.canFallback = false;
+        }
         if (Array.isArray(errJson?.suggestedProviders)) parsedErr.suggestedProviders = errJson.suggestedProviders;
 
         throw parsedErr;
@@ -350,10 +368,15 @@ export async function streamAIMessage({
                 }
               };
             } else if (data.type === 'error') {
-              const streamErr = parseRouterError(data.error || 'Stream error occurred.', data.code || 500);
+              const streamErr = parseRouterError(
+                data.error || 'Stream error occurred.',
+                data.code || 500,
+                data.provider || normalizedProvider
+              );
               if (data.code) streamErr.code = data.code;
               if (data.status) streamErr.status = data.status;
               if (typeof data.retryable === 'boolean') streamErr.retryable = data.retryable;
+              if (typeof data.canFallback === 'boolean') streamErr.canFallback = data.canFallback;
               streamErr.provider = data.provider || normalizedProvider;
               throw streamErr;
             }
@@ -449,7 +472,11 @@ export async function streamAIMessage({
           }
 
           if (!accumulatedText && !receivedDone) {
-            throw parseRouterError('Stream connection was closed before response data was received.', 503);
+            throw parseRouterError(
+              'Stream connection was closed before response data was received.',
+              503,
+              finalProvider || normalizedProvider
+            );
           }
 
           return {
@@ -485,7 +512,7 @@ export async function streamAIMessage({
       }
 
       if (apiErr.name === 'TypeError' && !apiErr.status) {
-        const netErr = parseRouterError(apiErr.message || 'fetch failed', 503);
+        const netErr = parseRouterError(apiErr.message || 'fetch failed', 503, normalizedProvider);
         netErr.provider = normalizedProvider;
         throw netErr;
       }
@@ -523,10 +550,11 @@ export async function streamAIMessage({
 
     case AI_PROVIDERS.OLLAMA: {
       const err = new Error(
-        'Local AI (Ollama) requires the backend server. Please verify the server is running and Ollama is active on http://127.0.0.1:11434.'
+        'Local AI (Ollama) requires the local Orvix backend server. Please verify the local server is running and Ollama is active on http://127.0.0.1:11434.'
       );
       err.provider = AI_PROVIDERS.OLLAMA;
       err.code = 503;
+      err.canFallback = false;
       throw err;
     }
 

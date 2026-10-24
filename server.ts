@@ -320,7 +320,20 @@ export function parseGeminiError(err: any, provider = 'gemini'): {
     lowerCause.includes('econnrefused') ||
     lowerMsg.includes('network error');
 
+  const isOllamaProvider = provider.toLowerCase() === 'ollama';
+
   if (isNetworkFailure) {
+    if (isOllamaProvider) {
+      return {
+        statusCode: 503,
+        status: 'NETWORK_FAILURE',
+        category: 'provider network failure',
+        isUnavailable: true,
+        isRetryable: false,
+        message: 'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running locally ("ollama serve") and model "qwen2.5:1.5b" is available.',
+        retryAfterSeconds
+      };
+    }
     const detail = causeCode || (lowerMsg.includes('fetch failed') ? 'connection failed' : 'network unreachable');
     return {
       statusCode: 503,
@@ -343,6 +356,17 @@ export function parseGeminiError(err: any, provider = 'gemini'): {
     lowerMsg.includes('service unavailable') ||
     lowerMsg.includes('temporarily unavailable')
   ) {
+    if (isOllamaProvider) {
+      return {
+        statusCode: 503,
+        status: 'UNAVAILABLE',
+        category: 'provider API error',
+        isUnavailable: true,
+        isRetryable: false,
+        message: 'Local AI (Ollama) at http://127.0.0.1:11434 is currently unavailable. Please verify that Ollama is running locally ("ollama serve").',
+        retryAfterSeconds
+      };
+    }
     return {
       statusCode: 503,
       status: 'UNAVAILABLE',
@@ -2135,7 +2159,7 @@ Spoken transcript:
                 setTimeout(() => reject(new Error('Refine timeout')), 6000)
               );
               const genPromise = ai.models.generateContent({
-                model: 'gemini-2.5-flash',
+                model: 'gemini-3.8-flash',
                 contents: [{ role: 'user', parts: [{ text: refinePrompt }] }]
               });
               const geminiRes = await Promise.race([genPromise, timeoutPromise]);
@@ -2303,7 +2327,14 @@ Spoken transcript:
     // Secondary Transcription Path: Gemini Audio Recognition Fallback
     if (hasGemini) {
       try {
-        const ai = new GoogleGenAI({ apiKey: geminiKey });
+        const ai = new GoogleGenAI({
+          apiKey: geminiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build'
+            }
+          }
+        });
         let cleanMime = (audioFile.mimetype || 'audio/webm').split(';')[0].trim().toLowerCase();
         if (cleanMime === 'audio/m4a' || cleanMime === 'audio/x-m4a' || cleanMime === 'audio/mp4') {
           cleanMime = 'audio/aac';
@@ -2317,7 +2348,7 @@ ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
         const geminiRes = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-transcribe',
           contents: [
             {
               role: 'user',
@@ -2340,7 +2371,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           text,
           language: isoLang || 'en',
           duration: 0,
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-transcribe',
           provider: 'gemini',
           highAccuracy: true
         });
@@ -2348,7 +2379,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
         logAIDiagnostic({
           category: 'provider API error',
           provider: 'gemini',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.5-transcribe',
           phase: 'dispatch',
           sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
         });
@@ -4834,6 +4865,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   } catch (error: any) {
     console.error('API Error in /api/chat:', error);
     const providerName = String(req.body?.provider || 'unknown');
+    const isOllamaReq = providerName.toLowerCase() === 'ollama';
     const parsed = parseGeminiError(error, providerName);
     logAIDiagnostic({
       category: parsed.category || 'internal server error',
@@ -4850,9 +4882,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         error: parsed.message,
         code: parsed.statusCode,
         status: parsed.status,
-        retryable: parsed.isRetryable,
-        canFallback: true,
-        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
+        provider: providerName,
+        retryable: isOllamaReq ? false : parsed.isRetryable,
+        canFallback: !isOllamaReq,
+        suggestedProviders: isOllamaReq ? [] : ['gemini', 'groq', 'openrouter', 'cloudflare']
       });
       if (!res.writableEnded) res.end();
     } else {
@@ -4860,9 +4893,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         error: parsed.message,
         code: parsed.statusCode,
         status: parsed.status,
-        retryable: parsed.isRetryable,
-        canFallback: true,
-        suggestedProviders: ['gemini', 'groq', 'openrouter', 'cloudflare']
+        provider: providerName,
+        retryable: isOllamaReq ? false : parsed.isRetryable,
+        canFallback: !isOllamaReq,
+        suggestedProviders: isOllamaReq ? [] : ['gemini', 'groq', 'openrouter', 'cloudflare']
       });
     }
   }

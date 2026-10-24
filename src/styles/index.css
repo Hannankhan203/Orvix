@@ -1899,6 +1899,60 @@ html, body {
   flex-shrink: 0;
 }
 
+.offline-status-banner {
+  background-color: rgba(245, 158, 11, 0.1);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.25);
+  color: #fcd34d;
+  padding: 7px 14px;
+  font-size: 0.79rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  z-index: 25;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+[data-theme="light"] .offline-status-banner {
+  background-color: #fffbeb;
+  border-bottom-color: #fde68a;
+  color: #92400e;
+}
+
+.offline-status-icon {
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.offline-switch-btn {
+  background-color: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  color: #fde68a;
+  border-radius: var(--radius-xs);
+  padding: 3px 9px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color var(--transition-fast);
+}
+
+.offline-switch-btn:hover {
+  background-color: rgba(245, 158, 11, 0.28);
+}
+
+[data-theme="light"] .offline-switch-btn {
+  background-color: #fef3c7;
+  border-color: #f59e0b;
+  color: #92400e;
+}
+
+[data-theme="light"] .offline-switch-btn:hover {
+  background-color: #fde68a;
+}
+
 /* ==========================================================================
    Welcoming Empty State
    ========================================================================== */

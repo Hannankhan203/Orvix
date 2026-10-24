@@ -14,10 +14,17 @@ import {
   subscribeToUserChats,
   loadConversationMessages,
   generateChatTitle,
-  updateChatMode
+  updateChatMode,
+  getCachedUserChats,
+  saveCachedChatMessages,
+  syncOfflineUserChatsToFirestore
 } from '../services/chatStorageService.js';
 import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
-import { isFirebaseConfigured } from '../config/firebaseConfig.js';
+import {
+  isFirebaseConfigured,
+  isBrowserOnline,
+  subscribeToNetworkStatus
+} from '../config/firebaseConfig.js';
 import { getChatMode } from '../config/chatModes.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
@@ -37,17 +44,24 @@ import {
   createAlternativeRecord,
   getActiveAlternative
 } from '../services/alternativeResponseService.js';
-import { AlertCircle, X, Check } from 'lucide-react';
+import { AlertCircle, X, Check, WifiOff } from 'lucide-react';
 
 export default function ChatPage() {
   const { currentUser, username } = useAuth();
   const { settings } = useSettings();
   const { stopSpeech } = useSpeech();
-  const isCloudEnabled =
-    isFirebaseConfigured() && Boolean(currentUser?.uid);
 
+  const isGuestUser = Boolean(
+    !currentUser?.uid ||
+    currentUser?.isAnonymous ||
+    String(currentUser.uid).startsWith('guest-')
+  );
+  const isCloudEnabled = isFirebaseConfigured() && !isGuestUser;
+
+  const [isOffline, setIsOffline] = useState(() => !isBrowserOnline());
+  const [offlineBannerDismissed, setOfflineBannerDismissed] = useState(false);
   const [userChats, setUserChats] = useState([]);
-  const [chatsLoading, setChatsLoading] = useState(isCloudEnabled);
+  const [chatsLoading, setChatsLoading] = useState(isCloudEnabled && isBrowserOnline());
 
   const [activeChatId, setActiveChatId] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -215,7 +229,34 @@ export default function ChatPage() {
     }
   };
 
-  // 1. Subscribe to the conversation list.
+  // Listen for browser online/offline transitions and reconcile pending chats when connectivity returns
+  useEffect(() => {
+    return subscribeToNetworkStatus((online) => {
+      setIsOffline(!online);
+      if (!online) {
+        setOfflineBannerDismissed(false);
+      } else {
+        // Clear stale offline Firestore errors upon reconnecting
+        setPersistenceError((prev) =>
+          prev && prev.toLowerCase().includes('firestore') ? null : prev
+        );
+        if (isCloudEnabled && currentUser?.uid) {
+          syncOfflineUserChatsToFirestore(currentUser.uid)
+            .then(() => {
+              const refreshed = getCachedUserChats(currentUser.uid);
+              if (refreshed.length > 0) {
+                setUserChats(refreshed);
+              }
+            })
+            .catch((err) => {
+              console.warn('Background offline chat sync warning:', err);
+            });
+        }
+      }
+    });
+  }, [isCloudEnabled, currentUser?.uid]);
+
+  // 1. Subscribe to the conversation list (re-subscribes cleanly when transitioning back online).
   useEffect(() => {
     if (!isCloudEnabled || !currentUser?.uid) {
       const guestPinned = getGuestPinnedIds();
@@ -233,7 +274,23 @@ export default function ChatPage() {
       return undefined;
     }
 
-    setChatsLoading(true);
+    if (isOffline) {
+      const cached = getCachedUserChats(currentUser.uid);
+      setUserChats(cached);
+      setChatsLoading(false);
+      return undefined;
+    }
+
+    // Reconcile any pending offline chats when mounting online
+    void syncOfflineUserChatsToFirestore(currentUser.uid);
+
+    const cachedInitial = getCachedUserChats(currentUser.uid);
+    if (cachedInitial.length > 0) {
+      setUserChats(cachedInitial);
+      setChatsLoading(false);
+    } else {
+      setChatsLoading(true);
+    }
 
     const unsubscribe = subscribeToUserChats(
       currentUser.uid,
@@ -243,15 +300,17 @@ export default function ChatPage() {
       },
       (error) => {
         console.warn('Firestore subscription error:', error);
-        setPersistenceError(
-          'Unable to sync conversation list from Cloud Firestore.'
-        );
+        if (isBrowserOnline()) {
+          setPersistenceError(
+            'Unable to sync conversation list from Cloud Firestore.'
+          );
+        }
         setChatsLoading(false);
       }
     );
 
     return () => unsubscribe();
-  }, [isCloudEnabled, currentUser?.uid]);
+  }, [isCloudEnabled, currentUser?.uid, isOffline]);
 
   // 2. Restore conversation messages safely.
   useEffect(() => {
@@ -361,9 +420,11 @@ export default function ChatPage() {
             error
           );
 
-          setPersistenceError(
-            'Failed to load conversation history from Cloud Firestore.'
-          );
+          if (isBrowserOnline()) {
+            setPersistenceError(
+              'Failed to load conversation history from Cloud Firestore.'
+            );
+          }
         })
         .finally(() => {
           if (
@@ -470,6 +531,11 @@ export default function ChatPage() {
           chatId,
           sanitized
         );
+        setUserChats((previous) =>
+          previous.map((chat) =>
+            chat.id === chatId ? { ...chat, title: sanitized } : chat
+          )
+        );
       } else {
         setUserChats((previous) => {
           const next = previous.map((chat) =>
@@ -493,6 +559,9 @@ export default function ChatPage() {
     try {
       if (isCloudEnabled && currentUser?.uid) {
         await deleteConversation(currentUser.uid, chatId);
+        setUserChats((previous) =>
+          previous.filter((chat) => chat.id !== chatId)
+        );
       } else {
         setUserChats((previous) => {
           const next = previous.filter(
@@ -551,6 +620,17 @@ export default function ChatPage() {
           currentUser.uid,
           chatId,
           willPin
+        );
+        setUserChats((previous) =>
+          previous.map((chat) =>
+            chat.id === chatId
+              ? {
+                  ...chat,
+                  isPinned: willPin,
+                  pinnedAt: willPin ? Date.now() : null
+                }
+              : chat
+          )
         );
       } catch (error) {
         console.error('Failed to toggle pin in Firestore:', error);
@@ -643,14 +723,23 @@ export default function ChatPage() {
           chatId,
           normalizedMessage
         );
+        // Keep sidebar conversation list updated immediately while offline
+        if (!isBrowserOnline()) {
+          const cached = getCachedUserChats(currentUser.uid);
+          if (cached.length > 0) {
+            setUserChats(cached);
+          }
+        }
       } catch (error) {
         // Allow a future retry if this write failed.
         persistedMessageIdsRef.current.delete(message.id);
 
         console.warn('Firestore write warning:', error);
-        setPersistenceError(
-          'Notice: Could not save message to Cloud Firestore. Kept in memory.'
-        );
+        if (isBrowserOnline()) {
+          setPersistenceError(
+            'Notice: Could not save message to Cloud Firestore. Saved locally on this device.'
+          );
+        }
       }
 
       return;
@@ -1215,7 +1304,7 @@ export default function ChatPage() {
               isInterrupted,
               failedPrompt: promptText,
               failedProvider: effectiveProvider || finalProvider || providerToUse,
-              canSwitchProvider: true,
+              canSwitchProvider: !isOllama,
               referencedAttachments: undefined
             });
             finalizedErrorMessage = updated;
@@ -1252,7 +1341,7 @@ export default function ChatPage() {
           isInterrupted,
           failedPrompt: promptText,
           failedProvider: effectiveProvider || finalProvider || providerToUse,
-          canSwitchProvider: true,
+          canSwitchProvider: !isOllama,
           referencedAttachments: undefined
         });
 
@@ -1426,7 +1515,9 @@ export default function ChatPage() {
               userMsg = 'Attachment upload was cancelled or timed out. Please try again.';
             }
           } else if (userMsg.toLowerCase().includes('failed to fetch') || userMsg.toLowerCase().includes('networkerror')) {
-            userMsg = 'Network error while connecting to upload server. Please verify your internet connection.';
+            userMsg = !isBrowserOnline() || selectedProvider === 'ollama'
+              ? 'Could not reach the local Orvix backend server (/api/upload). Please verify the local server is running.'
+              : 'Network error while connecting to upload server. Please verify the server is running and check your connection.';
           }
 
           setPersistenceError(
@@ -1471,20 +1562,27 @@ export default function ChatPage() {
               titleSnippet,
               activeMode
             );
-
-            // Prevent the history effect from replacing the new chat's
-            // messages with an empty database result.
             skipNextChatLoadRef.current = currentChatId;
+            // Ensure offline-created conversations appear immediately in the sidebar
+            const cachedList = getCachedUserChats(currentUser.uid);
+            if (cachedList.length > 0) {
+              setUserChats(cachedList);
+            }
           } catch (error) {
-            console.warn('Could not create Firestore chat doc:', error);
-
-            setPersistenceError(
-              'Failed to initialize conversation in Cloud Firestore.'
-            );
-
-            setIsLoading(false);
-            isSubmittingRef.current = false;
-            return false;
+            console.warn('Could not create Firestore chat doc, falling back to local conversation:', error);
+            currentChatId = `local-${Date.now()}`;
+            skipNextChatLoadRef.current = currentChatId;
+            const fallbackChat = {
+              id: currentChatId,
+              title: titleSnippet,
+              mode: activeMode || 'general',
+              timestamp: 'Just now',
+              rawUpdatedAt: Date.now(),
+              isPinned: false,
+              pinnedAt: null,
+              pendingSync: true
+            };
+            setUserChats((previous) => [fallbackChat, ...previous]);
           }
         } else {
           currentChatId = `guest-${Date.now()}`;
@@ -2123,14 +2221,29 @@ export default function ChatPage() {
       const titleSnippet = generateChatTitle(trimmed);
       if (isCloudEnabled && currentUser?.uid) {
         try {
-          currentChatId = await createChatDocument(currentUser.uid, titleSnippet);
+          currentChatId = await createChatDocument(currentUser.uid, titleSnippet, activeMode);
           skipNextChatLoadRef.current = currentChatId;
+          const cachedList = getCachedUserChats(currentUser.uid);
+          if (cachedList.length > 0) {
+            setUserChats(cachedList);
+          }
         } catch (error) {
-          console.warn('Could not create Firestore chat doc for edit:', error);
-          setPersistenceError('Failed to initialize conversation in Cloud Firestore.');
-          setIsLoading(false);
-          isSubmittingRef.current = false;
-          return;
+          console.warn('Could not create Firestore chat doc for edit, using local fallback:', error);
+          currentChatId = `local-${Date.now()}`;
+          skipNextChatLoadRef.current = currentChatId;
+          setUserChats((previous) => [
+            {
+              id: currentChatId,
+              title: titleSnippet,
+              mode: activeMode || 'general',
+              timestamp: 'Just now',
+              rawUpdatedAt: Date.now(),
+              isPinned: false,
+              pinnedAt: null,
+              pendingSync: true
+            },
+            ...previous
+          ]);
         }
       } else {
         currentChatId = `guest-${Date.now()}`;
@@ -2218,6 +2331,12 @@ export default function ChatPage() {
         deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds).catch((err) => {
           console.warn('Could not delete truncated messages from Cloud Firestore:', err);
         });
+      } else {
+        saveCachedChatMessages(
+          currentUser.uid,
+          currentChatId,
+          [...earlierMessages, updatedUserMessage]
+        );
       }
       void persistMessageSafe(currentChatId, updatedUserMessage);
     } else {
@@ -2327,6 +2446,7 @@ export default function ChatPage() {
       activeTitle={activeTitle}
       chatsLoading={chatsLoading}
       isCloudSynced={isCloudEnabled}
+      isOffline={isOffline}
       selectedProvider={selectedProvider}
       onSelectProvider={handleSelectProvider}
       activeMode={activeMode}
@@ -2335,6 +2455,45 @@ export default function ChatPage() {
       onExportText={handleExportText}
       hasExportableMessages={hasExportableMessages}
     >
+      {isOffline && !offlineBannerDismissed && (
+        <div
+          className="offline-status-banner"
+          role="status"
+          aria-live="polite"
+        >
+          <WifiOff
+            size={15}
+            className="offline-status-icon"
+          />
+
+          <span className="persistence-alert-text">
+            {selectedProvider === 'ollama'
+              ? isCloudEnabled
+                ? 'Offline mode — Local AI (Ollama) is ready. Messages are saved locally and will sync to Cloud Firestore when internet reconnects.'
+                : 'Offline mode — Local AI (Ollama) and local conversation history are active.'
+              : 'You are offline — Cloud AI providers and cloud sync require internet. Switch to Local AI (Ollama) to chat locally.'}
+          </span>
+
+          {selectedProvider !== 'ollama' && (
+            <button
+              type="button"
+              className="offline-switch-btn"
+              onClick={() => handleSelectProvider('ollama')}
+            >
+              Switch to Ollama
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="persistence-alert-close"
+            onClick={() => setOfflineBannerDismissed(true)}
+            aria-label="Dismiss offline status banner"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
       {exportNotice && (
         <div
           className={`persistence-alert-banner export-status-banner ${exportNotice.type}`}
