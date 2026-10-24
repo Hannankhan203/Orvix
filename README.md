@@ -1,11 +1,11 @@
 # Orvix
 
-![Version](https://img.shields.io/badge/version-0.1.0-2563eb)
+![Version](https://img.shields.io/badge/version-0.2.0-2563eb)
 ![React](https://img.shields.io/badge/React-19.0-61dafb)
 ![Vite](https://img.shields.io/badge/Vite-8.3-646cff)
 ![TypeScript](https://img.shields.io/badge/Server-Express%20%2B%20TS-3178c6)
 
-**Current Version: v0.1.0**
+**Current Version: v0.2.0**
 
 **Orvix** is a full-stack, multi-model AI conversational workspace built with React 19, Vite, Tailwind CSS v4, and an Express + TypeScript backend proxy. It supports cloud AI streaming (Google Gemini, Groq, OpenRouter, Cloudflare Workers AI), local server inference (Ollama), and **on-device WebGPU inference (Browser AI via WebLLM)** with Progressive Web App (PWA) offline app-shell caching, client- and server-side document extraction, dual-format clipboard copying, voice dictation, and four specialized chat modes.
 
@@ -14,7 +14,9 @@
 ## Table of Contents
 
 1. [Key Features](#1-key-features)
-2. [What's New in v0.1.0 (Changelog)](#2-whats-new-in-v010-changelog)
+2. [Release History & What's New](#2-release-history--whats-new)
+   - [v0.2.0 (Mobile UI/UX Refinement)](#v020-october-25-2026--mobile-uiux-refinement-release)
+   - [v0.1.0 (Desktop UI/UX & Performance)](#v010--desktop-uiux-accessibility-and-performance-release)
 3. [Technologies & Architecture Overview](#3-technologies--architecture-overview)
 4. [AI Providers & Chat Modes](#4-ai-providers--chat-modes)
 5. [PWA, Offline Capabilities & Browser AI Requirements](#5-pwa-offline-capabilities--browser-ai-requirements)
@@ -41,7 +43,69 @@
 
 ---
 
-## 2. What's New in v0.1.0 (Changelog)
+## 2. Release History & What's New
+
+### v0.2.0 (October 25, 2026) — Mobile UI/UX Refinement Release
+
+Version **0.2.0** delivers a comprehensive **Mobile UI/UX Refinement** across smartphone, tablet, and touch-screen environments, improving viewport responsiveness, touch interaction ergonomics, navigation ergonomics, input handling, and conversation readability while preserving full desktop functionality:
+
+#### Responsive Viewports & Virtual Keyboard Adaptation
+- **Dynamic Viewport Height Management**: Bound the CSS custom property `--app-viewport-height` to `window.visualViewport` via an optimized `requestAnimationFrame` listener in `Layout.jsx`, dynamically adapting to virtual keyboard appearance, browser address bar collapsing, and orientation changes without container overflow or double-scrollbars.
+- **Virtual Keyboard Detection (`is-keyboard-open`)**: When mobile software keyboards open (detected via focus on editable inputs and height deltas >68px/115px), `<html>` receives the `.is-keyboard-open` class, reducing composer dock padding to 6px and hiding the non-essential disclaimer footnote to maximize visible conversation space.
+- **Granular Responsive Breakpoints**:
+  - **Tablet (`768px`–`1023px`)**: Scales sidebar width to 248px, tightens header margins (padding `0 12px`, gaps `6px`–`8px`), and hides non-essential labels when the sidebar is open to prevent element clipping.
+  - **Mobile (`< 768px`)**: Seamlessly converts desktop single-row header into a purpose-built 2-tier mobile navigation bar, transforms sidebar into an off-canvas drawer with backdrop blur, and optimizes touch targets.
+  - **Compact Phones (`<= 480px`)**: Dedicates Tier 2 of the mobile header exclusively to the AI model and mode selectors, hiding ancillary elements to prevent overlapping controls.
+  - **Small Mobile Screens (`320px`–`374px`)**: Scales welcome headings (`1.3rem`), subheadings (`0.825rem`), prompt cards, and composer padding (`8px`) so UI controls fit gracefully without horizontal overflow.
+  - **Mobile Landscape Orientation (`max-height: 500px` and `max-width: 900px`)**: Compacts header bars (42px top / 34px sub) and reduces vertical composer dock padding for short viewports.
+- **Safe Area Insets**: Integrated `env(safe-area-inset-top)`, `env(safe-area-inset-bottom)`, and `env(safe-area-inset-left)` into the mobile header, composer dock, and navigation drawer for native notch and home-indicator alignment on modern iOS and Android devices.
+
+#### Mobile Navigation, Drawers & Touch Gestures
+- **Purpose-Built 2-Tier Mobile Header**:
+  - **Tier 1 (Main Action Bar)**: Accessible hamburger drawer toggle (`20px`), Orvix brand mark with active conversation subtitle, compact export conversation menu, compact "+ New" chat button, and user profile avatar trigger.
+  - **Tier 2 (Context Bar)**: AI model/provider selector and chat mode popover positioned directly above the message stream for fast, one-handed switching.
+- **Touch & Swipe Drawer Gestures**:
+  - Swipe right from anywhere within the main chat area to open the sidebar navigation drawer.
+  - Swipe left on the open sidebar or backdrop to dismiss the drawer.
+  - **Intelligent Target Exclusion (`isExcludedSwipeTarget`)**: Rejects swipes initiated in the extreme left edge (<16px) to avoid interfering with native iOS system back gestures, and suppresses gestures initiated inside headers, composer dock, form inputs, buttons, dialogs, code blocks, and scrollable tables.
+- **Drawer Backdrop & Scroll Locking**: Dimmed, blurred backdrop (`rgba(0, 0, 0, 0.68)`, `backdrop-filter: blur(4px)`) locks background body scrolling (`overflow: hidden`) when the mobile drawer is open, preventing disorienting background scroll jumps while browsing chat history.
+- **Touch-Friendly Hit Targets & Actions**: Sidebar conversation actions (`Pin`, `Rename`, `Delete`) and confirmation bars (`Delete?` → `Delete` / `Cancel`) are permanently visible inline without requiring mouse hover, with touch targets sized at 32px–38px and `touch-action: manipulation` for instant touch response.
+
+#### Chat Interface & Message Layout Refinements
+- **Asymmetric Message Layout**:
+  - **Assistant Messages**: Styled as a clean, full-width reading column (`width: 100%`) with a compact 22x22px avatar pinned at top-left, 30px indented sender label/badge row, and 1.65 line-height for comfortable reading on narrow mobile displays.
+  - **User Messages**: Formatted as right-aligned bubbles (`max-width: 90%` on mobile, `94%` on small phones) with the redundant desktop avatar gutter removed to maximize usable message width.
+- **Touch-Persistent Action Bars**: Message action buttons (`Copy`, `Read Aloud`, `Alternative Provider`, `Regenerate`, `Edit`) remain permanently visible (`opacity: 1`) on mobile and touch devices rather than depending on hover states, with touch targets >=34px.
+- **Safe Overflow & Word-Break Handling**: Applied `word-break: break-word`, `overflow-wrap: anywhere`, and `-webkit-line-clamp` on active conversation titles, attachment chips, and model badges to prevent horizontal blowout or clipped text.
+- **Responsive Markdown Elements**: Bulleted and numbered lists feature proportional left indentation (`1.35rem` / `1.5rem`), blockquotes use compact padding (`0.65rem 0.95rem`), and tables render in an isolated horizontal scroll wrapper (`.table-responsive-wrapper`) with sticky first columns and min-width boundaries (`88px`–`240px`).
+
+#### Composer, Input Area & Attachment Handling
+- **Dock Padding & Keyboard-Aware Sizing**: Fixed bottom composer dock with responsive padding (`padding: 0 10px max(8px, env(safe-area-inset-bottom)) 10px`), collapsing to 6px when the virtual keyboard is active.
+- **Multiline Auto-Resize & Layout Expansion (`.composer-form.is-expanded`)**: Textarea smoothly auto-expands from 38px up to 144px (120px when keyboard is active). When entering multiline text, the textarea expands to 100% full width above the actions (`order: -1`), wrapping action buttons (Attach, Mode, Dictate, Send) neatly on a dedicated bottom control row.
+- **iOS Safari Auto-Zoom Prevention**: Enforces `font-size: 16px !important` across `.composer-textarea`, `.user-edit-textarea`, `.form-input`, `.sidebar-search-input`, and `.chat-rename-input`, preventing iOS Safari from forcing an unwanted viewport zoom on input focus.
+- **Mobile Attachment Staging**: Single-attachment staging chips display formatted sizes, truncated break-word filenames, and touch-friendly 32px removal/preview buttons.
+- **Clipboard & Drag Attachment**: Supports direct clipboard paste (`Ctrl+V` / `Cmd+V`) and touch/drag attachment handling on mobile.
+
+#### Voice Dictation & Recording Interface Refinements
+- **Dedicated Mobile Dictation Strip (`.composer-listening-bar`)**:
+  - Live audio waveform and recording status indicator with clear transcript preview.
+  - Language selector dropdown sized for mobile screens (`width: min(228px, calc(100vw - 24px))`, touch items 38px).
+- **Correctly Sized Action Controls**: Sized to touch-friendly 36px heights (`32px` on <=360px phones) with permanent visible text labels (`display: inline !important; white-space: nowrap;`), active tap feedback (`transform: scale(0.96)`), and accessible colors:
+  - **Pause**: Amber subtle pill with `<Pause size={12} />` and labeled "Pause" text.
+  - **Resume**: Blue subtle pill with `<Play size={12} />` and labeled "Resume" text.
+  - **Done**: Primary blue button with `<Check size={13} strokeWidth={2.5} />` and labeled "Done" text.
+  - **Cancel**: Neutral button with labeled "Cancel" text for discarding recording sessions.
+- **Duplicate Control Suppression**: When voice dictation is active on mobile, the composer's duplicate microphone button is hidden (`.chat-composer-dock.is-recording-active .composer-mic-btn { display: none !important; }`), ensuring zero redundant or competing buttons.
+
+#### Modals, Dialogs & Dropdowns
+- **DocumentPreviewModal Mobile Layout**: Full-screen adaptation with max-height 94dvh, 8px viewport margins, single-line truncated title with 38x38px close button, and a dedicated mobile secondary toolbar housing Image / Extracted OCR text tabs, Copy, and Download actions.
+- **ModeSelector Dropdown**: Mobile-optimized dropdown popover with arrow-key and touch-friendly item targets (`min-height: 40px`).
+- **ExportChatMenu**: Compact trigger button (`compact` prop) displaying icon-only on mobile headers to prevent crowding, opening an accessible dropdown for Markdown and Plain Text downloads.
+- **Personalization Settings & Auth Screen**: AuthCard adjusted with responsive padding (`24px 18px` on mobile, `20px 14px` on <=374px phones), accessible touch tabs, and form input font-size normalization.
+
+---
+
+### v0.1.0 — Desktop UI/UX, Accessibility, and Performance Release
 
 Version **0.1.0** consolidates the Orvix application metadata under a unified version (`0.1.0`, replacing the previous `0.9.4` / `0.9.0` split) and delivers a comprehensive **Desktop UI/UX, Accessibility, and Performance** update while preserving mobile and PWA workflows:
 
@@ -245,7 +309,7 @@ The following scripts are defined in `package.json`:
 │   ├── utils/                    # Clipboard formatter, speech cleaner, export & syntax
 │   └── workers/                  # webllmWorker.js (off-thread WebGPU worker)
 ├── .env.example                  # Environment variable template
-├── package.json                  # Project metadata (v0.1.0), scripts & dependencies
+├── package.json                  # Project metadata (v0.2.0), scripts & dependencies
 ├── server.ts                     # Express backend server & Vite middleware host
 └── vite.config.ts                # Vite bundler & Workbox PWA configuration
 ```

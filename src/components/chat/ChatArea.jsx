@@ -1671,7 +1671,7 @@ Transcript:
                     aria-label="Keep live transcript and skip Whisper refinement"
                   >
                     <span className="btn-label">Keep live</span>
-                    <X size={12} />
+                    <X size={14} className="dictation-btn-icon" />
                   </button>
                 ) : (
                   <>
@@ -1683,7 +1683,7 @@ Transcript:
                         title="Pause dictation"
                         aria-label="Pause dictation"
                       >
-                        <Pause size={12} className="btn-icon" />
+                        <Pause size={16} className="dictation-btn-icon" />
                         <span className="btn-label">Pause</span>
                       </button>
                     ) : recordingState === 'paused' ? (
@@ -1694,7 +1694,7 @@ Transcript:
                         title="Resume dictation"
                         aria-label="Resume dictation"
                       >
-                        <Play size={12} fill="currentColor" className="btn-icon" />
+                        <Play size={15} fill="currentColor" className="dictation-btn-icon" />
                         <span className="btn-label">Resume</span>
                       </button>
                     ) : null}
@@ -1706,7 +1706,7 @@ Transcript:
                       title="Finish dictation"
                       aria-label="Finish dictation"
                     >
-                      <Check size={13} strokeWidth={2.5} className="btn-icon" />
+                      <Check size={16} strokeWidth={2.4} className="dictation-btn-icon" />
                       <span className="btn-label">Done</span>
                     </button>
 
