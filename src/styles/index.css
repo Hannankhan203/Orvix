@@ -5258,7 +5258,6 @@ html, body {
   flex-shrink: 0;
   position: sticky;
   left: 0;
-  top: 0;
   z-index: 4;
   box-sizing: border-box;
   margin: 0;
