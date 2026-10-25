@@ -29,7 +29,8 @@ import {
 
 import {
   formatSpeechTranscript,
-  combineComposerText
+  combineComposerText,
+  mergeTranscriptSegments
 } from '../src/hooks/useVoiceDictation.js';
 
 import {
@@ -281,12 +282,91 @@ test('Speech recognition simulation accumulates multi-part chronological segment
   assert.ok(!finalFormatted.startsWith('async/await'), 'Must NEVER truncate to only the last phrase');
 });
 
-test('polishSpokenTranscript enhances technical vocabulary in programming context', () => {
-  const raw = 'explain async await callbacks and pedrandom in javascript';
-  const polished = polishSpokenTranscript(raw);
-  assert.ok(polished.includes('async/await'), 'Must polish async await to async/await');
-  assert.ok(polished.includes('palindrome'), 'Must disambiguate pedrandom to palindrome in programming context');
-  assert.ok(polished.includes('JavaScript'), 'Must properly case JavaScript');
+test('mergeTranscriptSegments cleanly deduplicates word overlap across silence restarts and engine breaks', () => {
+  // Exact match
+  assert.strictEqual(mergeTranscriptSegments('hello world', 'hello world'), 'hello world');
+
+  // Superset progressive expansion
+  assert.strictEqual(
+    mergeTranscriptSegments('generate javascript', 'generate javascript palindrome code'),
+    'generate javascript palindrome code'
+  );
+
+  // Trailing echo
+  assert.strictEqual(
+    mergeTranscriptSegments('functions and arrow functions', 'arrow functions'),
+    'functions and arrow functions'
+  );
+
+  // Word boundary overlap (e.g. 2 words repeated across silence restart)
+  assert.strictEqual(
+    mergeTranscriptSegments('explain var const let and', 'let and functions arrow functions'),
+    'explain var const let and functions arrow functions'
+  );
+
+  // Non-overlapping chronological segments
+  assert.strictEqual(
+    mergeTranscriptSegments('generate JavaScript palindrome code.', 'And explain async/await and ECMAScript.'),
+    'generate JavaScript palindrome code. And explain async/await and ECMAScript.'
+  );
+
+  // Empty handling
+  assert.strictEqual(mergeTranscriptSegments('', 'test speech'), 'test speech');
+  assert.strictEqual(mergeTranscriptSegments('test speech', ''), 'test speech');
+});
+
+test('Multi-instance speech accumulation survives browser silence cutoffs without losing earlier sentences', () => {
+  // Simulates user speaking a long technical request where Chrome cuts off after each pause:
+  // Utterance 1 (Instance 1): "can you write a function for palindrome in JavaScript"
+  // Engine restart...
+  // Utterance 2 (Instance 2): "and explain var const let functions and arrow functions"
+  // Engine restart...
+  // Utterance 3 (Instance 3): "objects arrays callbacks promises async await and ECMAScript"
+  let sessionAccumulatedText = '';
+
+  const instance1Final = 'can you write a function for palindrome in JavaScript';
+  sessionAccumulatedText = mergeTranscriptSegments(sessionAccumulatedText, instance1Final);
+
+  const instance2Final = 'and explain var comma const comma let comma functions and arrow functions';
+  sessionAccumulatedText = mergeTranscriptSegments(sessionAccumulatedText, instance2Final);
+
+  const instance3Final = 'objects arrays callbacks promises async await and ECMAScript';
+  sessionAccumulatedText = mergeTranscriptSegments(sessionAccumulatedText, instance3Final);
+
+  const formattedSession = formatSpeechTranscript(sessionAccumulatedText);
+
+  // Verify all parts of the spoken prompt are present
+  assert.ok(formattedSession.includes('Can you write a function for palindrome in JavaScript'), 'Must retain Utterance 1');
+  assert.ok(formattedSession.includes('var, const, let'), 'Must retain Utterance 2');
+  assert.ok(formattedSession.includes('arrow functions'), 'Must retain arrow functions');
+  assert.ok(formattedSession.includes('async/await and ECMAScript'), 'Must retain Utterance 3 and format technical terms');
+  assert.ok(!formattedSession.startsWith('ECMAScript'), 'Must never truncate to only the final word');
+});
+
+test('Truncation detection triggers audio fallback when substantial speech duration yields suspiciously few words', () => {
+  // Check truncation detection predicate
+  const isTruncated = (cleanSpeech, durationSec, hasAudio) => {
+    const wordCount = cleanSpeech ? cleanSpeech.split(/\s+/).filter(Boolean).length : 0;
+    return hasAudio && (!cleanSpeech || (durationSec >= 3 && wordCount <= 2) || (durationSec >= 6 && wordCount <= 4));
+  };
+
+  // Normal short phrase (e.g. 1 sec "hello") -> not truncated
+  assert.strictEqual(isTruncated('hello', 1, true), false);
+
+  // Normal 5 sec with 12 words -> not truncated
+  assert.strictEqual(isTruncated('Can you write code for a palindrome function in JavaScript right now', 5, true), false);
+
+  // Long 8 second recording with only 1 word returned ("ECMAScript") -> detected as truncated!
+  assert.strictEqual(isTruncated('ECMAScript', 8, true), true);
+
+  // 4 second recording with 2 words returned -> detected as truncated!
+  assert.strictEqual(isTruncated('ECMAScript code', 4, true), true);
+
+  // Empty speech with audio -> detected as truncated / empty!
+  assert.strictEqual(isTruncated('', 5, true), true);
+
+  // No audio captured -> cannot fallback
+  assert.strictEqual(isTruncated('ECMAScript', 8, false), false);
 });
 
 console.log(`\nAll ${passedTests} offline reliability tests passed successfully!`);

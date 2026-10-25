@@ -338,7 +338,11 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
     [/\b(?:s\s*q\s*l)\b/gi, 'SQL'],
     [/\b(?:no\s*s\s*q\s*l)\b/gi, 'NoSQL'],
     [/\b(?:graph\s*q\s*l)\b/gi, 'GraphQL'],
-    [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')]
+    [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')],
+    [/\bvar\s*,\s*constant\s*,\s*let\b/gi, 'var, const, let'],
+    [/\bvar\s+constant\s+let\b/gi, 'var, const, let'],
+    [/\barray\s+methods?\b/gi, (m) => (/s$/i.test(m) ? 'array methods' : 'array method')],
+    [/\barrow\s+functions?\b/gi, (m) => (/s$/i.test(m) ? 'arrow functions' : 'arrow function')]
   ];
 
   for (const [pattern, replacement] of techReplacements) {

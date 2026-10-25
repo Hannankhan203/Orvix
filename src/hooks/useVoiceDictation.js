@@ -197,7 +197,11 @@ const COMMON_TECH_ACRONYMS = [
   [/\b(?:graph\s*q\s*l)\b/gi, 'GraphQL'],
   [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')],
   [/\b(?:async\s+await|async\s*\/\s*await|(?:sync|sink)\s+await)\b/gi, 'async/await'],
-  [/\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome']
+  [/\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome'],
+  [/\bvar\s*,\s*constant\s*,\s*let\b/gi, 'var, const, let'],
+  [/\bvar\s+constant\s+let\b/gi, 'var, const, let'],
+  [/\barray\s+methods?\b/gi, (m) => (/s$/i.test(m) ? 'array methods' : 'array method')],
+  [/\barrow\s+functions?\b/gi, (m) => (/s$/i.test(m) ? 'arrow functions' : 'arrow function')]
 ];
 
 /**
@@ -310,6 +314,59 @@ export function combineComposerText(base = '', speech = '') {
 }
 
 /**
+ * Merges two chronological transcript segments, deduplicating boundary word overlaps
+ * (such as when recognition engines repeat words across silence restarts or breaks)
+ * and handling progressive subsumption.
+ *
+ * @param {string} prevText - Previously accumulated speech text
+ * @param {string} nextText - Newly recognized speech segment
+ * @returns {string} Merged, deduplicated speech text
+ */
+export function mergeTranscriptSegments(prevText = '', nextText = '') {
+  const cleanPrev = (prevText || '').trim();
+  const cleanNext = (nextText || '').trim();
+
+  if (!cleanPrev) return cleanNext;
+  if (!cleanNext) return cleanPrev;
+
+  const lowerPrev = cleanPrev.toLowerCase();
+  const lowerNext = cleanNext.toLowerCase();
+
+  // If next is identical to prev
+  if (lowerPrev === lowerNext) {
+    return cleanPrev;
+  }
+
+  // If cleanPrev already ends with cleanNext (e.g. echo of the tail)
+  if (lowerPrev.endsWith(lowerNext)) {
+    return cleanPrev;
+  }
+
+  // If cleanNext is a progressive superset that starts with cleanPrev
+  if (lowerNext.startsWith(lowerPrev)) {
+    return cleanNext;
+  }
+
+  // Check word boundary overlap (between 1 and 8 words)
+  const prevWords = cleanPrev.split(/\s+/);
+  const nextWords = cleanNext.split(/\s+/);
+  const maxOverlap = Math.min(prevWords.length, nextWords.length, 8);
+
+  for (let len = maxOverlap; len >= 1; len--) {
+    const prevSlice = prevWords.slice(-len).join(' ').toLowerCase();
+    const nextSlice = nextWords.slice(0, len).join(' ').toLowerCase();
+    if (prevSlice === nextSlice) {
+      // Overlap matched: append remainder of nextWords
+      const remainder = nextWords.slice(len).join(' ');
+      return remainder ? `${cleanPrev} ${remainder}` : cleanPrev;
+    }
+  }
+
+  // No overlap found: combine with appropriate spacing
+  return combineComposerText(cleanPrev, cleanNext);
+}
+
+/**
  * Selects the best candidate from a SpeechRecognitionResult's alternatives.
  * Evaluates alternative confidence scores when available to select the highest quality result.
  *
@@ -385,7 +442,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   // Core references
   const recognitionRef = useRef(null);
   const baseTextRef = useRef('');
-  const committedSegmentsRef = useRef([]); // Array of { instanceId: number, index: number, text: string, timestamp: number }
+  const sessionAccumulatedTextRef = useRef(''); // Persistent accumulated speech text across instances & breaks
+  const currentInstanceFinalMapRef = useRef(new Map()); // Map of index -> finalized transcript for current instance
+  const currentInstanceFinalRef = useRef(''); // Combined finalized text for current instance
+  const committedSegmentsRef = useRef([]); // Backward-compatibility ref for active segments
   const lastEmittedValueRef = useRef(''); // Tracks exact value sent to onInputChange
   const recentEmissionsRef = useRef(new Set()); // Tracks values emitted by dictation to distinguish from user typing
   const interimTranscriptRef = useRef('');
@@ -478,6 +538,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       inputValueRef.current = '';
       baseTextRef.current = '';
       sessionBaseTextRef.current = '';
+      sessionAccumulatedTextRef.current = '';
+      currentInstanceFinalMapRef.current.clear();
+      currentInstanceFinalRef.current = '';
       committedSegmentsRef.current = [];
       interimTranscriptRef.current = '';
       lastEmittedValueRef.current = '';
@@ -527,6 +590,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         recordingStateRef.current === 'listening' ||
         recordingStateRef.current === 'paused'
       ) {
+        sessionAccumulatedTextRef.current = '';
+        currentInstanceFinalMapRef.current.clear();
+        currentInstanceFinalRef.current = '';
         committedSegmentsRef.current = [];
         interimTranscriptRef.current = '';
         setInterimTranscript('');
@@ -849,6 +915,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         // Snapshot existing composer content as the base prefix
         baseTextRef.current = inputValueRef.current || '';
         sessionBaseTextRef.current = baseTextRef.current;
+        sessionAccumulatedTextRef.current = '';
+        currentInstanceFinalMapRef.current.clear();
+        currentInstanceFinalRef.current = '';
         committedSegmentsRef.current = [];
         interimTranscriptRef.current = '';
         recentEmissionsRef.current.clear();
@@ -891,8 +960,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
         updateRecordingState('requesting');
       } else {
-        // Continuing session after browser silence restart:
-        // Keep accumulated committedSegmentsRef intact in memory.
+        // Continuing session after browser silence restart or resume:
+        // Clear current instance buffers while preserving sessionAccumulatedTextRef intact.
+        currentInstanceFinalMapRef.current.clear();
+        currentInstanceFinalRef.current = '';
         interimTranscriptRef.current = '';
         setInterimTranscript('');
       }
@@ -1028,73 +1099,43 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           consecutiveSilenceRestartsRef.current = 0;
 
           // 1. Process all finalized results chronologically across all available indices
+          let hasNewFinal = false;
           for (let i = 0; i < event.results.length; i++) {
             const res = event.results[i];
             if (res && res.isFinal) {
               const bestCandidate = selectBestAlternative(res);
-              if (!bestCandidate) continue;
-
-              const precedingText = [
-                baseTextRef.current,
-                ...committedSegmentsRef.current.map((s) => s.text)
-              ]
-                .filter(Boolean)
-                .join(' ');
-
-              const formatted = formatSpeechTranscript(
-                bestCandidate,
-                selectedLanguageRef.current,
-                precedingText
-              );
-
-              if (formatted) {
-                const now = Date.now();
-                // Precise deduplication: Only suppress if this is the very first result (i === 0)
-                // of a silence restart instance AND its exact text matches the last chunk from
-                // the previous instance within a narrow 2-second restart window.
-                const isRestartFirstResult = !isNewSession && i === 0;
-                const isExactRestartEcho =
-                  isRestartFirstResult &&
-                  lastCommittedSegmentRef.current &&
-                  lastCommittedSegmentRef.current.text &&
-                  now - lastCommittedSegmentRef.current.timestamp < 2000 &&
-                  lastCommittedSegmentRef.current.text.toLowerCase().trim() === formatted.toLowerCase().trim();
-
-                // Prevent committing the same index twice in this instance
-                const alreadyCommitted = committedSegmentsRef.current.some(
-                  (s) => s.instanceId === currentInstanceId && s.index === i
-                );
-
-                if (!isExactRestartEcho && !alreadyCommitted) {
-                  // Guard against Android bug where progressive intermediate results are erroneously marked isFinal
-                  // and extend or subsume the previous committed segment within the same instance and index
-                  const prevSeg = committedSegmentsRef.current.length > 0
-                    ? committedSegmentsRef.current[committedSegmentsRef.current.length - 1]
-                    : null;
-
-                  if (
-                    prevSeg &&
-                    prevSeg.instanceId === currentInstanceId &&
-                    prevSeg.index === i &&
-                    formatted.toLowerCase().startsWith(prevSeg.text.toLowerCase())
-                  ) {
-                    prevSeg.text = formatted;
-                    prevSeg.timestamp = now;
-                  } else {
-                    committedSegmentsRef.current.push({
-                      instanceId: currentInstanceId,
-                      index: i,
-                      text: formatted,
-                      timestamp: now
-                    });
-                  }
-                  lastCommittedSegmentRef.current = {
-                    text: formatted,
-                    timestamp: now
-                  };
+              if (bestCandidate && bestCandidate.trim()) {
+                const existing = currentInstanceFinalMapRef.current.get(i);
+                if (existing !== bestCandidate.trim()) {
+                  currentInstanceFinalMapRef.current.set(i, bestCandidate.trim());
+                  hasNewFinal = true;
                 }
               }
             }
+          }
+
+          if (hasNewFinal) {
+            const sortedIndices = Array.from(currentInstanceFinalMapRef.current.keys()).sort((a, b) => a - b);
+            const instanceParts = [];
+            for (const idx of sortedIndices) {
+              const part = currentInstanceFinalMapRef.current.get(idx);
+              if (part) instanceParts.push(part);
+            }
+            currentInstanceFinalRef.current = instanceParts.join(' ');
+
+            // Maintain committedSegmentsRef for inspection and backward compatibility
+            const fullAccumulated = mergeTranscriptSegments(
+              sessionAccumulatedTextRef.current,
+              currentInstanceFinalRef.current
+            );
+            committedSegmentsRef.current = [
+              {
+                instanceId: currentInstanceId,
+                index: 0,
+                text: fullAccumulated,
+                timestamp: Date.now()
+              }
+            ];
           }
 
           // 2. Compute current interim text across all unfinalized results
@@ -1180,6 +1221,24 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           if (instanceCounterRef.current !== currentInstanceId) return;
           isStartingRef.current = false;
           recognitionRef.current = null;
+
+          // Fold any finalized or pending interim text into persistent session accumulation before instance teardown
+          if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
+            sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+              sessionAccumulatedTextRef.current,
+              currentInstanceFinalRef.current.trim()
+            );
+          }
+          if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
+            sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+              sessionAccumulatedTextRef.current,
+              interimTranscriptRef.current.trim()
+            );
+            interimTranscriptRef.current = '';
+            setInterimTranscript('');
+          }
+          currentInstanceFinalMapRef.current.clear();
+          currentInstanceFinalRef.current = '';
 
           if (hasFatalErrorRef.current) {
             hasFatalErrorRef.current = false;
@@ -1326,22 +1385,21 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
       pauseStartTimeRef.current = Date.now();
 
-      // Fold interim transcript into committedSegments in memory without writing to composer yet
-      if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
-        const formattedInterim = formatSpeechTranscript(
-          interimTranscriptRef.current.trim(),
-          selectedLanguageRef.current,
-          ''
+      // Fold current instance final and interim transcript into sessionAccumulatedTextRef in memory
+      if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
+        sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+          sessionAccumulatedTextRef.current,
+          currentInstanceFinalRef.current.trim()
         );
-        if (formattedInterim) {
-          committedSegmentsRef.current.push({
-            instanceId: instanceCounterRef.current,
-            index: Date.now(),
-            text: formattedInterim,
-            timestamp: Date.now()
-          });
-        }
       }
+      if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
+        sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+          sessionAccumulatedTextRef.current,
+          interimTranscriptRef.current.trim()
+        );
+      }
+      currentInstanceFinalMapRef.current.clear();
+      currentInstanceFinalRef.current = '';
       interimTranscriptRef.current = '';
       setInterimTranscript('');
       setWaveformBars(Array(NUM_WAVEFORM_BARS).fill(0.08));
@@ -1519,37 +1577,64 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       updateRecordingState('transcribing');
 
       // 5. Gather all accumulated speech from memory buffers
-      let allFinalSpeech = '';
-      for (const seg of committedSegmentsRef.current) {
-        allFinalSpeech = combineComposerText(allFinalSpeech, seg.text);
+      if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
+        sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+          sessionAccumulatedTextRef.current,
+          currentInstanceFinalRef.current.trim()
+        );
       }
-
       if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
-        allFinalSpeech = combineComposerText(allFinalSpeech, interimTranscriptRef.current.trim());
+        sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+          sessionAccumulatedTextRef.current,
+          interimTranscriptRef.current.trim()
+        );
       }
+      currentInstanceFinalMapRef.current.clear();
+      currentInstanceFinalRef.current = '';
+      interimTranscriptRef.current = '';
+      setInterimTranscript('');
 
-      let cleanSpeech = (allFinalSpeech || '').trim();
+      let cleanSpeech = (sessionAccumulatedTextRef.current || '').trim();
 
-      // 6. If cleanSpeech is empty, attempt audio recording fallback via /api/transcribe if audio was captured
-      if (!cleanSpeech && recordedAudioBlobRef.current && recordedAudioBlobRef.current.size > 500) {
+      // 6. Truncation and empty speech recovery:
+      // If cleanSpeech is empty OR suspected truncated despite substantial recorded audio,
+      // invoke /api/transcribe using the captured audio Blob.
+      const wordCount = cleanSpeech ? cleanSpeech.split(/\s+/).filter(Boolean).length : 0;
+      const durationSec =
+        recordingDuration ||
+        (recordingStartTimeRef.current ? Math.round((Date.now() - recordingStartTimeRef.current) / 1000) : 0);
+      const audioBlob = recordedAudioBlobRef.current;
+      const hasSubstantialAudio = Boolean(audioBlob && audioBlob.size > 2000);
+
+      const isSuspectedTruncated =
+        hasSubstantialAudio &&
+        (!cleanSpeech || (durationSec >= 3 && wordCount <= 2) || (durationSec >= 6 && wordCount <= 4));
+
+      if (isSuspectedTruncated) {
         try {
           const fallbackRes = await transcribeAudioBlob({
-            audioBlob: recordedAudioBlobRef.current,
+            audioBlob,
             language: selectedLanguageRef.current,
-            prompt: 'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, palindrome, algorithms, async await, promises, functions, objects, arrays, code'
+            prompt:
+              'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, Node.js, Python, palindrome, algorithms, data structures, async await, promises, functions, arrow functions, var, const, let, objects, arrays, callbacks, ECMAScript, code'
           });
-          if (fallbackRes?.text) {
-            cleanSpeech = fallbackRes.text.trim();
-            setTranscriptionMeta({
-              provider: fallbackRes.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
-              model: fallbackRes.model,
-              highAccuracy: true,
-              timestamp: Date.now()
-            });
-            setTranscriptionNotice({
-              type: 'success',
-              message: `Transcribed with ${fallbackRes.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : fallbackRes.model}`
-            });
+          if (fallbackRes?.text && fallbackRes.text.trim()) {
+            const serverText = fallbackRes.text.trim();
+            const serverWordCount = serverText.split(/\s+/).filter(Boolean).length;
+            if (!cleanSpeech || serverWordCount >= wordCount) {
+              cleanSpeech = serverText;
+              sessionAccumulatedTextRef.current = serverText;
+              setTranscriptionMeta({
+                provider: fallbackRes.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
+                model: fallbackRes.model,
+                highAccuracy: true,
+                timestamp: Date.now()
+              });
+              setTranscriptionNotice({
+                type: 'success',
+                message: `Transcribed with ${fallbackRes.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : fallbackRes.model}`
+              });
+            }
           }
         } catch (fErr) {
           console.warn('[Dictation] Fallback audio transcription notice:', fErr);
@@ -1562,6 +1647,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           type: 'fallback',
           message: 'No speech was detected in the recording.'
         });
+        sessionAccumulatedTextRef.current = '';
+        currentInstanceFinalMapRef.current.clear();
+        currentInstanceFinalRef.current = '';
         committedSegmentsRef.current = [];
         interimTranscriptRef.current = '';
         setInterimTranscript('');
@@ -1586,6 +1674,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       }
 
       setLastSessionTranscript(formattedSpeech);
+      sessionAccumulatedTextRef.current = '';
+      currentInstanceFinalMapRef.current.clear();
+      currentInstanceFinalRef.current = '';
       committedSegmentsRef.current = [];
       interimTranscriptRef.current = '';
       setInterimTranscript('');
@@ -1611,6 +1702,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   }, [
     cleanupRecognitionInstance,
     recordEmission,
+    recordingDuration,
     stopAudioResources,
     updateRecordingState
   ]);
@@ -1635,6 +1727,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       onInputChangeRef.current(originalBase);
     }
 
+    sessionAccumulatedTextRef.current = '';
+    currentInstanceFinalMapRef.current.clear();
+    currentInstanceFinalRef.current = '';
     committedSegmentsRef.current = [];
     interimTranscriptRef.current = '';
     nativeSessionTranscriptRef.current = '';
