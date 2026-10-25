@@ -1683,127 +1683,8 @@ html, body {
 }
 
 /* ==========================================================================
-   Chat Mode Selector (Pills, Compact Dropdown, Composer Strip & Notifications)
+   Chat Mode Selector (Compact Dropdown, Composer Strip & Notifications)
    ========================================================================== */
-
-/* Mode Pills (Welcome Screen variant) */
-.mode-selector-pills-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  max-width: 640px;
-  margin: 14px auto 8px auto;
-}
-
-.mode-pills-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.mode-pill-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 16px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-subtle);
-  background-color: var(--bg-card);
-  color: var(--text-secondary);
-  font-size: 0.84rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  user-select: none;
-}
-
-.mode-pill-btn:hover {
-  background-color: var(--bg-card-hover);
-  color: var(--text-primary);
-  border-color: var(--border-medium);
-  transform: translateY(-1px);
-}
-
-.mode-pill-btn:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
-}
-
-.mode-pill-btn.active {
-  font-weight: 600;
-  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.25);
-}
-
-.mode-pill-btn.active.mode-general {
-  background-color: rgba(37, 99, 235, 0.15);
-  color: #60a5fa;
-  border-color: #3b82f6;
-}
-
-.mode-pill-btn.active.mode-coding {
-  background-color: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border-color: #10b981;
-}
-
-.mode-pill-btn.active.mode-writing {
-  background-color: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-  border-color: #f59e0b;
-}
-
-.mode-pill-btn.active.mode-learning {
-  background-color: rgba(139, 92, 246, 0.15);
-  color: #a78bfa;
-  border-color: #8b5cf6;
-}
-
-.mode-pill-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.mode-pill-name {
-  line-height: 1;
-}
-
-.mode-pill-active-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: currentColor;
-  flex-shrink: 0;
-}
-
-.mode-pill-description {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.77rem;
-  color: var(--text-muted);
-  padding: 4px 14px;
-  border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-subtle);
-  max-width: 90%;
-  text-align: center;
-}
-
-.mode-desc-tag {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.mode-desc-text {
-  color: var(--text-muted);
-}
 
 /* Compact Dropdown Mode Selector (Header & Composer variant) */
 .mode-selector-compact-container {
@@ -2160,10 +2041,6 @@ html, body {
 }
 
 @media (max-width: 640px) {
-  .mode-pill-btn {
-    padding: 6px 12px;
-    font-size: 0.78rem;
-  }
   .composer-mode-strip-desc {
     display: none;
   }
@@ -2310,202 +2187,241 @@ html, body {
 }
 
 /* ==========================================================================
-   Welcoming Empty State
+   Welcoming Empty State — Responsive Hero Centerpiece
    ========================================================================== */
+:root {
+  --welcome-logo-size: 72px;
+  --welcome-logo-gap: 22px;
+  --welcome-heading-size: 2.35rem;
+  --welcome-heading-line-height: 1.18;
+  --welcome-heading-letter-spacing: -0.026em;
+  --welcome-max-width: 720px;
+}
+
 .welcome-screen {
   margin: auto 0;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
-  padding: 24px 0;
+  padding: 32px 16px clamp(28px, 5vh, 52px) 16px;
   width: 100%;
+  user-select: none;
 }
 
 .welcome-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin-bottom: 24px;
+  justify-content: center;
+  text-align: center;
+  width: 100%;
+  max-width: var(--welcome-max-width, 720px);
+  margin: 0 auto;
 }
 
+/* Hero Orvix Logo Mark Container */
+.welcome-logo-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: var(--welcome-logo-size, 72px);
+  height: var(--welcome-logo-size, 72px);
+  margin-bottom: var(--welcome-logo-gap, 22px);
+  transition: transform var(--transition-normal);
+  cursor: default;
+}
+
+.welcome-logo-wrap:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+/* Ambient Radial Aura behind the Hero Logo */
+.welcome-logo-wrap::after {
+  content: '';
+  position: absolute;
+  inset: -14px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.22) 0%, rgba(37, 99, 235, 0.06) 50%, transparent 72%);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+  z-index: -1;
+  filter: blur(12px);
+  transition: opacity var(--transition-normal);
+}
+
+[data-theme="light"] .welcome-logo-wrap::after {
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.16) 0%, rgba(59, 130, 246, 0.03) 50%, transparent 72%);
+}
+
+.welcome-hero-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.welcome-hero-logo svg {
+  width: var(--welcome-logo-size, 72px) !important;
+  height: var(--welcome-logo-size, 72px) !important;
+  max-width: 100%;
+  max-height: 100%;
+  filter: drop-shadow(0 8px 24px rgba(37, 99, 235, 0.28));
+  transition: filter var(--transition-normal);
+}
+
+.welcome-logo-wrap:hover .welcome-hero-logo svg {
+  filter: drop-shadow(0 12px 32px rgba(37, 99, 235, 0.42));
+}
+
+/* Legacy/Fallback .welcome-badge compatibility */
 .welcome-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  padding: 4px 10px;
-  border-radius: var(--radius-full);
-  margin-bottom: 14px;
+  justify-content: center;
+  position: relative;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-bottom: var(--welcome-logo-gap, 22px);
 }
 
 .welcome-badge-icon {
   color: var(--accent-primary);
 }
 
+/* Hero Greeting Headline */
 .welcome-heading {
-  font-size: 1.85rem;
+  font-size: var(--welcome-heading-size, 2.35rem);
   font-weight: 600;
+  line-height: var(--welcome-heading-line-height, 1.18);
   color: var(--text-primary);
-  letter-spacing: -0.025em;
-  margin-bottom: 8px;
-}
-
-.welcome-subheading {
-  font-size: 0.95rem;
-  color: var(--text-secondary);
-  max-width: 500px;
-  line-height: 1.5;
-  padding: 0 8px;
-}
-
-/* Starter Prompts Grid */
-.starter-prompts-container {
+  letter-spacing: var(--welcome-heading-letter-spacing, -0.026em);
+  margin: 0 auto;
+  max-width: var(--welcome-max-width, 720px);
   width: 100%;
-  margin-top: 14px;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  transition: font-size var(--transition-fast), line-height var(--transition-fast);
 }
 
-.starter-prompts-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  padding: 0 4px;
+/* ==========================================================================
+   Responsive Scaling across Device Tiers
+   - Small mobile: 320–359px
+   - Standard mobile: 360–430px
+   - Large mobile & small tablet: 431–767px
+   - Tablet: 768–1023px
+   - Laptop: 1024–1439px
+   - Desktop: 1440–1919px
+   - Large desktop: 1920px and above
+   ========================================================================== */
+
+/* 1. Small Mobile (320px – 359px) */
+@media (max-width: 359px) {
+  :root {
+    --welcome-logo-size: 40px;
+    --welcome-logo-gap: 14px;
+    --welcome-heading-size: 1.25rem;
+    --welcome-heading-line-height: 1.25;
+    --welcome-heading-letter-spacing: -0.015em;
+    --welcome-max-width: 290px;
+  }
+  .welcome-screen {
+    padding: 12px 8px clamp(14px, 3vh, 22px) 8px;
+  }
 }
 
-.starter-prompts-caption {
-  font-size: 0.72rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
+/* 2. Standard Mobile (360px – 430px) */
+@media (min-width: 360px) and (max-width: 430px) {
+  :root {
+    --welcome-logo-size: 48px;
+    --welcome-logo-gap: 16px;
+    --welcome-heading-size: 1.48rem;
+    --welcome-heading-line-height: 1.22;
+    --welcome-heading-letter-spacing: -0.02em;
+    --welcome-max-width: 360px;
+  }
+  .welcome-screen {
+    padding: 16px 12px clamp(18px, 4vh, 28px) 12px;
+  }
 }
 
-.starter-prompts-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  width: 100%;
+/* 3. Large Mobile and Small Tablet (431px – 767px) */
+@media (min-width: 431px) and (max-width: 767px) {
+  :root {
+    --welcome-logo-size: 56px;
+    --welcome-logo-gap: 18px;
+    --welcome-heading-size: 1.75rem;
+    --welcome-heading-line-height: 1.2;
+    --welcome-heading-letter-spacing: -0.022em;
+    --welcome-max-width: 460px;
+  }
+  .welcome-screen {
+    padding: 20px 16px clamp(22px, 4vh, 32px) 16px;
+  }
 }
 
-.prompt-card {
-  background-color: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 13px 15px;
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
-  min-height: 84px;
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+/* 4. Tablet (768px – 1023px) */
+@media (min-width: 768px) and (max-width: 1023px) {
+  :root {
+    --welcome-logo-size: 64px;
+    --welcome-logo-gap: 22px;
+    --welcome-heading-size: 2.15rem;
+    --welcome-heading-line-height: 1.18;
+    --welcome-heading-letter-spacing: -0.025em;
+    --welcome-max-width: 600px;
+  }
+  .welcome-screen {
+    padding: 26px 20px clamp(26px, 4vh, 38px) 20px;
+  }
 }
 
-.prompt-card:hover {
-  background-color: var(--bg-card-hover);
-  border-color: rgba(59, 130, 246, 0.35);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+/* 5. Laptop (1024px – 1439px) */
+@media (min-width: 1024px) and (max-width: 1439px) {
+  :root {
+    --welcome-logo-size: 76px;
+    --welcome-logo-gap: 24px;
+    --welcome-heading-size: 2.5rem;
+    --welcome-heading-line-height: 1.16;
+    --welcome-heading-letter-spacing: -0.028em;
+    --welcome-max-width: 720px;
+  }
+  .welcome-screen {
+    padding: 34px 24px clamp(32px, 5vh, 46px) 24px;
+  }
 }
 
-.prompt-card:active {
-  transform: translateY(0);
+/* 6. Desktop (1440px – 1919px) */
+@media (min-width: 1440px) and (max-width: 1919px) {
+  :root {
+    --welcome-logo-size: 88px;
+    --welcome-logo-gap: 28px;
+    --welcome-heading-size: 2.95rem;
+    --welcome-heading-line-height: 1.14;
+    --welcome-heading-letter-spacing: -0.032em;
+    --welcome-max-width: 820px;
+  }
+  .welcome-screen {
+    padding: 42px 28px clamp(36px, 6vh, 54px) 28px;
+  }
 }
 
-.prompt-card:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 1px;
-}
-
-.prompt-card-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-}
-
-.prompt-card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-primary);
-  font-weight: 600;
-  font-size: 0.88rem;
-  line-height: 1.35;
-}
-
-.prompt-card-icon {
-  color: var(--accent-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-sm);
-  background-color: rgba(37, 99, 235, 0.12);
-  flex-shrink: 0;
-}
-
-.prompt-card-title {
-  color: var(--text-primary);
-  font-weight: 600;
-  font-size: 0.88rem;
-  letter-spacing: -0.01em;
-}
-
-.prompt-card-arrow {
-  color: var(--text-muted);
-  opacity: 0.4;
-  display: flex;
-  align-items: center;
-  transition: opacity var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.prompt-card:hover .prompt-card-arrow {
-  opacity: 1;
-  color: var(--accent-primary);
-  transform: translate(2px, -2px);
-}
-
-.prompt-card-desc {
-  font-size: 0.78rem;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  margin: 0;
-}
-
-.prompt-card-footer {
-  display: flex;
-  align-items: center;
-  margin-top: 2px;
-}
-
-.prompt-card-badge {
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  padding: 2px 7px;
-  border-radius: var(--radius-xs);
-  background-color: rgba(255, 255, 255, 0.05);
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-}
-
-.prompt-card:hover .prompt-card-badge {
-  color: var(--text-secondary);
-  border-color: rgba(255, 255, 255, 0.12);
+/* 7. Large Desktop (1920px and above) */
+@media (min-width: 1920px) {
+  :root {
+    --welcome-logo-size: 100px;
+    --welcome-logo-gap: 32px;
+    --welcome-heading-size: 3.4rem;
+    --welcome-heading-line-height: 1.12;
+    --welcome-heading-letter-spacing: -0.035em;
+    --welcome-max-width: 900px;
+  }
+  .welcome-screen {
+    padding: 50px 32px clamp(42px, 7vh, 64px) 32px;
+  }
 }
 
 .messages-loading-state {
@@ -9146,33 +9062,6 @@ body.theme-light .notice-retry-btn,
     padding-bottom: 20px;
   }
 
-  .starter-prompts-grid {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .welcome-screen {
-    padding: 16px 0;
-  }
-
-  .welcome-heading {
-    font-size: 1.45rem;
-  }
-
-  .welcome-subheading {
-    font-size: 0.88rem;
-  }
-
-  .mode-pill-btn {
-    min-height: 36px;
-    touch-action: manipulation;
-  }
-
-  .mode-pill-description {
-    border-radius: var(--radius-md);
-    padding: 6px 12px;
-    line-height: 1.4;
-  }
 
   /* Messages on Mobile — Full-Width Assistant Prose & Native User Bubbles */
   .message-wrapper.assistant-wrapper {
@@ -9673,18 +9562,6 @@ body.theme-light .notice-retry-btn,
 
   .chat-scroll-viewport {
     padding: 10px 10px 6px 10px;
-  }
-
-  .welcome-heading {
-    font-size: 1.3rem;
-  }
-
-  .welcome-subheading {
-    font-size: 0.825rem;
-  }
-
-  .prompt-card {
-    padding: 10px 12px;
   }
 
   .auth-content-wrap {
@@ -10894,11 +10771,7 @@ body.theme-light .notice-retry-btn,
   color: #92400e;
 }
 
-/* Light mode adjustments for mode components */
-[data-theme="light"] .mode-pill-description {
-  background: rgba(0, 0, 0, 0.03);
-}
-
+/* Light mode adjustments for mode notification banner */
 [data-theme="light"] .mode-change-notification-banner {
   background-color: #eff6ff;
   border-color: #bfdbfe;
@@ -10907,30 +10780,6 @@ body.theme-light .notice-retry-btn,
 
 [data-theme="light"] .mode-notice-icon {
   color: #2563eb;
-}
-
-[data-theme="light"] .mode-pill-btn.active.mode-general {
-  background-color: #eff6ff;
-  color: #1d4ed8;
-  border-color: #2563eb;
-}
-
-[data-theme="light"] .mode-pill-btn.active.mode-coding {
-  background-color: #ecfdf5;
-  color: #047857;
-  border-color: #059669;
-}
-
-[data-theme="light"] .mode-pill-btn.active.mode-writing {
-  background-color: #fffbeb;
-  color: #b45309;
-  border-color: #d97706;
-}
-
-[data-theme="light"] .mode-pill-btn.active.mode-learning {
-  background-color: #f5f3ff;
-  color: #6d28d9;
-  border-color: #7c3aed;
 }
 
 /* Controlled Multi-Part Continuation Quick Action Chip */
@@ -11813,10 +11662,8 @@ body.theme-light .notice-retry-btn,
 .message-image-card:focus-visible,
 .alternative-provider-option:focus-visible,
 .alternative-nav-btn:focus-visible,
-.mode-pill-btn:focus-visible,
 .mode-compact-trigger:focus-visible,
-.mode-dropdown-item:focus-visible,
-.prompt-card:focus-visible {
+.mode-dropdown-item:focus-visible {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
 }

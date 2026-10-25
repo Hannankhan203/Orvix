@@ -1135,20 +1135,6 @@ export default function ChatArea({
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, []);
-
-  const handlePromptSelect = (promptText) => {
-    if (onInputChange) {
-      onInputChange(promptText);
-    }
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-      try {
-        const len = (promptText || '').length;
-        textareaRef.current.setSelectionRange(len, len);
-      } catch (_) {}
-    }
-  };
-
   const submitComposerMessage = async (textToSend) => {
     if (!onSubmit || (!textToSend.trim() && attachments.length === 0) || isLoading) {
       return;
@@ -1405,10 +1391,7 @@ Transcript:
         <div className="chat-content-constrained">
           {isNewChat && !hasMessages ? (
             <WelcomeScreen
-              onSelectPrompt={handlePromptSelect}
               username={username}
-              activeMode={activeMode}
-              onSelectMode={onSelectMode}
             />
           ) : messagesLoading && !hasMessages ? (
             <div className="messages-loading-state" role="status" aria-label="Loading conversation">
@@ -1671,7 +1654,7 @@ Transcript:
                     aria-label="Keep live transcript and skip Whisper refinement"
                   >
                     <span className="btn-label">Keep live</span>
-                    <X size={14} className="dictation-btn-icon" />
+                    <X size={12} />
                   </button>
                 ) : (
                   <>
@@ -1683,7 +1666,7 @@ Transcript:
                         title="Pause dictation"
                         aria-label="Pause dictation"
                       >
-                        <Pause size={16} className="dictation-btn-icon" />
+                        <Pause size={12} className="btn-icon" />
                         <span className="btn-label">Pause</span>
                       </button>
                     ) : recordingState === 'paused' ? (
@@ -1694,7 +1677,7 @@ Transcript:
                         title="Resume dictation"
                         aria-label="Resume dictation"
                       >
-                        <Play size={15} fill="currentColor" className="dictation-btn-icon" />
+                        <Play size={12} fill="currentColor" className="btn-icon" />
                         <span className="btn-label">Resume</span>
                       </button>
                     ) : null}
@@ -1706,7 +1689,7 @@ Transcript:
                       title="Finish dictation"
                       aria-label="Finish dictation"
                     >
-                      <Check size={16} strokeWidth={2.4} className="dictation-btn-icon" />
+                      <Check size={13} strokeWidth={2.5} className="btn-icon" />
                       <span className="btn-label">Done</span>
                     </button>
 

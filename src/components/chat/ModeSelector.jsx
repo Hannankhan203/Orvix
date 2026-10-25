@@ -11,14 +11,12 @@ const ICON_COMPONENTS = {
 
 /**
  * ModeSelector Component
- * Provides responsive mode selection for Orvix chat:
- * - 'pills': Segmented / card row for the WelcomeScreen.
- * - 'compact': Dropdown popover pill for composer and header bars.
+ * Provides responsive mode selection dropdown for the Orvix header.
  *
  * @param {Object} props
  * @param {string} props.activeMode - Currently active mode ID ('general' | 'coding' | 'writing' | 'learning')
  * @param {(modeId: string) => void} props.onSelectMode - Callback when mode changes
- * @param {'pills' | 'compact'} [props.variant='compact']
+ * @param {'compact'} [props.variant='compact']
  * @param {'left' | 'right' | 'auto'} [props.dropdownAlign='auto']
  * @param {boolean} [props.disabled=false]
  * @param {string} [props.className='']
@@ -115,73 +113,7 @@ export default function ModeSelector({
     setIsOpen(false);
   };
 
-  // Variant A: Interactive Mode Pills Row (Welcome / New Chat screen)
-  if (variant === 'pills') {
-    const handlePillKeyDown = (e, index) => {
-      if (disabled) return;
-      const total = CHAT_MODE_LIST.length;
-      let nextIdx = -1;
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        nextIdx = (index + 1) % total;
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        nextIdx = (index - 1 + total) % total;
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        nextIdx = 0;
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        nextIdx = total - 1;
-      }
-      if (nextIdx !== -1) {
-        const nextMode = CHAT_MODE_LIST[nextIdx];
-        handleSelect(nextMode.id);
-        const groupEl = e.currentTarget.closest('.mode-pills-row');
-        const buttons = groupEl?.querySelectorAll('.mode-pill-btn');
-        buttons?.[nextIdx]?.focus();
-      }
-    };
-
-    return (
-      <div className={`mode-selector-pills-wrap ${className}`} role="radiogroup" aria-label="Select conversation mode">
-        <div className="mode-pills-row">
-          {CHAT_MODE_LIST.map((mode, idx) => {
-            const IconComp = ICON_COMPONENTS[mode.iconName] || Sparkles;
-            const isSelected = mode.id === currentMode.id;
-
-            return (
-              <button
-                key={mode.id}
-                type="button"
-                role="radio"
-                aria-checked={isSelected}
-                disabled={disabled}
-                onClick={() => handleSelect(mode.id)}
-                onKeyDown={(e) => handlePillKeyDown(e, idx)}
-                className={`mode-pill-btn ${isSelected ? 'active' : ''} mode-${mode.id}`}
-                title={mode.description}
-              >
-                <span className="mode-pill-icon" aria-hidden="true">
-                  <IconComp size={15} />
-                </span>
-                <span className="mode-pill-name">{mode.shortName}</span>
-                {isSelected && <span className="mode-pill-active-dot" aria-hidden="true" />}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Short mode description callout */}
-        <div className="mode-pill-description" role="status" aria-live="polite">
-          <span className="mode-desc-tag">{currentMode.name}:</span>
-          <span className="mode-desc-text">{currentMode.description}</span>
-        </div>
-      </div>
-    );
-  }
-
-  // Variant B: Compact Dropdown Popover (Composer toolbar & Header)
+  // Compact Dropdown Popover (Header and composer bars)
   return (
     <div
       ref={containerRef}
