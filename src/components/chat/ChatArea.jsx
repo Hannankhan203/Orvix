@@ -927,6 +927,54 @@ export default function ChatArea({
   const activeLang =
     supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
 
+  // Screen reader announcements for dictation state changes
+  const [srAnnouncement, setSrAnnouncement] = useState('');
+
+  useEffect(() => {
+    if (dictationError) {
+      setSrAnnouncement(`Dictation error: ${dictationError}`);
+      return;
+    }
+    switch (recordingState) {
+      case 'requesting':
+        setSrAnnouncement('Requesting microphone permission');
+        break;
+      case 'listening':
+        setSrAnnouncement('Microphone recording active. Speak naturally.');
+        break;
+      case 'paused':
+        setSrAnnouncement('Dictation paused.');
+        break;
+      case 'stopping':
+        setSrAnnouncement('Stopping recording.');
+        break;
+      case 'transcribing':
+        setSrAnnouncement('Transcribing audio transcript.');
+        break;
+      case 'success':
+        setSrAnnouncement('Dictation transcript inserted into message composer. Text is ready to edit or send.');
+        break;
+      case 'cancelled':
+        setSrAnnouncement('Dictation cancelled. Audio discarded and previous text restored.');
+        break;
+      default:
+        break;
+    }
+  }, [recordingState, dictationError]);
+
+  // Cleanly abort any active microphone dictation session when switching conversations
+  useEffect(() => {
+    if (
+      recordingState === 'listening' ||
+      recordingState === 'paused' ||
+      recordingState === 'requesting' ||
+      recordingState === 'stopping' ||
+      recordingState === 'transcribing'
+    ) {
+      cancelListening();
+    }
+  }, [activeChatId, cancelListening]);
+
   const handleStopListening = async () => {
     await stopListening();
     requestAnimationFrame(() => {
@@ -957,8 +1005,13 @@ export default function ChatArea({
       resumeListening();
     } else if (recordingState === 'requesting') {
       handleCancelListening();
-    } else if (recordingState === 'finalizing' || recordingState === 'transcribing') {
-      // Safe guard: ignore multi-tap while actively finalizing or transcribing
+    } else if (
+      recordingState === 'stopping' ||
+      recordingState === 'finalizing' ||
+      recordingState === 'transcribing' ||
+      recordingState === 'success'
+    ) {
+      // Safe guard: ignore multi-tap while actively stopping, transcribing, or finalizing
       return;
     } else {
       startListening();
@@ -1164,6 +1217,12 @@ export default function ChatArea({
       return;
     }
 
+    if (e.key === 'Escape' && isRecordingActive) {
+      e.preventDefault();
+      handleCancelListening();
+      return;
+    }
+
     if (e.key === 'Escape' && isLoading && onStopGenerating) {
       e.preventDefault();
       onStopGenerating();
@@ -1320,13 +1379,16 @@ Transcript:
 
   const hasContent = inputValue.trim().length > 0 || attachments.length > 0;
   const hasMessages = messages.length > 0;
-  // Dictation dock is active when actively requesting, listening, paused, finalizing, or transcribing
+  // Dictation dock is active when actively requesting, listening, paused, stopping, finalizing, transcribing, success, or cancelled
   const isRecordingActive =
     recordingState === 'listening' ||
     recordingState === 'paused' ||
     recordingState === 'requesting' ||
+    recordingState === 'stopping' ||
     recordingState === 'finalizing' ||
-    recordingState === 'transcribing';
+    recordingState === 'transcribing' ||
+    recordingState === 'success' ||
+    recordingState === 'cancelled';
 
   const normalComposerPlaceholder = isCompactViewport
     ? activeMode === 'coding'
@@ -1530,20 +1592,37 @@ Transcript:
             </div>
           )}
 
+          {/* Visually-hidden live region for screen-reader dictation announcements */}
+          <div
+            className="sr-only"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {srAnnouncement}
+          </div>
+
           {/* Modern Recording & Waveform Dictation Bar */}
           {isRecordingActive && (
             <div
               className={`composer-listening-bar state-${recordingState}`}
-              role="status"
-              aria-live="polite"
+              role="region"
+              aria-label="Voice dictation controls"
             >
               <div className="listening-left-group">
                 <div className="listening-indicator-content">
                   <div className={`listening-mic-badge ${recordingState}`} aria-hidden="true">
-                    {recordingState === 'requesting' || recordingState === 'transcribing' || recordingState === 'finalizing' ? (
+                    {recordingState === 'requesting' ||
+                    recordingState === 'stopping' ||
+                    recordingState === 'transcribing' ||
+                    recordingState === 'finalizing' ? (
                       <Loader2 size={13} className="spin-icon" />
                     ) : recordingState === 'listening' ? (
                       <span className="recording-dot-pulse" />
+                    ) : recordingState === 'success' ? (
+                      <Check size={13} strokeWidth={2.5} className="badge-icon success" />
+                    ) : recordingState === 'cancelled' ? (
+                      <X size={13} className="badge-icon cancelled" />
                     ) : (
                       <Mic size={13} />
                     )}
@@ -1553,10 +1632,16 @@ Transcript:
                       ? 'Connecting...'
                       : recordingState === 'paused'
                       ? 'Paused'
+                      : recordingState === 'stopping'
+                      ? 'Stopping...'
                       : recordingState === 'transcribing'
                       ? 'Transcribing...'
                       : recordingState === 'finalizing'
                       ? 'Finishing...'
+                      : recordingState === 'success'
+                      ? 'Transcript ready'
+                      : recordingState === 'cancelled'
+                      ? 'Cancelled'
                       : 'Recording'}
                   </span>
                   <span className="listening-timer" aria-label={`Recording duration: ${formattedDuration}`}>
@@ -1571,8 +1656,9 @@ Transcript:
                     className="dictation-lang-btn"
                     onClick={() => setLangMenuOpen((prev) => !prev)}
                     title={`Dictation language: ${activeLang.label}. Click to switch.`}
-                    aria-label="Select dictation language"
+                    aria-label={`Select dictation language, currently ${activeLang.label}`}
                     aria-expanded={langMenuOpen}
+                    aria-haspopup="menu"
                   >
                     <span className="lang-flag">{activeLang.flag}</span>
                     <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
@@ -1580,7 +1666,7 @@ Transcript:
                   </button>
 
                   {langMenuOpen && (
-                    <div className="dictation-lang-dropdown" role="menu">
+                    <div className="dictation-lang-dropdown" role="menu" aria-label="Recognition Language">
                       <div className="lang-dropdown-header">Recognition Language</div>
                       {supportedLanguages.map((lang) => (
                         <button
@@ -1626,18 +1712,29 @@ Transcript:
                 </div>
               </div>
 
-              {/* Action Buttons: Pause/Resume, Stop (Done), Cancel (✕) */}
+              {/* Action Buttons: Pause/Resume, Stop, Cancel */}
               <div className="listening-actions-group">
-                {recordingState === 'transcribing' ? (
+                {recordingState === 'stopping' || recordingState === 'transcribing' || recordingState === 'finalizing' ? (
                   <button
                     type="button"
                     className="dictation-strip-btn cancel-btn"
                     onClick={handleCancelListening}
-                    title="Cancel transcription"
-                    aria-label="Cancel transcription"
+                    title="Cancel transcription and discard audio"
+                    aria-label="Cancel transcription and discard audio"
                   >
+                    <X size={13} className="btn-icon" aria-hidden="true" />
                     <span className="btn-label">Cancel</span>
                   </button>
+                ) : recordingState === 'success' ? (
+                  <div className="dictation-status-pill success" aria-hidden="true">
+                    <Check size={12} strokeWidth={2.5} className="btn-icon" />
+                    <span className="btn-label">Inserted</span>
+                  </div>
+                ) : recordingState === 'cancelled' ? (
+                  <div className="dictation-status-pill cancelled" aria-hidden="true">
+                    <X size={12} className="btn-icon" />
+                    <span className="btn-label">Discarded</span>
+                  </div>
                 ) : (
                   <>
                     {recordingState === 'listening' ? (
@@ -1648,7 +1745,7 @@ Transcript:
                         title="Pause recording"
                         aria-label="Pause recording"
                       >
-                        <Pause size={12} className="btn-icon" />
+                        <Pause size={12} className="btn-icon" aria-hidden="true" />
                         <span className="btn-label">Pause</span>
                       </button>
                     ) : recordingState === 'paused' ? (
@@ -1659,7 +1756,7 @@ Transcript:
                         title="Resume recording"
                         aria-label="Resume recording"
                       >
-                        <Play size={12} fill="currentColor" className="btn-icon" />
+                        <Play size={12} fill="currentColor" className="btn-icon" aria-hidden="true" />
                         <span className="btn-label">Resume</span>
                       </button>
                     ) : null}
@@ -1668,20 +1765,21 @@ Transcript:
                       type="button"
                       className="dictation-strip-btn stop-btn"
                       onClick={handleStopListening}
-                      title="Finish recording and insert transcript into composer"
-                      aria-label="Finish recording"
+                      title="Stop recording and insert transcript into composer"
+                      aria-label="Stop recording and insert transcript into composer"
                     >
-                      <Check size={13} strokeWidth={2.5} className="btn-icon" />
-                      <span className="btn-label">Done</span>
+                      <Square size={11} fill="currentColor" className="btn-icon" aria-hidden="true" />
+                      <span className="btn-label">Stop</span>
                     </button>
 
                     <button
                       type="button"
                       className="dictation-strip-btn cancel-btn"
                       onClick={handleCancelListening}
-                      title="Cancel recording (discard audio)"
-                      aria-label="Cancel recording"
+                      title="Cancel recording (discard audio and keep existing text)"
+                      aria-label="Cancel recording and discard audio"
                     >
+                      <X size={13} className="btn-icon" aria-hidden="true" />
                       <span className="btn-label">Cancel</span>
                     </button>
                   </>
@@ -2054,17 +2152,17 @@ Transcript:
                 {(!isRecordingActive || !isCompactViewport) && (
                   <Button
                     type="button"
-                    variant={isListening ? 'primary' : (isRequesting || isTranscribing) ? 'outline' : 'ghost'}
+                    variant={isListening ? 'primary' : (isRequesting || isTranscribing || recordingState === 'stopping') ? 'outline' : 'ghost'}
                     size="icon-round"
-                    disabled={isLoading || isTranscribing || isFinalizing}
+                    disabled={isLoading || isTranscribing || isFinalizing || recordingState === 'stopping' || recordingState === 'success'}
                     onClick={handleToggleListening}
                     title={
                       !isSupported
                         ? 'Voice dictation is not supported in this browser.'
-                        : isTranscribing
-                        ? 'Transcribing recorded audio...'
+                        : isTranscribing || recordingState === 'stopping'
+                        ? 'Processing dictation...'
                         : isListening
-                        ? 'Finish dictation'
+                        ? 'Stop dictation and insert transcript'
                         : isRequesting
                         ? 'Connecting microphone... Click to cancel'
                         : isPaused
@@ -2074,21 +2172,21 @@ Transcript:
                     ariaLabel={
                       !isSupported
                         ? 'Voice dictation not supported'
-                        : isTranscribing
-                        ? 'Transcribing audio'
+                        : isTranscribing || recordingState === 'stopping'
+                        ? 'Processing dictation'
                         : isListening
-                        ? 'Finish voice dictation'
+                        ? 'Stop dictation'
                         : isRequesting
                         ? 'Connecting microphone'
                         : isPaused
                         ? 'Resume dictation'
                         : 'Start voice dictation'
                     }
-                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing ? 'transcribing' : ''}`}
+                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing || recordingState === 'stopping' ? 'transcribing' : ''}`}
                     icon={
                       isListening ? (
                         <Square size={13} fill="currentColor" />
-                      ) : (isRequesting || isTranscribing) ? (
+                      ) : (isRequesting || isTranscribing || recordingState === 'stopping') ? (
                         <Loader2 size={16} className="spin-icon" />
                       ) : isPaused ? (
                         <Play size={13} fill="currentColor" />

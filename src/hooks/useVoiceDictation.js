@@ -1258,8 +1258,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     if (
       recordingStateRef.current === 'listening' ||
       recordingStateRef.current === 'requesting' ||
+      recordingStateRef.current === 'stopping' ||
       recordingStateRef.current === 'finalizing' ||
-      recordingStateRef.current === 'transcribing'
+      recordingStateRef.current === 'transcribing' ||
+      recordingStateRef.current === 'success'
     ) {
       return;
     }
@@ -1412,8 +1414,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     if (isTransitioningRef.current) return '';
     if (
       recordingStateRef.current === 'idle' ||
+      recordingStateRef.current === 'stopping' ||
       recordingStateRef.current === 'finalizing' ||
       recordingStateRef.current === 'transcribing' ||
+      recordingStateRef.current === 'success' ||
       recordingStateRef.current === 'error'
     ) {
       return '';
@@ -1425,8 +1429,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     transcriptionSessionCounterRef.current += 1;
     const currentSessionId = transcriptionSessionCounterRef.current;
 
-    // 1. Immediately transition to 'transcribing' to signal that recording stopped and transcript is finalizing
-    updateRecordingState('transcribing');
+    // 1. Immediately transition to 'stopping' to signal that recording stopped and hardware is closing
+    updateRecordingState('stopping');
 
     try {
       // 2. Stop audio tracks and Web Audio visualizer so system microphone indicator turns off immediately
@@ -1470,6 +1474,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       if (transcriptionSessionCounterRef.current !== currentSessionId) {
         return '';
       }
+
+      // Transition to 'transcribing' to reflect text compilation & formatting phase
+      updateRecordingState('transcribing');
 
       // 5. Gather all accumulated speech from memory buffers
       let allFinalSpeech = '';
@@ -1517,7 +1524,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       interimTranscriptRef.current = '';
       setInterimTranscript('');
       setTranscriptionNotice(null);
-      updateRecordingState('idle');
+      // Brief honest success state before returning to idle
+      updateRecordingState('success');
+      setTimeout(() => {
+        if (recordingStateRef.current === 'success') {
+          updateRecordingState('idle');
+        }
+      }, 750);
       return finalCombined;
     } catch (err) {
       console.warn('[Dictation] Finalize transcription error:', err);
@@ -1564,7 +1577,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     setInterimTranscript('');
     setLastSessionTranscript('');
     setTranscriptionNotice(null);
-    updateRecordingState('idle');
+    updateRecordingState('cancelled');
+    setTimeout(() => {
+      if (recordingStateRef.current === 'cancelled') {
+        updateRecordingState('idle');
+      }
+    }, 350);
   }, [cleanupRecognitionInstance, recordEmission, stopAudioResources, updateRecordingState]);
 
   // Keep live transcript and cancel in-flight Whisper request without reverting composer (Phase 5.4)
@@ -1695,10 +1713,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     } else if (recordingStateRef.current === 'requesting') {
       cancelListening();
     } else if (
+      recordingStateRef.current === 'stopping' ||
       recordingStateRef.current === 'finalizing' ||
-      recordingStateRef.current === 'transcribing'
+      recordingStateRef.current === 'transcribing' ||
+      recordingStateRef.current === 'success'
     ) {
-      // Safe no-op while finalization is actively in-flight
+      // Safe no-op while transition is in-flight
       return;
     } else {
       await startListening();
@@ -1775,8 +1795,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     isListening: recordingState === 'listening',
     isPaused: recordingState === 'paused',
     isRequesting: recordingState === 'requesting',
+    isStopping: recordingState === 'stopping',
     isFinalizing: recordingState === 'finalizing',
     isTranscribing: recordingState === 'transcribing',
+    isSuccess: recordingState === 'success',
+    isCancelled: recordingState === 'cancelled',
     isSupported,
     isFirefox: capabilities.isFirefox,
     isIOS: capabilities.isIOS,

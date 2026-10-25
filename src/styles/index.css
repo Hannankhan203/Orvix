@@ -7137,10 +7137,27 @@ body.theme-light .composer-stop-btn:hover:not(:disabled),
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), var(--bg-card));
 }
 
+.composer-listening-bar.state-stopping {
+  border-color: rgba(99, 102, 241, 0.45);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), var(--bg-card));
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2), var(--shadow-sm);
+}
+
 .composer-listening-bar.state-transcribing {
   border-color: rgba(16, 185, 129, 0.45);
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), var(--bg-card));
   box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2), var(--shadow-sm);
+}
+
+.composer-listening-bar.state-success {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.16), var(--bg-card));
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25), var(--shadow-sm);
+}
+
+.composer-listening-bar.state-cancelled {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), var(--bg-card));
 }
 
 /* Light Mode Overrides for Dictation Strip */
@@ -7162,6 +7179,15 @@ body.theme-light .composer-listening-bar.state-listening,
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15), 0 2px 10px rgba(37, 99, 235, 0.08);
 }
 
+:root[data-theme="light"] .composer-listening-bar.state-stopping,
+html[data-theme="light"] .composer-listening-bar.state-stopping,
+body.theme-light .composer-listening-bar.state-stopping,
+[data-theme="light"] .composer-listening-bar.state-stopping {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), #ffffff);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15), 0 2px 10px rgba(99, 102, 241, 0.08);
+}
+
 :root[data-theme="light"] .composer-listening-bar.state-transcribing,
 html[data-theme="light"] .composer-listening-bar.state-transcribing,
 body.theme-light .composer-listening-bar.state-transcribing,
@@ -7169,6 +7195,23 @@ body.theme-light .composer-listening-bar.state-transcribing,
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), #ffffff);
   border-color: rgba(16, 185, 129, 0.35);
   box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.15), 0 2px 10px rgba(16, 185, 129, 0.08);
+}
+
+:root[data-theme="light"] .composer-listening-bar.state-success,
+html[data-theme="light"] .composer-listening-bar.state-success,
+body.theme-light .composer-listening-bar.state-success,
+[data-theme="light"] .composer-listening-bar.state-success {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.10), #ffffff);
+  border-color: rgba(16, 185, 129, 0.45);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2), 0 2px 10px rgba(16, 185, 129, 0.08);
+}
+
+:root[data-theme="light"] .composer-listening-bar.state-cancelled,
+html[data-theme="light"] .composer-listening-bar.state-cancelled,
+body.theme-light .composer-listening-bar.state-cancelled,
+[data-theme="light"] .composer-listening-bar.state-cancelled {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.06), #ffffff);
+  border-color: rgba(239, 68, 68, 0.3);
 }
 
 .listening-left-group {
@@ -7217,10 +7260,28 @@ body.theme-light .composer-listening-bar.state-transcribing,
   border-color: rgba(59, 130, 246, 0.35);
 }
 
+.listening-mic-badge.stopping {
+  background-color: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
 .listening-mic-badge.transcribing {
   background-color: rgba(16, 185, 129, 0.16);
   color: #34d399;
   border-color: rgba(16, 185, 129, 0.4);
+}
+
+.listening-mic-badge.success {
+  background-color: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.listening-mic-badge.cancelled {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 /* Recording Status Dot Pulse */
@@ -7554,23 +7615,131 @@ body.theme-light .waveform-bar.active,
 }
 
 .dictation-strip-btn.cancel-btn {
-  background-color: rgba(255, 255, 255, 0.05);
-  border-color: var(--border-medium);
-  color: var(--text-secondary);
+  background-color: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #cbd5e1;
   padding: 4px 10px;
   width: auto;
   min-width: fit-content;
 }
 
 .dictation-strip-btn.cancel-btn:hover {
-  background-color: rgba(239, 68, 68, 0.15);
-  border-color: rgba(239, 68, 68, 0.35);
-  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #f87171;
 }
 
-.dictation-strip-btn:focus-visible {
+.dictation-strip-btn.stop-btn:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.dictation-strip-btn.cancel-btn:focus-visible {
+  outline: 2px solid #ef4444;
+  outline-offset: 2px;
+}
+
+.dictation-strip-btn.pause-btn:focus-visible,
+.dictation-strip-btn.resume-btn:focus-visible {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
+}
+
+/* Light Theme Overrides for Dictation Buttons */
+:root[data-theme="light"] .dictation-strip-btn.stop-btn,
+html[data-theme="light"] .dictation-strip-btn.stop-btn,
+body.theme-light .dictation-strip-btn.stop-btn,
+[data-theme="light"] .dictation-strip-btn.stop-btn {
+  background-color: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.stop-btn:hover,
+html[data-theme="light"] .dictation-strip-btn.stop-btn:hover,
+body.theme-light .dictation-strip-btn.stop-btn:hover,
+[data-theme="light"] .dictation-strip-btn.stop-btn:hover {
+  background-color: #1d4ed8;
+  border-color: #1e40af;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.cancel-btn,
+html[data-theme="light"] .dictation-strip-btn.cancel-btn,
+body.theme-light .dictation-strip-btn.cancel-btn,
+[data-theme="light"] .dictation-strip-btn.cancel-btn {
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.cancel-btn:hover,
+html[data-theme="light"] .dictation-strip-btn.cancel-btn:hover,
+body.theme-light .dictation-strip-btn.cancel-btn:hover,
+[data-theme="light"] .dictation-strip-btn.cancel-btn:hover {
+  background-color: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.pause-btn,
+html[data-theme="light"] .dictation-strip-btn.pause-btn,
+body.theme-light .dictation-strip-btn.pause-btn,
+[data-theme="light"] .dictation-strip-btn.pause-btn {
+  background-color: rgba(217, 119, 6, 0.1);
+  border-color: rgba(217, 119, 6, 0.3);
+  color: #b45309;
+}
+
+:root[data-theme="light"] .dictation-strip-btn.resume-btn,
+html[data-theme="light"] .dictation-strip-btn.resume-btn,
+body.theme-light .dictation-strip-btn.resume-btn,
+[data-theme="light"] .dictation-strip-btn.resume-btn {
+  background-color: rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.3);
+  color: #1d4ed8;
+}
+
+/* Dictation Status Pills (Success / Cancelled) */
+.dictation-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  user-select: none;
+  line-height: 1;
+}
+
+.dictation-status-pill.success {
+  background-color: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #34d399;
+}
+
+:root[data-theme="light"] .dictation-status-pill.success,
+html[data-theme="light"] .dictation-status-pill.success,
+body.theme-light .dictation-status-pill.success,
+[data-theme="light"] .dictation-status-pill.success {
+  background-color: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #059669;
+}
+
+.dictation-status-pill.cancelled {
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+:root[data-theme="light"] .dictation-status-pill.cancelled,
+html[data-theme="light"] .dictation-status-pill.cancelled,
+body.theme-light .dictation-status-pill.cancelled,
+[data-theme="light"] .dictation-status-pill.cancelled {
+  background-color: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #dc2626;
 }
 
 .dictation-strip-btn.text-btn {
@@ -7641,25 +7810,6 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
     flex-shrink: 0;
   }
   .dictation-strip-btn {
-    padding: 4px 8px;
-    font-size: 0.72rem;
-  }
-  .dictation-lang-btn {
-    min-height: 32px;
-    padding: 2px 8px;
-    touch-action: manipulation;
-  }
-  .dictation-lang-dropdown {
-    width: min(228px, calc(100vw - 24px));
-    max-width: calc(100vw - 24px);
-    max-height: min(240px, 46dvh);
-  }
-  .dictation-lang-option {
-    min-height: 38px;
-    padding: 7px 8px;
-    touch-action: manipulation;
-  }
-  .dictation-strip-btn {
     height: 36px;
     min-height: 36px;
     width: auto;
@@ -7683,6 +7833,21 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
   }
   .dictation-strip-btn:active {
     transform: scale(0.96);
+  }
+  .dictation-lang-btn {
+    min-height: 32px;
+    padding: 2px 8px;
+    touch-action: manipulation;
+  }
+  .dictation-lang-dropdown {
+    width: min(228px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    max-height: min(240px, 46dvh);
+  }
+  .dictation-lang-option {
+    min-height: 38px;
+    padding: 7px 8px;
+    touch-action: manipulation;
   }
   .composer-dictation-error {
     padding: 7px 10px;
@@ -7765,68 +7930,90 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
   }
 }
 
-@media (max-width: 480px) {
+/* Two-tier mobile layout (< 560px) to guarantee zero horizontal overflow and comfortable touch targets */
+@media (max-width: 560px) {
   .composer-listening-bar {
-    padding: 6px 8px;
-    gap: 5px 6px;
-    min-height: 44px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    gap: 8px;
+    min-height: auto;
+    border-radius: var(--radius-xl);
   }
   .listening-left-group {
-    min-width: 0;
+    order: 1;
     flex: 1 1 auto;
-    gap: 5px;
+    min-width: 0;
+    gap: 6px;
   }
   .listening-text {
-    max-width: 72px;
+    max-width: 86px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.74rem;
+    font-size: 0.76rem;
   }
   .dictation-lang-btn {
-    padding: 2px 6px;
-    font-size: 0.7rem;
     min-height: 28px;
+    padding: 2px 7px;
+    font-size: 0.7rem;
+    touch-action: manipulation;
+  }
+  .listening-waveform-area {
+    order: 2;
+    flex: 0 0 auto;
+    min-width: 54px;
+    max-width: 108px;
+    height: 24px;
+    padding: 0 4px;
+    justify-content: flex-end;
+  }
+  .waveform-visualizer {
+    gap: 2px;
+    max-width: 100px;
+    height: 22px;
+  }
+  .waveform-bar {
+    width: 2.5px;
   }
   .listening-actions-group {
-    gap: 5px;
-    flex-shrink: 0;
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    margin-top: 2px;
     display: flex;
     align-items: center;
+    gap: 6px;
+    justify-content: stretch;
   }
   .dictation-strip-btn {
-    height: 36px;
-    min-height: 36px;
+    flex: 1 1 0;
+    height: 38px;
+    min-height: 38px;
     width: auto;
-    min-width: fit-content;
+    min-width: 0;
     padding: 0 8px;
-    gap: 4px;
-    font-size: 0.74rem;
+    font-size: 0.78rem;
     font-weight: 600;
-    white-space: nowrap;
+    justify-content: center;
+    border-radius: var(--radius-md);
     touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-  }
-  .dictation-strip-btn .btn-label {
-    display: inline !important;
-    white-space: nowrap;
   }
   .dictation-strip-btn.stop-btn {
+    flex: 1.3 1 0;
     padding: 0 10px;
   }
   .dictation-strip-btn.cancel-btn {
+    flex: 1 1 0;
     padding: 0 8px;
   }
-  .composer-mic-btn {
-    min-width: 40px;
-    min-height: 40px;
-    touch-action: manipulation;
+  .dictation-status-pill {
+    width: 100%;
+    height: 36px;
+    justify-content: center;
+    font-size: 0.78rem;
   }
-  .composer-attach-btn {
-    min-width: 40px;
-    min-height: 40px;
-    touch-action: manipulation;
-  }
+  .composer-mic-btn,
+  .composer-attach-btn,
   .composer-send-btn,
   .composer-stop-btn {
     min-width: 40px;
@@ -7844,50 +8031,59 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
 
 @media (max-width: 360px) {
   .composer-listening-bar {
-    padding: 5px 6px;
-    gap: 4px 4px;
-    min-height: 40px;
+    padding: 6px 8px;
+    gap: 6px;
   }
   .listening-left-group {
     gap: 4px;
   }
   .listening-text {
-    max-width: 54px;
+    max-width: 62px;
+    font-size: 0.70rem;
+  }
+  .listening-timer {
     font-size: 0.68rem;
+    padding: 1px 4px;
   }
   .dictation-lang-btn {
-    padding: 2px 4px;
-    font-size: 0.66rem;
+    padding: 2px 5px;
+    font-size: 0.65rem;
     min-height: 26px;
     gap: 2px;
   }
-  .listening-actions-group {
-    gap: 3.5px;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
+  .listening-waveform-area {
+    min-width: 42px;
+    max-width: 74px;
+  }
+  .waveform-visualizer {
+    max-width: 70px;
+    gap: 1.5px;
+  }
+  .waveform-bar {
+    width: 2px;
   }
   .dictation-strip-btn {
-    height: 32px;
-    min-height: 32px;
-    width: auto;
-    min-width: fit-content;
-    padding: 0 6px;
+    height: 36px;
+    min-height: 36px;
+    font-size: 0.74rem;
+    padding: 0 4px;
     gap: 3px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    white-space: nowrap;
   }
-  .dictation-strip-btn .btn-label {
-    display: inline !important;
-    white-space: nowrap;
-  }
-  .dictation-strip-btn.stop-btn {
-    padding: 0 7px;
-  }
-  .dictation-strip-btn.cancel-btn {
-    padding: 0 6px;
-  }
+}
+
+/* Keyboard open adjustments to optimize vertical real-estate and touch response */
+html.is-keyboard-open .chat-composer-dock {
+  padding-bottom: 6px;
+}
+
+html.is-keyboard-open .composer-listening-bar {
+  padding: 6px 8px;
+  gap: 6px;
+}
+
+html.is-keyboard-open .dictation-strip-btn {
+  height: 34px;
+  min-height: 34px;
 }
 
 /* Voice Dictation Error Notification */
@@ -11729,8 +11925,20 @@ body.theme-light .notice-retry-btn,
   .document-preview-overlay,
   .document-preview-modal,
   .export-dropdown-popover,
-  .transcript-review-card {
+  .transcript-review-card,
+  .composer-listening-bar,
+  .recording-dot-pulse,
+  .waveform-bar,
+  .listening-mic-badge,
+  .composer-dictation-error,
+  .composer-dictation-notice,
+  .dictation-lang-dropdown,
+  .dictation-strip-btn {
     animation: none !important;
     transition: none !important;
+  }
+
+  .recording-dot-pulse {
+    box-shadow: none !important;
   }
 }
