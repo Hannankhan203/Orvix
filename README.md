@@ -1,11 +1,11 @@
 # Orvix
 
-![Version](https://img.shields.io/badge/version-0.2.0-2563eb)
+![Version](https://img.shields.io/badge/version-0.2.1-2563eb)
 ![React](https://img.shields.io/badge/React-19.0-61dafb)
 ![Vite](https://img.shields.io/badge/Vite-8.3-646cff)
 ![TypeScript](https://img.shields.io/badge/Server-Express%20%2B%20TS-3178c6)
 
-**Current Version: v0.2.0**
+**Current Version: v0.2.1**
 
 **Orvix** is a full-stack, multi-model AI conversational workspace built with React 19, Vite, Tailwind CSS v4, and an Express + TypeScript backend proxy. It supports cloud AI streaming (Google Gemini, Groq, OpenRouter, Cloudflare Workers AI), local server inference (Ollama), and **on-device WebGPU inference (Browser AI via WebLLM)** with Progressive Web App (PWA) offline app-shell caching, client- and server-side document extraction, dual-format clipboard copying, voice dictation, and four specialized chat modes.
 
@@ -15,6 +15,7 @@
 
 1. [Key Features](#1-key-features)
 2. [Release History & What's New](#2-release-history--whats-new)
+   - [v0.2.1 (Empty New Chat UI Refinement)](#v021-october-25-2026--empty-new-chat-ui-refinement-release)
    - [v0.2.0 (Mobile UI/UX Refinement)](#v020-october-25-2026--mobile-uiux-refinement-release)
    - [v0.1.0 (Desktop UI/UX & Performance)](#v010--desktop-uiux-accessibility-and-performance-release)
 3. [Technologies & Architecture Overview](#3-technologies--architecture-overview)
@@ -35,7 +36,7 @@
 - **Multi-Provider AI Routing**: Switch between **Google Gemini**, **Groq**, **OpenRouter**, **Cloudflare Workers AI**, **Local AI (Ollama)**, and **Browser AI (WebLLM)**. Compare outputs across models on any assistant turn via non-destructive `< X of Y >` response alternatives.
 - **On-Device Browser AI (WebLLM & WebGPU)**: Run quantized **Qwen 2.5 Instruct** models (`0.5B` lightweight and `1.5B` standard) directly in the browser inside a dedicated Web Worker off the main thread—requiring zero API keys and sending zero prompt data to external servers.
 - **Offline PWA App-Shell & Local Document Parsing**: Workbox precaches the production application shell, WebLLM worker chunks, and client-side document parsers (`unpdf`, `mammoth`, `jszip`). After an initial online visit and model download, Orvix can reopen offline to chat and extract text from supported documents locally.
-- **Four Specialized Chat Modes**: Dedicated **General Assistant**, **Coding**, **Writing**, and **Learning** modes with tailored system instructions, starter prompts, educational callout detection, editorial prose layouts, and VS Code-style code blocks.
+- **Four Specialized Chat Modes**: Dedicated **General Assistant**, **Coding**, **Writing**, and **Learning** modes selected from the persistent header dropdown, featuring tailored system instructions, educational callout detection, editorial prose layouts, and VS Code-style code blocks with locked line numbering.
 - **Dual-Format Clipboard Copying**: Copies assistant responses simultaneously as styled `text/html` (for Google Docs, Word, Slack, and email) and structured `text/plain` record layouts (`• Header: Value`) so Markdown tables remain readable in plain-text messaging apps such as WhatsApp and Telegram.
 - **Multimodal Attachments & Server OCR**: Attach one file per message (up to 25 MB) via file picker, clipboard paste (`Ctrl+V` / `Cmd+V`), or drag-and-drop. Supports PDFs, Word (`.docx`), PowerPoint (`.pptx` with speaker notes), CSV/TSV, JSON, XML, TXT/Markdown, and images (with server-side `tesseract.js` OCR and binary header verification).
 - **Cross-Platform Voice Dictation & Read-Aloud**: Combines live browser speech recognition (interim snapshot replacement without word duplication) with optional server-side Whisper Large v3 Turbo refinement, 9 language locales, and Web Speech API text-to-speech playback (`Play`, `Pause`, `Resume`, `Stop`).
@@ -44,6 +45,32 @@
 ---
 
 ## 2. Release History & What's New
+
+### v0.2.1 (October 25, 2026) — Empty New Chat UI Refinement Release
+
+Version **0.2.1** delivers a focused UI/UX refinement to the **empty new-chat state**, removing redundant inline controls and elevating the Orvix logo and personalized greeting into an intentional, visually balanced hero centerpiece across all screen sizes (small mobile up to large desktop displays and PWA):
+
+#### Complete Removal of Redundant Empty-State Controls
+- **Full Removal of Mode Selection Statement & Buttons**: Completely removed the redundant "Select Chat Mode" statement and the four inline mode buttons that previously rendered in the empty chat response panel across all devices and breakpoints.
+- **Removal of Starter Prompts**: Eliminated all empty-state starter/example prompts across all four chat modes, creating a clean, distraction-free canvas upon opening a new chat.
+- **Real Code & Style Clean-Up**: Removed obsolete rendering markup, dead state, unused handlers, and obsolete CSS grid styles (`.welcome-modes-statement`, `.welcome-modes-grid`, `.welcome-mode-btn`, `.welcome-prompts-grid`, `.welcome-prompt-card`) rather than hiding them via CSS (`display: none`, media queries, or hidden classes).
+- **Header Selection Preserved**: Preserved the authoritative **Chat Mode dropdown** (`ModeSelector.jsx`) and **AI Model dropdown** (`ModelSelector.jsx`) in the header navigation bar as the unified controls for mode and model selection, eliminating control duplication while keeping all underlying mode functionality fully intact.
+
+#### Responsive Empty-State Hero Centerpiece
+- **Preserved Core Identity & Personalization**: Kept the authentic Orvix logo asset and dynamic personalized greeting ("*What can I help you with, [username]?*"), gracefully falling back to "friend" when unauthenticated or unnamed.
+- **7-Tier Fluid Responsive Scaling**: Engineered progressive sizing for the logo mark, radial aura, and greeting typography across seven viewport tiers using CSS `clamp()`:
+  - **Small Mobile (`320px`–`359px`)**: 40px–44px logo, `1.25rem` heading font, compact 10px element gap.
+  - **Standard Mobile (`360px`–`430px`)**: 46px–50px logo, `1.4rem`–`1.5rem` heading font.
+  - **Large Mobile & Small Tablet (`431px`–`767px`)**: 54px–58px logo, `1.6rem`–`1.8rem` heading font.
+  - **Tablet (`768px`–`1023px`)**: 62px–68px logo, `1.9rem`–`2.1rem` heading font.
+  - **Laptop (`1024px`–`1439px`)**: 74px–80px logo, `2.3rem`–`2.6rem` heading font.
+  - **Desktop (`1440px`–`1919px`)**: 84px–90px logo, `2.75rem`–`3.1rem` heading font.
+  - **Large Desktop (`1920px+`)**: 96px–100px logo, `3.2rem`–`3.4rem` heading font.
+- **Subtle Ambient Radial Glow**: Added a soft, non-intrusive ambient radial aura behind the logo mark (`.welcome-hero-glow`, scaling smoothly from `280px` to `520px` diameter) providing visual depth and focal anchorage without interfering with contrast or readability.
+- **Optical Vertical Centering & Composer Balance**: Adjusted the hero layout with responsive optical negative margins (`-1.5rem` on tablet/laptop, `-2.5rem` on desktop) ensuring the hero group floats naturally at the true optical center of the chat viewport above the composer dock, without crowding or clipping when the sidebar toggles open or closed.
+- **Strict Verification & Quality Assurance**: 0 TypeScript compilation errors (`tsc --noEmit`), pristine production build output (`vite build`), and 100% offline reliability test suite pass (`10/10` tests passing).
+
+---
 
 ### v0.2.0 (October 25, 2026) — Mobile UI/UX Refinement Release
 
@@ -309,7 +336,7 @@ The following scripts are defined in `package.json`:
 │   ├── utils/                    # Clipboard formatter, speech cleaner, export & syntax
 │   └── workers/                  # webllmWorker.js (off-thread WebGPU worker)
 ├── .env.example                  # Environment variable template
-├── package.json                  # Project metadata (v0.2.0), scripts & dependencies
+├── package.json                  # Project metadata (v0.2.1), scripts & dependencies
 ├── server.ts                     # Express backend server & Vite middleware host
 └── vite.config.ts                # Vite bundler & Workbox PWA configuration
 ```
