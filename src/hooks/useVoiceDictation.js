@@ -19,6 +19,20 @@ export const SUPPORTED_LANGUAGES = [
 
 export const DEFAULT_LANGUAGE = 'en-US';
 
+export const NUM_WAVEFORM_BARS = 16;
+
+/**
+ * Formats elapsed recording duration in seconds to mm:ss display string.
+ * @param {number} seconds
+ * @returns {string} Formatted duration (e.g. 0:05, 1:24)
+ */
+export function formatDuration(seconds = 0) {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  const mins = Math.floor(s / 60);
+  const secs = s % 60;
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
 /**
  * Audio Capture & Buffering Configuration (Phase 5.2 & 5.4)
  */
@@ -74,26 +88,15 @@ export function detectDictationCapabilities() {
   );
   const hasMediaRecorder = Boolean(window.MediaRecorder);
 
-  // Engine mode resolution:
-  // - 'hybrid': Desktop browsers with both Web Speech API and MediaRecorder (Concurrent live preview + Whisper refinement)
-  // - 'native-live': Mobile browsers with Web Speech API (Exclusive SpeechRecognition to prevent Android hardware mic lock, with Whisper refinement on Stop)
-  // - 'direct-audio': Firefox, iOS standalone PWAs, & browsers without functional SpeechRecognition (Direct MediaRecorder capture + Whisper transcription)
-  // - 'native-only': Browsers with SpeechRecognition but missing MediaRecorder
-  // - 'unsupported': Neither capability available
-  let engineMode = 'unsupported';
-  if (!isFirefox && hasSpeechRecognition && hasGetUserMedia && hasMediaRecorder) {
-    engineMode = isMobile ? 'native-live' : 'hybrid';
-  } else if (hasGetUserMedia && hasMediaRecorder) {
-    engineMode = 'direct-audio';
-  } else if (!isFirefox && hasSpeechRecognition) {
-    engineMode = 'native-only';
-  }
+  // In Phase 3: Free, technically compatible browser speech-recognition is the authoritative engine
+  const isSupported = Boolean(hasSpeechRecognition);
+  const engineMode = isSupported ? 'browser-speech' : 'unsupported';
 
   return {
     hasSpeechRecognition,
     hasGetUserMedia,
     hasMediaRecorder,
-    isSupported: engineMode !== 'unsupported',
+    isSupported,
     engineMode,
     isFirefox,
     isIOS,
@@ -349,9 +352,16 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   const [interimTranscript, setInterimTranscript] = useState('');
   const [lastSessionTranscript, setLastSessionTranscript] = useState('');
 
-  // Real-time audio reactivity: volume (0-100) and 5 frequency bins (0.0 - 1.0)
+  // Real-time audio reactivity: volume (0-100), 5 legacy bins, and full 16-band waveform bars
   const [audioLevel, setAudioLevel] = useState(0);
   const [audioFrequencies, setAudioFrequencies] = useState([0.15, 0.25, 0.35, 0.25, 0.15]);
+  const [waveformBars, setWaveformBars] = useState(() => Array(NUM_WAVEFORM_BARS).fill(0.08));
+
+  // Elapsed recording duration in seconds
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const durationIntervalRef = useRef(null);
+  const pausedDurationRef = useRef(0);
+  const pauseStartTimeRef = useRef(0);
 
   // Selected language with localStorage and browser locale resolution
   const [selectedLanguage, setSelectedLanguageState] = useState(getInitialLanguage);
@@ -541,9 +551,16 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       audioContextRef.current = null;
     }
 
+    // Clear duration timer interval
+    if (durationIntervalRef.current) {
+      clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+    }
+
     analyserRef.current = null;
     setAudioLevel(0);
     setAudioFrequencies([0.15, 0.25, 0.35, 0.25, 0.15]);
+    setWaveformBars(Array(NUM_WAVEFORM_BARS).fill(0.08));
   }, []);
 
   // Safely acquires a single shared microphone MediaStream (Phase 5.2 & 5.4).
@@ -637,8 +654,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       }
 
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 64;
-      analyser.smoothingTimeConstant = 0.75;
+      analyser.fftSize = 128; // 64 frequency bins
+      analyser.smoothingTimeConstant = 0.65;
       analyserRef.current = analyser;
 
       const source = ctx.createMediaStreamSource(stream);
@@ -651,22 +668,26 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         analyserRef.current.getByteFrequencyData(dataArray);
 
         let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
+        const activeBins = Math.min(dataArray.length, 36);
+        for (let i = 0; i < activeBins; i++) {
           sum += dataArray[i];
         }
-        const avg = sum / dataArray.length;
-        const normalizedVol = Math.min(100, Math.round((avg / 128) * 100));
+        const avg = sum / (activeBins || 1);
+        const normalizedVol = Math.min(100, Math.round((avg / 120) * 100));
         setAudioLevel(normalizedVol);
 
-        const step = Math.floor(dataArray.length / 5);
-        const bars = [
-          Math.max(0.15, (dataArray[step * 0] || 0) / 255),
-          Math.max(0.2, (dataArray[step * 1] || 0) / 255),
-          Math.max(0.25, (dataArray[step * 2] || 0) / 255),
-          Math.max(0.2, (dataArray[step * 3] || 0) / 255),
-          Math.max(0.15, (dataArray[step * 4] || 0) / 255)
-        ];
-        setAudioFrequencies(bars);
+        // Map real microphone frequency spectrum to 16 reactive waveform bars
+        const step = Math.max(1, Math.floor(activeBins / NUM_WAVEFORM_BARS));
+        const bars = [];
+        for (let b = 0; b < NUM_WAVEFORM_BARS; b++) {
+          const idx = Math.min(dataArray.length - 1, b * step);
+          const val = dataArray[idx] || 0;
+          // Normalized value between 0.08 (idle baseline) and 1.0 (peak speech)
+          const level = Math.max(0.08, Math.min(1.0, val / 230));
+          bars.push(level);
+        }
+        setWaveformBars(bars);
+        setAudioFrequencies(bars.slice(0, 5));
 
         animFrameRef.current = requestAnimationFrame(updateMeter);
       };
@@ -827,10 +848,17 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         nativeSessionTranscriptRef.current = '';
         expectedEmittedBeforeTranscribeRef.current = '';
 
-        // Reset audio capture buffers for fresh session
+        // Reset audio capture buffers and duration timer for fresh session
         audioChunksRef.current = [];
         recordedBytesRef.current = 0;
         recordingStartTimeRef.current = Date.now();
+        pausedDurationRef.current = 0;
+        pauseStartTimeRef.current = 0;
+        setRecordingDuration(0);
+        if (durationIntervalRef.current) {
+          clearInterval(durationIntervalRef.current);
+          durationIntervalRef.current = null;
+        }
         recordedAudioBlobRef.current = null;
         setRecordedAudioBlob(null);
         setRecordedAudioDuration(0);
@@ -847,54 +875,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         updateRecordingState('requesting');
       } else {
         // Continuing session after browser silence restart:
-        // Fold already finalized speech segments into baseTextRef so the new instance starts cleanly.
-        // CRITICAL: NEVER fold interimTranscript into baseTextRef! Interim is unfinalized temporary speech
-        // that will be re-evaluated by the active speech stream. Folding it into baseText duplicates words.
-        let committedSoFar = '';
-        for (const seg of committedSegmentsRef.current) {
-          committedSoFar = combineComposerText(committedSoFar, seg.text);
-        }
-        if (committedSoFar) {
-          baseTextRef.current = combineComposerText(baseTextRef.current, committedSoFar);
-          committedSegmentsRef.current = [];
-        }
+        // Keep accumulated committedSegmentsRef intact in memory.
         interimTranscriptRef.current = '';
         setInterimTranscript('');
       }
 
-      // DIRECT-AUDIO MODE (Firefox & browsers without native SpeechRecognition):
-      // Captures audio directly via MediaRecorder and delivers high-accuracy Whisper transcription upon Done.
-      if (caps.engineMode === 'direct-audio') {
-        cleanupRecognitionInstance();
-        try {
-          const sharedStream = await acquireMicrophoneStream();
-          if (
-            isExplicitStopRef.current ||
-            (recordingStateRef.current !== 'listening' && recordingStateRef.current !== 'requesting')
-          ) {
-            stopAudioResources();
-            return;
-          }
-          attachAudioAnalyser(sharedStream);
-          startMediaRecorder(sharedStream);
-          updateRecordingState('listening');
-          setDictationError(null);
-        } catch (streamErr) {
-          hasFatalErrorRef.current = true;
-          stopAudioResources();
-          const errorMsg =
-            streamErr?.name === 'NotAllowedError' || streamErr?.name === 'PermissionDeniedError'
-              ? 'Microphone access was denied. Please allow microphone permissions in your browser address bar.'
-              : streamErr?.name === 'NotFoundError' || streamErr?.name === 'DevicesNotFoundError'
-              ? 'No microphone detected or microphone is currently busy in another application.'
-              : 'Unable to access microphone. Please check device permissions.';
-          setDictationError(errorMsg);
-          updateRecordingState('error');
-        }
-        return;
-      }
-
-      // HYBRID / NATIVE MODE (Chrome, Edge, Safari):
       const SpeechRecognition =
         typeof window !== 'undefined'
           ? window.SpeechRecognition || window.webkitSpeechRecognition
@@ -902,7 +887,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
       if (!SpeechRecognition) {
         setDictationError(
-          'Voice dictation is not supported in this browser. Please use Google Chrome, Microsoft Edge, Safari, or Firefox.'
+          'Voice dictation is not supported in this browser. Please use Google Chrome, Microsoft Edge, or Safari.'
         );
         hasFatalErrorRef.current = true;
         updateRecordingState('error');
@@ -915,16 +900,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       if (isStartingRef.current) return;
       isStartingRef.current = true;
 
-      // 1. In parallel for fresh sessions (isNewSession), initialize microphone stream for audio visualizer & MediaRecorder
-      // Desktop 'hybrid' mode records concurrent audio for Whisper.
-      // Mobile 'native-live' mode provides exclusive microphone access to SpeechRecognition to avoid Android hardware mic lock conflicts.
-      const shouldRecordConcurrentAudio =
+      // In parallel for fresh sessions (isNewSession), initialize microphone stream for audio visualizer & MediaRecorder
+      const shouldInitAudioStream =
         isNewSession &&
-        caps.hasGetUserMedia &&
-        caps.hasMediaRecorder &&
-        caps.engineMode === 'hybrid';
+        caps.hasGetUserMedia;
 
-      if (shouldRecordConcurrentAudio) {
+      if (shouldInitAudioStream) {
         acquireMicrophoneStream()
           .then((sharedStream) => {
             if (
@@ -935,10 +916,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
               return;
             }
             attachAudioAnalyser(sharedStream);
-            startMediaRecorder(sharedStream);
+            if (caps.hasMediaRecorder) {
+              startMediaRecorder(sharedStream);
+            }
           })
           .catch((streamErr) => {
-            console.warn('[Dictation] MediaRecorder stream acquisition failed:', streamErr);
+            console.warn('[Dictation] Microphone stream acquisition notice:', streamErr);
             if (!recognitionRef.current) {
               isStartingRef.current = false;
               hasFatalErrorRef.current = true;
@@ -977,23 +960,27 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           updateRecordingState('listening');
           setDictationError(null);
           consecutiveErrorsRef.current = 0;
+
+          // Start elapsed duration timer if not running
+          if (!durationIntervalRef.current) {
+            durationIntervalRef.current = setInterval(() => {
+              if (recordingStateRef.current === 'listening') {
+                const now = Date.now();
+                const start = recordingStartTimeRef.current || now;
+                const elapsed = Math.max(0, Math.floor((now - start - pausedDurationRef.current) / 1000));
+                setRecordingDuration(elapsed);
+              }
+            }, 250);
+          }
         };
 
         recognition.onspeechstart = () => {
           if (instanceCounterRef.current !== currentInstanceId) return;
           consecutiveErrorsRef.current = 0;
-          if (!analyserRef.current) {
-            setAudioLevel(65);
-            setAudioFrequencies([0.35, 0.65, 0.85, 0.6, 0.3]);
-          }
         };
 
         recognition.onspeechend = () => {
           if (instanceCounterRef.current !== currentInstanceId) return;
-          if (!analyserRef.current) {
-            setAudioLevel(0);
-            setAudioFrequencies([0.15, 0.25, 0.35, 0.25, 0.15]);
-          }
         };
 
         recognition.onnomatch = () => {
@@ -1109,44 +1096,10 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           interimTranscriptRef.current = currentInterim;
           setInterimTranscript(currentInterim);
 
-          // 3. Assemble and emit combined text to composer in real time (both finalized and interim results)
-          let liveSpeech = '';
-          for (const seg of committedSegmentsRef.current) {
-            liveSpeech = combineComposerText(liveSpeech, seg.text);
-          }
-
-          if (currentInterim && currentInterim.trim()) {
-            const precedingForInterim = combineComposerText(baseTextRef.current, liveSpeech);
-            const formattedInterim = formatSpeechTranscript(
-              currentInterim.trim(),
-              selectedLanguageRef.current,
-              precedingForInterim
-            );
-            if (formattedInterim) {
-              liveSpeech = combineComposerText(liveSpeech, formattedInterim);
-            }
-          }
-
-          const liveCombined = combineComposerText(baseTextRef.current, liveSpeech);
-
-          if (!analyserRef.current) {
-            const dynamicLevel = currentInterim ? 75 : 45;
-            setAudioLevel(dynamicLevel);
-            setAudioFrequencies([
-              0.25 + Math.random() * 0.25,
-              0.45 + Math.random() * 0.35,
-              0.65 + Math.random() * 0.3,
-              0.45 + Math.random() * 0.35,
-              0.25 + Math.random() * 0.25
-            ]);
-          }
-
-          if (liveCombined !== inputValueRef.current) {
-            recordEmission(liveCombined);
-            if (onInputChangeRef.current) {
-              onInputChangeRef.current(liveCombined);
-            }
-          }
+          // In-memory speech buffering (Phase 2):
+          // Recognized speech is held securely in committedSegmentsRef and interimTranscriptRef.
+          // No recognized words appear in the composer while the user is actively speaking.
+          // When the user stops recording (in stopListening), the complete transcript is formatted and inserted.
         };
 
         recognition.onerror = (event) => {
@@ -1160,49 +1113,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           }
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
-            // If MediaRecorder is actively recording, native speech engine was restricted by OS/webview.
-            // Maintain recording so the user's speech is still captured and transcribed by Whisper upon Stop.
-            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-              console.warn(
-                '[Dictation] Live speech recognition not permitted in this context; maintaining audio capture:',
-                errorType
-              );
-              setTranscriptionNotice({
-                type: 'fallback',
-                message: 'Live speech preview unavailable in this mode — audio is recording for Whisper transcription.'
-              });
-              return;
-            }
-
-            // If SpeechRecognition fails with service-not-allowed (e.g. Google Speech service disabled),
-            // gracefully transition to direct-audio mode so user speech is captured and transcribed with Whisper.
-            if (
-              caps.hasGetUserMedia &&
-              caps.hasMediaRecorder &&
-              errorType === 'service-not-allowed'
-            ) {
-              console.warn('[Dictation] Native speech service not allowed; falling back to direct audio Whisper transcription');
-              cleanupRecognitionInstance();
-              acquireMicrophoneStream()
-                .then((sharedStream) => {
-                  attachAudioAnalyser(sharedStream);
-                  startMediaRecorder(sharedStream);
-                  setEngineMode('direct-audio');
-                  updateRecordingState('listening');
-                  setTranscriptionNotice({
-                    type: 'fallback',
-                    message: 'Live speech preview unavailable on this device — audio is recording for Whisper transcription.'
-                  });
-                })
-                .catch(() => {
-                  hasFatalErrorRef.current = true;
-                  stopAudioResources();
-                  setDictationError('Unable to access microphone. Please check device permissions.');
-                  updateRecordingState('error');
-                });
-              return;
-            }
-
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1210,10 +1120,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             );
             updateRecordingState('error');
           } else if (errorType === 'audio-capture') {
-            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-              console.warn('[Dictation] Audio-capture event from SpeechRecognition; MediaRecorder active.');
-              return;
-            }
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1402,31 +1308,27 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         mediaStreamRef.current = null;
       }
 
-      // Commit any interim transcript captured up to pause
-      let allFinalSpeech = '';
-      for (const seg of committedSegmentsRef.current) {
-        allFinalSpeech = combineComposerText(allFinalSpeech, seg.text);
-      }
+      pauseStartTimeRef.current = Date.now();
+
+      // Fold interim transcript into committedSegments in memory without writing to composer yet
       if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
         const formattedInterim = formatSpeechTranscript(
           interimTranscriptRef.current.trim(),
           selectedLanguageRef.current,
-          combineComposerText(baseTextRef.current, allFinalSpeech)
+          ''
         );
         if (formattedInterim) {
-          allFinalSpeech = combineComposerText(allFinalSpeech, formattedInterim);
+          committedSegmentsRef.current.push({
+            instanceId: instanceCounterRef.current,
+            index: Date.now(),
+            text: formattedInterim,
+            timestamp: Date.now()
+          });
         }
       }
-      const finalCombined = combineComposerText(baseTextRef.current, allFinalSpeech);
-      baseTextRef.current = finalCombined;
-      committedSegmentsRef.current = [];
       interimTranscriptRef.current = '';
       setInterimTranscript('');
-
-      recordEmission(finalCombined);
-      if (onInputChangeRef.current) {
-        onInputChangeRef.current(finalCombined);
-      }
+      setWaveformBars(Array(NUM_WAVEFORM_BARS).fill(0.08));
 
       updateRecordingState('paused');
     },
@@ -1444,6 +1346,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       isExplicitStopRef.current = false;
       hasFatalErrorRef.current = false;
       setDictationError(null);
+
+      if (pauseStartTimeRef.current > 0) {
+        pausedDurationRef.current += Date.now() - pauseStartTimeRef.current;
+        pauseStartTimeRef.current = 0;
+      }
 
       // For modes utilizing MediaRecorder (hybrid or direct-audio), verify/resume hardware audio stream
       if (engineMode === 'hybrid' || engineMode === 'direct-audio' || engineMode === 'native-live') {
@@ -1500,324 +1407,132 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     updateRecordingState
   ]);
 
-  // Stop dictation and commit finalized transcript and audio buffer (Phase 5.2, 5.3 & 5.4)
+  // Stop dictation, await transcription completion, and insert the completed transcript exactly once
   const stopListening = useCallback(async () => {
-    if (isTransitioningRef.current) return;
+    if (isTransitioningRef.current) return '';
     if (
       recordingStateRef.current === 'idle' ||
       recordingStateRef.current === 'finalizing' ||
       recordingStateRef.current === 'transcribing' ||
       recordingStateRef.current === 'error'
     ) {
-      return;
+      return '';
     }
     isTransitioningRef.current = true;
     isExplicitStopRef.current = true;
     clearTimeout(restartTimeoutRef.current);
-    updateRecordingState('finalizing');
+
+    transcriptionSessionCounterRef.current += 1;
+    const currentSessionId = transcriptionSessionCounterRef.current;
+
+    // 1. Immediately transition to 'transcribing' to signal that recording stopped and transcript is finalizing
+    updateRecordingState('transcribing');
 
     try {
-      // Clean up recognition instance immediately to prevent trailing onresult events from double-committing
-      cleanupRecognitionInstance();
-
-      // Finalize MediaRecorder audio chunks with clean event synchronization
-      let finalBlob = null;
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        try {
-          await new Promise((resolve) => {
-            const recorder = mediaRecorderRef.current;
-            if (!recorder || recorder.state === 'inactive') {
-              resolve();
-              return;
-            }
-
-            let resolved = false;
-            const complete = () => {
-              if (resolved) return;
-              resolved = true;
-              try {
-                recorder.removeEventListener('stop', handleStop);
-              } catch (_) {}
-              resolve();
-            };
-
-            const handleStop = () => {
-              // Defer resolution slightly to guarantee that any final dataavailable event
-              // dispatched by the browser has completed and added its chunk to audioChunksRef
-              setTimeout(complete, 60);
-            };
-
-            recorder.addEventListener('stop', handleStop);
-
-            try {
-              if (typeof recorder.requestData === 'function') {
-                try {
-                  recorder.requestData();
-                } catch (_) {}
-              }
-              if (recorder.state !== 'inactive') {
-                recorder.stop();
-              } else {
-                complete();
-              }
-            } catch (_) {
-              complete();
-            }
-
-            // Safety timeout to prevent hanging if browser drops stop event
-            setTimeout(complete, 800);
-          });
-        } catch (_) {}
-      }
-
-      // Assemble and store final audio blob for Phase 5.2/5.3 buffer access
-      if (audioChunksRef.current.length > 0) {
-        const type = activeMimeTypeRef.current || 'audio/webm';
-        finalBlob = new Blob(audioChunksRef.current, { type });
-        recordedAudioBlobRef.current = finalBlob;
-        setRecordedAudioBlob(finalBlob);
-
-        const duration = recordingStartTimeRef.current > 0
-          ? Math.round((Date.now() - recordingStartTimeRef.current) / 1000)
-          : 0;
-        setRecordedAudioDuration(duration);
-      }
-
-      // Release microphone tracks and visualizer resources
+      // 2. Stop audio tracks and Web Audio visualizer so system microphone indicator turns off immediately
       stopAudioResources();
 
-      // Assemble final committed speech including any pending interim transcript
+      // 3. Gracefully signal the speech recognizer to finish and wait for final results to settle
+      if (recognitionRef.current) {
+        const rec = recognitionRef.current;
+        await new Promise((resolve) => {
+          let resolved = false;
+          const complete = () => {
+            if (!resolved) {
+              resolved = true;
+              resolve();
+            }
+          };
+
+          const timeoutId = setTimeout(complete, 280);
+
+          const prevOnEnd = rec.onend;
+          rec.onend = (e) => {
+            try {
+              prevOnEnd?.(e);
+            } catch (_) {}
+            clearTimeout(timeoutId);
+            complete();
+          };
+
+          try {
+            rec.stop();
+          } catch (_) {
+            clearTimeout(timeoutId);
+            complete();
+          }
+        });
+      }
+
+      cleanupRecognitionInstance();
+
+      // 4. Stale session safeguard: If session was cancelled during the settle window, abort
+      if (transcriptionSessionCounterRef.current !== currentSessionId) {
+        return '';
+      }
+
+      // 5. Gather all accumulated speech from memory buffers
       let allFinalSpeech = '';
       for (const seg of committedSegmentsRef.current) {
         allFinalSpeech = combineComposerText(allFinalSpeech, seg.text);
       }
 
       if (interimTranscriptRef.current && interimTranscriptRef.current.trim()) {
-        const formattedInterim = formatSpeechTranscript(
-          interimTranscriptRef.current.trim(),
-          selectedLanguageRef.current,
-          combineComposerText(baseTextRef.current, allFinalSpeech)
-        );
-        if (formattedInterim) {
-          allFinalSpeech = combineComposerText(allFinalSpeech, formattedInterim);
-        }
+        allFinalSpeech = combineComposerText(allFinalSpeech, interimTranscriptRef.current.trim());
       }
 
-      const finalNativeCombined = combineComposerText(baseTextRef.current, allFinalSpeech);
-      recordEmission(finalNativeCombined);
+      const cleanSpeech = (allFinalSpeech || '').trim();
+
+      // 6. Handle empty speech gracefully
+      if (!cleanSpeech) {
+        setTranscriptionNotice({
+          type: 'fallback',
+          message: 'No speech was detected in the recording.'
+        });
+        committedSegmentsRef.current = [];
+        interimTranscriptRef.current = '';
+        setInterimTranscript('');
+        updateRecordingState('idle');
+        return '';
+      }
+
+      // 7. Format completed speech with verbal punctuation, tech terms, and proper capitalization
+      const initialBase = sessionBaseTextRef.current || '';
+      const formattedSpeech = formatSpeechTranscript(
+        cleanSpeech,
+        selectedLanguageRef.current,
+        initialBase
+      );
+
+      // 8. Combine with preserved composer base text and insert EXACTLY ONCE
+      const finalCombined = combineComposerText(initialBase, formattedSpeech);
+      recordEmission(finalCombined);
 
       if (onInputChangeRef.current) {
-        onInputChangeRef.current(finalNativeCombined);
+        onInputChangeRef.current(finalCombined);
       }
 
+      setLastSessionTranscript(formattedSpeech);
+      committedSegmentsRef.current = [];
       interimTranscriptRef.current = '';
       setInterimTranscript('');
-
-      // Compute total session speech across any silence restarts or pauses
-      const initialSessionBaseText = sessionBaseTextRef.current || '';
-      let totalSessionSpeech = allFinalSpeech;
-      if (initialSessionBaseText && finalNativeCombined.startsWith(initialSessionBaseText)) {
-        totalSessionSpeech = finalNativeCombined.slice(initialSessionBaseText.length).trim();
-      } else if (!initialSessionBaseText) {
-        totalSessionSpeech = finalNativeCombined.trim();
-      }
-      if (!totalSessionSpeech) {
-        totalSessionSpeech = allFinalSpeech;
-      }
-
-      if (totalSessionSpeech) {
-        setLastSessionTranscript(totalSessionSpeech);
-      }
-
-      committedSegmentsRef.current = [];
-
-      // Phase 5.3: Whisper-based High-Accuracy Final Transcription Pipeline
-      const currentNativeSpeech = totalSessionSpeech;
-      const preTranscribeValue = finalNativeCombined;
-
-      nativeSessionTranscriptRef.current = currentNativeSpeech;
-      expectedEmittedBeforeTranscribeRef.current = preTranscribeValue;
-
-      const hasRecordedBlob = Boolean(finalBlob && finalBlob.size >= 300);
-      const hasSpeechToRefine = Boolean(totalSessionSpeech && totalSessionSpeech.trim());
-
-      // Trigger Whisper refinement if audio was recorded (>= 300 bytes) OR if live speech was dictated
-      if (hasRecordedBlob || hasSpeechToRefine) {
-        console.log(
-          `[Dictation] Submitting for Whisper transcription (hasBlob: ${hasRecordedBlob}, speech: "${
-            (totalSessionSpeech || '').slice(0, 30)
-          }...", lang: ${selectedLanguageRef.current})`
-        );
-        transcriptionSessionCounterRef.current += 1;
-        const currentSessionId = transcriptionSessionCounterRef.current;
-
-        updateRecordingState('transcribing');
-
-        if (transcriptionAbortCtrlRef.current) {
-          try {
-            transcriptionAbortCtrlRef.current.abort();
-          } catch (_) {}
-        }
-        const abortCtrl = new AbortController();
-        transcriptionAbortCtrlRef.current = abortCtrl;
-
-        try {
-          const result = await transcribeAudioBlob({
-            audioBlob: hasRecordedBlob ? finalBlob : null,
-            transcript: totalSessionSpeech,
-            language: selectedLanguageRef.current,
-            prompt: 'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, palindrome, algorithms, async await, promises, functions, objects, arrays, code',
-            signal: abortCtrl.signal
-          });
-
-          // Stale response safeguard: Ignore result if a newer dictation session was started or cancelled
-          if (transcriptionSessionCounterRef.current !== currentSessionId) {
-            return;
-          }
-
-          const rawWhisper = (result.text || '').trim();
-          if (rawWhisper) {
-            console.log(
-              `[Dictation] Server transcription received: "${rawWhisper}" (model: ${result.model}, provider: ${result.provider})`
-            );
-            const initialBase = sessionBaseTextRef.current || '';
-            const formattedWhisper = formatSpeechTranscript(
-              rawWhisper,
-              selectedLanguageRef.current,
-              initialBase
-            );
-
-            const currentVal = inputValueRef.current || '';
-
-            // Non-destructive reconciliation policy (Phase 5.4 & Rule A):
-            // 1. If composer had text during the session and is now empty (manually cleared by user), NEVER repopulate!
-            // But if the session started with an empty composer and no live speech was emitted (e.g. mobile PWA or direct-audio mode),
-            // empty currentVal is expected and MUST receive the Whisper transcript!
-            const hadTextDuringSession = Boolean(preTranscribeValue?.trim() || initialBase?.trim());
-            if (!currentVal.trim() && hadTextDuringSession) {
-              console.log('[Dictation] Composer was cleared by user during session; discarding whisper transcript.');
-              return;
-            }
-
-            // Guard against Whisper truncation: If native speech recognized a substantial utterance (>= 50 chars),
-            // and Whisper returned less than 40% of that length, retain the complete native transcript.
-            if (
-              currentNativeSpeech &&
-              currentNativeSpeech.length >= 50 &&
-              formattedWhisper.length < currentNativeSpeech.length * 0.4
-            ) {
-              setLastSessionTranscript(currentNativeSpeech);
-              setTranscriptionNotice({
-                type: 'fallback',
-                message: 'Whisper result was incomplete — live speech transcript retained.'
-              });
-              return;
-            }
-
-            const fullReconciled = combineComposerText(initialBase, formattedWhisper);
-            let reconciled = fullReconciled;
-
-            const isExactPreTranscribe = currentVal === preTranscribeValue;
-            const isRecentEmission =
-              recentEmissionsRef.current.has(currentVal) ||
-              recentEmissionsRef.current.has(currentVal.trim());
-            const isLastEmitted = currentVal === lastEmittedValueRef.current;
-
-            let currentSpeechPortion = currentVal;
-            if (initialBase && currentVal.startsWith(initialBase)) {
-              currentSpeechPortion = currentVal.slice(initialBase.length).trim();
-            }
-
-            if (isExactPreTranscribe || isRecentEmission || isLastEmitted || (!currentVal.trim() && !hadTextDuringSession)) {
-              // 2. Composer was untouched since stop, contains a dictation emission, or was empty waiting for transcribe: apply complete Whisper transcript
-              reconciled = fullReconciled;
-            } else if (currentNativeSpeech && currentVal.includes(currentNativeSpeech)) {
-              // 3. User made edits around the speech: substitute the speech portion
-              reconciled = currentVal.replace(currentNativeSpeech, formattedWhisper);
-            } else if (
-              currentSpeechPortion &&
-              (currentNativeSpeech.includes(currentSpeechPortion) ||
-                formattedWhisper.toLowerCase().includes(currentSpeechPortion.toLowerCase()) ||
-                recentEmissionsRef.current.has(currentSpeechPortion))
-            ) {
-              // 4. Composer contains a partial live chunk of the speech:
-              // Replace the partial speech portion with the full Whisper transcript!
-              reconciled = currentVal.replace(currentSpeechPortion, formattedWhisper);
-            } else if (currentVal && initialBase && currentVal === initialBase) {
-              // Only initial base text remains in composer
-              reconciled = fullReconciled;
-            } else {
-              // 5. User typed new/different text with no overlap with this dictation session: do NOT overwrite their typing!
-              setLastSessionTranscript(formattedWhisper);
-              setTranscriptionNotice({
-                type: 'success',
-                message: `Enhanced transcript ready in review helper: "${formattedWhisper.length > 35 ? formattedWhisper.slice(0, 35) + '...' : formattedWhisper}"`
-              });
-              return;
-            }
-
-            recordEmission(reconciled);
-
-            if (onInputChangeRef.current && reconciled !== currentVal) {
-              onInputChangeRef.current(reconciled);
-            }
-
-            setLastSessionTranscript(formattedWhisper);
-            setTranscriptionMeta({
-              provider: result.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
-              model: result.model,
-              highAccuracy: true,
-              timestamp: Date.now()
-            });
-            setTranscriptionNotice({
-              type: 'success',
-              message: `Enhanced with ${result.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : result.model}`
-            });
-          }
-        } catch (err) {
-          if (transcriptionSessionCounterRef.current !== currentSessionId) return;
-          if (err?.name === 'AbortError') return;
-
-          console.warn('[Transcription] Whisper transcription error:', err?.message || err);
-          const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
-          const msg = isOffline
-            ? 'Network disconnected during transcription — live speech transcript retained.'
-            : err?.isTimeout
-            ? 'Whisper request timed out — live speech transcript retained.'
-            : err?.code === 'RATE_LIMIT_EXCEEDED'
-            ? 'Whisper rate limit reached — live speech transcript retained.'
-            : err?.code === 'PROVIDER_NOT_CONFIGURED'
-            ? (engineMode === 'direct-audio'
-                ? 'Whisper transcription requires API key setup on server.'
-                : 'Whisper service not configured — live speech transcript retained.')
-            : 'Whisper service unavailable — live speech transcript retained.';
-
-          setTranscriptionNotice({
-            type: 'fallback',
-            message: msg,
-            canRetry: true
-          });
-        } finally {
-          if (transcriptionSessionCounterRef.current === currentSessionId) {
-            updateRecordingState('idle');
-          }
-        }
-      } else {
-        console.warn(
-          `[Dictation] Audio recording buffer too small for server transcription (${
-            finalBlob ? finalBlob.size : 0
-          } bytes)`
-        );
+      setTranscriptionNotice(null);
+      updateRecordingState('idle');
+      return finalCombined;
+    } catch (err) {
+      console.warn('[Dictation] Finalize transcription error:', err);
+      if (transcriptionSessionCounterRef.current === currentSessionId) {
         updateRecordingState('idle');
       }
+      return '';
     } finally {
       setTimeout(() => {
         isTransitioningRef.current = false;
-      }, 150);
+      }, 100);
     }
   }, [
     cleanupRecognitionInstance,
-    engineMode,
+    recordEmission,
     stopAudioResources,
     updateRecordingState
   ]);
@@ -1828,33 +1543,14 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     clearTimeout(restartTimeoutRef.current);
     cleanupRecognitionInstance();
 
-    // Abort any in-flight Whisper transcription request
-    if (transcriptionAbortCtrlRef.current) {
-      try {
-        transcriptionAbortCtrlRef.current.abort();
-      } catch (_) {}
-      transcriptionAbortCtrlRef.current = null;
-    }
+    // Invalidate any in-flight transcription session
     transcriptionSessionCounterRef.current += 1;
-
-    // Stop MediaRecorder and discard recorded audio chunks completely
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (_) {}
-    }
-    audioChunksRef.current = [];
-    recordedBytesRef.current = 0;
-    recordingStartTimeRef.current = 0;
-    recordedAudioBlobRef.current = null;
-    setRecordedAudioBlob(null);
-    setRecordedAudioDuration(0);
 
     // Release microphone tracks and visualizer resources
     stopAudioResources();
 
     // Revert to original composer content prior to this session
-    const originalBase = sessionBaseTextRef.current ?? baseTextRef.current;
+    const originalBase = sessionBaseTextRef.current ?? baseTextRef.current ?? '';
     recordEmission(originalBase);
     if (onInputChangeRef.current) {
       onInputChangeRef.current(originalBase);
@@ -1869,7 +1565,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     setLastSessionTranscript('');
     setTranscriptionNotice(null);
     updateRecordingState('idle');
-  }, [cleanupRecognitionInstance, stopAudioResources, updateRecordingState]);
+  }, [cleanupRecognitionInstance, recordEmission, stopAudioResources, updateRecordingState]);
 
   // Keep live transcript and cancel in-flight Whisper request without reverting composer (Phase 5.4)
   const keepLiveTranscript = useCallback(() => {
@@ -2093,6 +1789,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     supportedLanguages: SUPPORTED_LANGUAGES,
     audioLevel,
     audioFrequencies,
+    waveformBars,
+    recordingDuration,
+    formattedDuration: formatDuration(recordingDuration),
     startListening,
     pauseListening,
     resumeListening,

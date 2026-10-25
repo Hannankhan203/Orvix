@@ -902,6 +902,9 @@ export default function ChatArea({
     supportedLanguages,
     audioLevel,
     audioFrequencies,
+    waveformBars,
+    recordingDuration,
+    formattedDuration,
     startListening,
     pauseListening,
     resumeListening,
@@ -924,8 +927,8 @@ export default function ChatArea({
   const activeLang =
     supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
 
-  const handleStopListening = () => {
-    stopListening();
+  const handleStopListening = async () => {
+    await stopListening();
     requestAnimationFrame(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -949,7 +952,7 @@ export default function ChatArea({
 
   const handleToggleListening = () => {
     if (recordingState === 'listening') {
-      handleStopListening();
+      void handleStopListening();
     } else if (recordingState === 'paused') {
       resumeListening();
     } else if (recordingState === 'requesting') {
@@ -1154,7 +1157,7 @@ export default function ChatArea({
     }
   };
 
-  const handleKeyDown = (e) => {
+  const handleKeyDown = async (e) => {
     if (e.key === 'Escape' && langMenuOpen) {
       e.preventDefault();
       setLangMenuOpen(false);
@@ -1183,14 +1186,10 @@ export default function ChatArea({
       e.preventDefault();
       let textToSend = inputValue;
       if (isListening || isPaused || isRequesting) {
-        if (
-          interimTranscript &&
-          interimTranscript.trim() &&
-          !inputValue.toLowerCase().includes(interimTranscript.trim().toLowerCase())
-        ) {
-          textToSend = combineComposerText(inputValue, interimTranscript.trim());
+        const completed = await stopListening();
+        if (typeof completed === 'string' && completed.trim()) {
+          textToSend = completed;
         }
-        stopListening();
       }
       clearLastSessionTranscript();
       setSuggestedRefinement(null);
@@ -1198,18 +1197,14 @@ export default function ChatArea({
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     let textToSend = inputValue;
     if (isListening || isPaused || isRequesting) {
-      if (
-        interimTranscript &&
-        interimTranscript.trim() &&
-        !inputValue.toLowerCase().includes(interimTranscript.trim().toLowerCase())
-      ) {
-        textToSend = combineComposerText(inputValue, interimTranscript.trim());
+      const completed = await stopListening();
+      if (typeof completed === 'string' && completed.trim()) {
+        textToSend = completed;
       }
-      stopListening();
     }
     clearLastSessionTranscript();
     setSuggestedRefinement(null);
@@ -1535,7 +1530,7 @@ Transcript:
             </div>
           )}
 
-          {/* Professional Active Dictation Strip */}
+          {/* Modern Recording & Waveform Dictation Bar */}
           {isRecordingActive && (
             <div
               className={`composer-listening-bar state-${recordingState}`}
@@ -1547,25 +1542,11 @@ Transcript:
                   <div className={`listening-mic-badge ${recordingState}`} aria-hidden="true">
                     {recordingState === 'requesting' || recordingState === 'transcribing' || recordingState === 'finalizing' ? (
                       <Loader2 size={13} className="spin-icon" />
+                    ) : recordingState === 'listening' ? (
+                      <span className="recording-dot-pulse" />
                     ) : (
                       <Mic size={13} />
                     )}
-                  </div>
-                  <div
-                    className="listening-soundwave"
-                    aria-hidden="true"
-                    title={isListening ? `Microphone audio level: ${audioLevel}%` : 'Connecting microphone'}
-                  >
-                    {audioFrequencies.map((freq, idx) => (
-                      <span
-                        key={idx}
-                        className={`soundwave-bar dynamic ${isListening ? 'active' : ''}`}
-                        style={{
-                          height: isListening ? `${Math.max(5, Math.round(freq * 18))}px` : '4px',
-                          opacity: isListening ? Math.max(0.4, Math.min(1, freq * 1.2)) : 0.35
-                        }}
-                      />
-                    ))}
                   </div>
                   <span className="listening-text">
                     {recordingState === 'requesting'
@@ -1573,10 +1554,13 @@ Transcript:
                       : recordingState === 'paused'
                       ? 'Paused'
                       : recordingState === 'transcribing'
-                      ? 'Refining...'
+                      ? 'Transcribing...'
                       : recordingState === 'finalizing'
                       ? 'Finishing...'
                       : 'Recording'}
+                  </span>
+                  <span className="listening-timer" aria-label={`Recording duration: ${formattedDuration}`}>
+                    {formattedDuration}
                   </span>
                 </div>
 
@@ -1622,39 +1606,37 @@ Transcript:
                 </div>
               </div>
 
-              {/* Interim Transcript Live Preview */}
-              <div className="listening-preview-area" title={interimTranscript || 'Live speech preview'}>
-                {interimTranscript ? (
-                  <span className="live-speech-bubble">"{interimTranscript}"</span>
-                ) : (
-                  <span className="live-speech-placeholder">
-                    {recordingState === 'requesting'
-                      ? 'Connecting to microphone...'
-                      : recordingState === 'paused'
-                      ? 'Dictation paused'
-                      : recordingState === 'transcribing'
-                      ? 'Transcribing audio...'
-                      : recordingState === 'finalizing'
-                      ? 'Finishing...'
-                      : engineMode === 'direct-audio'
-                      ? 'Recording audio — click Done when finished'
-                      : 'Speak naturally...'}
-                  </span>
-                )}
+              {/* Real Waveform Visualizer (driven by Web Audio API frequency spectrum) */}
+              <div
+                className="listening-waveform-area"
+                aria-hidden="true"
+                title={isListening ? `Microphone audio level: ${audioLevel}%` : 'Microphone audio visualizer'}
+              >
+                <div className="waveform-visualizer">
+                  {waveformBars.map((barVal, idx) => (
+                    <span
+                      key={idx}
+                      className={`waveform-bar ${isListening ? 'active' : ''}`}
+                      style={{
+                        height: isListening ? `${Math.max(4, Math.round(barVal * 24))}px` : '4px',
+                        opacity: isListening ? Math.max(0.35, Math.min(1, barVal * 1.5)) : 0.25
+                      }}
+                    />
+                  ))}
+                </div>
               </div>
 
-              {/* Action Buttons: Pause/Resume, Stop, Cancel (✕) */}
+              {/* Action Buttons: Pause/Resume, Stop (Done), Cancel (✕) */}
               <div className="listening-actions-group">
                 {recordingState === 'transcribing' ? (
                   <button
                     type="button"
-                    className="dictation-strip-btn cancel-btn text-btn"
-                    onClick={keepLiveTranscript}
-                    title="Keep live transcript and skip Whisper refinement"
-                    aria-label="Keep live transcript and skip Whisper refinement"
+                    className="dictation-strip-btn cancel-btn"
+                    onClick={handleCancelListening}
+                    title="Cancel transcription"
+                    aria-label="Cancel transcription"
                   >
-                    <span className="btn-label">Keep live</span>
-                    <X size={12} />
+                    <span className="btn-label">Cancel</span>
                   </button>
                 ) : (
                   <>
@@ -1663,8 +1645,8 @@ Transcript:
                         type="button"
                         className="dictation-strip-btn pause-btn"
                         onClick={pauseListening}
-                        title="Pause dictation"
-                        aria-label="Pause dictation"
+                        title="Pause recording"
+                        aria-label="Pause recording"
                       >
                         <Pause size={12} className="btn-icon" />
                         <span className="btn-label">Pause</span>
@@ -1674,8 +1656,8 @@ Transcript:
                         type="button"
                         className="dictation-strip-btn resume-btn"
                         onClick={resumeListening}
-                        title="Resume dictation"
-                        aria-label="Resume dictation"
+                        title="Resume recording"
+                        aria-label="Resume recording"
                       >
                         <Play size={12} fill="currentColor" className="btn-icon" />
                         <span className="btn-label">Resume</span>
@@ -1686,8 +1668,8 @@ Transcript:
                       type="button"
                       className="dictation-strip-btn stop-btn"
                       onClick={handleStopListening}
-                      title="Finish dictation"
-                      aria-label="Finish dictation"
+                      title="Finish recording and insert transcript into composer"
+                      aria-label="Finish recording"
                     >
                       <Check size={13} strokeWidth={2.5} className="btn-icon" />
                       <span className="btn-label">Done</span>
@@ -1697,8 +1679,8 @@ Transcript:
                       type="button"
                       className="dictation-strip-btn cancel-btn"
                       onClick={handleCancelListening}
-                      title="Cancel dictation (discard session)"
-                      aria-label="Cancel dictation"
+                      title="Cancel recording (discard audio)"
+                      aria-label="Cancel recording"
                     >
                       <span className="btn-label">Cancel</span>
                     </button>
