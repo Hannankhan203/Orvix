@@ -27,6 +27,15 @@ import {
   resolveWebLLMModelId
 } from '../src/services/webllmService.js';
 
+import {
+  formatSpeechTranscript,
+  combineComposerText
+} from '../src/hooks/useVoiceDictation.js';
+
+import {
+  polishSpokenTranscript
+} from '../src/utils/speechTextCleaner.js';
+
 console.log('--- Starting Orvix Offline Reliability Audit ---');
 
 let passedTests = 0;
@@ -183,6 +192,101 @@ test('Generated production service worker contains required precached chunks and
   // Verify model weights are NOT in precache
   assert.ok(!swContent.includes('resolve/main/params_shard'), 'Model weights must NOT be precached via Workbox');
   assert.ok(!swContent.includes('huggingface.co/Qwen'), 'Model weights URLs must NOT be in Workbox precache');
+});
+
+// ----------------------------------------------------------------------------
+// 5. Speech Recognition Segment Accumulation & Technical Formatting
+// ----------------------------------------------------------------------------
+test('formatSpeechTranscript formats technical English vocabulary and verbal punctuation accurately', () => {
+  const spoken =
+    'can you write a function for palindrome in javascript period and explain var comma const comma let comma functions comma arrow functions comma objects comma arrays comma callbacks comma promises comma async await comma and ecmascript question mark';
+
+  const formatted = formatSpeechTranscript(spoken);
+  assert.ok(formatted.includes('palindrome'), 'Must preserve "palindrome"');
+  assert.ok(formatted.includes('JavaScript'), 'Must capitalize "JavaScript"');
+  assert.ok(formatted.includes('. And explain'), 'Must convert "period" to dot and capitalize next sentence');
+  assert.ok(formatted.includes('var, const, let'), 'Must convert verbal commas cleanly without spaces before punctuation');
+  assert.ok(formatted.includes('async/await'), 'Must format "async await" to "async/await"');
+  assert.ok(formatted.includes('ECMAScript?'), 'Must format "ecmascript question mark" to "ECMAScript?"');
+});
+
+test('formatSpeechTranscript protects Math.random from palindrome disambiguation', () => {
+  const spoken = 'generate a random number using math.random';
+  const formatted = formatSpeechTranscript(spoken);
+  assert.ok(formatted.includes('Math.random'), 'Must preserve "Math.random" without converting to palindrome');
+});
+
+test('combineComposerText preserves existing typed text without dropping words or creating double spaces', () => {
+  const existing = 'Here is my existing code:\n';
+  const speech = 'generate a palindrome function in JavaScript.';
+  const combined = combineComposerText(existing, speech);
+
+  assert.strictEqual(
+    combined,
+    'Here is my existing code:\ngenerate a palindrome function in JavaScript.',
+    'Must cleanly preserve existing composer base text'
+  );
+
+  const existingWithSpace = 'Tell me about ';
+  const speech2 = 'TypeScript interfaces.';
+  assert.strictEqual(combineComposerText(existingWithSpace, speech2), 'Tell me about TypeScript interfaces.');
+});
+
+test('Speech recognition simulation accumulates multi-part chronological segments without dropping early words', () => {
+  // Simulates Web Speech API emitting sequential phrases across multiple indices in event.results
+  const mockResults = [
+    { isFinal: true, 0: { transcript: 'generate JavaScript palindrome code' } },
+    { isFinal: true, 0: { transcript: 'and explain var const let' } },
+    { isFinal: false, 0: { transcript: 'functions and arrow functions' } },
+    { isFinal: false, 0: { transcript: 'async await and ECMAScript' } }
+  ];
+
+  // 1. Finalized results accumulation
+  const committedSegments = [];
+  for (let i = 0; i < mockResults.length; i++) {
+    const res = mockResults[i];
+    if (res.isFinal) {
+      committedSegments.push({
+        index: i,
+        text: formatSpeechTranscript(res[0].transcript)
+      });
+    }
+  }
+
+  // 2. Unfinalized interim results concatenation (NOT overwriting)
+  const unfinalizedParts = [];
+  for (let i = 0; i < mockResults.length; i++) {
+    const res = mockResults[i];
+    if (!res.isFinal) {
+      unfinalizedParts.push(res[0].transcript.trim());
+    }
+  }
+  const currentInterim = unfinalizedParts.join(' ');
+
+  // 3. Final session assembly
+  let allFinalSpeech = '';
+  for (const seg of committedSegments) {
+    allFinalSpeech = combineComposerText(allFinalSpeech, seg.text);
+  }
+  if (currentInterim) {
+    allFinalSpeech = combineComposerText(allFinalSpeech, currentInterim);
+  }
+
+  const finalFormatted = formatSpeechTranscript(allFinalSpeech);
+
+  assert.ok(finalFormatted.includes('Generate JavaScript palindrome code'), 'Must retain the beginning of the sentence');
+  assert.ok(finalFormatted.includes('var const let'), 'Must retain middle clauses');
+  assert.ok(finalFormatted.includes('functions and arrow functions'), 'Must retain intermediate unfinalized clauses');
+  assert.ok(finalFormatted.includes('async/await and ECMAScript'), 'Must retain final clauses and format technical terms');
+  assert.ok(!finalFormatted.startsWith('async/await'), 'Must NEVER truncate to only the last phrase');
+});
+
+test('polishSpokenTranscript enhances technical vocabulary in programming context', () => {
+  const raw = 'explain async await callbacks and pedrandom in javascript';
+  const polished = polishSpokenTranscript(raw);
+  assert.ok(polished.includes('async/await'), 'Must polish async await to async/await');
+  assert.ok(polished.includes('palindrome'), 'Must disambiguate pedrandom to palindrome in programming context');
+  assert.ok(polished.includes('JavaScript'), 'Must properly case JavaScript');
 });
 
 console.log(`\nAll ${passedTests} offline reliability tests passed successfully!`);

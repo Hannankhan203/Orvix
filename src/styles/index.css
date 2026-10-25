@@ -7573,18 +7573,53 @@ body.theme-light .waveform-bar.active,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  font-size: 0.74rem;
-  font-weight: 600;
-  padding: 4px 10px;
+  gap: 4px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.015em;
+  padding: 4px 8px;
   height: 28px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   cursor: pointer;
   transition: all var(--transition-fast);
   user-select: none;
-  line-height: 1;
+  line-height: 1.2;
   box-sizing: border-box;
+}
+
+.dictation-strip-btn .btn-label {
+  display: inline-block;
+  line-height: 1.2;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  white-space: nowrap;
+}
+
+.dictation-strip-btn .btn-icon,
+.dictation-strip-btn svg {
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
+  min-height: 12px;
+  max-width: 13px;
+  max-height: 13px;
+  padding: 0;
+  border-radius: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+
+.dictation-strip-btn.stop-btn .btn-icon,
+.dictation-strip-btn.stop-btn svg {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  min-height: 10px;
 }
 
 .dictation-strip-btn.stop-btn {
@@ -7592,6 +7627,7 @@ body.theme-light .waveform-bar.active,
   border-color: #3b82f6;
   color: #ffffff;
   box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+  padding: 4px 9px;
 }
 
 .dictation-strip-btn.stop-btn:hover {
@@ -7603,6 +7639,7 @@ body.theme-light .waveform-bar.active,
   background-color: rgba(245, 158, 11, 0.15);
   border-color: rgba(245, 158, 11, 0.35);
   color: #f59e0b;
+  padding: 4px 8px;
 }
 
 .dictation-strip-btn.pause-btn:hover {
@@ -7614,6 +7651,7 @@ body.theme-light .waveform-bar.active,
   background-color: rgba(59, 130, 246, 0.15);
   border-color: rgba(59, 130, 246, 0.35);
   color: #3b82f6;
+  padding: 4px 8px;
 }
 
 .dictation-strip-btn.resume-btn:hover {
@@ -7625,7 +7663,7 @@ body.theme-light .waveform-bar.active,
   background-color: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.16);
   color: #cbd5e1;
-  padding: 4px 10px;
+  padding: 4px 8px;
   width: auto;
   min-width: fit-content;
 }
@@ -7710,13 +7748,36 @@ body.theme-light .dictation-strip-btn.resume-btn,
 .dictation-status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 0.74rem;
-  font-weight: 600;
-  padding: 4px 10px;
+  gap: 4px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.015em;
+  padding: 4px 8px;
+  height: 28px;
   border-radius: var(--radius-md);
   user-select: none;
-  line-height: 1;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+
+.dictation-status-pill .btn-label {
+  display: inline-block;
+  line-height: 1.2;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  white-space: nowrap;
+}
+
+.dictation-status-pill .btn-icon,
+.dictation-status-pill svg {
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
+  min-height: 12px;
+  padding: 0;
+  border-radius: 0;
+  flex-shrink: 0;
 }
 
 .dictation-status-pill.success {
@@ -7817,26 +7878,32 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
     flex-shrink: 0;
   }
   .dictation-strip-btn {
-    height: 36px;
-    min-height: 36px;
+    height: 32px;
+    min-height: 32px;
     width: auto;
     min-width: fit-content;
-    padding: 0 10px;
-    font-size: 0.78rem;
-    font-weight: 600;
+    padding: 0 8px;
+    font-size: 0.70rem;
+    font-weight: 500;
+    letter-spacing: 0.015em;
+    gap: 4px;
     white-space: nowrap;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
   }
   .dictation-strip-btn .btn-label {
-    display: inline !important;
+    display: inline-block !important;
     white-space: nowrap;
+    font-size: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    line-height: 1.2;
   }
   .dictation-strip-btn.stop-btn {
-    padding: 0 12px;
+    padding: 0 9px;
   }
   .dictation-strip-btn.cancel-btn {
-    padding: 0 10px;
+    padding: 0 8px;
   }
   .dictation-strip-btn:active {
     transform: scale(0.96);
@@ -7994,30 +8061,34 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
   }
   .dictation-strip-btn {
     flex: 1 1 0;
-    height: 38px;
-    min-height: 38px;
+    height: 34px;
+    min-height: 34px;
     width: auto;
     min-width: 0;
-    padding: 0 8px;
-    font-size: 0.78rem;
-    font-weight: 600;
+    padding: 0 6px;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.015em;
+    gap: 4px;
     justify-content: center;
     border-radius: var(--radius-md);
     touch-action: manipulation;
   }
   .dictation-strip-btn.stop-btn {
-    flex: 1.3 1 0;
-    padding: 0 10px;
+    flex: 1.15 1 0;
+    padding: 0 8px;
   }
   .dictation-strip-btn.cancel-btn {
     flex: 1 1 0;
-    padding: 0 8px;
+    padding: 0 6px;
   }
   .dictation-status-pill {
     width: 100%;
-    height: 36px;
+    height: 34px;
     justify-content: center;
-    font-size: 0.78rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.015em;
   }
   .composer-mic-btn,
   .composer-attach-btn,
@@ -8070,11 +8141,20 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
     width: 2px;
   }
   .dictation-strip-btn {
-    height: 36px;
-    min-height: 36px;
-    font-size: 0.74rem;
+    height: 30px;
+    min-height: 30px;
+    font-size: 0.64rem;
+    font-weight: 500;
+    letter-spacing: 0;
     padding: 0 4px;
-    gap: 3px;
+    gap: 2.5px;
+  }
+  .dictation-strip-btn .btn-icon,
+  .dictation-strip-btn svg {
+    width: 10px;
+    height: 10px;
+    min-width: 10px;
+    min-height: 10px;
   }
 }
 
@@ -8089,8 +8169,11 @@ html.is-keyboard-open .composer-listening-bar {
 }
 
 html.is-keyboard-open .dictation-strip-btn {
-  height: 34px;
-  min-height: 34px;
+  height: 30px;
+  min-height: 30px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  padding: 0 6px;
 }
 
 /* Voice Dictation Error Notification */
@@ -9906,23 +9989,30 @@ body.theme-light .notice-retry-btn,
     gap: 4px 6px;
   }
   .dictation-strip-btn {
-    height: 32px;
-    min-height: 32px;
+    height: 28px;
+    min-height: 28px;
     width: auto;
     min-width: fit-content;
-    padding: 0 8px;
-    font-size: 0.72rem;
+    padding: 0 7px;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.015em;
+    gap: 4px;
     white-space: nowrap;
   }
   .dictation-strip-btn .btn-label {
-    display: inline !important;
+    display: inline-block !important;
     white-space: nowrap;
+    font-size: inherit;
+    font-weight: inherit;
+    letter-spacing: inherit;
+    line-height: 1.2;
   }
   .dictation-strip-btn.stop-btn {
     padding: 0 8px;
   }
   .dictation-strip-btn.cancel-btn {
-    padding: 0 8px;
+    padding: 0 7px;
   }
   .listening-preview-area {
     padding: 2px 2px 0 2px;

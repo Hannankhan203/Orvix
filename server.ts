@@ -2165,7 +2165,7 @@ Spoken transcript:
                 setTimeout(() => reject(new Error('Refine timeout')), 6000)
               );
               const genPromise = ai.models.generateContent({
-                model: 'gemini-3.8-flash',
+                model: 'gemini-2.5-flash',
                 contents: [{ role: 'user', parts: [{ text: refinePrompt }] }]
               });
               const geminiRes = await Promise.race([genPromise, timeoutPromise]);
@@ -2354,7 +2354,7 @@ ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
         const geminiRes = await ai.models.generateContent({
-          model: 'gemini-3.5-transcribe',
+          model: 'gemini-2.5-flash',
           contents: [
             {
               role: 'user',
@@ -2377,7 +2377,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           text,
           language: isoLang || 'en',
           duration: 0,
-          model: 'gemini-3.5-transcribe',
+          model: 'gemini-2.5-flash',
           provider: 'gemini',
           highAccuracy: true
         });
@@ -2385,7 +2385,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
         logAIDiagnostic({
           category: 'provider API error',
           provider: 'gemini',
-          model: 'gemini-3.5-transcribe',
+          model: 'gemini-2.5-flash',
           phase: 'dispatch',
           sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
         });

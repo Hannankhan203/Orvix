@@ -88,9 +88,13 @@ export function detectDictationCapabilities() {
   );
   const hasMediaRecorder = Boolean(window.MediaRecorder);
 
-  // In Phase 3: Free, technically compatible browser speech-recognition is the authoritative engine
-  const isSupported = Boolean(hasSpeechRecognition);
-  const engineMode = isSupported ? 'browser-speech' : 'unsupported';
+  // Authoritative browser speech recognition or native audio recording with server transcription fallback
+  const isSupported = Boolean(hasSpeechRecognition || (hasGetUserMedia && hasMediaRecorder));
+  const engineMode = hasSpeechRecognition
+    ? 'browser-speech'
+    : hasGetUserMedia && hasMediaRecorder
+    ? 'audio-record'
+    : 'unsupported';
 
   return {
     hasSpeechRecognition,
@@ -175,6 +179,9 @@ const COMMON_TECH_ACRONYMS = [
   [/\bjava\s*script\b/gi, 'JavaScript'],
   [/\becma\s*script\b/gi, 'ECMAScript'],
   [/\btype\s*script\b/gi, 'TypeScript'],
+  [/\bnode\s*\.?\s*j\s*s\b/gi, 'Node.js'],
+  [/\bnext\s*\.?\s*j\s*s\b/gi, 'Next.js'],
+  [/\bvue\s*\.?\s*j\s*s\b/gi, 'Vue.js'],
   [/\byou\s*tube\b/gi, 'YouTube'],
   [/\bpython\b/gi, 'Python'],
   [/\breact\b/gi, 'React'],
@@ -184,7 +191,13 @@ const COMMON_TECH_ACRONYMS = [
   [/\b(?:j\s*s\s*o\s*n)\b/gi, 'JSON'],
   [/\b(?:h\s*t\s*m\s*l)\b/gi, 'HTML'],
   [/\b(?:c\s*s\s*s)\b/gi, 'CSS'],
-  [/\b(?:u\s*r\s*l)s?\b/gi, (m) => (/s$/i.test(m) ? 'URLs' : 'URL')]
+  [/\b(?:u\s*r\s*l)s?\b/gi, (m) => (/s$/i.test(m) ? 'URLs' : 'URL')],
+  [/\b(?:s\s*q\s*l)\b/gi, 'SQL'],
+  [/\b(?:no\s*s\s*q\s*l)\b/gi, 'NoSQL'],
+  [/\b(?:graph\s*q\s*l)\b/gi, 'GraphQL'],
+  [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')],
+  [/\b(?:async\s+await|async\s*\/\s*await|(?:sync|sink)\s+await)\b/gi, 'async/await'],
+  [/\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome']
 ];
 
 /**
@@ -211,6 +224,9 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
       .replace(/\s*ندائیہ\s*/gi, '! ')
       .replace(/\s*نئی\s*لائن\s*/gi, '\n');
   } else {
+    // Protect Math.random before palindrome and punctuation conversions
+    text = text.replace(/\bmath\s*\.\s*random\b/gi, 'Math.random');
+
     // English & standard verbal punctuation rules
     text = text
       .replace(/(?:\s+|^)\b(?:period|full\s*stop)\b/gi, '.')
@@ -231,7 +247,7 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
       .replace(/\bi've\b/g, "I've")
       .replace(/\bi'd\b/g, "I'd");
 
-    // Standard tech acronyms
+    // Standard tech acronyms & common programming terms
     for (const [pattern, replacement] of COMMON_TECH_ACRONYMS) {
       text = text.replace(pattern, replacement);
     }
@@ -380,6 +396,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   onInputChangeRef.current = onInputChange;
 
   const isExplicitStopRef = useRef(false);
+  const isCancelledRef = useRef(false);
   const hasFatalErrorRef = useRef(false);
   const recordingStateRef = useRef(recordingState);
   recordingStateRef.current = recordingState;
@@ -886,6 +903,24 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
           : null;
 
       if (!SpeechRecognition) {
+        if (caps.hasGetUserMedia && caps.hasMediaRecorder) {
+          // Native audio capture fallback for browsers without Web Speech API (Firefox, iOS PWA)
+          acquireMicrophoneStream()
+            .then((stream) => {
+              attachAudioAnalyser(stream);
+              startMediaRecorder(stream);
+              updateRecordingState('listening');
+            })
+            .catch((streamErr) => {
+              console.warn('[Dictation] Microphone stream acquisition failed:', streamErr);
+              hasFatalErrorRef.current = true;
+              stopAudioResources();
+              setDictationError('Microphone access was denied. Please allow microphone permissions.');
+              updateRecordingState('error');
+            });
+          return;
+        }
+
         setDictationError(
           'Voice dictation is not supported in this browser. Please use Google Chrome, Microsoft Edge, or Safari.'
         );
@@ -941,14 +976,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       // 2. Synchronously instantiate and start SpeechRecognition under the active user activation
       try {
         const recognition = new SpeechRecognition();
-        // On mobile Android, continuous = false guarantees immediate progressive interim results without holding frames until speech pauses
-        recognition.continuous = !caps.isMobile;
+        recognition.continuous = true;
         recognition.interimResults = true;
         recognition.maxAlternatives = 1;
         recognition.lang = selectedLanguageRef.current;
 
         console.log(
-          `[Dictation] Initializing recognition (continuous: ${!caps.isMobile}, interimResults: true, lang: ${selectedLanguageRef.current})`
+          `[Dictation] Initializing recognition (continuous: true, interimResults: true, lang: ${selectedLanguageRef.current})`
         );
 
         hasFatalErrorRef.current = false;
@@ -989,12 +1023,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
         recognition.onresult = (event) => {
           if (instanceCounterRef.current !== currentInstanceId) return;
-          if (isExplicitStopRef.current) return;
+          if (isCancelledRef.current) return;
           consecutiveErrorsRef.current = 0;
           consecutiveSilenceRestartsRef.current = 0;
 
-          // 1. Process all newly finalized results
-          for (let i = event.resultIndex; i < event.results.length; i++) {
+          // 1. Process all finalized results chronologically across all available indices
+          for (let i = 0; i < event.results.length; i++) {
             const res = event.results[i];
             if (res && res.isFinal) {
               const bestCandidate = selectBestAlternative(res);
@@ -1033,7 +1067,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
                 if (!isExactRestartEcho && !alreadyCommitted) {
                   // Guard against Android bug where progressive intermediate results are erroneously marked isFinal
-                  // and extend or subsume the previous committed segment within the same instance
+                  // and extend or subsume the previous committed segment within the same instance and index
                   const prevSeg = committedSegmentsRef.current.length > 0
                     ? committedSegmentsRef.current[committedSegmentsRef.current.length - 1]
                     : null;
@@ -1041,9 +1075,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
                   if (
                     prevSeg &&
                     prevSeg.instanceId === currentInstanceId &&
+                    prevSeg.index === i &&
                     formatted.toLowerCase().startsWith(prevSeg.text.toLowerCase())
                   ) {
-                    // Update and replace the previous premature final chunk rather than appending to prevent compounding
                     prevSeg.text = formatted;
                     prevSeg.timestamp = now;
                   } else {
@@ -1063,43 +1097,23 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             }
           }
 
-          // 2. Compute current interim text across unfinalized results
-          // CRITICAL ARCHITECTURAL RULE:
-          // The current interim result is a temporary interpretation of currently spoken words.
-          // Progressive interim results are successive snapshots of the SAME current speech.
-          // The latest interim result replaces previous interim snapshots; it must NEVER be accumulated or appended.
-          let currentInterim = '';
+          // 2. Compute current interim text across all unfinalized results
+          // Web Speech API emits distinct unfinalized segments across sequential indices.
+          // Concatenate all unfinalized parts chronologically to prevent dropping early or middle clauses.
+          const unfinalizedParts = [];
           for (let i = 0; i < event.results.length; i++) {
             const res = event.results[i];
             if (res && !res.isFinal) {
               const interimCand = selectBestAlternative(res);
-              if (interimCand) {
-                const candTrimmed = interimCand.trim();
-                const existingTrimmed = currentInterim.trim();
-
-                if (!existingTrimmed) {
-                  currentInterim = candTrimmed;
-                } else if (candTrimmed.toLowerCase().startsWith(existingTrimmed.toLowerCase())) {
-                  // Progressive extension snapshot: replace with the more complete interim candidate
-                  currentInterim = candTrimmed;
-                } else if (existingTrimmed.toLowerCase().startsWith(candTrimmed.toLowerCase())) {
-                  // Existing interim already holds a longer/more complete hypothesis: retain it
-                  currentInterim = existingTrimmed;
-                } else {
-                  // In multi-result interim streams, the latest entry represents the active interim hypothesis
-                  currentInterim = candTrimmed;
-                }
+              if (interimCand && interimCand.trim()) {
+                unfinalizedParts.push(interimCand.trim());
               }
             }
           }
 
+          const currentInterim = unfinalizedParts.join(' ');
           interimTranscriptRef.current = currentInterim;
           setInterimTranscript(currentInterim);
-
-          // In-memory speech buffering (Phase 2):
-          // Recognized speech is held securely in committedSegmentsRef and interimTranscriptRef.
-          // No recognized words appear in the composer while the user is actively speaking.
-          // When the user stops recording (in stopListening), the complete transcript is formatted and inserted.
         };
 
         recognition.onerror = (event) => {
@@ -1423,7 +1437,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       return '';
     }
     isTransitioningRef.current = true;
-    isExplicitStopRef.current = true;
     clearTimeout(restartTimeoutRef.current);
 
     transcriptionSessionCounterRef.current += 1;
@@ -1433,10 +1446,17 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     updateRecordingState('stopping');
 
     try {
-      // 2. Stop audio tracks and Web Audio visualizer so system microphone indicator turns off immediately
-      stopAudioResources();
+      // Safely request final audio slice from MediaRecorder if active
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          if (typeof mediaRecorderRef.current.requestData === 'function') {
+            mediaRecorderRef.current.requestData();
+          }
+          mediaRecorderRef.current.stop();
+        } catch (_) {}
+      }
 
-      // 3. Gracefully signal the speech recognizer to finish and wait for final results to settle
+      // 2. Gracefully signal the speech recognizer to finish and wait for final results to settle
       if (recognitionRef.current) {
         const rec = recognitionRef.current;
         await new Promise((resolve) => {
@@ -1448,7 +1468,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             }
           };
 
-          const timeoutId = setTimeout(complete, 280);
+          // 650ms window allows Chrome & Safari engines to finalize speech pipeline and fire onresult + onend
+          const timeoutId = setTimeout(complete, 650);
 
           const prevOnEnd = rec.onend;
           rec.onend = (e) => {
@@ -1466,6 +1487,25 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
             complete();
           }
         });
+      }
+
+      isExplicitStopRef.current = true;
+
+      // 3. Stop audio tracks and Web Audio visualizer only after recognition has settled
+      stopAudioResources();
+
+      // Assemble captured audio chunks into Blob for retry and server fallback
+      if (audioChunksRef.current && audioChunksRef.current.length > 0) {
+        try {
+          const mimeType = activeMimeTypeRef.current || 'audio/webm';
+          const blob = new Blob(audioChunksRef.current, { type: mimeType });
+          recordedAudioBlobRef.current = blob;
+          setRecordedAudioBlob(blob);
+          const durationSec = recordingStartTimeRef.current
+            ? Math.round((Date.now() - recordingStartTimeRef.current) / 1000)
+            : 0;
+          setRecordedAudioDuration(durationSec);
+        } catch (_) {}
       }
 
       cleanupRecognitionInstance();
@@ -1488,9 +1528,35 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
         allFinalSpeech = combineComposerText(allFinalSpeech, interimTranscriptRef.current.trim());
       }
 
-      const cleanSpeech = (allFinalSpeech || '').trim();
+      let cleanSpeech = (allFinalSpeech || '').trim();
 
-      // 6. Handle empty speech gracefully
+      // 6. If cleanSpeech is empty, attempt audio recording fallback via /api/transcribe if audio was captured
+      if (!cleanSpeech && recordedAudioBlobRef.current && recordedAudioBlobRef.current.size > 500) {
+        try {
+          const fallbackRes = await transcribeAudioBlob({
+            audioBlob: recordedAudioBlobRef.current,
+            language: selectedLanguageRef.current,
+            prompt: 'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, palindrome, algorithms, async await, promises, functions, objects, arrays, code'
+          });
+          if (fallbackRes?.text) {
+            cleanSpeech = fallbackRes.text.trim();
+            setTranscriptionMeta({
+              provider: fallbackRes.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
+              model: fallbackRes.model,
+              highAccuracy: true,
+              timestamp: Date.now()
+            });
+            setTranscriptionNotice({
+              type: 'success',
+              message: `Transcribed with ${fallbackRes.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : fallbackRes.model}`
+            });
+          }
+        } catch (fErr) {
+          console.warn('[Dictation] Fallback audio transcription notice:', fErr);
+        }
+      }
+
+      // Handle empty speech gracefully
       if (!cleanSpeech) {
         setTranscriptionNotice({
           type: 'fallback',
@@ -1523,7 +1589,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
       committedSegmentsRef.current = [];
       interimTranscriptRef.current = '';
       setInterimTranscript('');
-      setTranscriptionNotice(null);
       // Brief honest success state before returning to idle
       updateRecordingState('success');
       setTimeout(() => {
@@ -1552,6 +1617,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
   // Cancel dictation: Discards speech from this session and restores original composer text
   const cancelListening = useCallback(() => {
+    isCancelledRef.current = true;
     isExplicitStopRef.current = true;
     clearTimeout(restartTimeoutRef.current);
     cleanupRecognitionInstance();

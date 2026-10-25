@@ -323,6 +323,9 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
     [/\bjava\s*script\b/gi, 'JavaScript'],
     [/\becma\s*script\b/gi, 'ECMAScript'],
     [/\btype\s*script\b/gi, 'TypeScript'],
+    [/\bnode\s*\.?\s*j\s*s\b/gi, 'Node.js'],
+    [/\bnext\s*\.?\s*j\s*s\b/gi, 'Next.js'],
+    [/\bvue\s*\.?\s*j\s*s\b/gi, 'Vue.js'],
     [/\bpython\b/gi, 'Python'],
     [/\breact\b/gi, 'React'],
     [/\bangular\b/gi, 'Angular'],
@@ -331,7 +334,11 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
     [/\b(?:j\s*s\s*o\s*n)\b/gi, 'JSON'],
     [/\b(?:h\s*t\s*m\s*l)\b/gi, 'HTML'],
     [/\b(?:c\s*s\s*s)\b/gi, 'CSS'],
-    [/\b(?:u\s*r\s*l)s?\b/gi, (m) => (/s$/i.test(m) ? 'URLs' : 'URL')]
+    [/\b(?:u\s*r\s*l)s?\b/gi, (m) => (/s$/i.test(m) ? 'URLs' : 'URL')],
+    [/\b(?:s\s*q\s*l)\b/gi, 'SQL'],
+    [/\b(?:no\s*s\s*q\s*l)\b/gi, 'NoSQL'],
+    [/\b(?:graph\s*q\s*l)\b/gi, 'GraphQL'],
+    [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')]
   ];
 
   for (const [pattern, replacement] of techReplacements) {
