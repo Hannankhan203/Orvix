@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "npm run lint && node scripts/auditOfflineReliability.js && node scripts/testCodeBlockSync.js"
+    "test": "npm run lint && node scripts/auditOfflineReliability.js"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

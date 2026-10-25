@@ -66,6 +66,8 @@
   --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
   --transition-fast: 140ms ease-out;
   --transition-normal: 220ms ease-out;
+  --sidebar-duration: 240ms;
+  --sidebar-easing: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
@@ -233,7 +235,10 @@ html, body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  transition: transform var(--transition-normal), margin-left var(--transition-normal);
+  will-change: transform, margin-left;
+  transition: transform var(--sidebar-duration) var(--sidebar-easing),
+              margin-left var(--sidebar-duration) var(--sidebar-easing),
+              visibility 0s linear 0s;
   z-index: 50;
   user-select: none;
 }
@@ -242,7 +247,9 @@ html, body {
   margin-left: calc(-1 * var(--sidebar-width));
   visibility: hidden;
   pointer-events: none;
-  transition: transform var(--transition-normal), margin-left var(--transition-normal), visibility 0s linear var(--transition-normal);
+  transition: transform var(--sidebar-duration) var(--sidebar-easing),
+              margin-left var(--sidebar-duration) var(--sidebar-easing),
+              visibility 0s linear var(--sidebar-duration);
 }
 
 .sidebar-header {
@@ -9190,7 +9197,8 @@ body.theme-light .notice-retry-btn,
     pointer-events: auto;
     z-index: 50;
     margin-left: 0 !important;
-    transition: transform var(--transition-normal), visibility 0s linear 0s;
+    will-change: transform;
+    transition: transform var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear 0s;
   }
 
   .chatora-sidebar.collapsed {
@@ -9198,7 +9206,7 @@ body.theme-light .notice-retry-btn,
     visibility: hidden;
     pointer-events: none;
     margin-left: 0 !important;
-    transition: transform var(--transition-normal), visibility 0s linear var(--transition-normal);
+    transition: transform var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear var(--sidebar-duration);
   }
 
   .chatora-sidebar .sidebar-header {
@@ -9227,6 +9235,18 @@ body.theme-light .notice-retry-btn,
     -webkit-backdrop-filter: blur(4px);
     z-index: 45;
     touch-action: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    will-change: opacity;
+    transition: opacity var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear var(--sidebar-duration);
+  }
+
+  .sidebar-backdrop.visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition: opacity var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear 0s;
   }
 
   /* Inline non-overlapping sidebar chat item actions on mobile */
@@ -11914,6 +11934,8 @@ body.theme-light .notice-retry-btn,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .chatora-sidebar,
+  .sidebar-backdrop,
   .composer-stop-btn,
   .speaking-badge-icon.pulse,
   .mini-wave-bar,

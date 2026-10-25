@@ -348,8 +348,8 @@ export default function Layout({
       const clientY = touch.clientY;
 
       if (sidebarOpenRef.current) {
-        // When mobile drawer is open (< 768px), allow swipe-left on sidebar or backdrop to close
-        if (window.innerWidth >= 768) return;
+        // When drawer is open (mobile or touch tablet <= 1024px), allow swipe-left on sidebar or backdrop to close
+        if (window.innerWidth > 1024) return;
         if (!e.target?.closest?.('.chatora-sidebar, .sidebar-backdrop')) return;
         if (e.target?.closest?.('input, textarea, select')) return;
       } else {
@@ -595,14 +595,12 @@ export default function Layout({
 
   return (
     <div className={`chatora-app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`}>
-      {/* Mobile backdrop */}
-      {sidebarOpen && (
-        <div
-          className="sidebar-backdrop"
-          onClick={closeSidebar}
-          aria-hidden="true"
-        />
-      )}
+      {/* Mobile/Tablet backdrop with smooth fade in and fade out */}
+      <div
+        className={`sidebar-backdrop ${sidebarOpen ? 'visible' : ''}`}
+        onClick={closeSidebar}
+        aria-hidden={!sidebarOpen ? 'true' : undefined}
+      />
 
       {/* Collapsible Sidebar */}
       <Sidebar
