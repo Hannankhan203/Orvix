@@ -1,9 +1,6 @@
 # Orvix
 
 ![Version](https://img.shields.io/badge/version-0.2.1-2563eb)
-![React](https://img.shields.io/badge/React-19.0-61dafb)
-![Vite](https://img.shields.io/badge/Vite-8.3-646cff)
-![TypeScript](https://img.shields.io/badge/Server-Express%20%2B%20TS-3178c6)
 
 **Current Version: v0.2.1**
 
@@ -15,9 +12,11 @@
 
 1. [Key Features](#1-key-features)
 2. [Release History & What's New](#2-release-history--whats-new)
+   - [Version Numbering & Milestone Nomenclature](#version-numbering--milestone-nomenclature)
    - [v0.2.1 (Empty New Chat UI Refinement)](#v021-october-25-2026--empty-new-chat-ui-refinement-release)
    - [v0.2.0 (Mobile UI/UX Refinement)](#v020-october-25-2026--mobile-uiux-refinement-release)
-   - [v0.1.0 (Desktop UI/UX & Performance)](#v010--desktop-uiux-accessibility-and-performance-release)
+   - [v0.1.0 (Desktop UI/UX, Accessibility & Performance)](#v010--desktop-uiux-accessibility-and-performance-release)
+   - [Earlier Development Releases & Milestones (Recovered History)](#earlier-development-releases--milestones-recovered-history)
 3. [Technologies & Architecture Overview](#3-technologies--architecture-overview)
 4. [AI Providers & Chat Modes](#4-ai-providers--chat-modes)
 5. [PWA, Offline Capabilities & Browser AI Requirements](#5-pwa-offline-capabilities--browser-ai-requirements)
@@ -45,6 +44,19 @@
 ---
 
 ## 2. Release History & What's New
+
+### Version Numbering & Milestone Nomenclature
+
+Orvix uses semantic versioning (`0.y.z`), where:
+- **v0.1.0** represents the initial formal consolidation of early prototyping, establishing the Desktop UI/UX, Accessibility, and Performance baseline.
+- **v0.2.0** represents the Mobile UI/UX Refinement milestone.
+- **v0.2.1** represents the Empty New Chat UI Refinement patch release.
+
+> **Resolution of Milestone Labels ("1.0", "2.0", "2.1")**: During project planning, these three major stages were often informally referenced as *Milestone 1.0* (Desktop), *Milestone 2.0* (Mobile), and *Milestone 2.1* (Empty-State Refinement). In the authoritative codebase metadata (`package.json`, `src/config/appConfig.js`, and build manifests), these correspond directly to **v0.1.0**, **v0.2.0**, and **v0.2.1**. The package manifests were not bumped to `1.x` or `2.x` because the project maintains zero-major semantic versioning.
+
+Below is the verified chronological release history of the project, including recovered early development milestones. Where exact calendar dates were not recorded in repository commits prior to October 2026, releases are documented by their verified architectural progression and source code evidence.
+
+---
 
 ### v0.2.1 (October 25, 2026) — Empty New Chat UI Refinement Release
 
@@ -155,6 +167,64 @@ Version **0.1.0** consolidates the Orvix application metadata under a unified ve
 - **Resource & Lifecycle Fixes**: Fixed a premature `URL.revokeObjectURL` cleanup in `ChatArea.jsx` that revoked image attachment `previewUrl` blobs upon message submission; gated the `SpeechContext` 1-second watchdog interval so it runs only while speech is actively playing; and removed hardcoded client-side API key fallbacks in `groqService.js` and `openrouterService.js`.
 
 *(Note: Mobile-specific features such as main-area swipe-to-open navigation and mobile PWA live dictation remain preserved from prior iterations.)*
+
+---
+
+### Earlier Development Releases & Milestones (Recovered History)
+
+The following entries document the verified architectural milestones leading up to the `v0.1.0` consolidation, recovered through codebase analysis, service registries, and historical comments. Exact calendar dates prior to October 2026 are not recorded in repository commits and are intentionally omitted to maintain historical integrity:
+
+#### v0.9.0 / v0.9.4 — Pre-Consolidation Release Split
+- **Context & Evidence**: Documented in `v0.1.0` consolidation notes and service exports (`ServiceRegistry` v1.0.0 in `src/services/index.js`). Represents the transition from standalone feature prototypes into a unified application.
+- **Key Contributions**:
+  - Initial Progressive Web App (PWA) setup with Workbox service worker app-shell precaching (`vite-plugin-pwa`).
+  - WebLLM WebGPU off-thread worker integration experiments (`webllmWorker.js`) for on-device inference.
+  - Multi-part continuation detection and session budgeting (`multiPartResponseService.js`).
+  - Dual-format clipboard formatter generating synchronized rich `text/html` and structured plain text.
+
+#### v0.3 — Multimodal Attachments & Document Extraction Milestone
+- **Context & Evidence**: Verified in `src/services/documentExtractor.js`, `src/services/browserDocumentExtractor.js`, `src/services/imageOcrService.js`, and `api/upload.ts`.
+- **Key Contributions**:
+  - Client-side and server-side document parsing pipelines supporting `.pdf` (`unpdf`), `.docx` (`mammoth`), `.pptx` (`jszip`), `.csv`, `.tsv`, `.json`, `.xml`, and `.txt`.
+  - Server-side image OCR pipeline via `tesseract.js` with binary magic number verification.
+  - Document context augmentation (`prepareDocumentContext`) and character budgeting for LLM prompts.
+  - Document and image preview modal (`DocumentPreviewModal.jsx`) with extracted text inspection and download options.
+
+#### v0.1 — Cloud AI Provider Routing & Specialized Chat Modes Milestone
+- **Context & Evidence**: Verified in `src/services/aiRouter.js`, `src/services/geminiService.js`, `src/services/groqService.js`, `src/services/openrouterService.js`, and `src/config/chatModes.js`.
+- **Key Contributions**:
+  - Multi-provider AI dispatch architecture (`aiRouter.js`) supporting Google Gemini (`gemini-3.8-flash`), Groq (`llama-3.3-70b`), and OpenRouter (`openrouter/free`).
+  - Multi-turn conversation history windowing (`formatConversationHistory`) for bounded context preservation.
+  - Introduction of four specialized conversation modes: **General Assistant**, **Coding**, **Writing**, and **Learning** with dedicated system prompt engineering.
+  - Non-destructive alternative response comparison mechanism (`< X of Y >`).
+
+#### v0.0.3 — Authentication Foundation & User Settings
+- **Context & Evidence**: Verified in `firebase-blueprint.json`, `firestore.rules`, `src/config/firebaseConfig.js`, `src/context/AuthContext.jsx`, `src/components/auth/AuthScreen.jsx`, and `src/services/userProfileService.js`.
+- **Key Contributions**:
+  - Dual-tier persistence: Firebase Authentication and Cloud Firestore synchronization for registered users, alongside offline-ready `localStorage` + `IndexedDB` access for guests.
+  - User personalization settings modal (`SettingsModal.jsx`) supporting custom user name, persona traits, theme selection, and speech synthesis rate.
+  - Firestore security rules and schema enforcement for multi-user isolation.
+
+#### v0.0.2 — Storage Persistence, Theming & Navigation
+- **Context & Evidence**: Verified in `src/services/chatStorageService.js` and `src/styles/index.css`.
+- **Key Contributions**:
+  - Local browser persistence (`localStorage`) for conversation sessions, active chat switching, and auto-saving.
+  - Sidebar navigation drawer with conversation list, search filtering, pinning (up to 5 chats), renaming, and deletion.
+  - Dark mode foundations and cohesive CSS custom property theme tokens.
+
+#### v0.0.1.1 — Intermediate Development Version
+- **Context & Evidence**: Early intermediate revision between initial prototype and persistent storage.
+- **Key Contributions**:
+  - Multi-conversation state management prototype and state transition bug fixes.
+  - Message composer input improvements, multiline textarea auto-expansion, and scroll-to-bottom behavior.
+
+#### v0.0.1 — Initial Chatbot Prototype
+- **Context & Evidence**: Verified in `src/services/mockChatService.js` and `src/config/sampleData.js`.
+- **Key Contributions**:
+  - Initial React single-page application shell powered by Vite.
+  - Basic conversational chat interface with user and assistant message styling.
+  - In-memory mock AI simulation service (`mockChatService.js`) with typing simulation and sample conversation fixtures (`sampleData.js`).
+  - Core Orvix branding and responsive layout shell.
 
 ---
 
