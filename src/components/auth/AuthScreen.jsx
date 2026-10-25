@@ -106,19 +106,22 @@ export default function AuthScreen() {
 
   return (
     <div className="auth-screen-container">
-      <div className="auth-card">
+      <div className="auth-content-wrap">
         {/* Brand Header */}
-        <div className="auth-brand-header">
-          <div className="flex justify-center mb-3" aria-hidden="true">
-            <OrvixLogo size={52} />
+        <header className="auth-brand-header">
+          <div className="auth-logo-badge" aria-hidden="true">
+            <OrvixLogo size={42} />
           </div>
-          <h1 className="auth-brand-title">{APP_CONFIG.name}</h1>
+          <span className="auth-brand-kicker">{APP_CONFIG.name}</span>
+          <h1 className="auth-brand-title">
+            {mode === 'login' ? 'Welcome back' : 'Create your account'}
+          </h1>
           <p className="auth-brand-subtitle">
             {mode === 'login'
               ? 'Sign in to access your intelligent chat workspace'
-              : 'Create your account to start conversations with Orvix'}
+              : 'Get started with fast multimodal AI conversations'}
           </p>
-        </div>
+        </header>
 
         {/* Offline Notice */}
         {isOffline && (
@@ -286,6 +289,13 @@ export default function AuthScreen() {
           </Button>
         </form>
 
+        {/* Subtle Divider */}
+        <div className="auth-divider" role="separator" aria-label="Alternative sign-in method">
+          <span className="auth-divider-line" />
+          <span className="auth-divider-text">or</span>
+          <span className="auth-divider-line" />
+        </div>
+
         {/* Guest Mode Alternative */}
         <div className="auth-guest-section">
           <Button
@@ -301,7 +311,7 @@ export default function AuthScreen() {
         </div>
 
         {/* Footer Switcher */}
-        <div className="auth-card-footer">
+        <footer className="auth-footer">
           {mode === 'login' ? (
             <p>
               Don't have an account?{' '}
@@ -325,7 +335,7 @@ export default function AuthScreen() {
               </button>
             </p>
           )}
-        </div>
+        </footer>
       </div>
     </div>
   );
