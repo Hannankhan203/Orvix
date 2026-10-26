@@ -111,6 +111,7 @@ export async function sendGeminiMessage({
  * @param {string|null} [params.username=null]
  * @param {Object|null} [params.preferences=null]
  * @param {string} [params.mode='general']
+ * @param {string|null} [params.model=null]
  * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
  * @param {AbortSignal} [params.signal]
  * @param {string|null} [params.conversationId=null]
@@ -123,6 +124,7 @@ export async function streamGeminiMessage({
   username = null,
   preferences = null,
   mode = 'general',
+  model = null,
   onChunk,
   signal,
   conversationId = null,
@@ -136,6 +138,7 @@ export async function streamGeminiMessage({
     },
     body: JSON.stringify({
       provider: 'gemini',
+      model: model ? String(model).trim() : null,
       mode,
       prompt,
       history,

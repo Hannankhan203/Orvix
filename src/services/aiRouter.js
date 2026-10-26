@@ -669,7 +669,17 @@ export async function streamAIMessage({
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, onChunk, signal, attachments, conversationId });
+      const result = await streamGeminiMessage({
+        prompt,
+        history,
+        username,
+        mode: normalizedMode,
+        model,
+        onChunk,
+        signal,
+        attachments,
+        conversationId
+      });
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI

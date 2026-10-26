@@ -33,6 +33,8 @@ import uploadServerlessHandler from '../api/upload.ts';
 import transcribeServerlessHandler from '../api/transcribe.ts';
 // @ts-ignore - JS module
 import { streamAIMessage } from '../src/services/aiRouter.js';
+// @ts-ignore - JS module
+import { streamGeminiMessage } from '../src/services/geminiService.js';
 
 let passed = 0;
 let failed = 0;
@@ -129,11 +131,17 @@ async function run() {
     // -------------------------------------------------------------------------
     // 2. End-to-End streamAIMessage (src/services/aiRouter.js) SSE Streaming
     // -------------------------------------------------------------------------
-    console.log('\n--- [2/4] Verifying streamAIMessage (aiRouter.js) SSE Flow ---');
+    console.log('\n--- [2/4] Verifying streamAIMessage & streamGeminiMessage Model Forwarding ---');
 
-    // Route relative `/api/...` fetch calls from aiRouter.js to our test server
+    const capturedChatBodies: any[] = [];
+    // Route relative `/api/...` fetch calls from aiRouter.js and geminiService.js to our test server
     globalThis.fetch = ((input: any, init?: any) => {
       if (typeof input === 'string' && input.startsWith('/')) {
+        if (input === '/api/chat' && init?.body && typeof init.body === 'string') {
+          try {
+            capturedChatBodies.push(JSON.parse(init.body));
+          } catch (_) {}
+        }
         return originalFetch(`${baseUrl}${input}`, init);
       }
       return originalFetch(input, init);
@@ -156,6 +164,73 @@ async function run() {
       'streamAIMessage streams SSE chunks without throwing 401 Unauthorized',
       typeof streamResult?.text === 'string' && streamResult.text.length > 0 && streamedChunks.length > 0,
       `got textLen=${streamResult?.text?.length ?? 0} chunks=${streamedChunks.length}`
+    );
+    assert(
+      'streamAIMessage preserves null model in /api/chat body when no model override is provided',
+      capturedChatBodies.length === 1 && capturedChatBodies[0]?.model === null,
+      `got model=${JSON.stringify(capturedChatBodies[0]?.model)}`
+    );
+
+    await streamAIMessage({
+      provider: 'gemini',
+      model: 'gemini-3.8-flash',
+      mode: 'general',
+      prompt: 'Hello with model override!',
+      history: []
+    } as any);
+    assert(
+      'streamAIMessage forwards explicit Gemini model override in /api/chat body',
+      capturedChatBodies.length === 2 && capturedChatBodies[1]?.model === 'gemini-3.8-flash',
+      `got model=${JSON.stringify(capturedChatBodies[1]?.model)}`
+    );
+
+    await streamGeminiMessage({
+      prompt: 'Direct Gemini stream without model override',
+      history: [],
+      mode: 'general'
+    });
+    assert(
+      'streamGeminiMessage preserves null model in /api/chat body when no model is supplied',
+      capturedChatBodies.length === 3 && capturedChatBodies[2]?.model === null,
+      `got model=${JSON.stringify(capturedChatBodies[2]?.model)}`
+    );
+
+    await streamGeminiMessage({
+      prompt: 'Direct Gemini stream with model override',
+      history: [],
+      mode: 'general',
+      model: 'gemini-3.8-flash'
+    });
+    assert(
+      'streamGeminiMessage forwards explicit model override in /api/chat body',
+      capturedChatBodies.length === 4 && capturedChatBodies[3]?.model === 'gemini-3.8-flash',
+      `got model=${JSON.stringify(capturedChatBodies[3]?.model)}`
+    );
+
+    // Also verify streamAIMessage trims and forwards model override cleanly
+    const trimmedCapturedBodies: any[] = [];
+    globalThis.fetch = ((input: any, init?: any) => {
+      if (typeof input === 'string' && input === '/api/chat' && init?.body && typeof init.body === 'string') {
+        try {
+          trimmedCapturedBodies.push(JSON.parse(init.body));
+        } catch (_) {}
+      }
+      if (typeof input === 'string' && input.startsWith('/')) {
+        return originalFetch(`${baseUrl}${input}`, init);
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    await streamAIMessage({
+      provider: 'gemini',
+      model: '  gemini-3.8-flash  ',
+      mode: 'coding',
+      prompt: 'Verify trimmed model override'
+    } as any);
+    assert(
+      'streamAIMessage trims and forwards model override cleanly',
+      trimmedCapturedBodies.length === 1 && trimmedCapturedBodies[0]?.model === 'gemini-3.8-flash',
+      `got model=${JSON.stringify(trimmedCapturedBodies[0]?.model)}`
     );
 
     // Restore original environment variables immediately after deterministic routing check
