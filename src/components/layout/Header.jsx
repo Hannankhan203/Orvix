@@ -45,9 +45,7 @@ export default function Header({
   onSelectMode,
   onExportMarkdown,
   onExportText,
-  hasExportableMessages = false,
-  desktopToggleRef = null,
-  mobileToggleRef = null
+  hasExportableMessages = false
 }) {
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
@@ -160,15 +158,11 @@ export default function Header({
       <div className="header-desktop-view">
         <div className="header-left">
           <Button
-            ref={desktopToggleRef}
             variant="ghost"
             size="icon"
             onClick={onToggleSidebar}
             title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
             ariaLabel={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-            aria-expanded={sidebarOpen}
-            aria-controls="orvix-sidebar"
-            className="desktop-sidebar-toggle-btn"
             icon={<Menu size={18} />}
           />
 
@@ -280,14 +274,12 @@ export default function Header({
         <div className="header-mobile-top">
           <div className="mobile-top-left">
             <button
-              ref={mobileToggleRef}
               type="button"
               className="mobile-header-btn mobile-menu-btn"
               onClick={onToggleSidebar}
               title={sidebarOpen ? 'Close sidebar' : 'Open chat history'}
               aria-label={sidebarOpen ? 'Close sidebar' : 'Open chat history'}
               aria-expanded={sidebarOpen}
-              aria-controls="orvix-sidebar"
             >
               <Menu size={20} />
             </button>

@@ -1,10 +1,6 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './Sidebar.jsx';
 import Header from './Header.jsx';
-import {
-  evacuateSidebarFocus,
-  isElementVisibleAndFocusable
-} from '../../utils/sidebarFocusManager.js';
 
 /**
  * Layout Component
@@ -53,50 +49,17 @@ export default function Layout({
     return true;
   });
 
-  const sidebarRef = useRef(null);
-  const sidebarCloseBtnRef = useRef(null);
-  const desktopSidebarToggleRef = useRef(null);
-  const mobileSidebarToggleRef = useRef(null);
-  const sidebarOpenRef = useRef(sidebarOpen);
-
-  useEffect(() => {
-    sidebarOpenRef.current = sidebarOpen;
-  }, [sidebarOpen]);
-
-  const restoreFocusOutsideSidebar = useCallback(() => {
-    const fallbackComposer =
-      typeof document !== 'undefined' ? document.querySelector('.composer-textarea') : null;
-    return evacuateSidebarFocus({
-      sidebarEl: sidebarRef.current,
-      desktopToggleEl: desktopSidebarToggleRef.current,
-      mobileToggleEl: mobileSidebarToggleRef.current,
-      fallbackEl: fallbackComposer
-    });
-  }, []);
-
-  const closeSidebar = useCallback(() => {
-    // Move focus out of the sidebar BEFORE hiding it with aria-hidden="true" / inert
-    restoreFocusOutsideSidebar();
-    sidebarOpenRef.current = false;
-    setSidebarOpen(false);
-  }, [restoreFocusOutsideSidebar]);
-
-  const openSidebar = useCallback(() => {
-    sidebarOpenRef.current = true;
-    setSidebarOpen(true);
-  }, []);
-
   // Handle responsive resizing
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth < 768 && sidebarOpenRef.current) {
-        closeSidebar();
+      if (window.innerWidth < 768 && sidebarOpen) {
+        setSidebarOpen(false);
       }
     };
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [closeSidebar]);
+  }, [sidebarOpen]);
 
   // Synchronize visualViewport height & virtual keyboard state on mobile/tablet browsers and PWAs
   useEffect(() => {
@@ -215,56 +178,44 @@ export default function Layout({
     };
   }, [sidebarOpen]);
 
-  // Ensure focus is never trapped inside the collapsed sidebar after any state transition
-  useLayoutEffect(() => {
-    if (!sidebarOpen) {
-      restoreFocusOutsideSidebar();
-    }
-  }, [sidebarOpen, restoreFocusOutsideSidebar]);
-
-  // Move focus into the mobile overlay drawer when opened on small screens
+  // Manage focus when opening/closing the mobile drawer on small screens
   const prevSidebarOpenRef = useRef(sidebarOpen);
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
+    if (typeof window === 'undefined') return;
     const isMobile = window.innerWidth < 768;
-    let frameId = null;
-
-    if (isMobile && !prevSidebarOpenRef.current && sidebarOpen) {
-      frameId = requestAnimationFrame(() => {
-        if (!sidebarOpenRef.current) return;
-        const closeBtn = sidebarCloseBtnRef.current;
-        if (isElementVisibleAndFocusable(closeBtn)) {
-          closeBtn.focus({ preventScroll: true });
-        }
-      });
-    }
-
-    prevSidebarOpenRef.current = sidebarOpen;
-    return () => {
-      if (frameId !== null) {
-        cancelAnimationFrame(frameId);
+    if (isMobile && prevSidebarOpenRef.current !== sidebarOpen) {
+      if (sidebarOpen) {
+        requestAnimationFrame(() => {
+          const sidebarEl = document.querySelector('.chatora-sidebar');
+          const closeBtn = sidebarEl?.querySelector('.sidebar-collapse-btn');
+          closeBtn?.focus({ preventScroll: true });
+        });
+      } else {
+        requestAnimationFrame(() => {
+          const menuBtn = document.querySelector('.mobile-menu-btn');
+          menuBtn?.focus({ preventScroll: true });
+        });
       }
-    };
+    }
+    prevSidebarOpenRef.current = sidebarOpen;
   }, [sidebarOpen]);
 
   // Handle Escape key to close mobile sidebar
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.defaultPrevented) return;
       if (e.key === 'Escape' && sidebarOpen && window.innerWidth < 768) {
-        closeSidebar();
-        if (
-          typeof document !== 'undefined' &&
-          document.activeElement === document.body &&
-          isElementVisibleAndFocusable(mobileSidebarToggleRef.current)
-        ) {
-          mobileSidebarToggleRef.current.focus({ preventScroll: true });
-        }
+        setSidebarOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [sidebarOpen, closeSidebar]);
+  }, [sidebarOpen]);
+
+  // Keep a ref to sidebarOpen to avoid tearing down and re-binding gesture listeners on state updates
+  const sidebarOpenRef = useRef(sidebarOpen);
+  useEffect(() => {
+    sidebarOpenRef.current = sidebarOpen;
+  }, [sidebarOpen]);
 
   // Mobile/Tablet swipe gestures:
   // - Swipe right across main chat viewport to open sidebar when closed
@@ -474,7 +425,7 @@ export default function Layout({
           absX > absY &&
           (deltaX <= -MIN_SWIPE_PX || (deltaX <= -FLICK_DISTANCE_PX && velocityX < -FLICK_VELOCITY));
         if (isQualifyingCloseSwipe) {
-          closeSidebar();
+          setSidebarOpen(false);
         }
       } else {
         // Open sidebar if horizontal swipe crossed threshold or was a fast rightward flick
@@ -484,7 +435,7 @@ export default function Layout({
           (deltaX >= MIN_SWIPE_PX || (deltaX >= FLICK_DISTANCE_PX && velocityX > FLICK_VELOCITY));
 
         if (isQualifyingOpenSwipe) {
-          openSidebar();
+          setSidebarOpen(true);
         }
       }
 
@@ -571,7 +522,7 @@ export default function Layout({
         (deltaX >= MIN_SWIPE_PX || (deltaX >= FLICK_DISTANCE_PX && velocityX > FLICK_VELOCITY));
 
       if (isQualifyingSwipe && !sidebarOpenRef.current) {
-        openSidebar();
+        setSidebarOpen(true);
       }
 
       resetPointerGesture();
@@ -614,22 +565,22 @@ export default function Layout({
 
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [closeSidebar, openSidebar]);
+  }, []);
 
-  const toggleSidebar = useCallback(() => {
-    if (sidebarOpenRef.current) {
-      closeSidebar();
-    } else {
-      openSidebar();
-    }
-  }, [closeSidebar, openSidebar]);
+  const toggleSidebar = () => {
+    setSidebarOpen((prev) => !prev);
+  };
+
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+  };
 
   const handleSelectChat = (chatId) => {
     if (onSelectChat) {
       onSelectChat(chatId);
     }
     if (window.innerWidth < 768) {
-      closeSidebar();
+      setSidebarOpen(false);
     }
   };
 
@@ -638,7 +589,7 @@ export default function Layout({
       onNewChat();
     }
     if (window.innerWidth < 768) {
-      closeSidebar();
+      setSidebarOpen(false);
     }
   };
 
@@ -665,9 +616,6 @@ export default function Layout({
         chatsLoading={chatsLoading}
         isCloudSynced={isCloudSynced}
         isOffline={isOffline}
-        sidebarRef={sidebarRef}
-        closeButtonRef={sidebarCloseBtnRef}
-        onRestoreFocus={restoreFocusOutsideSidebar}
       />
 
       {/* Main Viewport */}
@@ -684,8 +632,6 @@ export default function Layout({
           onExportMarkdown={onExportMarkdown}
           onExportText={onExportText}
           hasExportableMessages={hasExportableMessages}
-          desktopToggleRef={desktopSidebarToggleRef}
-          mobileToggleRef={mobileSidebarToggleRef}
         />
         {children}
       </div>

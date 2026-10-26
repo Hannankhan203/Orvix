@@ -120,10 +120,8 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
 
   if (Array.isArray(message.alternatives) && message.alternatives.length > 0) {
     // Message already has alternatives array; ensure each alternative is well-formed
-    const targetActiveId = message.activeAlternativeId || message.alternatives[0]?.id;
-    alternatives = message.alternatives.map((alt) => {
-      const isTargetActive = alt.id === targetActiveId || message.alternatives.length === 1;
-      return createAlternativeRecord({
+    alternatives = message.alternatives.map((alt) =>
+      createAlternativeRecord({
         id: alt.id,
         parentMessageId: alt.parentMessageId || parentMessageId,
         content: alt.content,
@@ -133,20 +131,10 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
         timestamp: alt.timestamp || message.timestamp,
         createdAt: alt.createdAt,
         referencedAttachments: alt.referencedAttachments || message.referencedAttachments || [],
-        isError:
-          alt.isError !== undefined
-            ? Boolean(alt.isError)
-            : isTargetActive
-              ? Boolean(message.isError)
-              : false,
-        isStopped:
-          alt.isStopped !== undefined
-            ? Boolean(alt.isStopped)
-            : isTargetActive
-              ? Boolean(message.isStopped)
-              : false
-      });
-    });
+        isError: alt.isError,
+        isStopped: alt.isStopped
+      })
+    );
   } else {
     // Legacy message without alternatives: wrap existing message content as Alternative #1
     const initialAltId = message.id ? `alt-${message.id}` : generateAlternativeId(message.provider || 'gemini');
@@ -187,8 +175,6 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
     modelUsed: activeAlt.modelUsed,
     responseTimeMs: activeAlt.responseTimeMs,
     timestamp: activeAlt.timestamp || message.timestamp,
-    isError: Boolean(activeAlt.isError),
-    isStopped: Boolean(activeAlt.isStopped),
     referencedAttachments:
       activeAlt.referencedAttachments && activeAlt.referencedAttachments.length > 0
         ? activeAlt.referencedAttachments
@@ -224,8 +210,6 @@ export function addAlternativeToAssistantMessage(assistantMessage, newAlternativ
     modelUsed: newAlternative.modelUsed,
     responseTimeMs: newAlternative.responseTimeMs,
     timestamp: newAlternative.timestamp,
-    isError: Boolean(newAlternative.isError),
-    isStopped: Boolean(newAlternative.isStopped),
     referencedAttachments:
       newAlternative.referencedAttachments && newAlternative.referencedAttachments.length > 0
         ? newAlternative.referencedAttachments
@@ -235,7 +219,7 @@ export function addAlternativeToAssistantMessage(assistantMessage, newAlternativ
 
 /**
  * Switches the active alternative of an assistant message to targetAlternativeId.
- * Updates projected properties (content, provider, model, responseTimeMs, isStopped, isError) accordingly.
+ * Updates projected properties (content, provider, model, responseTimeMs) accordingly.
  *
  * @param {Object} assistantMessage - Target assistant message
  * @param {string} targetAlternativeId - ID of alternative to make active
@@ -251,19 +235,14 @@ export function switchActiveAlternativeInMessage(assistantMessage, targetAlterna
     return assistantMessage;
   }
 
-  const { requestStartTime: _ignoreStart, ...cleanBase } = assistantMessage;
-
   return {
-    ...cleanBase,
+    ...assistantMessage,
     activeAlternativeId: targetAlternativeId,
     content: targetAlt.content,
     provider: targetAlt.provider,
     modelUsed: targetAlt.modelUsed,
     responseTimeMs: targetAlt.responseTimeMs,
     timestamp: targetAlt.timestamp || assistantMessage.timestamp,
-    isStreaming: false,
-    isError: Boolean(targetAlt.isError),
-    isStopped: Boolean(targetAlt.isStopped),
     referencedAttachments:
       targetAlt.referencedAttachments && targetAlt.referencedAttachments.length > 0
         ? targetAlt.referencedAttachments
@@ -273,7 +252,7 @@ export function switchActiveAlternativeInMessage(assistantMessage, targetAlterna
 
 /**
  * Updates properties of the active alternative inside an assistant message.
- * Also synchronizes root projected properties without leaking transient streaming fields into alternative records.
+ * Also synchronizes root projected properties.
  *
  * @param {Object} assistantMessage
  * @param {Object} updates
@@ -284,17 +263,12 @@ export function updateActiveAlternativeInMessage(assistantMessage, updates = {})
 
   const normalized = normalizeAssistantMessage(assistantMessage);
   const activeId = normalized.activeAlternativeId;
-  const {
-    isStreaming: _ignoreAltStreaming,
-    requestStartTime: _ignoreAltStartTime,
-    ...altUpdates
-  } = updates;
 
   const updatedAlternatives = normalized.alternatives.map((alt) => {
     if (alt.id !== activeId) return alt;
     return {
       ...alt,
-      ...altUpdates,
+      ...updates,
       id: alt.id // Never mutate alternative ID
     };
   });
@@ -310,57 +284,8 @@ export function updateActiveAlternativeInMessage(assistantMessage, updates = {})
     provider: updates.provider || activeAlt.provider,
     modelUsed: updates.modelUsed !== undefined ? updates.modelUsed : activeAlt.modelUsed,
     responseTimeMs:
-      updates.responseTimeMs !== undefined ? updates.responseTimeMs : activeAlt.responseTimeMs,
-    isError:
-      updates.isError !== undefined ? Boolean(updates.isError) : Boolean(activeAlt.isError),
-    isStopped:
-      updates.isStopped !== undefined ? Boolean(updates.isStopped) : Boolean(activeAlt.isStopped)
+      updates.responseTimeMs !== undefined ? updates.responseTimeMs : activeAlt.responseTimeMs
   };
-}
-
-/**
- * Deterministically finalizes an interrupted/user-stopped assistant message:
- * - Preserves partial generated text (or falls back cleanly if stopped before first token)
- * - Clears active streaming & live timer state immediately (`isStreaming: false`, `requestStartTime: undefined`)
- * - Marks `isStopped: true` and ensures `isError: false` / `isInterrupted: false`
- *
- * @param {Object} assistantMessage
- * @param {Object} [options]
- * @param {string} [options.partialContent]
- * @param {string|null} [options.modelUsed]
- * @param {string|null} [options.provider]
- * @returns {Object}
- */
-export function finalizeStoppedAssistantMessage(
-  assistantMessage,
-  { partialContent = '', modelUsed = undefined, provider = undefined } = {}
-) {
-  if (!assistantMessage) return assistantMessage;
-
-  const normalized = normalizeAssistantMessage(assistantMessage);
-  const candidateText =
-    typeof partialContent === 'string' && partialContent.trim().length > 0
-      ? partialContent
-      : typeof normalized.content === 'string' && normalized.content.trim().length > 0
-        ? normalized.content
-        : 'Response generation stopped.';
-
-  const updated = updateActiveAlternativeInMessage(normalized, {
-    content: candidateText,
-    modelUsed: modelUsed !== undefined ? (modelUsed || normalized.modelUsed) : normalized.modelUsed,
-    provider: provider || normalized.provider || 'gemini',
-    responseTimeMs: null,
-    isStreaming: false,
-    isStopped: true,
-    isError: false,
-    isInterrupted: false,
-    failedPrompt: undefined,
-    failedProvider: undefined,
-    referencedAttachments: undefined
-  });
-
-  const { requestStartTime: _ignoreStart, ...finalized } = updated;
-  return finalized;
 }
 
 /**
@@ -391,17 +316,12 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
 
   const normalized = normalizeAssistantMessage(assistantMessage);
   const targetAlternativeId = targetId || normalized.activeAlternativeId;
-  const {
-    isStreaming: _ignoreAltStreaming,
-    requestStartTime: _ignoreAltStartTime,
-    ...altUpdates
-  } = updates;
 
   const updatedAlternatives = normalized.alternatives.map((alt) => {
     if (alt.id !== targetAlternativeId) return alt;
     return {
       ...alt,
-      ...altUpdates,
+      ...updates,
       id: alt.id // Never mutate alternative ID
     };
   });
@@ -419,15 +339,13 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
     content: activeAlt.content,
     provider: activeAlt.provider,
     modelUsed: activeAlt.modelUsed,
-    responseTimeMs: activeAlt.responseTimeMs,
-    isError: Boolean(activeAlt.isError),
-    isStopped: Boolean(activeAlt.isStopped)
+    responseTimeMs: activeAlt.responseTimeMs
   };
 }
 
 /**
  * Normalizes all messages in a conversation so all assistant messages
- * have parentMessageId, valid alternatives array, and no stale streaming state on reload.
+ * have parentMessageId and valid alternatives array.
  *
  * @param {Array} messages - Full conversation messages array
  * @returns {Array} Normalized messages array
@@ -445,11 +363,7 @@ export function ensureConversationAlternatives(messages = []) {
 
     if (msg.sender === 'assistant') {
       const normalized = normalizeAssistantMessage(msg, lastUserMessage);
-      const { requestStartTime: _ignoreStart, ...cleanRestored } = normalized;
-      return {
-        ...cleanRestored,
-        isStreaming: false
-      };
+      return normalized;
     }
 
     return msg;

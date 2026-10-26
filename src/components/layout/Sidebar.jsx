@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Plus, ChevronLeft, X, MessageSquare, LogOut, Loader2, Cloud, CloudOff, Pin, Sliders, Search, Download } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import SidebarChatItem from './SidebarChatItem.jsx';
@@ -14,50 +14,18 @@ export default function Sidebar({
   onNewChat,
   recentChats = [],
   activeChatId = null,
-  onSelectChat = null,
-  onRenameChat = null,
-  onDeleteChat = null,
-  onTogglePin = null,
+  onSelectChat,
+  onRenameChat,
+  onDeleteChat,
+  onTogglePin,
   chatsLoading = false,
   isCloudSynced = false,
-  isOffline = false,
-  sidebarRef = null,
-  closeButtonRef = null,
-  onRestoreFocus = null
+  isOffline = false
 }) {
   const { currentUser, username, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
   const { isInstallable, install } = usePWAInstall();
   const [searchQuery, setSearchQuery] = useState('');
-  const internalSidebarRef = useRef(null);
-
-  const setSidebarNode = useCallback(
-    (node) => {
-      internalSidebarRef.current = node;
-      if (typeof sidebarRef === 'function') {
-        sidebarRef(node);
-      } else if (sidebarRef && typeof sidebarRef === 'object') {
-        sidebarRef.current = node;
-      }
-    },
-    [sidebarRef]
-  );
-
-  // Defensive guard: if isOpen becomes false externally while a descendant still holds focus,
-  // immediately evacuate focus out of the hidden sidebar before paint.
-  useLayoutEffect(() => {
-    if (isOpen || typeof document === 'undefined') return;
-    const asideEl = internalSidebarRef.current;
-    const activeEl = document.activeElement;
-    if (asideEl && activeEl && asideEl.contains(activeEl)) {
-      if (typeof onRestoreFocus === 'function') {
-        onRestoreFocus();
-      }
-      if (asideEl.contains(document.activeElement) && typeof activeEl.blur === 'function') {
-        activeEl.blur();
-      }
-    }
-  }, [isOpen, onRestoreFocus]);
 
   const handleLogout = async () => {
     try {
@@ -88,12 +56,9 @@ export default function Sidebar({
 
   return (
     <aside
-      id="orvix-sidebar"
-      ref={setSidebarNode}
       className={`chatora-sidebar ${!isOpen ? 'collapsed' : ''}`}
       aria-label="Sidebar navigation"
       aria-hidden={!isOpen ? 'true' : undefined}
-      inert={!isOpen}
     >
       {/* Branding & Collapse Toggle */}
       <div className="sidebar-header">
@@ -103,7 +68,6 @@ export default function Sidebar({
         </div>
 
         <Button
-          ref={closeButtonRef}
           variant="ghost"
           size="icon"
           onClick={onClose}

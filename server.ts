@@ -1,8 +1,5 @@
-import dotenv from 'dotenv';
-if (process.env.TESTING !== 'true') {
-  dotenv.config({ override: false });
-}
 import express from 'express';
+import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -40,36 +37,6 @@ import {
 } from './src/services/multiPartResponseService.js';
 // @ts-ignore - Context-aware spoken transcript polisher
 import { polishSpokenTranscript } from './src/utils/speechTextCleaner.js';
-import {
-  connectToDatabase,
-  getMongoStatus,
-  closeDatabase,
-  isMongoConfigured,
-  getDatabaseName
-} from './src/db/mongodb.ts';
-import {
-  setupBackendMongoIndexes,
-  getBackendMongoSummary,
-  validateUserId,
-  validateConversationId
-} from './src/services/backendMongoService.ts';
-import {
-  initializeFirebaseAdmin,
-  isFirebaseAdminConfigured,
-  getFirebaseAdminDiagnostic
-} from './src/services/firebaseAdminService.ts';
-import {
-  requireAuth,
-  optionalAuth,
-  type AuthenticatedUser
-} from './src/middleware/authMiddleware.ts';
-import { mongoApiRouter } from './src/routes/mongoApiRoutes.ts';
-
-// Safe server-side Firebase Admin initialization (non-blocking)
-initializeFirebaseAdmin();
-
-
-
 
 export interface DocumentData {
   fileId?: string;
@@ -154,9 +121,7 @@ export interface DocumentExtractionResult {
   extractedAt: string;
 }
 
-if (process.env.TESTING !== 'true') {
-  dotenv.config({ override: false });
-}
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -169,7 +134,7 @@ const PORT = Number(portFromArg) || Number(process.env.PORT) || 3000;
 // Permissive CORS middleware for cross-origin and Vercel preview environments
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -1045,60 +1010,9 @@ app.get(['/api/config', '/config'], (_req, res) => {
     ollamaConfigured: true,
     ollamaSupported: true,
     whisperConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') || Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
-    whisperProvider: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') ? 'groq' : (Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') ? 'gemini' : null),
-    mongodbConfigured: isMongoConfigured(),
-    mongodbDatabase: getDatabaseName(),
-    firebaseAdminConfigured: isFirebaseAdminConfigured()
+    whisperProvider: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') ? 'groq' : (Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') ? 'gemini' : null)
   });
 });
-
-// API MongoDB Atlas Diagnostic & Connection Status
-app.get(['/api/db/status', '/api/mongodb/status'], async (req, res) => {
-  if (req.query.connect === 'true' && isMongoConfigured()) {
-    await connectToDatabase().catch(() => {});
-  }
-  const status = await getMongoStatus();
-  const summary = await getBackendMongoSummary();
-  res.json({
-    status: status.isConnected ? 'connected' : (status.isConfigured ? 'disconnected' : 'unconfigured'),
-    ...status,
-    readiness: summary.collections,
-    authBoundary: summary.authBoundary
-  });
-});
-
-// API MongoDB Atlas Full Readiness Summary
-app.get(['/api/db/summary', '/api/mongodb/summary'], async (_req, res) => {
-  const summary = await getBackendMongoSummary();
-  res.json(summary);
-});
-
-// Safe Firebase Admin Diagnostic Status Endpoint
-// Returns configuration source, project ID match, and non-sensitive diagnostic error without exposing keys
-app.get(['/api/auth/status', '/api/auth/diagnostic'], (_req, res) => {
-  res.json(getFirebaseAdminDiagnostic());
-});
-
-// Dedicated Firebase Auth Token Verification Check (Phase 3 Step 1)
-// Verifies Bearer ID token cryptographically and returns authenticated user identity
-app.get('/api/auth/verify', requireAuth, (req, res) => {
-  res.json({
-    status: 'authenticated',
-    message: 'Firebase ID token verified successfully.',
-    user: {
-      uid: req.user?.uid,
-      email: req.user?.email,
-      emailVerified: req.user?.emailVerified,
-      name: req.user?.name
-    }
-  });
-});
-
-// Authenticated MongoDB User-Data API Router (Phase 3 Step 2)
-// Derives user identity exclusively from cryptographically verified req.user.uid
-// Enforces ownership checks on every user, conversation, message, and settings operation
-app.use('/api', mongoApiRouter);
-
 
 /* ==========================================================================
    Controlled Temporary File Upload & Storage Management Architecture
@@ -2251,7 +2165,7 @@ Spoken transcript:
                 setTimeout(() => reject(new Error('Refine timeout')), 6000)
               );
               const genPromise = ai.models.generateContent({
-                model: 'gemini-3.8-flash',
+                model: 'gemini-2.5-flash',
                 contents: [{ role: 'user', parts: [{ text: refinePrompt }] }]
               });
               const geminiRes = await Promise.race([genPromise, timeoutPromise]);
@@ -2440,7 +2354,7 @@ ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
         const geminiRes = await ai.models.generateContent({
-          model: 'gemini-3.5-transcribe',
+          model: 'gemini-2.5-flash',
           contents: [
             {
               role: 'user',
@@ -2463,7 +2377,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           text,
           language: isoLang || 'en',
           duration: 0,
-          model: 'gemini-3.5-transcribe',
+          model: 'gemini-2.5-flash',
           provider: 'gemini',
           highAccuracy: true
         });
@@ -2471,7 +2385,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
         logAIDiagnostic({
           category: 'provider API error',
           provider: 'gemini',
-          model: 'gemini-3.5-transcribe',
+          model: 'gemini-2.5-flash',
           phase: 'dispatch',
           sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
         });
@@ -2867,7 +2781,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.8-flash (demo)';
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.1-flash-lite (demo)';
         if (!shouldStream) {
           return res.json({
             text,
@@ -2964,12 +2878,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       const requestedGeminiModel =
         typeof clientModel === 'string' && clientModel.trim()
           ? clientModel.trim()
-          : 'gemini-3.5-flash-lite';
+          : 'gemini-3.1-flash-lite';
 
       const attemptPlan = [
         { model: requestedGeminiModel, attemptNum: 1 },
-        { model: requestedGeminiModel === 'gemini-3.5-flash-lite' ? 'gemini-3.8-flash' : 'gemini-3.5-flash-lite', attemptNum: 2 },
-        { model: 'gemini-3.6-flash', attemptNum: 3 }
+        { model: requestedGeminiModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash', attemptNum: 2 },
+        { model: 'gemini-flash-latest', attemptNum: 3 }
       ];
       const maxAttempts = attemptPlan.length;
 
@@ -4998,28 +4912,6 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   }
 });
 
-// Database offline route-level error middleware (Phase 3 Step 3.4D-1)
-// Fails explicitly with HTTP 503 instead of silently returning mock empty objects or arrays
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (
-    err?.name === 'MongooseError' ||
-    err?.name === 'MongoNetworkError' ||
-    err?.name === 'MongoServerSelectionError' ||
-    err?.name === 'MongoNotConnectedError' ||
-    err?.code === 'DATABASE_NOT_CONNECTED' ||
-    err?.message?.includes('buffering timed out') ||
-    err?.message?.includes('MongoDB is not connected') ||
-    err?.message?.includes('Database connection required')
-  ) {
-    console.warn('[MongoDB] Database offline/unavailable error caught in middleware:', err?.message || err);
-    return res.status(503).json({
-      error: 'Service temporarily unavailable (database offline)',
-      code: 'DATABASE_UNAVAILABLE'
-    });
-  }
-  next(err);
-});
-
 // Setup Vite middleware in dev or static serving in production
 async function startServer() {
   const publicPath = path.resolve(__dirname, 'public');
@@ -5044,30 +4936,6 @@ async function startServer() {
     console.log(`Orvix server running on http://0.0.0.0:${PORT}`);
   });
 
-  // Connect to MongoDB Atlas in background if configured, without blocking server boot
-  if (isMongoConfigured()) {
-    connectToDatabase()
-      .then(async (db) => {
-        if (db) {
-          await setupBackendMongoIndexes();
-          console.log('[MongoDB] Collection indexes verified successfully.');
-        }
-      })
-      .catch((err) => {
-        console.warn('[MongoDB] Non-fatal background connection warning:', err?.message || err);
-      });
-  } else {
-    console.log('[MongoDB] MONGODB_URI not configured. Database connection is dormant.');
-  }
-
-  // Graceful shutdown hooks
-  const shutdown = async () => {
-    await closeDatabase();
-    process.exit(0);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-
   // Eliminate artificial HTTP timeouts to allow long-running streams (60s, 90s, 5m+)
   httpServer.timeout = 0;
   httpServer.requestTimeout = 0;
@@ -5079,4 +4947,4 @@ if (!process.env.VERCEL && !process.env.TESTING) {
   startServer();
 }
 
-export { app, requireAuth, optionalAuth };
+export { app };

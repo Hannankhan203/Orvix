@@ -1144,11 +1144,6 @@ html, body {
   background-color: var(--bg-card);
 }
 
-.mobile-header-btn:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
-}
-
 .mobile-brand-badge {
   display: flex;
   align-items: center;

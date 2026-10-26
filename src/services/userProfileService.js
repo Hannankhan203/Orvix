@@ -1,14 +1,12 @@
 /**
  * Orvix User Profile Service
- * Handles user profile persistence in MongoDB Atlas via the authenticated Express API (/api/users/me),
- * username validation, local storage caching, and synchronization with Firebase Auth.
- *
- * Phase 3, Step 3.1: Migrated from direct Firestore operations to authenticated Express/MongoDB API.
+ * Handles user profile persistence in Cloud Firestore under /users/{userId},
+ * username validation, and synchronization with Firebase Auth.
  */
 
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { updateProfile } from 'firebase/auth';
-import { auth, isBrowserOnline } from '../config/firebaseConfig.js';
-import { getIdToken } from './authService.js';
+import { db, auth, isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
 
 function getProfileCacheKey(userId) {
   return `orvix_user_profile_${userId}`;
@@ -26,7 +24,7 @@ export function getCachedUserProfile(userId) {
   }
 }
 
-export function saveCachedUserProfile(userId, profile) {
+function saveCachedUserProfile(userId, profile) {
   if (!userId || !profile || typeof window === 'undefined') return;
   try {
     localStorage.setItem(getProfileCacheKey(userId), JSON.stringify(profile));
@@ -83,22 +81,9 @@ export function validateUsername(username) {
   return { isValid: true, sanitized };
 }
 
-export {
-  setAuthTokenProviderForTesting,
-  resolveAuthToken,
-  getApiEndpoint,
-  authorizedApiFetch
-} from './mongoApiClient.js';
-import {
-  setAuthTokenProviderForTesting,
-  resolveAuthToken,
-  getApiEndpoint,
-  authorizedApiFetch
-} from './mongoApiClient.js';
-
 /**
- * Fetches the user's persistent profile document from MongoDB via Express API (with local offline cache).
- * @param {string} userId - Authenticated user UID (or guest identifier)
+ * Fetches the user's persistent profile document from Cloud Firestore (with local offline cache).
+ * @param {string} userId - Authenticated user UID
  * @returns {Promise<{ uid: string, username?: string, email?: string } | null>}
  */
 export async function getUserProfile(userId) {
@@ -106,57 +91,41 @@ export async function getUserProfile(userId) {
 
   const cached = getCachedUserProfile(userId);
 
-  // Guest users or offline browser environment: immediately return local cache
-  if (userId.startsWith('guest-') || !isBrowserOnline()) {
+  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
     return cached;
   }
 
   try {
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const profileRef = doc(db, 'users', userId);
     let timer = null;
-    if (controller) {
-      timer = setTimeout(() => controller.abort(), 4000);
-    }
-
-    const { res: response } = await authorizedApiFetch(
-      '/api/users/me',
-      {
-        method: 'GET',
-        signal: controller ? controller.signal : undefined
-      }
-    ).finally(() => {
+    const snap = await Promise.race([
+      getDoc(profileRef),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Profile fetch timed out')), 4000);
+      })
+    ]).finally(() => {
       if (timer) clearTimeout(timer);
     });
 
-    if (response) {
-      if (response.ok) {
-        const data = await response.json();
-        if (data?.user) {
-          const profile = {
-            uid: data.user.uid || userId,
-            username: data.user.username || '',
-            email: data.user.email || ''
-          };
-          saveCachedUserProfile(userId, profile);
-          return profile;
-        }
-      } else if (response.status === 404) {
-        // User is authenticated in Firebase but no profile document exists yet in MongoDB.
-        // Return cached if available, else null so caller can create one or fallback to displayName.
-        return cached || null;
-      } else {
-        console.warn(`[UserProfileService] Profile fetch returned HTTP ${response.status}`);
-      }
+    if (snap && snap.exists()) {
+      const data = snap.data();
+      const profile = {
+        uid: userId,
+        username: data.username || '',
+        email: data.email || ''
+      };
+      saveCachedUserProfile(userId, profile);
+      return profile;
     }
   } catch (err) {
-    console.warn('Could not retrieve user profile from backend API, using local cache if available:', err?.message || err);
+    console.warn('Could not retrieve user profile from Firestore, using local cache if available:', err?.message || err);
   }
 
   return cached;
 }
 
 /**
- * Persists the user profile to MongoDB Atlas via Express API and syncs displayName with Firebase Auth.
+ * Persists the user profile to Firestore and syncs displayName with Firebase Auth.
  * @param {string} userId - Authenticated user UID
  * @param {Object} data
  * @param {string} data.username
@@ -169,89 +138,62 @@ export async function saveUserProfile(userId, { username, email = '' }) {
     throw new Error(error);
   }
 
-  const existingCached = userId ? getCachedUserProfile(userId) : null;
-  const effectiveEmail = email || existingCached?.email || auth?.currentUser?.email || '';
-
-  // 1. Immediately update local cache for instant UI feedback and offline continuity
   if (userId) {
     saveCachedUserProfile(userId, {
       uid: userId,
       username: sanitized,
-      email: effectiveEmail
+      email: email || ''
     });
   }
 
-  // 2. Sync with Firebase Authentication profile displayName if active
-  if (auth?.currentUser && (auth.currentUser.uid === userId || !userId)) {
+  if (!isBrowserOnline()) {
+    return;
+  }
+
+  // 1. Sync with Firebase Authentication profile displayName if active
+  if (auth?.currentUser && auth.currentUser.uid === userId) {
     try {
       await updateProfile(auth.currentUser, {
         displayName: sanitized
       });
     } catch (authErr) {
-      console.warn('Could not update Firebase Auth displayName:', authErr?.message || authErr);
+      console.warn('Could not update Firebase Auth displayName:', authErr);
     }
   }
 
-  // 3. Guest sessions: guest data remains in local cache/sessionStorage only
-  if (userId?.startsWith('guest-') || auth?.currentUser?.isAnonymous) {
+  // 2. Persist to Cloud Firestore under /users/{userId}
+  if (!db || !isFirebaseConfigured() || !userId) {
     return;
   }
 
-  // 4. Offline mode: local cache updated, defer cloud write without crashing
-  if (!isBrowserOnline()) {
-    return;
-  }
-
-  // 5. Persist to MongoDB via Express API (PUT /api/users/me)
-  // Identity is derived exclusively from the verified token on the server
   try {
-    const { res: response, token } = await authorizedApiFetch('/api/users/me', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        username: sanitized,
-        email: effectiveEmail
-      })
-    });
+    const profileRef = doc(db, 'users', userId);
+    const existingSnap = await getDoc(profileRef);
 
-    if (!token || !response) {
-      // If user is not yet fully authenticated with a valid token, local cache and auth displayName are saved
-      return;
-    }
-
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.user) {
-        saveCachedUserProfile(userId, {
-          uid: data.user.uid || userId,
-          username: data.user.username,
-          email: data.user.email || ''
-        });
-      }
+    if (existingSnap.exists()) {
+      await setDoc(
+        profileRef,
+        {
+          uid: userId,
+          username: sanitized,
+          email: email || existingSnap.data()?.email || '',
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
     } else {
-      let errMsg = '';
-      try {
-        const errJson = await response.json();
-        errMsg = errJson?.error || `HTTP ${response.status}`;
-      } catch (_) {
-        errMsg = `HTTP ${response.status}`;
-      }
-
-      if (response.status === 400) {
-        throw new Error(errMsg || 'Invalid username provided.');
-      } else if (response.status === 401 || response.status === 403) {
-        throw new Error(`Authentication required to save profile: ${errMsg}`);
-      } else {
-        // Server 500 / 503 / temporary maintenance: log warning, do not crash UI
-        console.warn(`[UserProfileService] Could not persist profile to MongoDB (HTTP ${response.status}): ${errMsg}`);
-      }
+      await setDoc(profileRef, {
+        uid: userId,
+        username: sanitized,
+        email: email || '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
     }
-  } catch (apiErr) {
-    if (apiErr?.message?.includes('Invalid username') || apiErr?.message?.includes('Authentication required')) {
-      throw apiErr;
-    }
-    console.warn('Network error while saving profile to backend API:', apiErr?.message || apiErr);
+  } catch (firestoreErr) {
+    console.error('Failed to save profile to Firestore:', firestoreErr);
+    throw new Error(
+      `Failed to save username to cloud storage: ${firestoreErr?.message || firestoreErr}`
+    );
   }
 }

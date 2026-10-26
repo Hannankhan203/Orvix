@@ -107,27 +107,3 @@ export function onAuthChange(callback) {
   }
   return onAuthStateChanged(auth, callback);
 }
-
-/**
- * Retrieves the current user's Firebase Auth ID token for authenticating backend requests.
- * @param {boolean} [forceRefresh=false]
- * @returns {Promise<string|null>}
- */
-export async function getIdToken(forceRefresh = false) {
-  if (!auth || !auth.currentUser) return null;
-  try {
-    return await auth.currentUser.getIdToken(forceRefresh);
-  } catch (err) {
-    console.warn('Failed to retrieve Firebase ID token:', err?.message || err);
-    return null;
-  }
-}
-
-export {
-  authorizedApiFetch,
-  resolveAuthToken,
-  getApiEndpoint,
-  setAuthTokenProviderForTesting
-} from './mongoApiClient.js';
-
-
