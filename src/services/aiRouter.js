@@ -375,7 +375,14 @@ export async function streamAIMessage({
         let finalProvider = normalizedProvider;
         let receivedDone = false;
 
+        const createAbortError = () => {
+          const abortErr = new Error('Generation cancelled by user.');
+          abortErr.name = 'AbortError';
+          return abortErr;
+        };
+
         const handleSSELine = (line) => {
+          if (signal?.aborted) return null;
           const trimmed = line.trim();
           // Transparently ignore keep-alive heartbeats (lines starting with ':') and blank lines
           if (!trimmed || trimmed.startsWith(':')) return null;
@@ -387,14 +394,17 @@ export async function streamAIMessage({
           }
           try {
             const data = JSON.parse(dataStr);
+            if (signal?.aborted) return null;
             if (data.type === 'start') {
               modelUsed = data.modelUsed;
               finalProvider = data.provider || normalizedProvider;
               onStart?.({ modelUsed, provider: finalProvider });
             } else if (data.type === 'chunk' && data.text) {
+              if (signal?.aborted) return null;
               accumulatedText += data.text;
               onChunk?.(data.text, accumulatedText);
             } else if (data.type === 'done') {
+              if (signal?.aborted) return null;
               receivedDone = true;
               if (data.modelUsed) modelUsed = data.modelUsed;
               if (data.provider) finalProvider = data.provider;
@@ -428,9 +438,33 @@ export async function streamAIMessage({
           return null;
         };
 
+        const handleSignalAbort = () => {
+          try {
+            Promise.resolve(reader.cancel()).catch(() => {});
+          } catch (_) {}
+        };
+
+        if (signal) {
+          if (signal.aborted) {
+            handleSignalAbort();
+            reader.releaseLock();
+            throw createAbortError();
+          }
+          signal.addEventListener('abort', handleSignalAbort, { once: true });
+        }
+
         try {
           while (true) {
+            if (signal?.aborted) {
+              throw createAbortError();
+            }
+
             const { done, value } = await reader.read();
+
+            if (signal?.aborted) {
+              throw createAbortError();
+            }
+
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
@@ -438,11 +472,18 @@ export async function streamAIMessage({
             buffer = lines.pop() || '';
 
             for (const line of lines) {
+              if (signal?.aborted) {
+                throw createAbortError();
+              }
               const res = handleSSELine(line);
               if (res?.result) {
                 return res.result;
               }
             }
+          }
+
+          if (signal?.aborted) {
+            throw createAbortError();
           }
 
           // Process any trailing bytes and buffered events
@@ -453,11 +494,19 @@ export async function streamAIMessage({
           if (buffer) {
             const trailingLines = buffer.split('\n');
             for (const tLine of trailingLines) {
+              if (signal?.aborted) {
+                throw createAbortError();
+              }
               const res = handleSSELine(tLine);
               if (res?.result) {
                 return res.result;
               }
             }
+          }
+
+          // If the client explicitly requested cancellation, stop cleanly before treating stream as done
+          if (signal?.aborted) {
+            throw createAbortError();
           }
 
           // If standard completion was signaled
@@ -467,13 +516,6 @@ export async function streamAIMessage({
               modelUsed: modelUsed || 'AI Model',
               provider: finalProvider
             };
-          }
-
-          // If the client explicitly requested cancellation, stop cleanly
-          if (signal?.aborted) {
-            const abortErr = new Error('Generation cancelled by user.');
-            abortErr.name = 'AbortError';
-            throw abortErr;
           }
 
           // If the connection was abruptly dropped mid-stream (e.g. Vercel Hobby 60s serverless execution limit
@@ -494,10 +536,12 @@ export async function streamAIMessage({
               username,
               preferences,
               onChunk: (chunkText) => {
+                if (signal?.aborted) return;
                 accumulatedText += chunkText;
                 onChunk?.(chunkText, accumulatedText);
               },
               onStart: (info) => {
+                if (signal?.aborted) return;
                 if (info?.modelUsed) modelUsed = info.modelUsed;
               },
               signal,
@@ -525,11 +569,21 @@ export async function streamAIMessage({
             provider: finalProvider
           };
         } finally {
-          reader.releaseLock();
+          if (signal) {
+            signal.removeEventListener('abort', handleSignalAbort);
+          }
+          try {
+            reader.releaseLock();
+          } catch (_) {}
         }
       } else {
         // Non-streaming response fallback
         const data = await res.json();
+        if (signal?.aborted) {
+          const abortErr = new Error('Generation cancelled by user.');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
         onChunk?.(data.text, data.text);
         return {
           text: data.text,
@@ -538,7 +592,7 @@ export async function streamAIMessage({
         };
       }
     } catch (apiErr) {
-      if (signal?.aborted) throw apiErr;
+      if (signal?.aborted || apiErr?.name === 'AbortError') throw apiErr;
 
       if (apiErr?.retryable && clientAttempt < maxClientAttempts) {
         const delay = 1000 + Math.random() * 500;

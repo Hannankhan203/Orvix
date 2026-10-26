@@ -1,14 +1,17 @@
 /**
  * Orvix User Settings Service
  * Manages personal preferences persistence:
- * - Signed-in users: Persisted to Cloud Firestore under /users/{userId}/settings/preferences, cached locally in user-scoped storage
- * - Guest explorers: Persisted strictly to local storage
- * - Restores default settings if missing or corrupt
- * - Isolates preferences between different user accounts
+ * - Registered users: Persisted to MongoDB Atlas via authenticated Express API (/api/user-settings/me)
+ *   and cached in user-scoped local storage for instant render and offline continuity
+ * - Guest explorers: Persisted strictly to local storage without requiring authentication or MongoDB
+ * - Restores default settings if missing, partial, or corrupted
+ * - Strict per-user isolation: identity derived exclusively from verified backend token
+ *
+ * Phase 3, Step 3.2: Migrated from direct Cloud Firestore access to authenticated Express/MongoDB API.
  */
 
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db, isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
+import { auth, isBrowserOnline } from '../config/firebaseConfig.js';
+import { getIdToken } from './authService.js';
 
 export const DEFAULT_SETTINGS = {
   theme: 'system', // 'light' | 'dark' | 'system'
@@ -105,12 +108,12 @@ export function sanitizeSettings(raw) {
 
 /**
  * Helper to get the local storage key for a user or guest.
- * Enforces per-user data isolation.
+ * Enforces per-user data isolation in local storage.
  *
  * @param {string|null} userId
  * @returns {string}
  */
-function getStorageKey(userId) {
+export function getStorageKey(userId) {
   if (userId && !userId.startsWith('guest-')) {
     return `orvix_user_settings_${userId}`;
   }
@@ -137,8 +140,22 @@ export function resolveEffectiveTheme(theme) {
   return 'dark';
 }
 
+export {
+  setAuthTokenProviderForTesting,
+  resolveAuthToken,
+  getApiEndpoint,
+  authorizedApiFetch
+} from './mongoApiClient.js';
+import {
+  setAuthTokenProviderForTesting,
+  resolveAuthToken,
+  getApiEndpoint,
+  authorizedApiFetch
+} from './mongoApiClient.js';
+
 /**
  * Loads preferences for the given user ID (or guest).
+ * Checks local cache first for instant synchronous render, then syncs with MongoDB if online.
  *
  * @param {string|null} userId
  * @returns {Promise<typeof DEFAULT_SETTINGS>}
@@ -160,27 +177,49 @@ export async function loadSettings(userId = null) {
     console.warn('Could not read settings from local storage:', err);
   }
 
-  // 2. For registered users with Firebase active and online, attempt cloud retrieval
-  if (isRegisteredUser && isFirebaseConfigured() && db && isBrowserOnline()) {
+  // 2. For registered users who are online, fetch from authenticated MongoDB API (/api/user-settings/me)
+  if (isRegisteredUser && isBrowserOnline()) {
     try {
-      const settingsRef = doc(db, 'users', userId, 'settings', 'preferences');
-      const snap = await getDoc(settingsRef);
-
-      if (snap.exists()) {
-        const cloudData = snap.data();
-        const sanitized = sanitizeSettings(cloudData);
-
-        // Update local cache
-        try {
-          if (typeof window !== 'undefined') {
-            localStorage.setItem(storageKey, JSON.stringify(sanitized));
-          }
-        } catch (_) {}
-
-        return sanitized;
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      let timer = null;
+      if (controller) {
+        timer = setTimeout(() => controller.abort(), 4000);
       }
-    } catch (cloudErr) {
-      console.warn('Could not fetch settings from Firestore, falling back to local cache:', cloudErr);
+
+      const { res: response } = await authorizedApiFetch(
+        '/api/user-settings/me',
+        {
+          method: 'GET',
+          signal: controller ? controller.signal : undefined
+        }
+      ).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+
+      if (response) {
+        if (response.ok) {
+          const data = await response.json();
+          if (data?.settings) {
+            const sanitized = sanitizeSettings(data.settings);
+
+            // Update local cache for offline continuity and instant future render
+            try {
+              if (typeof window !== 'undefined') {
+                localStorage.setItem(storageKey, JSON.stringify(sanitized));
+              }
+            } catch (_) {}
+
+            return sanitized;
+          }
+        } else if (response.status === 404) {
+          // No settings document in database yet; fallback to local settings or defaults
+          return localSettings || { ...DEFAULT_SETTINGS };
+        } else {
+          console.warn(`[UserSettingsService] Settings fetch returned HTTP ${response.status}`);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch settings from MongoDB API, using local cache:', err?.message || err);
     }
   }
 
@@ -190,22 +229,38 @@ export async function loadSettings(userId = null) {
 
 /**
  * Saves preferences for the given user ID (or guest).
+ * Immediately updates local storage, then persists to MongoDB Atlas via Express API (/api/user-settings/me).
  *
  * @param {string|null} userId
  * @param {Partial<typeof DEFAULT_SETTINGS>} partialSettings
- * @param {typeof DEFAULT_SETTINGS} [currentSettings]
+ * @param {typeof DEFAULT_SETTINGS} [currentSettings=DEFAULT_SETTINGS]
  * @returns {Promise<typeof DEFAULT_SETTINGS>}
  */
-export async function saveSettings(userId = null, partialSettings, currentSettings = DEFAULT_SETTINGS) {
-  const merged = {
-    ...currentSettings,
-    ...partialSettings
-  };
-  const sanitized = sanitizeSettings(merged);
+export async function saveSettings(userId = null, partialSettings = {}, currentSettings = DEFAULT_SETTINGS) {
   const storageKey = getStorageKey(userId);
   const isRegisteredUser = Boolean(userId && !userId.startsWith('guest-'));
 
-  // 1. Always update local storage first
+  // If currentSettings was not explicitly customized by caller, inspect local cache first
+  // to ensure partial updates do not accidentally reset other previously saved fields
+  let baseSettings = currentSettings;
+  if (baseSettings === DEFAULT_SETTINGS) {
+    try {
+      if (typeof window !== 'undefined') {
+        const stored = localStorage.getItem(storageKey);
+        if (stored) {
+          baseSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+        }
+      }
+    } catch (_) {}
+  }
+
+  const merged = {
+    ...baseSettings,
+    ...partialSettings
+  };
+  const sanitized = sanitizeSettings(merged);
+
+  // 1. Immediately update local storage for instantaneous UI response & offline persistence
   try {
     if (typeof window !== 'undefined') {
       localStorage.setItem(storageKey, JSON.stringify(sanitized));
@@ -214,21 +269,63 @@ export async function saveSettings(userId = null, partialSettings, currentSettin
     console.warn('Could not save settings locally:', localErr);
   }
 
-  // 2. Persist to Firestore for registered users if configured and online
-  if (isRegisteredUser && isFirebaseConfigured() && db && isBrowserOnline()) {
-    try {
-      const settingsRef = doc(db, 'users', userId, 'settings', 'preferences');
-      await setDoc(
-        settingsRef,
-        {
-          ...sanitized,
-          updatedAt: serverTimestamp()
+  // 2. Guest explorers: persist strictly to local storage without server requests
+  if (!isRegisteredUser) {
+    return sanitized;
+  }
+
+  // 3. Offline mode: local cache updated, defer server write without crashing
+  if (!isBrowserOnline()) {
+    return sanitized;
+  }
+
+  // 5. Persist to MongoDB via Express API (POST /api/user-settings/me)
+  // Identity is derived exclusively from the verified token on the server
+  try {
+    const { res: response, token } = await authorizedApiFetch(
+      '/api/user-settings/me',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
         },
-        { merge: true }
-      );
-    } catch (cloudErr) {
-      console.warn('Could not save settings to Firestore, saved locally:', cloudErr);
+        body: JSON.stringify(sanitized)
+      }
+    );
+
+    if (!token || !response) {
+      // If not yet authenticated with token, settings remain safely stored locally
+      return sanitized;
     }
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data?.settings) {
+        const serverSanitized = sanitizeSettings(data.settings);
+        try {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(storageKey, JSON.stringify(serverSanitized));
+          }
+        } catch (_) {}
+        return serverSanitized;
+      }
+    } else {
+      let errMsg = '';
+      try {
+        const errJson = await response.json();
+        errMsg = errJson?.error || `HTTP ${response.status}`;
+      } catch (_) {
+        errMsg = `HTTP ${response.status}`;
+      }
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn(`[UserSettingsService] Authentication error while saving settings (HTTP ${response.status}): ${errMsg}`);
+      } else {
+        console.warn(`[UserSettingsService] Could not persist settings to MongoDB (HTTP ${response.status}): ${errMsg}`);
+      }
+    }
+  } catch (cloudErr) {
+    console.warn('Could not save settings to MongoDB API, saved locally:', cloudErr?.message || cloudErr);
   }
 
   return sanitized;

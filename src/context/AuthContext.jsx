@@ -7,7 +7,8 @@ import {
   formatAuthError,
   getUserProfile,
   saveUserProfile,
-  validateUsername
+  validateUsername,
+  getIdToken
 } from '../services/authService.js';
 import { getCachedUserProfile } from '../services/userProfileService.js';
 import { isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
@@ -355,6 +356,7 @@ export function AuthProvider({ children }) {
     signup,
     login,
     logout,
+    getIdToken,
     continueAsGuest,
     isConfigured
   };

@@ -12,6 +12,30 @@
     {
       "source": "/api/upload/:subpath*",
       "destination": "/api/upload?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/conversations/:subpath*",
+      "destination": "/api/conversations?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/messages/:subpath*",
+      "destination": "/api/messages?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/users/:subpath*",
+      "destination": "/api/users?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/user-settings/:subpath*",
+      "destination": "/api/user-settings?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/db/:subpath*",
+      "destination": "/api/db?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/auth/:subpath*",
+      "destination": "/api/auth?__subpath=:subpath*"
     }
   ],
   "headers": [
@@ -27,7 +51,7 @@
       "source": "/api/(.*)",
       "headers": [
         { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS, DELETE" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, PUT, PATCH, OPTIONS, DELETE" },
         { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization, Accept, X-Title" }
       ]
     }
