@@ -19,7 +19,31 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import {
+
+// Snapshot initial environment variables before test mutations
+const ENV_KEYS_TO_RESTORE = [
+  'TESTING',
+  'VERCEL',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'FIREBASE_SERVICE_ACCOUNT_KEY',
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_CLIENT_EMAIL',
+  'GOOGLE_CLIENT_EMAIL',
+  'FIREBASE_PRIVATE_KEY',
+  'GOOGLE_PRIVATE_KEY',
+  'VITE_FIREBASE_PROJECT_ID',
+  'GOOGLE_CLOUD_PROJECT'
+] as const;
+
+const initialEnvSnapshot: Record<string, string | undefined> = {};
+for (const key of ENV_KEYS_TO_RESTORE) {
+  initialEnvSnapshot[key] = process.env[key];
+}
+
+// Ensure isolated test mode before importing firebaseAdminService
+process.env.TESTING = 'true';
+
+const {
   resolveCredentialFilePath,
   parseServiceAccountKey,
   initializeFirebaseAdmin,
@@ -27,7 +51,7 @@ import {
   getFirebaseAdminInitError,
   getFirebaseAdminDiagnostic,
   fullResetFirebaseAdminForTesting
-} from '../src/services/firebaseAdminService.ts';
+} = await import('../src/services/firebaseAdminService.ts');
 
 // Test runner state
 let passed = 0;
@@ -322,18 +346,54 @@ async function runTests() {
     assert('App initializes successfully after override from .env', overrideApp !== null);
     assert('isFirebaseAdminConfigured() returns true after override', isFirebaseAdminConfigured());
 
-    // Clean up
+    // -------------------------------------------------------------------------
+    // 11. Vercel Project-ID-Only Regression Test (No Explicit Credentials)
+    // -------------------------------------------------------------------------
+    console.log('\n11. Vercel Project-ID-Only Regression Test (No Explicit Credentials)');
     await fullResetFirebaseAdminForTesting();
     delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
     delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    delete process.env.FIREBASE_PROJECT_ID;
     delete process.env.FIREBASE_CLIENT_EMAIL;
     delete process.env.FIREBASE_PRIVATE_KEY;
-    delete process.env.VITE_FIREBASE_PROJECT_ID;
+    delete process.env.FIREBASE_PROJECT_ID;
+    delete process.env.GOOGLE_CLOUD_PROJECT;
 
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch (_) {}
+    process.env.VERCEL = '1';
+    process.env.VITE_FIREBASE_PROJECT_ID = 'test-vercel-project-only';
+
+    const vercelAdcApp = initializeFirebaseAdmin();
+    assert(
+      'Vercel + VITE_FIREBASE_PROJECT_ID without credentials does NOT initialize app',
+      vercelAdcApp === null
+    );
+    assert(
+      'Vercel + VITE_FIREBASE_PROJECT_ID reports isFirebaseAdminConfigured() === false',
+      !isFirebaseAdminConfigured()
+    );
+
+    const vercelDiag = getFirebaseAdminDiagnostic();
+    assert(
+      'Vercel + VITE_FIREBASE_PROJECT_ID diagnostic isConfigured is false',
+      vercelDiag.isConfigured === false
+    );
+    assert(
+      'Vercel + VITE_FIREBASE_PROJECT_ID credentialSource is none (not application_default)',
+      vercelDiag.credentialSource === 'none',
+      `Actual source: ${vercelDiag.credentialSource}`
+    );
+    assert(
+      'Vercel + VITE_FIREBASE_PROJECT_ID diagnostic reports non-sensitive unconfigured message',
+      Boolean(vercelDiag.initError && vercelDiag.initError.includes('No Firebase service account credentials found'))
+    );
+
+    // Also verify project-ID-only without VERCEL=1 when no ADC credentials exist
+    delete process.env.VERCEL;
+    await fullResetFirebaseAdminForTesting();
+    const projectOnlyApp = initializeFirebaseAdmin();
+    assert(
+      'Standalone VITE_FIREBASE_PROJECT_ID without ADC or service account remains unconfigured',
+      projectOnlyApp === null && !isFirebaseAdminConfigured()
+    );
 
     console.log('\n====================================================');
     console.log(`  Tests completed: ${passed} passed, ${failed} failed`);
@@ -344,10 +404,19 @@ async function runTests() {
     }
   } catch (err) {
     console.error('Fatal test exception:', err);
+    process.exitCode = 1;
+  } finally {
+    await fullResetFirebaseAdminForTesting();
+    for (const key of ENV_KEYS_TO_RESTORE) {
+      if (initialEnvSnapshot[key] !== undefined) {
+        process.env[key] = initialEnvSnapshot[key];
+      } else {
+        delete process.env[key];
+      }
+    }
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (_) {}
-    process.exit(1);
   }
 }
 

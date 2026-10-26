@@ -252,19 +252,19 @@ router.post('/conversations', async (req: Request, res: Response) => {
     }
   }
 
-  // Validate and enforce pin limit (max 5)
-  if (Boolean(isPinned)) {
-    const canPin = await canPinConversation(authUid);
-    if (!canPin) {
-      res.status(400).json({
-        error: 'Maximum of 5 pinned conversations reached. Unpin another conversation first.',
-        code: 'PIN_LIMIT_EXCEEDED'
-      });
-      return;
-    }
-  }
-
   try {
+    // Validate and enforce pin limit (max 5) inside try/catch so DB errors map to 503 DATABASE_UNAVAILABLE
+    if (Boolean(isPinned)) {
+      const canPin = await canPinConversation(authUid);
+      if (!canPin) {
+        res.status(400).json({
+          error: 'Maximum of 5 pinned conversations reached. Unpin another conversation first.',
+          code: 'PIN_LIMIT_EXCEEDED'
+        });
+        return;
+      }
+    }
+
     const conversation = await createConversation({
       id: id ? id.trim() : undefined,
       userId: authUid, // Strict ownership: derived exclusively from verified token

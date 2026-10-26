@@ -19,8 +19,7 @@
  */
 
 process.env.TESTING = 'true';
-import dotenv from 'dotenv';
-dotenv.config();
+
 
 import express from 'express';
 import type { DecodedIdToken } from 'firebase-admin/auth';
@@ -28,6 +27,7 @@ import { app, requireAuth, optionalAuth } from '../server.ts';
 import {
   setMockAuthVerifierForTesting,
   resetFirebaseAdminForTesting,
+  fullResetFirebaseAdminForTesting,
   verifyFirebaseIdToken
 } from '../src/services/firebaseAdminService.ts';
 import { extractBearerToken } from '../src/middleware/authMiddleware.ts';
@@ -154,7 +154,7 @@ async function run() {
     // 2. Unconfigured Service & Missing Headers on /api/auth/verify
     // ---------------------------------------------------------------------------
     console.log('\n--- [2/6] Testing Endpoint Security (Missing / Malformed) ---');
-    resetFirebaseAdminForTesting();
+    await fullResetFirebaseAdminForTesting();
 
     const noAuthReq = await simulateRequest('GET', '/api/auth/verify');
     assert('GET /api/auth/verify without header returns HTTP 401', noAuthReq.status === 401);
@@ -172,12 +172,41 @@ async function run() {
     assert('GET /api/auth/verify with empty token returns HTTP 401', malformedReq2.status === 401);
     assert('Response code is AUTH_TOKEN_MALFORMED', malformedReq2.data?.code === 'AUTH_TOKEN_MALFORMED');
 
-    // When no mock and no credentials configured, rejects tokens safely
-    const unconfiguredReq = await simulateRequest('GET', '/api/auth/verify', {
-      authorization: 'Bearer some-jwt-token'
-    });
-    assert('Unconfigured Admin SDK returns HTTP 401', unconfiguredReq.status === 401);
-    assert('Response declares unconfigured service', unconfiguredReq.data?.code === 'AUTH_SERVICE_UNCONFIGURED');
+    // When no mock and no credentials configured, rejects tokens safely.
+    // Temporarily isolate Firebase credential env vars in case local .env or shell is configured.
+    const firebaseEnvKeys = [
+      'FIREBASE_SERVICE_ACCOUNT_KEY',
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      'FIREBASE_CLIENT_EMAIL',
+      'GOOGLE_CLIENT_EMAIL',
+      'FIREBASE_PRIVATE_KEY',
+      'GOOGLE_PRIVATE_KEY',
+      'FIREBASE_PROJECT_ID',
+      'VITE_FIREBASE_PROJECT_ID',
+      'GOOGLE_CLOUD_PROJECT'
+    ] as const;
+    const savedFirebaseEnv: Partial<Record<(typeof firebaseEnvKeys)[number], string | undefined>> = {};
+    for (const key of firebaseEnvKeys) {
+      savedFirebaseEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+
+    try {
+      await fullResetFirebaseAdminForTesting();
+      const unconfiguredReq = await simulateRequest('GET', '/api/auth/verify', {
+        authorization: 'Bearer some-jwt-token'
+      });
+      assert('Unconfigured Admin SDK returns HTTP 401', unconfiguredReq.status === 401);
+      assert('Response declares unconfigured service', unconfiguredReq.data?.code === 'AUTH_SERVICE_UNCONFIGURED');
+    } finally {
+      for (const key of firebaseEnvKeys) {
+        if (savedFirebaseEnv[key] !== undefined) {
+          process.env[key] = savedFirebaseEnv[key];
+        } else {
+          delete process.env[key];
+        }
+      }
+    }
 
     // ---------------------------------------------------------------------------
     // 3. Rejection of Invalid, Expired, and Revoked Tokens

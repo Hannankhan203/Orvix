@@ -1,5 +1,7 @@
 import dotenv from 'dotenv';
-dotenv.config({ override: true });
+if (process.env.TESTING !== 'true') {
+  dotenv.config({ override: false });
+}
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -152,7 +154,9 @@ export interface DocumentExtractionResult {
   extractedAt: string;
 }
 
-dotenv.config();
+if (process.env.TESTING !== 'true') {
+  dotenv.config({ override: false });
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

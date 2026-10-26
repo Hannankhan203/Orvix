@@ -10,41 +10,43 @@
  * - Test E: No mixed persistence (failed connections never store phantom records in memory)
  */
 
-process.env.TESTING = 'true';
-import dotenv from 'dotenv';
-dotenv.config();
-
 import http from 'http';
 import type { DecodedIdToken } from 'firebase-admin/auth';
-import { app } from '../server.ts';
-import {
+
+// Establish TESTING=true before dynamically importing application modules so server.ts does not start listening
+process.env.TESTING = 'true';
+
+const { app } = await import('../server.ts');
+const {
   getDatabase,
   connectToDatabase,
+  getMongoClient,
   getMongoStatus,
   isMongoConfigured,
   setMockDatabaseForTesting,
+  setMongoClientFactoryForTesting,
   enableInMemoryTestDatabase,
   resetTestDatabase,
   MongoNotConnectedError
-} from '../src/db/mongodb.ts';
-import {
+} = (await import('../src/db/mongodb.ts')) as any;
+const {
   setMockAuthVerifierForTesting,
   resetFirebaseAdminForTesting
-} from '../src/services/firebaseAdminService.ts';
-import {
+} = await import('../src/services/firebaseAdminService.ts');
+const {
   createConversation,
   findConversationById,
   findConversationsByUserId,
   getConversationsCollection
-} from '../src/repositories/conversationRepository.ts';
-import {
+} = await import('../src/repositories/conversationRepository.ts');
+const {
   getUserProfile,
   saveUserProfile
-} from '../src/services/userProfileService.js';
-import {
+} = await import('../src/services/userProfileService.js');
+const {
   authorizedApiFetch,
   setAuthTokenProviderForTesting
-} from '../src/services/mongoApiClient.js';
+} = await import('../src/services/mongoApiClient.js');
 
 // Test User Identity
 const USER_TEST: DecodedIdToken = {
@@ -179,6 +181,17 @@ async function runTests() {
       const apiBody = await apiRes?.json();
       assert(apiBody?.code === 'DATABASE_UNAVAILABLE', 'API response specifies DATABASE_UNAVAILABLE code');
 
+      // Verify that pinned conversation creation also fails explicitly with 503 (no unhandled rejection in canPinConversation)
+      const { res: pinnedRes } = await authorizedApiFetch('/api/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Pinned Unconfigured Attempt', isPinned: true })
+      });
+      assert(
+        pinnedRes !== null && pinnedRes.status === 503,
+        'POST /api/conversations with isPinned: true returns HTTP 503 when MongoDB is unconfigured'
+      );
+
       // Verify that GET /api/conversations also fails explicitly with 503 (NOT an empty array or fake 200)
       const { res: getRes } = await authorizedApiFetch('/api/conversations', { method: 'GET' });
       assert(getRes !== null && getRes.status === 503, 'GET /api/conversations returns HTTP 503 (not fake empty array)');
@@ -188,8 +201,16 @@ async function runTests() {
       assert(profRes !== null && profRes.status === 503, 'GET /api/users/me returns HTTP 503 when MongoDB is unconfigured');
 
     } finally {
-      process.env.MONGODB_URI = originalUri;
-      process.env.TESTING = originalTesting;
+      if (originalUri !== undefined) {
+        process.env.MONGODB_URI = originalUri;
+      } else {
+        delete process.env.MONGODB_URI;
+      }
+      if (originalTesting !== undefined) {
+        process.env.TESTING = originalTesting;
+      } else {
+        delete process.env.TESTING;
+      }
     }
 
     // =========================================================================
@@ -221,8 +242,16 @@ async function runTests() {
       assert(settingsRes !== null && settingsRes.status === 503, 'POST /api/user-settings/me returns HTTP 503 on database failure');
 
     } finally {
-      process.env.TESTING = origTestingC;
-      process.env.MONGODB_URI = originalUri;
+      if (origTestingC !== undefined) {
+        process.env.TESTING = origTestingC;
+      } else {
+        delete process.env.TESTING;
+      }
+      if (originalUri !== undefined) {
+        process.env.MONGODB_URI = originalUri;
+      } else {
+        delete process.env.MONGODB_URI;
+      }
     }
 
     // =========================================================================
@@ -257,6 +286,18 @@ async function runTests() {
 
     const dbActive = getDatabase();
     assert(dbActive === testDb, 'getDatabase() returns explicitly enabled test database in test mode');
+
+    // Verify that even without calling resetTestDatabase(), removing TESTING prevents getDatabase() from returning testDb
+    delete process.env.TESTING;
+    let leakedTestDbOutsideTesting = false;
+    try {
+      getDatabase();
+      leakedTestDbOutsideTesting = true;
+    } catch (err: any) {
+      leakedTestDbOutsideTesting = !(err instanceof MongoNotConnectedError);
+    }
+    assert(!leakedTestDbOutsideTesting, 'getDatabase() refuses to return cached test database once TESTING=true is removed');
+    process.env.TESTING = 'true';
 
     // =========================================================================
     // TEST E: No mixed persistence (Failed connection leaves zero phantom records)
@@ -296,6 +337,371 @@ async function runTests() {
 
     const { res: statusRes } = await authorizedApiFetch('/api/db/status', { method: 'GET' });
     assert(statusRes?.status === 200, 'GET /api/db/status returns HTTP 200 with readiness data');
+
+    // =========================================================================
+    // TEST F: Deterministic Connection Lifecycle Race Condition Suite
+    // =========================================================================
+    console.log('\n--- Test F: Deterministic Connection Lifecycle Race Conditions ---');
+    resetTestDatabase();
+    process.env.TESTING = 'true';
+
+    function createDeferred<T = void>() {
+      let resolve!: (val: T | PromiseLike<T>) => void;
+      let reject!: (err?: any) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    function createControlledMockClient(
+      label: string,
+      connectDeferred: ReturnType<typeof createDeferred<void>>,
+      pingImpl: () => Promise<any> = async () => ({ ok: 1 })
+    ) {
+      const listeners: Record<string, Array<(...args: any[]) => void>> = {};
+      const mockDb = {
+        databaseName: `Orvix-${label}`,
+        command: pingImpl,
+        collection: () => ({})
+      } as any;
+
+      const client = {
+        label,
+        closeCalls: 0,
+        on: (event: string, fn: (...args: any[]) => void) => {
+          listeners[event] = listeners[event] || [];
+          listeners[event].push(fn);
+          return client;
+        },
+        emit: (event: string, ...args: any[]) => {
+          for (const fn of listeners[event] || []) fn(...args);
+        },
+        connect: () => connectDeferred.promise,
+        db: () => mockDb,
+        close: async () => {
+          client.closeCalls++;
+          client.emit('serverClosed');
+        }
+      };
+      return { client: client as any, mockDb };
+    }
+
+    // 1. Old attempt finishes AFTER resetTestDatabase() while Attempt #2 is still pending,
+    //    and concurrent Attempt #3 deduplicates onto Attempt #2 without constructing a 3rd client
+    {
+      const def1 = createDeferred<void>();
+      const def2 = createDeferred<void>();
+      const def3 = createDeferred<void>();
+      const c1 = createControlledMockClient('attempt-1', def1);
+      const c2 = createControlledMockClient('attempt-2', def2);
+      const c3 = createControlledMockClient('unexpected-attempt-3', def3);
+      let factoryCallCount = 0;
+
+      setMongoClientFactoryForTesting(() => {
+        factoryCallCount++;
+        return c1.client;
+      });
+
+      process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/Orvix';
+
+      const p1 = connectToDatabase();
+      await Promise.resolve();
+      await Promise.resolve();
+      assert(factoryCallCount === 1, 'Attempt #1 constructs first MongoClient');
+
+      // Reset while Attempt #1 is still in flight, then start Attempt #2
+      resetTestDatabase();
+      setMongoClientFactoryForTesting(() => {
+        factoryCallCount++;
+        return factoryCallCount === 2 ? c2.client : c3.client;
+      });
+
+      const p2 = connectToDatabase();
+      await Promise.resolve();
+      await Promise.resolve();
+      assert(factoryCallCount === 2, 'Attempt #2 constructs second MongoClient after reset');
+
+      // Resolve stale Attempt #1 WHILE Attempt #2 is still pending
+      def1.resolve();
+      const res1 = await p1;
+
+      assert(res1 === null, 'Stale Attempt #1 resolves to null after reset');
+      assert(c1.client.closeCalls === 1, 'Stale Attempt #1 closes its abandoned MongoClient');
+      assert(c2.client.closeCalls === 0, 'Stale Attempt #1 does not close Attempt #2 MongoClient');
+
+      // Concurrent caller Attempt #3 arrives while Attempt #2 is still pending:
+      // Proves Attempt #1's finally block did NOT clear state.connectionPromise
+      const p3 = connectToDatabase();
+      await Promise.resolve();
+      await Promise.resolve();
+      assert(
+        factoryCallCount === 2,
+        'Concurrent caller Attempt #3 reuses Attempt #2 in-flight promise without constructing a third MongoClient'
+      );
+
+      const statusWhileAttempt2Pending = await getMongoStatus();
+
+      assert(
+        statusWhileAttempt2Pending.isConnecting === true,
+        'Attempt #2 remains marked as connecting while the concurrent caller reuses it'
+      );
+
+      // Now resolve Attempt #2 and confirm both p2 and p3 resolve to Attempt #2's Db and Attempt #2 owns state
+      def2.resolve();
+      const [res2, res3] = await Promise.all([p2, p3]);
+      assert(res2 === c2.mockDb, 'Attempt #2 resolves with its own Db instance');
+      assert(res3 === c2.mockDb, 'Concurrent caller Attempt #3 resolves with Attempt #2 Db instance');
+      assert(factoryCallCount === 2, 'Total MongoClient constructions remained strictly 2');
+      assert(getDatabase() === c2.mockDb, 'getDatabase() returns Attempt #2 Db');
+      assert(getMongoClient() === c2.client, 'getMongoClient() returns Attempt #2 MongoClient');
+    }
+
+    // 2. Stale attempt resolving or rejecting cannot overwrite a newly enabled in-memory DB or injected mock
+    {
+      resetTestDatabase();
+      const defStaleSuccess = createDeferred<void>();
+      const cStaleSuccess = createControlledMockClient('stale-vs-inmem', defStaleSuccess);
+      setMongoClientFactoryForTesting(() => cStaleSuccess.client);
+      process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/Orvix';
+
+      const pStale = connectToDatabase();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Enable in-memory test database while pStale is still connecting
+      const inMemDb = enableInMemoryTestDatabase();
+      defStaleSuccess.resolve();
+      const staleRes = await pStale;
+
+      assert(staleRes === null, 'Stale attempt superseded by enableInMemoryTestDatabase() resolves to null');
+      assert(cStaleSuccess.client.closeCalls === 1, 'Stale attempt superseded by enableInMemoryTestDatabase() closes its client');
+      assert(getDatabase() === inMemDb, 'Stale attempt does not overwrite newly enabled in-memory test database');
+      assert(getMongoClient() === null, 'state.client remains null when in-memory test database is active');
+
+      // Now test stale attempt vs setMockDatabaseForTesting()
+      resetTestDatabase();
+      const defStaleFail = createDeferred<void>();
+      const cStaleFail = createControlledMockClient('stale-vs-mock', defStaleFail);
+      setMongoClientFactoryForTesting(() => cStaleFail.client);
+
+      const pStaleFail = connectToDatabase();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const customMockDb = { databaseName: 'CustomMock', command: async () => ({ ok: 1 }), collection: () => ({}) };
+      setMockDatabaseForTesting(customMockDb);
+      defStaleFail.reject(new Error('Delayed connection refusal'));
+      const staleFailRes = await pStaleFail;
+
+      assert(staleFailRes === null, 'Rejected stale attempt superseded by setMockDatabaseForTesting() returns null');
+      assert(cStaleFail.client.closeCalls === 1, 'Rejected stale attempt closes its client');
+      assert(getDatabase() === (customMockDb as any), 'Rejected stale attempt does not overwrite injected mock database');
+    }
+
+    // 3. Failed ping after successful connect() closes the client created by that attempt
+    {
+      resetTestDatabase();
+      const defConnectOk = createDeferred<void>();
+      const cPingFail = createControlledMockClient(
+        'ping-fail',
+        defConnectOk,
+        async () => {
+          throw new Error('Authentication failed during ping');
+        }
+      );
+      setMongoClientFactoryForTesting(() => cPingFail.client);
+      process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/Orvix';
+
+      defConnectOk.resolve();
+      const pingFailRes = await connectToDatabase();
+
+      assert(pingFailRes === null, 'connectToDatabase() returns null when post-connect ping fails');
+      assert(cPingFail.client.closeCalls === 1, 'Failed ping closes the MongoClient created by that attempt');
+      assert(getMongoClient() === null, 'state.client remains null after failed ping');
+    }
+
+    // 4. URI removal closes previous real client without disrupting an explicitly permitted test database
+    {
+      resetTestDatabase();
+      const defReal = createDeferred<void>();
+      const cReal = createControlledMockClient('real-connected', defReal);
+      setMongoClientFactoryForTesting(() => cReal.client);
+      process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/Orvix';
+
+      defReal.resolve();
+      await connectToDatabase();
+      assert(getMongoClient() === cReal.client, 'Real client is connected prior to URI removal');
+
+      delete process.env.MONGODB_URI;
+      const statusAfterUriRemoval = await getMongoStatus();
+      assert(statusAfterUriRemoval.isConnected === false, 'getMongoStatus() marks connection false when URI is removed');
+      assert(cReal.client.closeCalls === 1, 'getMongoStatus() closes previous real MongoClient when URI is removed');
+      assert(getMongoClient() === null, 'state.client is cleared after URI removal');
+
+      // Enable explicit test database while MONGODB_URI remains unset
+      const permittedTestDb = enableInMemoryTestDatabase();
+      const statusWithTestDb = await getMongoStatus();
+      assert(statusWithTestDb.isConnected === true, 'getMongoStatus() preserves explicit test DB when URI is unset');
+      assert(getDatabase() === permittedTestDb, 'getDatabase() returns explicit test DB when URI is unset and TESTING=true');
+      assert((await connectToDatabase()) === permittedTestDb, 'connectToDatabase() preserves explicit test DB when TESTING=true');
+    }
+
+    // 5. Synchronous exception in MongoClient factory cleans up connectionPromise without wedging
+    {
+      resetTestDatabase();
+      process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/Orvix';
+      let syncThrowCalls = 0;
+      setMongoClientFactoryForTesting(() => {
+        syncThrowCalls++;
+        throw new Error('Synchronous MongoParseError in constructor');
+      });
+
+      const syncFailRes = await connectToDatabase();
+      assert(syncFailRes === null, 'Synchronous constructor error resolves to null');
+      assert(syncThrowCalls === 1, 'Factory was invoked once during synchronous failure');
+
+      const statusAfterSyncFail = await getMongoStatus();
+      assert(statusAfterSyncFail.isConnecting === false, 'state.isConnecting is reset to false after synchronous factory error');
+
+      const defRecovery = createDeferred<void>();
+      const cRecovery = createControlledMockClient('recovery', defRecovery);
+      setMongoClientFactoryForTesting(() => cRecovery.client);
+      defRecovery.resolve();
+
+      const recoveredDb = await connectToDatabase();
+      assert(
+        recoveredDb === cRecovery.mockDb,
+        'Subsequent connectToDatabase() succeeds (no permanently settled promise left cached)'
+      );
+    }
+
+    // 6. Disconnected real client (serverClosed -> state.isConnected === false) + MONGODB_URI removal
+    //    is invalidated and closed once when getDatabase() is called
+    {
+      const savedUri = process.env.MONGODB_URI;
+      const savedTesting = process.env.TESTING;
+      try {
+        process.env.TESTING = 'true';
+        resetTestDatabase();
+
+        const defDisc = createDeferred<void>();
+        const cDisc = createControlledMockClient('server-closed-uri-removed', defDisc);
+        setMongoClientFactoryForTesting(() => cDisc.client);
+        process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/Orvix';
+
+        defDisc.resolve();
+        const connectedDb = await connectToDatabase();
+        assert(connectedDb === cDisc.mockDb, 'Controlled mock client connects and caches Db');
+        assert(getMongoClient() === cDisc.client, 'getMongoClient() returns active controlled client');
+
+        // Emit serverClosed so state.isConnected becomes false while state.client and state.db remain cached
+        cDisc.client.emit('serverClosed');
+        assert(cDisc.client.closeCalls === 0, 'Emitting serverClosed does not increment closeCalls by itself');
+
+        // Remove MONGODB_URI while state.isConnected is already false
+        delete process.env.MONGODB_URI;
+
+        let getDbThrew = false;
+        try {
+          getDatabase();
+        } catch (err: any) {
+          getDbThrew = err instanceof MongoNotConnectedError || err?.name === 'MongoNotConnectedError';
+        }
+
+        assert(
+          getDbThrew,
+          'getDatabase() throws MongoNotConnectedError after serverClosed and MONGODB_URI removal'
+        );
+        assert(
+          getMongoClient() === null,
+          'getDatabase() clears cached state.client even when state.isConnected was already false'
+        );
+        assert(
+          cDisc.client.closeCalls === 1,
+          'getDatabase() closes the detached stale client once when MONGODB_URI is missing'
+        );
+
+        // Calling getDatabase() again should not close the already-detached client a second time
+        try {
+          getDatabase();
+        } catch (_) {}
+        assert(
+          cDisc.client.closeCalls === 1,
+          'Subsequent getDatabase() calls do not close the stale client again (closed strictly once)'
+        );
+      } finally {
+        if (savedUri !== undefined) {
+          process.env.MONGODB_URI = savedUri;
+        } else {
+          delete process.env.MONGODB_URI;
+        }
+        if (savedTesting !== undefined) {
+          process.env.TESTING = savedTesting;
+        } else {
+          delete process.env.TESTING;
+        }
+        resetTestDatabase();
+      }
+    }
+
+    // 7. Test database purge on exiting TESTING mode prevents resurrection when TESTING='true' is restored
+    {
+      const savedUri = process.env.MONGODB_URI;
+      const savedTesting = process.env.TESTING;
+      try {
+        delete process.env.MONGODB_URI;
+        process.env.TESTING = 'true';
+        resetTestDatabase();
+
+        const enabledTestDb = enableInMemoryTestDatabase();
+        assert(getDatabase() === enabledTestDb, 'In-memory test database is active while TESTING="true"');
+
+        // Exit test mode and call getDatabase()
+        delete process.env.TESTING;
+        let rejectedOutsideTesting = false;
+        try {
+          getDatabase();
+        } catch (err: any) {
+          rejectedOutsideTesting = err instanceof MongoNotConnectedError || err?.name === 'MongoNotConnectedError';
+        }
+        assert(
+          rejectedOutsideTesting,
+          'getDatabase() rejects in-memory test database with MongoNotConnectedError when TESTING is removed'
+        );
+
+        // Restore TESTING='true' WITHOUT calling enableInMemoryTestDatabase() again
+        process.env.TESTING = 'true';
+        let rejectedAfterRestoringTesting = false;
+        try {
+          getDatabase();
+        } catch (err: any) {
+          rejectedAfterRestoringTesting =
+            err instanceof MongoNotConnectedError || err?.name === 'MongoNotConnectedError';
+        }
+        assert(
+          rejectedAfterRestoringTesting,
+          'Restoring TESTING="true" without re-enabling does not resurrect purged test database in getDatabase()'
+        );
+        assert(
+          (await connectToDatabase()) === null,
+          'Restoring TESTING="true" without re-enabling does not resurrect purged test database in connectToDatabase()'
+        );
+      } finally {
+        if (savedUri !== undefined) {
+          process.env.MONGODB_URI = savedUri;
+        } else {
+          delete process.env.MONGODB_URI;
+        }
+        if (savedTesting !== undefined) {
+          process.env.TESTING = savedTesting;
+        } else {
+          delete process.env.TESTING;
+        }
+        resetTestDatabase();
+      }
+    }
 
   } catch (unexpected: any) {
     console.error('Unexpected test error:', unexpected);

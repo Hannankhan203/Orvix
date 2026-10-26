@@ -54,18 +54,20 @@ export function loadEnvironmentVariables(): void {
     let loaded = false;
     for (const candidate of candidates) {
       if (fs.existsSync(candidate)) {
-        dotenv.config({ path: candidate, override: true });
+        dotenv.config({ path: candidate, override: false });
         loaded = true;
       }
     }
 
     if (!loaded) {
-      dotenv.config({ override: true });
+      dotenv.config({ override: false });
     }
   } catch (_) {}
 }
 
-loadEnvironmentVariables();
+if (process.env.TESTING !== 'true') {
+  loadEnvironmentVariables();
+}
 
 export type FirebaseCredentialSource =
   | 'service_account_key'
@@ -213,6 +215,78 @@ export function resolveCredentialFilePath(rawPath: string): string {
 }
 
 /**
+ * Determines whether Application Default Credentials (ADC) are genuinely available
+ * when no explicit service-account environment variable is configured.
+ *
+ * Prevents a standalone project ID (e.g., VITE_FIREBASE_PROJECT_ID on Vercel) from
+ * falsely marking Firebase Admin as configured without usable credentials.
+ */
+function hasUsableApplicationDefaultCredentials(): boolean {
+  // Vercel and serverless functions do not provide Google Cloud ADC
+  if (
+    process.env.VERCEL === '1' ||
+    Boolean(process.env.VERCEL) ||
+    process.env.SERVERLESS === 'true'
+  ) {
+    return false;
+  }
+
+  // Isolated automated tests should not implicitly bind to host ADC unless explicitly configured
+  if (process.env.TESTING === 'true') {
+    return false;
+  }
+
+  // Explicit GCE metadata server host configuration
+  if (process.env.GCE_METADATA_HOST && process.env.GCE_METADATA_HOST.trim()) {
+    return true;
+  }
+
+  // Check standard local gcloud ADC file location (`gcloud auth application-default login`)
+  try {
+    let adcPath = '';
+    if (process.env.CLOUDSDK_CONFIG && process.env.CLOUDSDK_CONFIG.trim()) {
+      adcPath = path.join(
+        process.env.CLOUDSDK_CONFIG.trim(),
+        'application_default_credentials.json'
+      );
+    } else if (process.platform === 'win32' && process.env.APPDATA) {
+      adcPath = path.join(
+        process.env.APPDATA,
+        'gcloud',
+        'application_default_credentials.json'
+      );
+    } else {
+      adcPath = path.join(
+        os.homedir(),
+        '.config',
+        'gcloud',
+        'application_default_credentials.json'
+      );
+    }
+
+    if (adcPath && fs.existsSync(adcPath)) {
+      const raw = fs.readFileSync(adcPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        (parsed.type === 'authorized_user' ||
+          parsed.type === 'service_account' ||
+          parsed.type === 'external_account' ||
+          Boolean(parsed.client_email) ||
+          Boolean(parsed.client_id))
+      ) {
+        return true;
+      }
+    }
+  } catch (_) {
+    return false;
+  }
+
+  return false;
+}
+
+/**
  * Initializes Firebase Admin SDK using available environment credentials.
  * Safe: will not throw or abort server startup if credentials are unconfigured or invalid.
  */
@@ -223,7 +297,10 @@ export function initializeFirebaseAdmin(): App | null {
   }
 
   // Always refresh environment variables from .env to pick up newly added credentials
-  loadEnvironmentVariables();
+  // (Skip during isolated test runs so in-memory test env overrides are not clobbered by .env on disk)
+  if (process.env.TESTING !== 'true') {
+    loadEnvironmentVariables();
+  }
 
   // Check if Firebase Admin app has already been initialized on the global instance
   const existingApps = getApps();
@@ -489,7 +566,11 @@ export function initializeFirebaseAdmin(): App | null {
       process.env.VITE_FIREBASE_PROJECT_ID ||
       process.env.GOOGLE_CLOUD_PROJECT;
 
-    if (targetProjectId && targetProjectId !== 'YOUR_FIREBASE_PROJECT_ID') {
+    if (
+      targetProjectId &&
+      targetProjectId !== 'YOUR_FIREBASE_PROJECT_ID' &&
+      hasUsableApplicationDefaultCredentials()
+    ) {
       try {
         state.app = initializeApp({
           credential: applicationDefault(),
@@ -643,9 +724,18 @@ export function resetFirebaseAdminForTesting(): void {
  */
 export async function fullResetFirebaseAdminForTesting(): Promise<void> {
   state.mockVerifier = null;
+  const activeApps = new Set<App>();
   if (state.app) {
+    activeApps.add(state.app);
+  }
+  for (const existingApp of getApps()) {
+    if (existingApp) {
+      activeApps.add(existingApp);
+    }
+  }
+  for (const appInstance of activeApps) {
     try {
-      await deleteApp(state.app);
+      await deleteApp(appInstance);
     } catch (_) {}
   }
   state.app = null;

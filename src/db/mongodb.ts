@@ -37,6 +37,58 @@ const state: MongoConnectionState = {
   connectionPromise: null
 };
 
+let connectionGeneration = 0;
+
+export type MongoClientFactory = (uri: string, options: MongoClientOptions) => MongoClient;
+let testMongoClientFactory: MongoClientFactory | null = null;
+
+/**
+ * Detaches and asynchronously closes any active MongoClient, increments connectionGeneration
+ * to fence off in-flight attempts, and resets connection state fields.
+ */
+function invalidateActiveConnection(lastError: string | null = null): void {
+  connectionGeneration++;
+  if (state.client) {
+    const clientToClose = state.client;
+    state.client = null;
+    clientToClose.close().catch(() => {});
+  }
+  state.db = null;
+  state.isConnected = false;
+  state.isConnecting = false;
+  state.connectionPromise = null;
+  state.lastError = lastError;
+}
+
+/**
+ * Purges any active or cached test database / mock state when running outside TESTING === 'true'
+ * so that restoring process.env.TESTING later cannot resurrect a prior test database or mock.
+ */
+function purgeTestDatabaseStateIfOutsideTesting(isUsingTestDb: boolean): void {
+  if (process.env.TESTING === 'true') {
+    return;
+  }
+  const hadTestArtifacts =
+    isUsingTestDb ||
+    testModeInMemoryEnabled ||
+    testModeInMemoryDb !== null ||
+    testMockDb !== null ||
+    testMongoClientFactory !== null;
+
+  if (!hadTestArtifacts) {
+    return;
+  }
+
+  testModeInMemoryEnabled = false;
+  testModeInMemoryDb = null;
+  testMockDb = null;
+  testMongoClientFactory = null;
+
+  if (isUsingTestDb) {
+    invalidateActiveConnection(null);
+  }
+}
+
 /**
  * Masks any potential connection string, username, or password from error strings.
  */
@@ -70,7 +122,12 @@ export function getDatabaseName(): string {
  */
 export function isMongoConfigured(): boolean {
   const uri = process.env.MONGODB_URI?.trim();
-  return Boolean(uri && !uri.includes('YOUR_MONGODB_URI'));
+  return Boolean(
+    uri &&
+      uri !== 'undefined' &&
+      !uri.includes('YOUR_MONGODB_URI') &&
+      (uri.startsWith('mongodb://') || uri.startsWith('mongodb+srv://'))
+  );
 }
 
 /**
@@ -100,6 +157,27 @@ function getMongoClientOptions(): MongoClientOptions {
  * @returns {Promise<Db | null>} The connected Db instance, or null if unconfigured/failed.
  */
 export async function connectToDatabase(): Promise<Db | null> {
+  const uri = process.env.MONGODB_URI?.trim();
+  const hasValidUri = isMongoConfigured();
+  const isUsingTestDb =
+    (testModeInMemoryEnabled && state.db === testModeInMemoryDb) ||
+    (testMockDb !== null && state.db === testMockDb);
+  const hasValidTestDb = isUsingTestDb && process.env.TESTING === 'true';
+
+  if (!hasValidTestDb) {
+    purgeTestDatabaseStateIfOutsideTesting(isUsingTestDb);
+  }
+
+  if (hasValidTestDb && state.db) {
+    return state.db;
+  }
+
+  // If MONGODB_URI was removed after an earlier real connection was cached, invalidate the real connection
+  if (!hasValidUri || !uri) {
+    invalidateActiveConnection('MONGODB_URI is not configured in environment variables.');
+    return null;
+  }
+
   // If already connected, return cached db
   if (state.isConnected && state.db) {
     return state.db;
@@ -110,44 +188,67 @@ export async function connectToDatabase(): Promise<Db | null> {
     return state.connectionPromise;
   }
 
-  const uri = process.env.MONGODB_URI?.trim();
-  if (!uri || uri.includes('YOUR_MONGODB_URI')) {
-    state.lastError = 'MONGODB_URI is not configured in environment variables.';
-    return null;
-  }
-
   const targetDbName = getDatabaseName();
+  const attemptGeneration = ++connectionGeneration;
+  const previousClient = state.client;
+  state.client = null;
   state.isConnecting = true;
   state.lastError = null;
 
-  state.connectionPromise = (async () => {
+  let currentPromise: Promise<Db | null> | null = null;
+  currentPromise = (async () => {
+    let createdClient: MongoClient | null = null;
     try {
-      if (state.client) {
+      // Yield a microtask so currentPromise and state.connectionPromise are always assigned
+      // before any synchronous exception (e.g., MongoParseError in new MongoClient) can reach finally.
+      await Promise.resolve();
+
+      if (previousClient) {
         try {
-          await state.client.close();
+          await previousClient.close();
         } catch (_) {}
-        state.client = null;
       }
 
-      const client = new MongoClient(uri, getMongoClientOptions());
+      if (attemptGeneration !== connectionGeneration || !isMongoConfigured()) {
+        return null;
+      }
+
+      const clientFactory: MongoClientFactory =
+        process.env.TESTING === 'true' && testMongoClientFactory
+          ? testMongoClientFactory
+          : (u, opts) => new MongoClient(u, opts);
+
+      createdClient = clientFactory(uri, getMongoClientOptions());
+      const clientRef = createdClient;
 
       // Setup connection event listeners
-      client.on('serverClosed', () => {
+      clientRef.on('serverClosed', () => {
+        if (state.client !== clientRef || attemptGeneration !== connectionGeneration) {
+          return;
+        }
         console.warn('[MongoDB] Server connection closed.');
         state.isConnected = false;
       });
 
-      client.on('error', (err) => {
+      clientRef.on('error', (err) => {
         console.error('[MongoDB] Client error:', sanitizeMongoError(err));
       });
 
-      await client.connect();
+      await clientRef.connect();
+      if (attemptGeneration !== connectionGeneration || !isMongoConfigured()) {
+        await clientRef.close().catch(() => {});
+        return null;
+      }
 
       // Verify connection with a quick ping command
-      const db = client.db(targetDbName);
+      const db = clientRef.db(targetDbName);
       await db.command({ ping: 1 });
+      if (attemptGeneration !== connectionGeneration || !isMongoConfigured()) {
+        await clientRef.close().catch(() => {});
+        return null;
+      }
 
-      state.client = client;
+      state.client = clientRef;
       state.db = db;
       state.isConnected = true;
       state.isConnecting = false;
@@ -157,6 +258,12 @@ export async function connectToDatabase(): Promise<Db | null> {
       console.log(`[MongoDB] Successfully connected to database: "${targetDbName}".`);
       return db;
     } catch (error: any) {
+      if (createdClient) {
+        await createdClient.close().catch(() => {});
+      }
+      if (attemptGeneration !== connectionGeneration) {
+        return null;
+      }
       state.isConnected = false;
       state.isConnecting = false;
       state.client = null;
@@ -166,10 +273,14 @@ export async function connectToDatabase(): Promise<Db | null> {
       console.error(`[MongoDB] Failed to connect to database "${targetDbName}": ${sanitizedMsg}`);
       return null;
     } finally {
-      state.connectionPromise = null;
+      if (attemptGeneration === connectionGeneration && state.connectionPromise === currentPromise) {
+        state.connectionPromise = null;
+        state.isConnecting = false;
+      }
     }
   })();
 
+  state.connectionPromise = currentPromise;
   return state.connectionPromise;
 }
 
@@ -381,6 +492,7 @@ function createInMemoryDatabaseInstance(): Db {
 
 let testModeInMemoryDb: Db | null = null;
 let testModeInMemoryEnabled = false;
+let testMockDb: Db | null = null;
 
 /**
  * TEST HOOK ONLY: Explicitly enables an in-memory mock database for isolated tests.
@@ -397,10 +509,10 @@ export function enableInMemoryTestDatabase(): Db {
   if (!testModeInMemoryDb) {
     testModeInMemoryDb = createInMemoryDatabaseInstance();
   }
+  invalidateActiveConnection(null);
   testModeInMemoryEnabled = true;
   state.db = testModeInMemoryDb;
   state.isConnected = true;
-  state.lastError = null;
   return testModeInMemoryDb;
 }
 
@@ -410,11 +522,9 @@ export function enableInMemoryTestDatabase(): Db {
 export function resetTestDatabase(): void {
   testModeInMemoryEnabled = false;
   testModeInMemoryDb = null;
-  state.db = null;
-  state.isConnected = false;
-  state.isConnecting = false;
-  state.lastError = null;
-  state.connectionPromise = null;
+  testMockDb = null;
+  testMongoClientFactory = null;
+  invalidateActiveConnection(null);
 }
 
 /**
@@ -429,13 +539,35 @@ export function resetTestDatabase(): void {
  * has explicitly injected a mock or opted into enableInMemoryTestDatabase().
  */
 export function getDatabase(): Db {
-  if (state.db && state.isConnected) {
-    return state.db;
+  const isUsingTestDb =
+    (testModeInMemoryEnabled && state.db === testModeInMemoryDb) ||
+    (testMockDb !== null && state.db === testMockDb);
+
+  // If a test database or mock is active, strictly require process.env.TESTING === 'true'.
+  // If test mode was exited, permanently purge cached test database/mock references so restoring
+  // process.env.TESTING later cannot make them accessible again without re-enabling them.
+  if (isUsingTestDb) {
+    if (process.env.TESTING === 'true' && state.db) {
+      return state.db;
+    }
+    purgeTestDatabaseStateIfOutsideTesting(true);
+  } else {
+    purgeTestDatabaseStateIfOutsideTesting(false);
+    if (!isMongoConfigured()) {
+      // MONGODB_URI was removed or is invalid; invalidate any cached real connection state
+      // even if serverClosed already set state.isConnected to false.
+      if (state.client || state.db || state.isConnected || state.isConnecting || state.connectionPromise) {
+        invalidateActiveConnection('MONGODB_URI is not configured in environment variables.');
+      }
+    } else if (state.db && state.isConnected) {
+      return state.db;
+    }
   }
 
   // If in explicit test mode AND test in-memory fallback was explicitly opted into
-  if (process.env.TESTING === 'true' && testModeInMemoryEnabled && testModeInMemoryDb) {
-    return testModeInMemoryDb;
+  if (process.env.TESTING === 'true') {
+    if (testMockDb) return testMockDb;
+    if (testModeInMemoryEnabled && testModeInMemoryDb) return testModeInMemoryDb;
   }
 
   // PRODUCTION / NORMAL RUNTIME: Fail explicitly. No silent in-memory fallback.
@@ -476,17 +608,35 @@ export async function getMongoStatus(): Promise<MongoStatusInfo> {
   const configured = isMongoConfigured();
   const dbName = getDatabaseName();
   const rawUri = process.env.MONGODB_URI?.trim();
+  const isUsingTestDb =
+    (testModeInMemoryEnabled && state.db === testModeInMemoryDb) ||
+    (testMockDb !== null && state.db === testMockDb);
+  const hasValidTestDb = isUsingTestDb && process.env.TESTING === 'true';
+
+  if (!hasValidTestDb) {
+    purgeTestDatabaseStateIfOutsideTesting(isUsingTestDb);
+  }
+
+  if (!configured && !hasValidTestDb) {
+    if (state.client || state.db || state.isConnected || state.isConnecting || state.connectionPromise) {
+      invalidateActiveConnection('MONGODB_URI is not configured in environment variables.');
+    }
+  }
 
   let pingLatencyMs: number | undefined;
 
   if (state.isConnected && state.db) {
+    const statusGeneration = connectionGeneration;
+    const targetDb = state.db;
     try {
       const start = Date.now();
-      await state.db.command({ ping: 1 });
+      await targetDb.command({ ping: 1 });
       pingLatencyMs = Date.now() - start;
     } catch (err: any) {
-      state.isConnected = false;
-      state.lastError = sanitizeMongoError(err);
+      if (statusGeneration === connectionGeneration && state.db === targetDb) {
+        state.isConnected = false;
+        state.lastError = sanitizeMongoError(err);
+      }
     }
   }
 
@@ -506,18 +656,21 @@ export async function getMongoStatus(): Promise<MongoStatusInfo> {
  * Gracefully disconnects the MongoDB client on application shutdown.
  */
 export async function closeDatabase(): Promise<void> {
-  if (state.client) {
+  connectionGeneration++;
+  const clientToClose = state.client;
+  state.client = null;
+  state.db = null;
+  state.isConnected = false;
+  state.isConnecting = false;
+  state.connectionPromise = null;
+
+  if (clientToClose) {
     try {
       console.log('[MongoDB] Closing database connection...');
-      await state.client.close();
+      await clientToClose.close();
       console.log('[MongoDB] Database connection closed.');
     } catch (err) {
       console.warn('[MongoDB] Error while closing connection:', err);
-    } finally {
-      state.client = null;
-      state.db = null;
-      state.isConnected = false;
-      state.isConnecting = false;
     }
   }
 }
@@ -535,12 +688,26 @@ export function setMockDatabaseForTesting(mockDb: any | null): void {
           'Test mocking is strictly forbidden in production.'
       );
     }
+    invalidateActiveConnection(null);
+    testMockDb = mockDb;
     state.db = mockDb;
     state.isConnected = true;
-    state.lastError = null;
   } else {
-    state.db = null;
-    state.isConnected = false;
+    testMockDb = null;
+    invalidateActiveConnection(null);
   }
+}
+
+/**
+ * TEST HOOK ONLY: Injects a custom MongoClient factory for deterministic connection lifecycle tests.
+ * Strictly permitted ONLY when process.env.TESTING === 'true'.
+ */
+export function setMongoClientFactoryForTesting(factory: MongoClientFactory | null): void {
+  if (factory && process.env.TESTING !== 'true') {
+    throw new Error(
+      '[CRITICAL] setMongoClientFactoryForTesting can only be called when process.env.TESTING === "true".'
+    );
+  }
+  testMongoClientFactory = factory;
 }
 

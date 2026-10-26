@@ -15,41 +15,42 @@
  *   TESTING=true tsx scripts/testVercelServerlessRouting.ts
  */
 
-process.env.TESTING = 'true';
-import dotenv from 'dotenv';
-dotenv.config();
-
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import fs from 'fs';
 import path from 'path';
 
-// Import all Vercel serverless entry point handlers directly
-import healthHandler from '../api/health.ts';
-import configHandler from '../api/config.ts';
-import chatHandler from '../api/chat.ts';
-import uploadHandler from '../api/upload.ts';
-import transcribeHandler from '../api/transcribe.ts';
-import conversationsHandler from '../api/conversations.ts';
-import messagesHandler from '../api/messages.ts';
-import usersHandler from '../api/users.ts';
-import userSettingsHandler from '../api/user-settings.ts';
-import dbHandler from '../api/db.ts';
-import authHandler from '../api/auth.ts';
+// Establish test and serverless environment variables BEFORE importing any application modules
+process.env.TESTING = 'true';
+process.env.VERCEL = '1';
 
-import {
+const {
   setMockAuthVerifierForTesting,
   resetFirebaseAdminForTesting
-} from '../src/services/firebaseAdminService.ts';
-import {
+} = await import('../src/services/firebaseAdminService.ts');
+const {
   getDatabase,
   connectToDatabase,
+  closeDatabase,
   getMongoStatus,
   isMongoConfigured,
   setMockDatabaseForTesting,
   enableInMemoryTestDatabase,
   resetTestDatabase,
   MongoNotConnectedError
-} from '../src/db/mongodb.ts';
+} = await import('../src/db/mongodb.ts');
+
+// Import all Vercel serverless entry point handlers after env initialization to prevent server.ts background listen
+const { default: healthHandler } = await import('../api/health.ts');
+const { default: configHandler } = await import('../api/config.ts');
+const { default: chatHandler } = await import('../api/chat.ts');
+const { default: uploadHandler } = await import('../api/upload.ts');
+const { default: transcribeHandler } = await import('../api/transcribe.ts');
+const { default: conversationsHandler } = await import('../api/conversations.ts');
+const { default: messagesHandler } = await import('../api/messages.ts');
+const { default: usersHandler } = await import('../api/users.ts');
+const { default: userSettingsHandler } = await import('../api/user-settings.ts');
+const { default: dbHandler } = await import('../api/db.ts');
+const { default: authHandler } = await import('../api/auth.ts');
 
 // Test Personas
 const ALICE: DecodedIdToken = {
@@ -88,7 +89,7 @@ setMockAuthVerifierForTesting(async (token: string) => {
   throw err;
 });
 
-// Helper to simulate calling a Vercel serverless function handler
+// Helper to simulate calling a Vercel serverless function handler with timeout protection
 async function callServerlessHandler(
   handler: (req: any, res: any) => any,
   options: {
@@ -96,9 +97,41 @@ async function callServerlessHandler(
     url: string;
     headers?: Record<string, string>;
     body?: any;
+    timeoutMs?: number;
   }
 ): Promise<{ status: number; data: any; headers: Record<string, string> }> {
+  const timeoutMs = options.timeoutMs ?? 10000;
+
   return new Promise((resolve, reject) => {
+    let isSettled = false;
+
+    const timer = setTimeout(() => {
+      if (!isSettled) {
+        isSettled = true;
+        reject(
+          new Error(
+            `[TIMEOUT] Serverless handler timed out after ${timeoutMs}ms for ${options.method} ${options.url}`
+          )
+        );
+      }
+    }, timeoutMs);
+
+    const safeResolve = (val: { status: number; data: any; headers: Record<string, string> }) => {
+      if (!isSettled) {
+        isSettled = true;
+        clearTimeout(timer);
+        resolve(val);
+      }
+    };
+
+    const safeReject = (err: any) => {
+      if (!isSettled) {
+        isSettled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    };
+
     const lowerHeaders: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json'
@@ -147,26 +180,44 @@ async function callServerlessHandler(
       getHeader: (key: string) => resHeaders[key.toLowerCase()],
       status: (code: number) => {
         statusCode = code;
+        res.statusCode = code;
         return res;
       },
       json: (obj: any) => {
-        statusCode = statusCode || 200;
-        resolve({ status: statusCode, data: obj, headers: resHeaders });
+        statusCode = statusCode || res.statusCode || 200;
+        safeResolve({ status: statusCode, data: obj, headers: resHeaders });
       },
       send: (content: any) => {
-        statusCode = statusCode || 200;
+        statusCode = statusCode || res.statusCode || 200;
         let parsed = content;
         try {
           if (typeof content === 'string') parsed = JSON.parse(content);
         } catch (_) {}
-        resolve({ status: statusCode, data: parsed, headers: resHeaders });
+        safeResolve({ status: statusCode, data: parsed, headers: resHeaders });
       },
       sendStatus: (code: number) => {
         statusCode = code;
-        resolve({ status: statusCode, data: null, headers: resHeaders });
+        res.statusCode = code;
+        safeResolve({ status: statusCode, data: null, headers: resHeaders });
       },
-      end: () => {
-        resolve({ status: statusCode, data: responseBody, headers: resHeaders });
+      write: (chunk: any) => {
+        if (chunk !== undefined && chunk !== null) {
+          responseBody += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+        }
+        return true;
+      },
+      end: (chunk?: any) => {
+        if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') {
+          responseBody += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+        }
+        statusCode = statusCode || res.statusCode || 200;
+        let parsed: any = responseBody;
+        try {
+          if (typeof responseBody === 'string' && responseBody.trim()) {
+            parsed = JSON.parse(responseBody);
+          }
+        } catch (_) {}
+        safeResolve({ status: statusCode, data: parsed, headers: resHeaders });
       },
       setTimeout: () => {},
       socket: { setTimeout: () => {}, setNoDelay: () => {}, setKeepAlive: () => {} },
@@ -176,9 +227,11 @@ async function callServerlessHandler(
     };
 
     try {
-      handler(req, res);
+      Promise.resolve(handler(req, res)).catch((err) => {
+        safeReject(err);
+      });
     } catch (err) {
-      reject(err);
+      safeReject(err);
     }
   });
 }
@@ -470,40 +523,68 @@ async function run() {
   // [8/8] Step 3.4D-1 No-Fallback Guarantees in Serverless Handlers
   // ---------------------------------------------------------------------------
   console.log('\n--- [8/8] Testing No-Fallback Guarantees Under Database Outage ---');
-  resetTestDatabase(); // Database is now disconnected / unconfigured
+  resetTestDatabase(); // Clear in-memory test database and state
+  const originalMongoUri = process.env.MONGODB_URI;
 
-  // Test that when unconfigured, serverless handlers explicitly fail with HTTP 503 DATABASE_UNAVAILABLE
-  const noFallbackConvs = await callServerlessHandler(conversationsHandler, {
-    method: 'GET',
-    url: '/api/conversations',
-    headers: { authorization: 'Bearer token-alice' }
-  });
-  assert(noFallbackConvs.status === 503, 'api/conversations.ts returns HTTP 503 when MongoDB is unavailable');
-  assert(noFallbackConvs.data?.code === 'DATABASE_UNAVAILABLE', 'Response code is DATABASE_UNAVAILABLE (no fake empty array)');
+  try {
+    // Deterministically simulate database outage/unconfigured environment
+    // without triggering Atlas network timeouts or cluster selection delays
+    delete process.env.MONGODB_URI;
 
-  const noFallbackUsers = await callServerlessHandler(usersHandler, {
-    method: 'GET',
-    url: '/api/users?__subpath=me',
-    headers: { authorization: 'Bearer token-alice' }
-  });
-  assert(noFallbackUsers.status === 503, 'api/users.ts returns HTTP 503 when MongoDB is unavailable');
-  assert(noFallbackUsers.data?.code === 'DATABASE_UNAVAILABLE', 'Response code is DATABASE_UNAVAILABLE (no fake user)');
+    // Test that when unconfigured, serverless handlers explicitly fail with HTTP 503 DATABASE_UNAVAILABLE
+    const noFallbackConvs = await callServerlessHandler(conversationsHandler, {
+      method: 'GET',
+      url: '/api/conversations',
+      headers: { authorization: 'Bearer token-alice' }
+    });
+    assert(noFallbackConvs.status === 503, 'api/conversations.ts returns HTTP 503 when MongoDB is unavailable');
+    assert(noFallbackConvs.data?.code === 'DATABASE_UNAVAILABLE', 'Response code is DATABASE_UNAVAILABLE (no fake empty array)');
 
-  const noFallbackSettings = await callServerlessHandler(userSettingsHandler, {
-    method: 'POST',
-    url: '/api/user-settings?__subpath=me',
-    headers: { authorization: 'Bearer token-alice' },
-    body: { theme: 'light' }
-  });
-  assert(noFallbackSettings.status === 503, 'api/user-settings.ts returns HTTP 503 when MongoDB is unavailable');
-  assert(noFallbackSettings.data?.code === 'DATABASE_UNAVAILABLE', 'Response code is DATABASE_UNAVAILABLE (no fake write)');
+    const noFallbackPinnedConv = await callServerlessHandler(conversationsHandler, {
+      method: 'POST',
+      url: '/api/conversations',
+      headers: { authorization: 'Bearer token-alice' },
+      body: { title: 'Pinned Outage Conversation', isPinned: true }
+    });
+    assert(
+      noFallbackPinnedConv.status === 503 && noFallbackPinnedConv.data?.code === 'DATABASE_UNAVAILABLE',
+      'api/conversations.ts POST with isPinned: true returns HTTP 503 DATABASE_UNAVAILABLE when MongoDB is unavailable'
+    );
 
-  // Verify that core liveness endpoints (/api/health) still work even when database is unavailable
-  const livenessStillWorks = await callServerlessHandler(healthHandler, {
-    method: 'GET',
-    url: '/api/health'
-  });
-  assert(livenessStillWorks.status === 200, 'Liveness endpoint /api/health returns HTTP 200 even when database is offline');
+    const noFallbackUsers = await callServerlessHandler(usersHandler, {
+      method: 'GET',
+      url: '/api/users?__subpath=me',
+      headers: { authorization: 'Bearer token-alice' }
+    });
+    assert(noFallbackUsers.status === 503, 'api/users.ts returns HTTP 503 when MongoDB is unavailable');
+    assert(noFallbackUsers.data?.code === 'DATABASE_UNAVAILABLE', 'Response code is DATABASE_UNAVAILABLE (no fake user)');
+
+    const noFallbackSettings = await callServerlessHandler(userSettingsHandler, {
+      method: 'POST',
+      url: '/api/user-settings?__subpath=me',
+      headers: { authorization: 'Bearer token-alice' },
+      body: { theme: 'light' }
+    });
+    assert(noFallbackSettings.status === 503, 'api/user-settings.ts returns HTTP 503 when MongoDB is unavailable');
+    assert(noFallbackSettings.data?.code === 'DATABASE_UNAVAILABLE', 'Response code is DATABASE_UNAVAILABLE (no fake write)');
+
+    // Verify that core liveness endpoints (/api/health) still work even when database is unavailable
+    const livenessStillWorks = await callServerlessHandler(healthHandler, {
+      method: 'GET',
+      url: '/api/health'
+    });
+    assert(livenessStillWorks.status === 200, 'Liveness endpoint /api/health returns HTTP 200 even when database is offline');
+  } finally {
+    // Restore environment and database state safely even if assertions fail
+    if (originalMongoUri !== undefined) {
+      process.env.MONGODB_URI = originalMongoUri;
+    } else {
+      delete process.env.MONGODB_URI;
+    }
+    resetTestDatabase();
+    resetFirebaseAdminForTesting();
+    await closeDatabase();
+  }
 
   console.log('\n========================================================================');
   console.log(`📊 Audit Results: ${passed} passed, ${failed} failed`);
@@ -512,6 +593,7 @@ async function run() {
   if (failed > 0) {
     process.exit(1);
   }
+  process.exitCode = 0;
 }
 
 run().catch((err) => {
