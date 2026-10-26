@@ -2867,7 +2867,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.1-flash-lite (demo)';
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.8-flash (demo)';
         if (!shouldStream) {
           return res.json({
             text,
@@ -2964,12 +2964,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       const requestedGeminiModel =
         typeof clientModel === 'string' && clientModel.trim()
           ? clientModel.trim()
-          : 'gemini-3.1-flash-lite';
+          : 'gemini-3.5-flash-lite';
 
       const attemptPlan = [
         { model: requestedGeminiModel, attemptNum: 1 },
-        { model: requestedGeminiModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash', attemptNum: 2 },
-        { model: 'gemini-flash-latest', attemptNum: 3 }
+        { model: requestedGeminiModel === 'gemini-3.5-flash-lite' ? 'gemini-3.8-flash' : 'gemini-3.5-flash-lite', attemptNum: 2 },
+        { model: 'gemini-3.6-flash', attemptNum: 3 }
       ];
       const maxAttempts = attemptPlan.length;
 
