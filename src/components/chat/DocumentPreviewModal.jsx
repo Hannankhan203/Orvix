@@ -56,6 +56,49 @@ function getModalFormatIcon(ext = '') {
   }
 }
 
+function getModalFormatBadgeClass(ext = '') {
+  const cleanExt = (ext || '').replace('.', '').toLowerCase();
+  switch (cleanExt) {
+    case 'pdf':
+      return 'format-pdf';
+    case 'doc':
+    case 'docx':
+      return 'format-doc';
+    case 'ppt':
+    case 'pptx':
+      return 'format-ppt';
+    case 'xls':
+    case 'xlsx':
+    case 'csv':
+    case 'tsv':
+      return 'format-sheet';
+    case 'md':
+    case 'markdown':
+    case 'txt':
+    case 'json':
+    case 'xml':
+    case 'js':
+    case 'jsx':
+    case 'ts':
+    case 'tsx':
+    case 'html':
+    case 'css':
+      return 'format-text';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'webp':
+    case 'gif':
+    case 'bmp':
+    case 'heic':
+    case 'heif':
+    case 'svg':
+      return 'format-image';
+    default:
+      return 'format-default';
+  }
+}
+
 export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -68,11 +111,12 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [ocrLoading, setOcrLoading] = useState(false);
   const createdObjectUrlRef = useRef(null);
 
-  const filename = attachment?.name || attachment?.originalName || 'Document';
+  const filename = attachment?.name || attachment?.originalName || attachment?.filename || 'Document';
   const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() : '';
   const ext = (filenameExt || attachment?.extension || attachment?.format || '').replace('.', '').toLowerCase();
   const mime = attachment?.type || attachment?.mimeType || '';
   const IconComponent = getModalFormatIcon(ext);
+  const formatBadgeClass = getModalFormatBadgeClass(ext);
 
   const isPdf = ext === 'pdf' || mime === 'application/pdf';
   const isImage =
@@ -292,24 +336,27 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   };
 
   const sizeText = attachment.formattedSize || (attachment.size ? `${(attachment.size / 1024).toFixed(1)} KB` : '');
+  const pagesCount = attachment.pageCount || attachment.extraction?.pageCount;
+  const slidesCount = attachment.slideCount || attachment.extraction?.slideCount;
+  const metaDetail = pagesCount ? `${pagesCount} page${pagesCount > 1 ? 's' : ''}` : slidesCount ? `${slidesCount} slide${slidesCount > 1 ? 's' : ''}` : null;
   const hasCopyableText = Boolean(textContent || (isImage && activeView === 'ocr' && ocrData?.text));
 
   return (
     <div
-      className="document-preview-overlay fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in"
+      className="document-preview-overlay"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-labelledby="preview-modal-title"
     >
       <div
-        className="document-preview-modal bg-[#192230] text-[#f8fafc] border border-white/10 rounded-xl shadow-2xl flex flex-col w-full max-w-4xl max-h-[90vh] overflow-hidden"
+        className="document-preview-modal"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
         <div className="preview-modal-header">
           <div className="preview-modal-title-group">
-            <div className="preview-modal-icon-badge" aria-hidden="true">
+            <div className={`preview-modal-icon-badge ${formatBadgeClass}`} aria-hidden="true">
               <IconComponent size={18} />
             </div>
             <div className="preview-modal-title-wrap">
@@ -322,9 +369,10 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               </h2>
               <div className="preview-modal-meta">
                 <span className="preview-modal-ext-pill">
-                  {ext || 'FILE'}
+                  {ext.toUpperCase() || 'FILE'}
                 </span>
-                {sizeText && <span>• {sizeText}</span>}
+                {sizeText && <span className="preview-modal-meta-item">• {sizeText}</span>}
+                {metaDetail && <span className="preview-modal-meta-item">• {metaDetail}</span>}
               </div>
             </div>
           </div>
@@ -354,7 +402,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                   <FileText size={13} aria-hidden="true" />
                   <span>Extracted Text</span>
                   {ocrData?.status === 'ready' && ocrData?.hasText ? (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Text detected" />
+                    <span className="preview-tab-dot" title="Text detected" />
                   ) : null}
                 </button>
               </div>
@@ -378,7 +426,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               onClick={handleDownloadOriginal}
               disabled={downloading}
               className="preview-download-btn"
-              title="Download original file"
+              title={`Download original file (${filename})`}
               aria-label={`Download original file ${filename}`}
             >
               {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
@@ -424,7 +472,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                 <FileText size={13} aria-hidden="true" />
                 <span>Extracted Text</span>
                 {ocrData?.status === 'ready' && ocrData?.hasText ? (
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Text detected" />
+                  <span className="preview-tab-dot" title="Text detected" />
                 ) : null}
               </button>
             </div>
@@ -449,7 +497,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               onClick={handleDownloadOriginal}
               disabled={downloading}
               className="preview-download-btn"
-              title="Download original file"
+              title={`Download original file (${filename})`}
               aria-label={`Download original file ${filename}`}
             >
               {downloading ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
@@ -459,119 +507,121 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         </div>
 
         {/* Modal Body */}
-        <div className="preview-modal-body flex-1 overflow-auto p-4 min-h-[300px] flex items-center justify-center bg-[#0e131b]">
+        <div className="preview-modal-body">
           {loading ? (
-            <div className="flex flex-col items-center gap-3 text-slate-400 py-12">
+            <div className="preview-status-state">
               <Loader2 size={28} className="animate-spin text-blue-400" />
-              <span className="text-sm">Loading document preview...</span>
+              <span className="preview-status-text">Loading document preview...</span>
             </div>
           ) : error ? (
-            <div className="flex flex-col items-center gap-3 text-center p-8 max-w-md">
+            <div className="preview-status-state error">
               <AlertTriangle size={32} className="text-amber-400" />
-              <p className="text-sm text-slate-300">{error}</p>
+              <p className="preview-status-text">{error}</p>
               <button
                 type="button"
                 onClick={handleDownloadOriginal}
-                className="mt-2 inline-flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white"
+                className="preview-download-btn mt-2"
               >
                 <Download size={14} />
                 <span>Try Direct Download</span>
               </button>
             </div>
           ) : isPdf && blobUrl ? (
-            <iframe
-              src={blobUrl}
-              title={filename}
-              className="w-full h-[70vh] rounded-md border border-white/5 bg-white"
-            />
+            <div className="preview-pdf-container">
+              <iframe
+                src={blobUrl}
+                title={filename}
+                className="preview-pdf-frame"
+              />
+            </div>
           ) : isImage && activeView === 'image' && blobUrl ? (
-            <div className="flex items-center justify-center max-h-[70vh] p-2">
+            <div className="preview-image-viewport">
               <img
                 src={blobUrl}
                 alt={filename}
-                className="max-h-[70vh] max-w-full object-contain rounded-md shadow-md"
+                className="preview-image-element"
               />
             </div>
           ) : isImage && activeView === 'ocr' ? (
             ocrLoading ? (
-              <div className="flex flex-col items-center gap-3 text-slate-400 py-12">
+              <div className="preview-status-state">
                 <Loader2 size={28} className="animate-spin text-blue-400" />
-                <span className="text-sm">Extracting text from image with OCR...</span>
+                <span className="preview-status-text">Extracting text from image with OCR...</span>
               </div>
             ) : ocrData?.status === 'NO_TEXT_DETECTED' || (ocrData?.success && !ocrData?.hasText) ? (
-              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md my-auto">
-                <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-400 mb-3">
+              <div className="preview-status-state">
+                <div className="preview-status-icon-circle info">
                   <FileText size={22} />
                 </div>
-                <h3 className="text-base font-semibold text-slate-100">No readable text detected in this image.</h3>
-                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                <h3 className="preview-status-title">No readable text detected in this image</h3>
+                <p className="preview-status-desc">
                   The OCR scan completed successfully, but no readable text or characters were found in this image.
                 </p>
               </div>
             ) : ocrData?.status === 'ready' && ocrData?.hasText ? (
-              <div className="w-full h-full max-h-[70vh] flex flex-col">
-                <div className="preview-ocr-stats-bar text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-2 rounded-md mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-emerald-400">OCR Text Extracted</span>
+              <div className="preview-text-container">
+                <div className="preview-ocr-stats-bar">
+                  <div className="preview-ocr-stats-group">
+                    <span className="preview-ocr-badge">OCR Text Extracted</span>
                     {ocrData.confidence > 0 && (
-                      <span className="text-slate-400">• Confidence: {ocrData.confidence}%</span>
+                      <span className="preview-ocr-confidence">• Confidence: {ocrData.confidence}%</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 text-slate-400 flex-wrap">
+                  <div className="preview-ocr-counts">
                     <span>{ocrData.totalWords || 0} words</span>
-                    <span>{ocrData.totalCharacters || 0} characters</span>
-                    {ocrData.lineCount ? <span>{ocrData.lineCount} lines</span> : null}
+                    <span>• {ocrData.totalCharacters || 0} characters</span>
+                    {ocrData.lineCount ? <span>• {ocrData.lineCount} lines</span> : null}
                   </div>
                 </div>
-                <pre className="flex-1 overflow-auto p-4 text-xs font-mono text-slate-200 bg-[#0b0f15] border border-white/10 rounded-lg whitespace-pre-wrap word-break leading-relaxed select-text">
+                <pre className="preview-text-content">
                   {ocrData.text || textContent}
                 </pre>
               </div>
             ) : ocrData?.status === 'unsupported_format' ? (
-              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md my-auto">
-                <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-400 mb-3">
+              <div className="preview-status-state">
+                <div className="preview-status-icon-circle warning">
                   <AlertTriangle size={22} />
                 </div>
-                <h3 className="text-base font-semibold text-slate-100">OCR Format Not Supported</h3>
-                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                <h3 className="preview-status-title">OCR Format Not Supported</h3>
+                <p className="preview-status-desc">
                   {ocrData?.error || 'Text extraction is not supported for this image format in this environment.'}
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md my-auto">
-                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center text-red-400 mb-3">
+              <div className="preview-status-state">
+                <div className="preview-status-icon-circle danger">
                   <AlertTriangle size={22} />
                 </div>
-                <h3 className="text-base font-semibold text-slate-100">Image Processing Error</h3>
-                <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                <h3 className="preview-status-title">Image Processing Error</h3>
+                <p className="preview-status-desc">
                   {ocrData?.error || 'Failed to process image for text extraction.'}
                 </p>
               </div>
             )
           ) : isTextual || textContent ? (
-            <div className="w-full h-full max-h-[70vh] flex flex-col">
+            <div className="preview-text-container">
               {isOffice && (
-                <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-md mb-3 flex items-center justify-between">
+                <div className="preview-office-notice">
                   <span>Displaying extracted text preview. Use Download above for the original formatted Office document.</span>
                 </div>
               )}
-              <pre className="flex-1 overflow-auto p-4 text-xs font-mono text-slate-200 bg-[#0b0f15] border border-white/10 rounded-lg whitespace-pre-wrap word-break leading-relaxed select-text">
+              <pre className="preview-text-content">
                 {textContent || 'No readable text content available.'}
               </pre>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-4 text-center p-8 max-w-md">
-              <IconComponent size={40} className="text-blue-400" />
-              <div>
-                <p className="text-sm font-medium text-slate-200">Preview not available for this format</p>
-                <p className="text-xs text-slate-400 mt-1">
-                  This file format ({ext.toUpperCase()}) cannot be natively rendered in the browser. Click below to download the original file.
-                </p>
+            <div className="preview-status-state">
+              <div className={`preview-status-icon-circle ${formatBadgeClass}`}>
+                <IconComponent size={32} />
               </div>
+              <h3 className="preview-status-title">Preview not available for this format</h3>
+              <p className="preview-status-desc">
+                This file format ({(ext || 'FILE').toUpperCase()}) cannot be natively rendered in the browser. Click below to download the original file.
+              </p>
               <button
                 type="button"
                 onClick={handleDownloadOriginal}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-lg bg-blue-600 hover:bg-blue-500 text-white"
+                className="preview-download-btn mt-2"
               >
                 <Download size={14} />
                 <span>Download {filename}</span>
