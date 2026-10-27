@@ -4,6 +4,8 @@
  * Calling Gemini from the server protects the API key and adheres to AI Studio best practices.
  */
 
+import { prepareChatRequestBody } from './attachmentStorageService.js';
+
 /**
  * Retrieves the configured Gemini API key (kept for interface compatibility; server handles actual authentication).
  */
@@ -64,21 +66,23 @@ export async function sendGeminiMessage({
   conversationId = null,
   attachments = []
 }) {
+  const requestBody = prepareChatRequestBody({
+    provider: 'gemini',
+    mode,
+    prompt,
+    history,
+    username: username ? String(username).trim() : null,
+    preferences: preferences || null,
+    conversationId: conversationId || null,
+    attachments: Array.isArray(attachments) ? attachments : []
+  });
+
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      provider: 'gemini',
-      mode,
-      prompt,
-      history,
-      username: username ? String(username).trim() : null,
-      preferences: preferences || null,
-      conversationId: conversationId || null,
-      attachments: Array.isArray(attachments) ? attachments : []
-    })
+    body: requestBody
   });
 
   if (!response.ok) {
@@ -128,23 +132,25 @@ export async function streamGeminiMessage({
   conversationId = null,
   attachments = []
 }) {
+  const requestBody = prepareChatRequestBody({
+    provider: 'gemini',
+    mode,
+    prompt,
+    history,
+    username: username ? String(username).trim() : null,
+    preferences: preferences || null,
+    stream: true,
+    conversationId: conversationId || null,
+    attachments: Array.isArray(attachments) ? attachments : []
+  });
+
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'text/event-stream'
     },
-    body: JSON.stringify({
-      provider: 'gemini',
-      mode,
-      prompt,
-      history,
-      username: username ? String(username).trim() : null,
-      preferences: preferences || null,
-      stream: true,
-      conversationId: conversationId || null,
-      attachments: Array.isArray(attachments) ? attachments : []
-    }),
+    body: requestBody,
     signal
   });
 

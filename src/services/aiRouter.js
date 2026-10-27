@@ -8,6 +8,7 @@ import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './gemin
 import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
 import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
 import { streamWebLLMMessage, DEFAULT_WEBLLM_MODEL_ID } from './webllmService.js';
+import { prepareChatRequestBody, sanitizeAttachmentForNetwork } from './attachmentStorageService.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
@@ -231,6 +232,26 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
     if (!cleanMsg || cleanMsg === 'Not Found' || cleanMsg.includes('Server request failed (404)')) {
       cleanMsg = 'The requested AI model was not found or is no longer available. Please select another provider or model.';
     }
+  } else if (
+    code === 413 ||
+    upperStatus === 'PAYLOAD_TOO_LARGE' ||
+    lowerMsg.includes('payload too large') ||
+    lowerMsg.includes('request entity too large') ||
+    lowerMsg.includes('entity.too.large') ||
+    lowerMsg.includes('function_payload_too_large')
+  ) {
+    code = 413;
+    status = 'PAYLOAD_TOO_LARGE';
+    retryable = false;
+    if (
+      !cleanMsg ||
+      cleanMsg === 'Payload Too Large' ||
+      cleanMsg === 'Request Entity Too Large' ||
+      cleanMsg.includes('Server request failed (413)')
+    ) {
+      cleanMsg =
+        'The attached image payload exceeds the supported request budget (3.0 MB max per image, 4.2 MB max total request). Please resize or compress the image and try again.';
+    }
   } else if (code === 400 || upperStatus === 'INVALID_ARGUMENT') {
     code = 400;
     status = 'INVALID_ARGUMENT';
@@ -255,6 +276,9 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   err.retryable = isOllamaContext ? false : (retryable ?? (code === 503 || code === 429));
   if (isOllamaContext) {
     err.provider = AI_PROVIDERS.OLLAMA;
+    err.canFallback = false;
+  } else if (code === 413 || status === 'PAYLOAD_TOO_LARGE') {
+    if (normalizedHint) err.provider = normalizedHint;
     err.canFallback = false;
   } else if (normalizedHint) {
     err.provider = normalizedHint;
@@ -304,7 +328,9 @@ export async function streamAIMessage({
       preferences: preferences || null,
       mode: normalizedMode,
       model: model ? String(model).trim() : null,
-      attachments: Array.isArray(attachments) ? attachments : [],
+      attachments: Array.isArray(attachments)
+        ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
+        : [],
       onStart,
       onChunk,
       signal
@@ -319,28 +345,30 @@ export async function streamAIMessage({
   while (clientAttempt < maxClientAttempts) {
     clientAttempt++;
     try {
+      const requestBody = prepareChatRequestBody({
+        provider: normalizedProvider,
+        model: model ? String(model).trim() : null,
+        mode: normalizedMode,
+        prompt,
+        history,
+        username: username ? String(username).trim() : null,
+        preferences: preferences || null,
+        stream: true,
+        conversationId: conversationId || null,
+        attachments: Array.isArray(attachments) ? attachments : [],
+        isContinuation: Boolean(isContinuation),
+        partNumber: partNumber || 1,
+        originalPrompt: originalPrompt || null,
+        previousContentSummary: previousContentSummary || null
+      });
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream'
         },
-        body: JSON.stringify({
-          provider: normalizedProvider,
-          model: model ? String(model).trim() : null,
-          mode: normalizedMode,
-          prompt,
-          history,
-          username: username ? String(username).trim() : null,
-          preferences: preferences || null,
-          stream: true,
-          conversationId: conversationId || null,
-          attachments: Array.isArray(attachments) ? attachments : [],
-          isContinuation: Boolean(isContinuation),
-          partNumber: partNumber || 1,
-          originalPrompt: originalPrompt || null,
-          previousContentSummary: previousContentSummary || null
-        }),
+        body: requestBody,
         signal
       });
 
@@ -606,7 +634,9 @@ export async function streamAIMessage({
         preferences: preferences || null,
         mode: normalizedMode,
         model: model ? String(model).trim() : null,
-        attachments: Array.isArray(attachments) ? attachments : [],
+        attachments: Array.isArray(attachments)
+          ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
+          : [],
         onStart,
         onChunk,
         signal

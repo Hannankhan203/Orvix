@@ -17,6 +17,7 @@ import {
   updateChatMode,
   getCachedUserChats,
   saveCachedChatMessages,
+  sanitizeMessageForStorage,
   syncOfflineUserChatsToFirestore
 } from '../services/chatStorageService.js';
 import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
@@ -29,7 +30,12 @@ import { getChatMode } from '../config/chatModes.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
-import { saveAttachmentBlob } from '../services/attachmentStorageService.js';
+import {
+  saveAttachmentBlob,
+  hydrateAttachmentsWithImageBytes,
+  sanitizeAttachmentForNetwork
+} from '../services/attachmentStorageService.js';
+import { isVisionCapableProvider } from '../services/documentContextService.js';
 import {
   isContinuationRequest,
   resolveMultiPartContext,
@@ -335,13 +341,7 @@ export default function ChatPage() {
           if (!chat || !Array.isArray(chat.messages)) return chat;
           return {
             ...chat,
-            messages: chat.messages.map((msg) => {
-              if (!msg || !Array.isArray(msg.attachments) || msg.attachments.length === 0) return msg;
-              return {
-                ...msg,
-                attachments: msg.attachments.map(({ file, base64, dataUrl, previewUrl, ...rest }) => rest)
-              };
-            })
+            messages: chat.messages.map((msg) => sanitizeMessageForStorage(msg))
           };
         });
         const serialized = JSON.stringify(sanitizedChats);
@@ -1120,6 +1120,34 @@ export default function ChatPage() {
       );
     }
     try {
+      let requestAttachments = currentAttachments;
+      if (Array.isArray(currentAttachments) && currentAttachments.length > 0) {
+        if (isVisionCapableProvider(providerToUse, effectiveModelOverride)) {
+          try {
+            requestAttachments = await hydrateAttachmentsWithImageBytes(currentAttachments, {
+              provider: providerToUse,
+              model: effectiveModelOverride
+            });
+          } catch (hydrateErr) {
+            if (
+              hydrateErr?.isPayloadError ||
+              hydrateErr?.name === 'ImagePayloadLimitError' ||
+              hydrateErr?.name === 'ImagePayloadValidationError' ||
+              hydrateErr?.code === 413 ||
+              hydrateErr?.code === 400 ||
+              hydrateErr?.status === 'PAYLOAD_TOO_LARGE'
+            ) {
+              throw hydrateErr;
+            }
+            console.warn('[Chat] Failed to hydrate image attachments from IndexedDB:', hydrateErr);
+          }
+        } else {
+          requestAttachments = currentAttachments.map((att) =>
+            sanitizeAttachmentForNetwork(att, { includeImageBytes: false })
+          );
+        }
+      }
+
       const result = await streamAIMessage({
         provider: providerToUse,
         model: effectiveModelOverride,
@@ -1134,7 +1162,7 @@ export default function ChatPage() {
         },
         signal: abortController.signal,
         conversationId: targetChatId,
-        attachments: currentAttachments,
+        attachments: requestAttachments,
         isContinuation: multiPartParams.isContinuation,
         partNumber: multiPartParams.partNumber,
         originalPrompt: multiPartParams.originalPrompt,
@@ -1364,17 +1392,27 @@ export default function ChatPage() {
         error?.status === 'PERMISSION_DENIED';
       const isRateLimit =
         error?.code === 429 || error?.status === 'RESOURCE_EXHAUSTED';
+      const isPayloadError = Boolean(
+        error?.isPayloadError ||
+        error?.code === 413 ||
+        error?.status === 'PAYLOAD_TOO_LARGE'
+      );
       const isNotFound =
-        error?.code === 404 ||
-        error?.status === 'NOT_FOUND' ||
-        rawMsg.toLowerCase().includes('not found') ||
-        rawMsg.toLowerCase().includes('does not exist') ||
-        rawMsg.toLowerCase().includes('access to it') ||
-        rawMsg.toLowerCase().includes('decommissioned') ||
-        rawMsg.toLowerCase().includes('retired');
+        !isPayloadError &&
+        (error?.code === 404 ||
+          error?.status === 'NOT_FOUND' ||
+          rawMsg.toLowerCase().includes('not found') ||
+          rawMsg.toLowerCase().includes('does not exist') ||
+          rawMsg.toLowerCase().includes('access to it') ||
+          rawMsg.toLowerCase().includes('decommissioned') ||
+          rawMsg.toLowerCase().includes('retired'));
 
       let friendlyMsg = rawMsg;
-      if (isOllama) {
+      if (isPayloadError) {
+        friendlyMsg =
+          rawMsg ||
+          'The attached image payload exceeds the supported request budget (3.0 MB max per image, 4.2 MB max total request). Please resize or compress the image and try again.';
+      } else if (isOllama) {
         // Ollama errors are local, specific, and actionable. Never rewrite into cloud provider demand errors.
         if (rawMsg) {
           friendlyMsg = rawMsg;
@@ -1749,65 +1787,49 @@ export default function ChatPage() {
               }
             } else {
               const uploadData = await uploadRes.json();
-              processedAttachments = Array.isArray(uploadData?.attachments)
-                ? uploadData.attachments.map((proc, idx) => {
-                    const orig =
-                      filesToUpload[idx] ||
-                      filesToUpload.find(
-                        (f) => f.name === (proc.originalName || proc.name)
-                      );
-                    return {
-                      ...proc,
-                      file: orig?.file,
-                      previewUrl: orig?.previewUrl || proc.dataUrl,
-                      dataUrl: proc.dataUrl,
-                      base64: proc.base64 || orig?.base64,
-                      isImage: Boolean(proc.isImage || orig?.isImage)
-                    };
-                  })
+              const rawUploaded = Array.isArray(uploadData?.attachments)
+                ? uploadData.attachments
                 : [];
 
-              // Persist file blobs into IndexedDB for robust local preview/download across reloads
-              await Promise.all(
-                filesToUpload.map(async (attItem, i) => {
-                  const proc =
-                    processedAttachments[i] ||
-                    processedAttachments.find(
-                      (p) => (p.originalName || p.name) === attItem.name
+              // Persist file blobs into IndexedDB first so React message state never needs large base64/dataUrl strings
+              processedAttachments = await Promise.all(
+                rawUploaded.map(async (proc, idx) => {
+                  const orig =
+                    filesToUpload[idx] ||
+                    filesToUpload.find(
+                      (f) => f.name === (proc.originalName || proc.name)
                     );
-                  if (proc && proc.id && attItem.file) {
+                  const { base64: _b64, dataUrl: _dUrl, data: _rawData, ...cleanProc } = proc || {};
+                  let savedInIdb = false;
+
+                  if (cleanProc.id && orig?.file) {
                     try {
-                      await saveAttachmentBlob(proc.id, attItem.file, {
-                        name: proc.name || attItem.name,
-                        originalName: proc.originalName || attItem.name,
-                        mimeType: proc.type || attItem.file.type,
-                        size: proc.size || attItem.file.size,
-                        formattedSize: proc.formattedSize || attItem.formattedSize,
-                        extension: proc.extension || attItem.extension,
-                        isImage: Boolean(attItem.isImage),
+                      savedInIdb = await saveAttachmentBlob(cleanProc.id, orig.file, {
+                        name: cleanProc.name || orig.name,
+                        originalName: cleanProc.originalName || orig.name,
+                        mimeType: cleanProc.type || cleanProc.mimeType || orig.file.type,
+                        size: cleanProc.size || orig.file.size,
+                        formattedSize: cleanProc.formattedSize || orig.formattedSize,
+                        extension: cleanProc.extension || orig.extension,
+                        isImage: Boolean(cleanProc.isImage || orig.isImage),
                         conversationId: activeChatIdRef.current || null
                       });
                     } catch (e) {
                       console.warn('Could not cache blob in IndexedDB:', e);
                     }
-
-                    // Attach base64 data for images under 3MB so stateless serverless environments have direct multimodal access
-                    if (attItem.isImage && attItem.file.size <= 3 * 1024 * 1024 && !proc.base64) {
-                      try {
-                        const b64 = await new Promise((resolve) => {
-                          const reader = new FileReader();
-                          reader.onload = () => resolve(reader.result);
-                          reader.onerror = () => resolve(null);
-                          reader.readAsDataURL(attItem.file);
-                        });
-                        if (b64) {
-                          proc.base64 = b64;
-                          if (!proc.dataUrl) proc.dataUrl = b64;
-                          if (!proc.previewUrl) proc.previewUrl = b64;
-                        }
-                      } catch (_) {}
-                    }
                   }
+
+                  const safePreviewUrl =
+                    typeof orig?.previewUrl === 'string' && orig.previewUrl.startsWith('blob:')
+                      ? orig.previewUrl
+                      : undefined;
+
+                  return {
+                    ...cleanProc,
+                    ...(savedInIdb ? {} : orig?.file ? { file: orig.file } : {}),
+                    ...(safePreviewUrl ? { previewUrl: safePreviewUrl } : {}),
+                    isImage: Boolean(cleanProc.isImage || orig?.isImage)
+                  };
                 })
               );
             }
@@ -2676,8 +2698,19 @@ export default function ChatPage() {
     });
 
     // 4. Update the user message in-place with the edited prompt and current timestamp
+    //    (ensure transient base64/dataUrl fields cannot linger in React state or localStorage)
     const updatedUserMessage = {
       ...messages[userMsgIndex],
+      attachments: Array.isArray(messages[userMsgIndex]?.attachments)
+        ? messages[userMsgIndex].attachments.map((att) => {
+            if (!att || typeof att !== 'object') return att;
+            const { base64: _b64, dataUrl: _dUrl, data: _rawData, ...cleanAtt } = att;
+            if (typeof cleanAtt.previewUrl === 'string' && cleanAtt.previewUrl.startsWith('data:')) {
+              delete cleanAtt.previewUrl;
+            }
+            return cleanAtt;
+          })
+        : messages[userMsgIndex]?.attachments,
       content: trimmed,
       timestamp: new Date().toLocaleTimeString([], {
         hour: '2-digit',

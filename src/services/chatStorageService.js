@@ -167,7 +167,8 @@ export function getCachedChatMessages(userId, chatId) {
 export function saveCachedChatMessages(userId, chatId, messages) {
   if (!userId || !chatId || typeof window === 'undefined' || !Array.isArray(messages)) return;
   try {
-    localStorage.setItem(getUserMessagesCacheKey(userId, chatId), JSON.stringify(messages));
+    const sanitizedMessages = messages.map((msg) => sanitizeMessageForStorage(msg));
+    localStorage.setItem(getUserMessagesCacheKey(userId, chatId), JSON.stringify(sanitizedMessages));
   } catch (err) {
     console.warn('Could not save cached chat messages:', err);
   }
@@ -219,19 +220,53 @@ function upsertCachedChatMessage(userId, chatId, messageObj) {
   return next;
 }
 
-function serializeAttachmentForStorage(att) {
+function sanitizeExtractionForStorage(extraction) {
+  if (!extraction || typeof extraction !== 'object') return null;
+  const { base64, dataUrl, data, previewUrl, file, blob, ...cleanExtraction } = extraction;
+  return cleanExtraction;
+}
+
+export function serializeAttachmentForStorage(att) {
+  if (!att || typeof att !== 'object') return att;
+  const resolvedType = att.type || att.mimeType || '';
   return {
     id: att.id,
     name: att.name || att.originalName || 'document',
     originalName: att.originalName || att.name || 'document',
     size: att.size || 0,
     formattedSize: att.formattedSize || '',
-    type: att.type || att.mimeType || '',
+    type: resolvedType,
+    mimeType: att.mimeType || resolvedType,
     extension: att.extension || '',
     isImage: Boolean(att.isImage),
     status: att.status || 'uploaded',
-    extraction: att.extraction || null
+    extraction: sanitizeExtractionForStorage(att.extraction)
   };
+}
+
+export function sanitizeMessageForStorage(msg) {
+  if (!msg || typeof msg !== 'object') return msg;
+  const next = { ...msg };
+  if (Array.isArray(next.attachments)) {
+    next.attachments = next.attachments.map(serializeAttachmentForStorage);
+  }
+  if (Array.isArray(next.referencedAttachments)) {
+    next.referencedAttachments = next.referencedAttachments.map(serializeAttachmentForStorage);
+  }
+  if (Array.isArray(next.alternatives)) {
+    next.alternatives = next.alternatives.map((alt) => {
+      if (!alt || typeof alt !== 'object') return alt;
+      const sanitizedAlt = { ...alt };
+      if (Array.isArray(sanitizedAlt.attachments)) {
+        sanitizedAlt.attachments = sanitizedAlt.attachments.map(serializeAttachmentForStorage);
+      }
+      if (Array.isArray(sanitizedAlt.referencedAttachments)) {
+        sanitizedAlt.referencedAttachments = sanitizedAlt.referencedAttachments.map(serializeAttachmentForStorage);
+      }
+      return sanitizedAlt;
+    });
+  }
+  return next;
 }
 
 function buildFirestoreMessagePayload(targetMessage) {
@@ -443,10 +478,11 @@ export async function saveChatMessage(userId, chatId, message) {
     return;
   }
 
-  const targetMessage =
+  const targetMessage = sanitizeMessageForStorage(
     message.sender === 'assistant'
       ? normalizeAssistantMessage(message)
-      : message;
+      : message
+  );
 
   const clientTimestamp =
     targetMessage.timestamp ||

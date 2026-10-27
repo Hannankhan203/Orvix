@@ -39,6 +39,12 @@ import {
 } from './src/services/multiPartResponseService.js';
 // @ts-ignore - Context-aware spoken transcript polisher
 import { polishSpokenTranscript } from './src/utils/speechTextCleaner.js';
+// @ts-ignore - Shared attachment payload validation and vision image-part builder
+import {
+  buildVisionImageParts,
+  MAX_VISION_IMAGE_BYTES,
+  MAX_CHAT_REQUEST_BYTES
+} from './src/services/attachmentStorageService.js';
 
 export interface DocumentData {
   fileId?: string;
@@ -158,6 +164,21 @@ app.use((req, _res, next) => {
 });
 
 app.use(express.json({ limit: '25mb' }));
+
+// Return structured JSON on oversized HTTP request bodies instead of default HTML 413 responses
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err && (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413)) {
+    return res.status(413).json({
+      error:
+        'The request payload exceeds the maximum supported size (3.0 MB per image, 4.2 MB total chat request budget). Please resize or compress attached images and try again.',
+      code: 413,
+      status: 'PAYLOAD_TOO_LARGE',
+      retryable: false,
+      canFallback: false
+    });
+  }
+  return next(err);
+});
 
 // Helper to pause execution with backoff
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1942,12 +1963,6 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         const isImg =
           ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
           r.mimeType.startsWith('image/');
-        const dataUrl = isImg && r.buffer && r.buffer.length <= 4 * 1024 * 1024
-          ? `data:${r.mimeType};base64,${r.buffer.toString('base64')}`
-          : undefined;
-        const base64 = isImg && r.buffer && r.buffer.length <= 4 * 1024 * 1024
-          ? r.buffer.toString('base64')
-          : undefined;
         return {
           id: r.id,
           originalName: r.originalName,
@@ -1961,8 +1976,6 @@ app.post(['/api/upload', '/upload'], (req, res) => {
           status: r.status,
           isImage: isImg,
           dimensions: r.dimensions,
-          dataUrl,
-          base64,
           url: `/api/upload/${r.id}/file`,
           uploadedAt: r.uploadedAt,
           extraction: r.extraction
@@ -2663,6 +2676,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             originalName,
             filename: record?.diskFilename || att.name || att.originalName || (rawExtraction as any).filename || originalName,
             format: detectedFormat || (rawExtraction as any).format,
+            mimeType: record?.mimeType || att.mimeType || att.type || (rawExtraction as any).mimeType,
+            type: record?.mimeType || att.type || att.mimeType || (rawExtraction as any).mimeType,
+            sizeBytes: Number(record?.size || att.size || (rawExtraction as any).sizeBytes || 0),
             pages: (rawExtraction as any).pages || record?.extraction?.pages,
             isImage: Boolean((rawExtraction as any).isImage || record?.isImage || att.isImage)
           };
@@ -2682,7 +2698,20 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             if (record?.extraction) {
               addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
             } else if (hAtt.extraction) {
-              addDocIfValid(hAtt.extraction as DocumentData, conversationId || undefined);
+              const docData: any = {
+                ...(hAtt.extraction as DocumentData),
+                id: hAtt.id,
+                fileId: hAtt.id,
+                originalName: hAtt.originalName || hAtt.name,
+                filename: hAtt.filename || hAtt.name || hAtt.originalName,
+                mimeType: hAtt.mimeType || hAtt.type || (hAtt.extraction as any)?.mimeType,
+                type: hAtt.type || hAtt.mimeType || (hAtt.extraction as any)?.mimeType,
+                extension: hAtt.extension,
+                sizeBytes: Number(hAtt.size || (hAtt.extraction as any)?.sizeBytes || 0),
+                isImage: Boolean(hAtt.isImage || (hAtt.extraction as any)?.isImage),
+                base64: hAtt.base64 || hAtt.dataUrl
+              };
+              addDocIfValid(docData, conversationId || undefined);
             }
           }
         }
@@ -2792,6 +2821,42 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     const effectiveSystemInstruction = adapted.effectiveSystemInstruction;
     const effectivePrompt = adapted.effectivePrompt;
 
+    // Validate image payloads for vision providers before demo/live dispatch, and enforce the deployed /api/chat request budget
+    let validatedGeminiImageParts: Array<{ mimeType: string; data: string }> = [];
+    if (normalizedProvider === 'gemini') {
+      try {
+        validatedGeminiImageParts = buildGeminiImageParts({
+          attachments: Array.isArray(attachments) ? attachments : [],
+          availableDocs
+        });
+      } catch (imgErr: any) {
+        const statusCode = Number(imgErr?.code) === 413 ? 413 : 400;
+        const statusLabel = statusCode === 413 ? 'PAYLOAD_TOO_LARGE' : 'INVALID_ARGUMENT';
+        return res.status(statusCode).json({
+          error:
+            imgErr?.message ||
+            'Attached image payload could not be processed within the supported request limits.',
+          code: statusCode,
+          status: statusLabel,
+          provider: 'gemini',
+          retryable: false,
+          canFallback: false
+        });
+      }
+    }
+
+    const serializedBodyBytes = Buffer.byteLength(JSON.stringify(req.body || {}), 'utf8');
+    if (serializedBodyBytes > MAX_CHAT_REQUEST_BYTES) {
+      return res.status(413).json({
+        error: `The complete chat request (${(serializedBodyBytes / (1024 * 1024)).toFixed(1)} MB) exceeds the ${(MAX_CHAT_REQUEST_BYTES / (1024 * 1024)).toFixed(1)} MB serverless request budget (max ${(MAX_VISION_IMAGE_BYTES / (1024 * 1024)).toFixed(1)} MB per image). Please resize or compress attached images or start a new conversation.`,
+        code: 413,
+        status: 'PAYLOAD_TOO_LARGE',
+        provider: normalizedProvider,
+        retryable: false,
+        canFallback: false
+      });
+    }
+
     // 1. Google Gemini Provider
     if (normalizedProvider === 'gemini') {
       const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
@@ -2865,97 +2930,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         }
       });
 
-      // Collect attached images for Gemini multimodal processing
-      const imageParts: Array<{ mimeType: string; data: string }> = [];
-      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'];
-      const normalizeImageMime = (declaredMime?: string, filename?: string): string => {
-        let clean = String(declaredMime || '').toLowerCase().trim();
-        if (clean === 'image/jpg') return 'image/jpeg';
-        if (clean && clean.startsWith('image/')) return clean;
-        const ext = path.extname(filename || '').toLowerCase();
-        if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
-        if (ext === '.png') return 'image/png';
-        if (ext === '.webp') return 'image/webp';
-        if (ext === '.gif') return 'image/gif';
-        if (ext === '.bmp') return 'image/bmp';
-        if (ext === '.heic') return 'image/heic';
-        if (ext === '.heif') return 'image/heif';
-        return 'image/jpeg';
-      };
-
-      if (Array.isArray(attachments)) {
-        for (const att of attachments) {
-          if (!att) continue;
-          const rec = att.id ? fileRegistry.get(att.id) : null;
-          const ext = path.extname(rec?.diskFilename || att.name || att.filename || '').toLowerCase();
-          const declaredMime = rec?.mimeType || att.type || att.mimeType || '';
-          const isImg = imageExtensions.includes(ext) || declaredMime.toLowerCase().startsWith('image/');
-
-          if (isImg) {
-            let buf = rec?.buffer;
-            if (!buf && rec?.diskFilename) {
-              const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
-              try {
-                if (fs.existsSync(fullDiskPath)) {
-                  buf = fs.readFileSync(fullDiskPath);
-                }
-              } catch (_) {}
-            }
-            // Allow client-provided base64 image data across stateless serverless invocations
-            if (!buf && (att?.base64 || att?.data || att?.dataUrl)) {
-              const rawB64 = String(att.base64 || att.data || att.dataUrl).replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
-              try {
-                buf = Buffer.from(rawB64, 'base64');
-              } catch (_) {}
-            }
-            if (buf && buf.length <= 10 * 1024 * 1024) {
-              const mime = normalizeImageMime(declaredMime, rec?.diskFilename || att.name || att.filename);
-              imageParts.push({
-                mimeType: mime,
-                data: buf.toString('base64')
-              });
-            }
-          }
-        }
-      }
-
-      // Also collect from availableDocs if not already added to imageParts
-      if (Array.isArray(availableDocs)) {
-        for (const doc of availableDocs) {
-          if (!isImageAttachment(doc)) continue;
-          const docId = doc.fileId || doc.id;
-          const rec = docId ? fileRegistry.get(docId) : null;
-          let buf = rec?.buffer;
-          if (!buf && rec?.diskFilename) {
-            const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
-            try {
-              if (fs.existsSync(fullDiskPath)) {
-                buf = fs.readFileSync(fullDiskPath);
-              }
-            } catch (_) {}
-          }
-          if (!buf && (doc.base64 || doc.data || doc.dataUrl)) {
-            const rawB64 = String(doc.base64 || doc.data || doc.dataUrl).replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
-            try {
-              buf = Buffer.from(rawB64, 'base64');
-            } catch (_) {}
-          }
-          if (buf && buf.length <= 10 * 1024 * 1024) {
-            const b64Data = buf.toString('base64');
-            if (!imageParts.some((p) => p.data === b64Data)) {
-              const mime = normalizeImageMime(
-                rec?.mimeType || doc.mimeType || doc.type,
-                rec?.diskFilename || doc.originalName || doc.filename
-              );
-              imageParts.push({
-                mimeType: mime,
-                data: b64Data
-              });
-            }
-          }
-        }
-      }
-
+      const imageParts: Array<{ mimeType: string; data: string }> = validatedGeminiImageParts;
       const contents = formatGeminiHistory(history, effectivePrompt, 12, imageParts);
       // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
       // Uses the requested Gemini model if valid, falling back to gemini-3.8-flash and gemini-flash-latest
@@ -5025,6 +5000,46 @@ async function startServer() {
   httpServer.requestTimeout = 0;
   httpServer.headersTimeout = 0;
   httpServer.keepAliveTimeout = 65000;
+}
+
+export function buildGeminiImageParts({
+  attachments = [],
+  availableDocs = [],
+  registry = fileRegistry,
+  uploadDir = UPLOAD_DIR,
+  maxImageBytes = MAX_VISION_IMAGE_BYTES,
+  maxRequestBytes = MAX_CHAT_REQUEST_BYTES
+}: {
+  attachments?: any[];
+  availableDocs?: any[];
+  registry?: Map<string, any>;
+  uploadDir?: string;
+  maxImageBytes?: number;
+  maxRequestBytes?: number;
+} = {}): Array<{ mimeType: string; data: string }> {
+  return buildVisionImageParts({
+    attachments,
+    availableDocs,
+    maxImageBytes,
+    maxRequestBytes,
+    resolveRegisteredFile: (id: string) => {
+      const rec = registry?.get(id);
+      if (!rec) return null;
+      let buf = rec.buffer;
+      if (!buf && rec.diskFilename && uploadDir) {
+        const fullDiskPath = path.join(uploadDir, rec.diskFilename);
+        try {
+          if (fs.existsSync(fullDiskPath)) {
+            buf = fs.readFileSync(fullDiskPath);
+          }
+        } catch (_) {}
+      }
+      return {
+        ...rec,
+        buffer: buf
+      };
+    }
+  });
 }
 
 if (!process.env.VERCEL && !process.env.TESTING) {
