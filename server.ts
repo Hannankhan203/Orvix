@@ -2574,6 +2574,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     }
 
     // Collect available documents for this specific conversation (Requirement 3: strict conversation isolation)
+    // Collect available documents for this specific conversation (Requirement 3: strict conversation isolation)
     const availableDocs: DocumentData[] = [];
     const seenDocIds = new Set<string>();
 
@@ -2582,14 +2583,15 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       if (fromConvId && conversationId && fromConvId !== conversationId) {
         return;
       }
-      const docKey = docData.fileId || docData.id || docData.originalName || docData.filename;
+      const docKey = docData.fileId || docData.id || (docData.originalName ? `${docData.originalName}_${docData.sizeBytes || 0}` : docData.filename);
       if (docKey && !seenDocIds.has(docKey)) {
         seenDocIds.add(docKey);
         availableDocs.push(docData);
       }
     };
 
-    // 1. Current turn attachments
+    // 1. Current turn attachments (Highest priority: explicitly attached to this request)
+    const currentTurnAttachmentId = Array.isArray(attachments) && attachments[0]?.id ? String(attachments[0].id) : undefined;
     if (Array.isArray(attachments)) {
       for (const att of attachments) {
         if (!att?.id) continue;
@@ -2669,9 +2671,10 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
-    // 2. Attachments in history of this conversation
+    // 2. Attachments in history of this conversation (traverse from MOST RECENT to oldest)
     if (Array.isArray(history)) {
-      for (const hMsg of history) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const hMsg = history[i];
         if (Array.isArray(hMsg?.attachments)) {
           for (const hAtt of hMsg.attachments) {
             if (!hAtt?.id) continue;
@@ -2686,9 +2689,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
-    // 3. Conversation-registered files for this conversation
+    // 3. Conversation-registered files for this conversation (traverse in reverse insertion order)
     if (conversationId && conversationDocuments.has(conversationId)) {
-      const convSet = conversationDocuments.get(conversationId)!;
+      const convSet = Array.from(conversationDocuments.get(conversationId)!).reverse();
       for (const fileId of convSet) {
         const record = fileRegistry.get(fileId);
         if (record?.extraction) {
@@ -2717,7 +2720,8 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     const prepDoc: PreparedDocumentContext = prepareDocumentContext(effectiveDocPrompt, availableDocs, {
       provider: normalizedProvider,
       model: clientModel,
-      isVisionCapable: isVision
+      isVisionCapable: isVision,
+      activeAttachmentId: currentTurnAttachmentId
     }) as PreparedDocumentContext;
     const shouldStream = stream !== false;
 

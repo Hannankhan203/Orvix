@@ -450,6 +450,37 @@ async function ocrScannedPdfPages(buffer, totalPages, initialPages = [], options
 }
 
 /**
+ * Determines whether extracted PDF text consists solely of mobile scanner watermarks or sparse headers.
+ * Mobile scanning apps (CamScanner, Adobe Scan, etc.) embed a watermark footer (e.g. "Scanned with CamScanner")
+ * in the text layer while the page content is completely rasterized.
+ * @param {string} text
+ * @param {number} totalPages
+ * @returns {boolean}
+ */
+export function isScannerWatermarkOrSparseText(text, totalPages = 1) {
+  if (!text) return true;
+  const clean = text.replace(/--- Page \d+ ---/g, '').trim();
+  const nonWs = clean.replace(/\s+/g, '');
+  if (nonWs.length < 10) return true;
+
+  // Detect mobile scanner watermarks
+  const watermarkRegex = /^(?:scanned\s+(?:by|with|using)\s+)?camscanner(?:\s+free\s+version)?$/i;
+  const altScannerRegex = /^(?:scanned\s+(?:by|with|using)\s+)?(?:adobe\s*scan|microsoft\s*lens|genius\s*scan|tapscanner|fast\s*scanner)$/i;
+
+  const lines = clean.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 0 && lines.every((l) => watermarkRegex.test(l) || altScannerRegex.test(l))) {
+    return true;
+  }
+
+  // If text is very short (< 60 non-whitespace characters total across document) and contains scanner watermark
+  if (nonWs.length < 60 && /(?:camscanner|adobe\s*scan|microsoft\s*lens|genius\s*scan|tapscanner)/i.test(clean)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Core Extractor for PDF documents
  * Retains page-by-page text, detects scanned/image-only PDFs and invokes OCR when necessary
  * @param {Buffer} buffer
@@ -481,8 +512,8 @@ async function extractPdfDocument(buffer, options = {}) {
 
     const fullAggregatedText = combinedTextParts.join('\n\n');
 
-    // 1. If native text extraction extracted meaningful text (>= 10 non-whitespace chars), preserve existing behavior!
-    if (nonWhitespaceChars >= 10) {
+    // 1. If native text extraction extracted meaningful text (>= 10 non-whitespace chars AND not merely a scanner watermark), preserve existing behavior!
+    if (nonWhitespaceChars >= 10 && !isScannerWatermarkOrSparseText(fullAggregatedText, totalPages)) {
       return {
         status: 'ready',
         success: true,
@@ -493,7 +524,7 @@ async function extractPdfDocument(buffer, options = {}) {
       };
     }
 
-    // 2. Insufficient native text (< 10 chars): PDF is scanned or image-only!
+    // 2. Insufficient native text or scanned watermark: PDF is scanned or image-only!
     // Attempt OCR on pages using unpdf raster image extraction and imageOcrService
     return await ocrScannedPdfPages(buffer, totalPages, pages, options);
   } catch (err) {

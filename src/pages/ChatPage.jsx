@@ -2048,7 +2048,8 @@ export default function ChatPage() {
           }
         }
         if (found.length > 0) {
-          activeAttachments = found.reverse();
+          // Keep newest attachments first (do not reverse to oldest)
+          activeAttachments = found;
         }
       }
 

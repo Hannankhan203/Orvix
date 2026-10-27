@@ -450,8 +450,15 @@ async function extractPdfDocument(arrayBuffer) {
 
     const fullAggregatedText = combinedTextParts.join('\n\n');
 
-    // Detect scanned or image-only PDFs (no extractable text layer)
-    if (nonWhitespaceChars < 10) {
+    const clean = fullAggregatedText.replace(/--- Page \d+ ---/g, '').trim();
+    const nonWs = clean.replace(/\s+/g, '');
+    const isWatermark =
+      /^(?:scanned\s+(?:by|with|using)\s+)?camscanner(?:\s+free\s+version)?$/i.test(clean) ||
+      /^(?:scanned\s+(?:by|with|using)\s+)?(?:adobe\s*scan|microsoft\s*lens|genius\s*scan|tapscanner|fast\s*scanner)$/i.test(clean) ||
+      (nonWs.length < 60 && /(?:camscanner|adobe\s*scan|microsoft\s*lens|genius\s*scan|tapscanner)/i.test(clean));
+
+    // Detect scanned or image-only PDFs (no extractable text layer or scanner watermark)
+    if (nonWhitespaceChars < 10 || isWatermark) {
       return {
         status: 'scanned_or_image_only',
         success: false,

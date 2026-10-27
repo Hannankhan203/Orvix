@@ -52,6 +52,27 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
     }
   }
 
+  // Detect relative document references when multiple documents exist in conversation
+  if (!targetFilename && availableDocs.length > 1) {
+    // 1. References to the latest / newly uploaded document
+    const latestDocRegex =
+      /\b(?:new|latest|recent|second|2nd|current|this|last|newly\s+uploaded)\s+(?:pdf|doc|document|file|attachment|scan|image|page)\b/i;
+    const newDocPhrases =
+      /\b(?:images?\s+in\s+(?:the\s+)?new\s+(?:pdf|doc|document|file)|text\s+from\s+(?:the\s+)?new\s+(?:pdf|doc|document|file)|in\s+the\s+new\s+(?:pdf|doc|document|file))\b/i;
+
+    // 2. References to the previous / earlier / first document
+    const previousDocRegex =
+      /\b(?:previous|first|1st|earlier|old|original|prior|preceding)\s+(?:pdf|doc|document|file|attachment)\b/i;
+
+    if (previousDocRegex.test(lowerPrompt)) {
+      const prevDoc = availableDocs[availableDocs.length - 1];
+      targetFilename = prevDoc.originalName || prevDoc.filename || prevDoc.name;
+    } else if (latestDocRegex.test(lowerPrompt) || newDocPhrases.test(lowerPrompt)) {
+      const latestDoc = availableDocs[0];
+      targetFilename = latestDoc.originalName || latestDoc.filename || latestDoc.name;
+    }
+  }
+
   // 1. Detect image / document top section query (Requirement 3: "What is written in the top section?")
   const topSectionRegex =
     /\b(?:top\s+(?:section|part|portion|lines?|half|area)|(?:written|shown|stated)\s+(?:in|on|at)\s+the\s+top|header|heading)\b/i;
@@ -263,7 +284,7 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
 
   const intent = parseDocumentQueryIntent(prompt, docs);
 
-  // If a specific document filename was mentioned in the prompt, prioritize it; otherwise include all available
+  // If a specific document filename was mentioned or targeted in the prompt, prioritize it
   let selectedDocs = docs;
   if (intent.targetFilename) {
     const matched = docs.filter(
@@ -273,6 +294,18 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
     );
     if (matched.length > 0) {
       selectedDocs = matched;
+    }
+  } else if (options && typeof options === 'object' && options.activeAttachmentId && docs.length > 1) {
+    const isMultiDocComparison = /\b(?:compare|both|all\s+(?:docs|documents|files)|difference\s+between)\b/i.test(prompt);
+    if (!isMultiDocComparison) {
+      const activeMatch = docs.find(
+        (d) =>
+          (d.id && d.id === options.activeAttachmentId) ||
+          (d.fileId && d.fileId === options.activeAttachmentId)
+      );
+      if (activeMatch) {
+        selectedDocs = [activeMatch];
+      }
     }
   }
 
