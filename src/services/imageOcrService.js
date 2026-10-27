@@ -44,6 +44,7 @@ let activeWorkerErrorReject = null;
 export function resolveLocalTrainedDataInfo() {
   const candidateDirs = [
     process.cwd(),
+    ...(process.env.LAMBDA_TASK_ROOT ? [process.env.LAMBDA_TASK_ROOT] : []),
     path.resolve(__dirname, '../..'),
     path.resolve(__dirname, '..'),
     path.resolve(process.cwd(), 'public'),
@@ -113,6 +114,9 @@ export function resolveLocalTesseractAssets() {
   } catch (_) {}
   workerCandidates.push(
     path.resolve(process.cwd(), 'node_modules/tesseract.js/src/worker-script/node/index.js'),
+    ...(process.env.LAMBDA_TASK_ROOT
+      ? [path.resolve(process.env.LAMBDA_TASK_ROOT, 'node_modules/tesseract.js/src/worker-script/node/index.js')]
+      : []),
     path.resolve(__dirname, '../../node_modules/tesseract.js/src/worker-script/node/index.js')
   );
 
@@ -140,6 +144,9 @@ export function resolveLocalTesseractAssets() {
   } catch (_) {}
   coreCandidates.push(
     path.resolve(process.cwd(), 'node_modules/tesseract.js-core'),
+    ...(process.env.LAMBDA_TASK_ROOT
+      ? [path.resolve(process.env.LAMBDA_TASK_ROOT, 'node_modules/tesseract.js-core')]
+      : []),
     path.resolve(__dirname, '../../node_modules/tesseract.js-core')
   );
 
