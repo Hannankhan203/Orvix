@@ -23,7 +23,9 @@ import {
   prepareDocumentContext,
   generateSimulatedDocumentResponse,
   adaptDocumentContextForProvider,
-  formatOpenAIMessages
+  formatOpenAIMessages,
+  isVisionCapableProvider,
+  isImageAttachment
 } from './src/services/documentContextService.js';
 // @ts-ignore - Multi-part large response handling service
 import {
@@ -75,6 +77,10 @@ export interface DocumentData {
   message?: string;
   warning?: string;
   error?: string;
+  base64?: string;
+  data?: string;
+  dataUrl?: string;
+  type?: string;
 }
 
 export interface PreparedDocumentContext {
@@ -86,6 +92,7 @@ export interface PreparedDocumentContext {
   isBoundedOrChunked: boolean;
   truncationNote?: string;
   directAnswer?: string;
+  isVision?: boolean;
 }
 
 export interface DocumentExtractionResult {
@@ -1125,6 +1132,7 @@ const ALLOWED_EXTENSIONS_MAP: Record<string, string[]> = {
   ],
   '.xls': ['application/vnd.ms-excel', 'application/octet-stream'],
   '.txt': ['text/plain', 'application/octet-stream'],
+  '.log': ['text/plain', 'text/x-log', 'application/octet-stream'],
   '.md': ['text/markdown', 'text/plain', 'text/x-markdown', 'application/octet-stream'],
   '.markdown': ['text/markdown', 'text/plain', 'application/octet-stream'],
   '.csv': ['text/csv', 'text/plain', 'application/csv', 'application/vnd.ms-excel', 'application/octet-stream'],
@@ -1306,7 +1314,7 @@ async function verifyFileSignature(
     }
 
     // Text formats: disallow null bytes \0 to prevent disguised binary files
-    if (['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml'].includes(ext)) {
+    if (['.txt', '.log', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml'].includes(ext)) {
       for (let i = 0; i < buffer.length; i++) {
         if (buffer[i] === 0x00) {
           return { valid: false, reason: 'Text file contains unexpected null binary bytes.' };
@@ -1907,15 +1915,18 @@ app.post(['/api/upload', '/upload'], (req, res) => {
           rec.extraction = imgExtraction;
           rec.status = imgExtraction?.status === 'error' ? 'error' : 'ready';
         } else {
+          const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
+          const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
           const extraction = (await extractDocumentContent(
             inputSource,
             rec.originalName,
             ext,
             rec.mimeType,
-            rec.id
+            rec.id,
+            { offline: isOfflineUpload, apiKey: geminiKey }
           )) as DocumentExtractionResult;
           rec.extraction = extraction;
-          rec.status = extraction.success || extraction.status === 'scanned_or_image_only' ? 'ready' : 'uploaded';
+          rec.status = extraction.success || extraction.status === 'scanned_or_image_only' || extraction.status === 'NO_TEXT_DETECTED' ? 'ready' : 'uploaded';
         }
       } catch (err: any) {
         console.warn(`[Document Extraction] Extraction error for ${rec.originalName}:`, err);
@@ -2592,11 +2603,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             const fullDiskPath = path.join(UPLOAD_DIR, record.diskFilename);
             const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
             if (inputSource) {
+              const isOfflineChat =
+                Boolean(req.body?.offline) ||
+                String(req.body?.provider || '').toLowerCase() === 'ollama';
+              const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
+
               if (isImg) {
-                const isOfflineChat =
-                  Boolean(req.body?.offline) ||
-                  String(req.body?.provider || '').toLowerCase() === 'ollama';
-                const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
                 record.extraction = (await extractImageText(
                   inputSource,
                   record.originalName,
@@ -2614,7 +2626,8 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   record.originalName,
                   ext,
                   record.mimeType,
-                  record.id
+                  record.id,
+                  { offline: isOfflineChat, apiKey: geminiKey }
                 )) as any;
               }
             }
@@ -2699,8 +2712,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // Prepare document context for the prompt (using originalPrompt when continuing)
     const effectiveDocPrompt = isContinuation && originalPrompt ? originalPrompt : prompt;
-    const prepDoc: PreparedDocumentContext = prepareDocumentContext(effectiveDocPrompt, availableDocs) as PreparedDocumentContext;
     const normalizedProvider = String(provider).toLowerCase();
+    const isVision = isVisionCapableProvider(normalizedProvider, clientModel);
+    const prepDoc: PreparedDocumentContext = prepareDocumentContext(effectiveDocPrompt, availableDocs, {
+      provider: normalizedProvider,
+      model: clientModel,
+      isVisionCapable: isVision
+    }) as PreparedDocumentContext;
     const shouldStream = stream !== false;
 
     // Detect if this inquiry is likely to exceed safe response output size
@@ -2724,7 +2742,16 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     });
 
     // If an immediate direct answer is determined (e.g. unreadable scanned file, empty doc, page out of bounds)
-    if (prepDoc.directAnswer) {
+    // Note: If the model is vision-capable (Gemini) and the document is an image without OCR text or with failed OCR,
+    // do not prematurely abort with "No readable text detected" — let the image bytes reach Gemini.
+    const isImageNoTextRejection =
+      prepDoc.directAnswer === 'No readable text detected in this image.' ||
+      (typeof prepDoc.directAnswer === 'string' &&
+        prepDoc.directAnswer.toLowerCase().includes('no readable text detected') &&
+        availableDocs.length > 0 &&
+        availableDocs.every((d: any) => isImageAttachment(d)));
+
+    if (prepDoc.directAnswer && !(isVision && isImageNoTextRejection)) {
       if (!shouldStream) {
         return res.json({
           text: prepDoc.directAnswer,
@@ -2836,14 +2863,30 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       // Collect attached images for Gemini multimodal processing
       const imageParts: Array<{ mimeType: string; data: string }> = [];
+      const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'];
+      const normalizeImageMime = (declaredMime?: string, filename?: string): string => {
+        let clean = String(declaredMime || '').toLowerCase().trim();
+        if (clean === 'image/jpg') return 'image/jpeg';
+        if (clean && clean.startsWith('image/')) return clean;
+        const ext = path.extname(filename || '').toLowerCase();
+        if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+        if (ext === '.png') return 'image/png';
+        if (ext === '.webp') return 'image/webp';
+        if (ext === '.gif') return 'image/gif';
+        if (ext === '.bmp') return 'image/bmp';
+        if (ext === '.heic') return 'image/heic';
+        if (ext === '.heif') return 'image/heif';
+        return 'image/jpeg';
+      };
+
       if (Array.isArray(attachments)) {
         for (const att of attachments) {
-          if (!att?.id) continue;
-          const rec = fileRegistry.get(att.id);
-          const ext = path.extname(rec?.diskFilename || att.name || '').toLowerCase();
-          const isImg =
-            ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(ext) ||
-            (rec?.mimeType || att.type || '').startsWith('image/');
+          if (!att) continue;
+          const rec = att.id ? fileRegistry.get(att.id) : null;
+          const ext = path.extname(rec?.diskFilename || att.name || att.filename || '').toLowerCase();
+          const declaredMime = rec?.mimeType || att.type || att.mimeType || '';
+          const isImg = imageExtensions.includes(ext) || declaredMime.toLowerCase().startsWith('image/');
+
           if (isImg) {
             let buf = rec?.buffer;
             if (!buf && rec?.diskFilename) {
@@ -2862,10 +2905,47 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               } catch (_) {}
             }
             if (buf && buf.length <= 10 * 1024 * 1024) {
-              const mime = rec?.mimeType || att.type || `image/${ext.replace('.', '')}`;
+              const mime = normalizeImageMime(declaredMime, rec?.diskFilename || att.name || att.filename);
               imageParts.push({
                 mimeType: mime,
                 data: buf.toString('base64')
+              });
+            }
+          }
+        }
+      }
+
+      // Also collect from availableDocs if not already added to imageParts
+      if (Array.isArray(availableDocs)) {
+        for (const doc of availableDocs) {
+          if (!isImageAttachment(doc)) continue;
+          const docId = doc.fileId || doc.id;
+          const rec = docId ? fileRegistry.get(docId) : null;
+          let buf = rec?.buffer;
+          if (!buf && rec?.diskFilename) {
+            const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
+            try {
+              if (fs.existsSync(fullDiskPath)) {
+                buf = fs.readFileSync(fullDiskPath);
+              }
+            } catch (_) {}
+          }
+          if (!buf && (doc.base64 || doc.data || doc.dataUrl)) {
+            const rawB64 = String(doc.base64 || doc.data || doc.dataUrl).replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+            try {
+              buf = Buffer.from(rawB64, 'base64');
+            } catch (_) {}
+          }
+          if (buf && buf.length <= 10 * 1024 * 1024) {
+            const b64Data = buf.toString('base64');
+            if (!imageParts.some((p) => p.data === b64Data)) {
+              const mime = normalizeImageMime(
+                rec?.mimeType || doc.mimeType || doc.type,
+                rec?.diskFilename || doc.originalName || doc.filename
+              );
+              imageParts.push({
+                mimeType: mime,
+                data: b64Data
               });
             }
           }

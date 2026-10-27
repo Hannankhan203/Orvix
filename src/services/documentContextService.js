@@ -219,14 +219,36 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
 }
 
 /**
+ * Determines whether a given provider and model have visual / multimodal capabilities.
+ * Google Gemini natively accepts image bytes / parts in Orvix.
+ * Other configured providers (Groq, OpenRouter, Cloudflare, Ollama, WebLLM) are text-only.
+ * @param {string} provider
+ * @param {string} [model]
+ * @returns {boolean}
+ */
+export function isVisionCapableProvider(provider, model) {
+  if (!provider) return false;
+  const norm = String(provider).toLowerCase().trim();
+  return norm === 'gemini';
+}
+
+/**
  * Processes one or more documents against a user's prompt intent,
  * applying page/slide extraction, format limitation notices, error explanations,
  * safe chunking for large files, and clean demarcations between multiple files.
  * @param {string} prompt
  * @param {Array<Object>} docs
+ * @param {Object|string} [options={}]
  * @returns {any}
  */
-export function prepareDocumentContext(prompt, docs) {
+export function prepareDocumentContext(prompt, docs, options = {}) {
+  const provider = typeof options === 'string' ? options : options?.provider;
+  const model = typeof options === 'object' ? options?.model : undefined;
+  const isVision =
+    typeof options === 'object' && typeof options?.isVisionCapable === 'boolean'
+      ? options.isVisionCapable
+      : isVisionCapableProvider(provider, model);
+
   if (!docs || docs.length === 0) {
     return {
       formattedContext: '',
@@ -234,7 +256,8 @@ export function prepareDocumentContext(prompt, docs) {
       unreadableDocNotes: [],
       targetedDocs: [],
       scope: 'none',
-      isBoundedOrChunked: false
+      isBoundedOrChunked: false,
+      isVision: Boolean(isVision)
     };
   }
 
@@ -268,18 +291,22 @@ export function prepareDocumentContext(prompt, docs) {
     (d) => d.status === 'error' || d.status === 'unsupported_format'
   );
 
-  // Requirements 6 & 7: If all attached images have NO_TEXT_DETECTED (and none failed with an OCR error),
-  // do not send fabricated text to AI; return the exact required message: "No readable text detected in this image."
+  // If all attached images have NO_TEXT_DETECTED (and none failed with an OCR error):
+  // For text-only providers: return the direct answer message "No readable text detected in this image."
+  // For vision-capable providers (Gemini): do NOT abort; allow visual inspection of original image bytes!
   if (isOnlyImages && !anyImageHasText && !anyImageHasError) {
-    return {
-      formattedContext: '',
-      hasErrorsOrWarnings: true,
-      unreadableDocNotes: ['No readable text detected in this image.'],
-      targetedDocs: selectedDocs,
-      scope: intent.targetScope,
-      isBoundedOrChunked: false,
-      directAnswer: 'No readable text detected in this image.'
-    };
+    if (!isVision) {
+      return {
+        formattedContext: '',
+        hasErrorsOrWarnings: true,
+        unreadableDocNotes: ['No readable text detected in this image.'],
+        targetedDocs: selectedDocs,
+        scope: intent.targetScope,
+        isBoundedOrChunked: false,
+        directAnswer: 'No readable text detected in this image.',
+        isVision: false
+      };
+    }
   }
 
   for (let docIdx = 0; docIdx < selectedDocs.length; docIdx++) {
@@ -287,23 +314,41 @@ export function prepareDocumentContext(prompt, docs) {
     const docName = doc.originalName || doc.filename || doc.name || `Document_${docIdx + 1}`;
     const format = (doc.format || 'UNKNOWN').toUpperCase();
 
-    // Dedicated Image Handling (Requirements 2, 4, 5, 6, 7)
+    // Dedicated Image Handling
     if (isImageAttachment(doc)) {
       if (doc.status === 'unsupported_format') {
         const issue = doc.error || `OCR text extraction is not supported for ${format} images in this environment.`;
         unreadableDocNotes.push(issue);
-        if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) directAnswer = issue;
-        docBlocks.push(`[ATTACHED IMAGE ${docIdx + 1}: "${docName}" (${format}) - STATUS: UNSUPPORTED]\n${issue}`);
+        if (!isVision) {
+          if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) {
+            directAnswer = issue;
+          }
+        }
+        docBlocks.push(
+          `=== ATTACHED IMAGE ${docIdx + 1} of ${selectedDocs.length}: "${docName}" ===\n` +
+          `Source Filename: ${docName} | Type: Image (${format})\n` +
+          `[OCR Status]: UNSUPPORTED FORMAT - ${issue}` +
+          (isVision ? '\n[Visual Analysis]: Image is forwarded directly to multimodal vision model for visual understanding.' : '')
+        );
         continue;
       }
 
       if (doc.status === 'error' && doc.error) {
         const issue = String(doc.error).includes('Offline image text extraction is unavailable')
           ? String(doc.error)
-          : `The image '${docName}' could not be processed: ${doc.error}`;
+          : `The image '${docName}' could not be processed for OCR: ${doc.error}`;
         unreadableDocNotes.push(issue);
-        if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) directAnswer = issue;
-        docBlocks.push(`[ATTACHED IMAGE ${docIdx + 1}: "${docName}" (${format}) - STATUS: ERROR]\n${issue}`);
+        if (!isVision) {
+          if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) {
+            directAnswer = issue;
+          }
+        }
+        docBlocks.push(
+          `=== ATTACHED IMAGE ${docIdx + 1} of ${selectedDocs.length}: "${docName}" ===\n` +
+          `Source Filename: ${docName} | Type: Image (${format})\n` +
+          `[OCR Status]: OCR FAILED - ${issue}` +
+          (isVision ? '\n[Visual Analysis]: Image is forwarded directly to multimodal vision model for visual inspection.' : '')
+        );
         continue;
       }
 
@@ -311,11 +356,16 @@ export function prepareDocumentContext(prompt, docs) {
       if (!hasReadableText || doc.status === 'NO_TEXT_DETECTED') {
         const noTextMsg = 'No readable text detected in this image.';
         unreadableDocNotes.push(noTextMsg);
-        if (selectedDocs.length === 1) directAnswer = noTextMsg;
+        if (!isVision) {
+          if (selectedDocs.length === 1 || (isOnlyImages && !anyImageHasText && !directAnswer)) {
+            directAnswer = noTextMsg;
+          }
+        }
         docBlocks.push(
           `=== ATTACHED IMAGE ${docIdx + 1} of ${selectedDocs.length}: "${docName}" ===\n` +
           `Source Filename: ${docName} | Type: Image (${format})\n` +
-          `[Status]: ${noTextMsg}`
+          `[OCR Status]: NO TEXT DETECTED - Scan completed successfully with no readable text found.` +
+          (isVision ? '\n[Visual Analysis]: Multimodal visual analysis will inspect the visual contents directly.' : `\n[Status]: ${noTextMsg}`)
         );
         continue;
       }
@@ -348,11 +398,40 @@ export function prepareDocumentContext(prompt, docs) {
       continue;
     }
 
-    // Check for extraction failure or non-readable content
+    // 1. Check for scanned document with NO readable text detected by OCR
+    if (doc.status === 'NO_TEXT_DETECTED') {
+      const issueExplanation =
+        doc.message ||
+        doc.warning ||
+        `No readable text detected in '${docName}'. This document was scanned or contains images, but OCR detected no readable text.`;
+      unreadableDocNotes.push(issueExplanation);
+      if (selectedDocs.length === 1) {
+        directAnswer = issueExplanation;
+      }
+      docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (${format}) - STATUS: NO TEXT DETECTED]\n${issueExplanation}`);
+      continue;
+    }
+
+    // 2. Check for OCR engine failure or unsupported rendering
+    if (doc.status === 'ocr_failed' || doc.status === 'unsupported_rendering') {
+      const issueExplanation =
+        doc.error ||
+        doc.warning ||
+        `Optical Character Recognition (OCR) failed on '${docName}'.`;
+      unreadableDocNotes.push(issueExplanation);
+      if (selectedDocs.length === 1) {
+        directAnswer = issueExplanation;
+      }
+      const label = doc.status === 'ocr_failed' ? 'OCR FAILED' : 'UNSUPPORTED RENDERING';
+      docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (${format}) - STATUS: ${label}]\n${issueExplanation}`);
+      continue;
+    }
+
+    // 3. Check for unhandled scanned / image-only PDFs without extracted text
     if (
       doc.status === 'scanned_or_image_only' ||
-      doc.isScanned ||
-      (doc.totalCharacters === 0 && !doc.success)
+      (doc.isScanned && (!doc.success || !doc.text || (doc.totalCharacters === 0 && !doc.hasText))) ||
+      (doc.totalCharacters === 0 && !doc.success && doc.status !== 'empty' && doc.status !== 'encrypted' && doc.status !== 'error')
     ) {
       const issueExplanation =
         doc.warning ||
@@ -496,11 +575,17 @@ export function prepareDocumentContext(prompt, docs) {
 
     // Case 3: Whole File or General Document Query
     let docBody = '';
+    const charCount = doc.totalCharacters || (doc.text ? doc.text.length : 0);
+    const wordCount = doc.totalWords || countWordsInString(doc.text);
+    const scannedBadge = doc.isScanned ? ' | Type: Scanned PDF (OCR Extracted Text)' : '';
+    const ocrBadge = doc.ocrEngine ? ` | OCR Engine: ${doc.ocrEngine}` : '';
+    const noticeBadge = doc.warning ? `\n[Notice: ${doc.warning}]` : '';
     const metaHeader = `=== DOCUMENT ${docIdx + 1} of ${selectedDocs.length}: "${docName}" ===\n` +
-      `Format: ${format} | Total Characters: ${doc.totalCharacters.toLocaleString()} | Words: ${doc.totalWords.toLocaleString()}` +
+      `Format: ${format}${scannedBadge}${ocrBadge} | Total Characters: ${charCount.toLocaleString()} | Words: ${wordCount.toLocaleString()}` +
       (doc.pageCount ? ` | Pages: ${doc.pageCount}` : '') +
       (doc.slideCount ? ` | Slides: ${doc.slideCount}` : '') +
       (doc.sectionCount ? ` | Sections: ${doc.sectionCount}` : '') +
+      noticeBadge +
       '\n';
 
     // Check size limit: If document exceeds MAX_PROMPT_CHARS_PER_DOC, implement safe bounded chunking / retrieval
@@ -551,7 +636,8 @@ export function prepareDocumentContext(prompt, docs) {
     scope: intent.targetScope,
     isBoundedOrChunked,
     truncationNote,
-    directAnswer
+    directAnswer,
+    isVision: Boolean(isVision)
   };
 }
 
@@ -567,7 +653,7 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
     return preparedContext.directAnswer;
   }
 
-  const { targetedDocs, scope } = preparedContext;
+  const { targetedDocs, scope, isVision } = preparedContext;
   if (!targetedDocs || targetedDocs.length === 0) {
     return "No document is currently attached to this conversation. Please attach a document (PDF, Word, PowerPoint, TXT, CSV) to analyze it.";
   }
@@ -584,6 +670,11 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
       const hasTxt = Boolean(doc.hasText || (doc.text && doc.text.trim().length > 0));
 
       if (!hasTxt || doc.status === 'NO_TEXT_DETECTED') {
+        if (isVision) {
+          return `### Image ${idx + 1}: "${name}"
+**Source Filename:** \`${name}\` (${fmt} Format)
+*Visual Inspection:* Processed directly via multimodal vision (no OCR text detected).`;
+        }
         return `### Image ${idx + 1}: "${name}"
 **Source Filename:** \`${name}\` (${fmt} Format)
 *Status:* No readable text detected in this image.`;
@@ -632,7 +723,20 @@ Based on the text extracted across all ${targetedDocs.length} attached images, e
       (!primaryDoc.hasText && (!primaryDoc.text || !primaryDoc.text.trim()));
 
     if (isNoText) {
+      if (isVision) {
+        return `### Visual Analysis of "${docName}"\n\n` +
+          `**Source Image:** \`${docName}\` (${format} Image)\n` +
+          `**Visual Inspection:** Analyzed using multimodal vision processing. While no printed or handwritten text was detected by OCR, the visual contents of "${docName}" were analyzed directly for your prompt: "${prompt}".`;
+      }
       return 'No readable text detected in this image.';
+    }
+
+    if (primaryDoc.status === 'error' || primaryDoc.status === 'unsupported_format') {
+      if (isVision) {
+        return `### Visual Analysis of "${docName}"\n\n` +
+          `**Source Image:** \`${docName}\` (${format} Image)\n` +
+          `**Visual Inspection:** Optical Character Recognition (OCR) encountered an issue (${primaryDoc.error || 'Extraction error'}), but multimodal vision processing analyzed the image directly for your prompt: "${prompt}".`;
+      }
     }
 
     const lines = (primaryDoc.text || '')
@@ -880,8 +984,9 @@ export const PROVIDER_PROFILES = {
     modelTag: 'gemini-3.8-flash',
     maxDocChars: 120_000, // Massive 1M token context window
     supportsSystemInstruction: true,
+    supportsVision: true,
     messageFormat: 'gemini',
-    notes: 'Handles massive contexts, ideal for whole-document analysis'
+    notes: 'Handles massive contexts and multimodal visual image inputs'
   },
   groq: {
     id: 'groq',
@@ -889,6 +994,7 @@ export const PROVIDER_PROFILES = {
     modelTag: 'openai/gpt-oss-120b',
     maxDocChars: 24_000, // Safe limit within 8k-16k token context window
     supportsSystemInstruction: true,
+    supportsVision: false,
     messageFormat: 'openai',
     notes: 'Ultra-fast inference with bounded 8k-16k token context window'
   },
@@ -898,6 +1004,7 @@ export const PROVIDER_PROFILES = {
     modelTag: 'openrouter/free',
     maxDocChars: 16_000, // Safe limit for free multi-model tier
     supportsSystemInstruction: true,
+    supportsVision: false,
     messageFormat: 'openai',
     notes: 'Free multi-model gateway with conservative context boundaries'
   },
@@ -907,6 +1014,7 @@ export const PROVIDER_PROFILES = {
     modelTag: '@cf/meta/llama-3.1-8b-instruct',
     maxDocChars: 16_000, // Safe limit within 8k token context window
     supportsSystemInstruction: true,
+    supportsVision: false,
     messageFormat: 'cloudflare',
     notes: 'Serverless Llama 3.1 8B inference with 8k token context window'
   },
@@ -916,6 +1024,7 @@ export const PROVIDER_PROFILES = {
     modelTag: 'qwen2.5:1.5b',
     maxDocChars: 16_000,
     supportsSystemInstruction: true,
+    supportsVision: false,
     messageFormat: 'openai',
     notes: 'Local offline Ollama instance with Qwen 2.5 1.5B'
   },
@@ -925,6 +1034,7 @@ export const PROVIDER_PROFILES = {
     modelTag: 'Qwen 2.5 1.5B',
     maxDocChars: 10_000,
     supportsSystemInstruction: true,
+    supportsVision: false,
     messageFormat: 'openai',
     notes: 'In-browser WebGPU inference with bounded 4k token context window'
   }

@@ -3,10 +3,14 @@ import path from 'path';
 import JSZip from 'jszip';
 import mammoth from 'mammoth';
 import { extractText as extractPdfText } from 'unpdf';
+import { extractImageText, rawImageDataToBmp } from './imageOcrService.js';
 
 // Configurable safety boundaries to prevent memory exhaustion and runaway processing
 const MAX_EXTRACTED_CHARACTERS = 500_000; // ~100k words
 const MAX_PREVIEW_LENGTH = 350;
+const MAX_SCANNED_PDF_PAGES_TO_OCR = 10;
+const MIN_IMAGE_OCR_DIMENSION = 30; // Ignore tiny decorative noise icons
+
 
 /**
  * Counts words in a string
@@ -48,38 +52,74 @@ function truncateSafely(text, limit = MAX_EXTRACTED_CHARACTERS) {
 }
 
 /**
- * Parses markdown or text headings into structured sections
+ * Decodes standard XML and HTML character entities
+ * @param {string} str
+ * @returns {string}
+ */
+export function decodeXmlEntities(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.replace(/&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);/gi, (match) => {
+    const lower = match.toLowerCase();
+    if (lower === '&amp;') return '&';
+    if (lower === '&lt;') return '<';
+    if (lower === '&gt;') return '>';
+    if (lower === '&quot;') return '"';
+    if (lower === '&apos;') return "'";
+    if (lower.startsWith('&#x')) {
+      const code = parseInt(lower.slice(3, -1), 16);
+      return !isNaN(code) && code > 0 ? String.fromCodePoint(code) : match;
+    }
+    if (lower.startsWith('&#')) {
+      const code = parseInt(lower.slice(2, -1), 10);
+      return !isNaN(code) && code > 0 ? String.fromCodePoint(code) : match;
+    }
+    return match;
+  });
+}
+
+/**
+ * Parses markdown or text headings into structured sections,
+ * properly ignoring code block comments (#) inside backtick fences.
  * @param {string} markdownText
  * @returns {Array<{ heading: string, level: number, content: string, charCount: number }>}
  */
 function extractSectionsFromMarkdown(markdownText) {
   const sections = [];
-  const lines = markdownText.split('\n');
+  const lines = (markdownText || '').split('\n');
 
   let currentHeading = 'Introduction';
   let currentLevel = 1;
   let currentContentLines = [];
+  let inCodeBlock = false;
 
   const headingRegex = /^(#{1,6})\s+(.*)$/;
 
   for (const line of lines) {
-    const match = line.match(headingRegex);
-    if (match) {
-      if (currentContentLines.length > 0 || currentHeading !== 'Introduction') {
-        const content = currentContentLines.join('\n').trim();
-        sections.push({
-          heading: currentHeading,
-          level: currentLevel,
-          content,
-          charCount: content.length
-        });
-        currentContentLines = [];
-      }
-      currentLevel = match[1].length;
-      currentHeading = match[2].trim();
-    } else {
+    if (line.trim().startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
       currentContentLines.push(line);
+      continue;
     }
+
+    if (!inCodeBlock) {
+      const match = line.match(headingRegex);
+      if (match) {
+        if (currentContentLines.length > 0 || currentHeading !== 'Introduction') {
+          const content = currentContentLines.join('\n').trim();
+          sections.push({
+            heading: currentHeading,
+            level: currentLevel,
+            content,
+            charCount: content.length
+          });
+          currentContentLines = [];
+        }
+        currentLevel = match[1].length;
+        currentHeading = match[2].trim();
+        continue;
+      }
+    }
+    currentContentLines.push(line);
   }
 
   if (currentContentLines.length > 0) {
@@ -96,39 +136,65 @@ function extractSectionsFromMarkdown(markdownText) {
 }
 
 /**
- * Robust CSV/TSV parser supporting quotes and commas/tabs within quotes
+ * Robust CSV/TSV parser supporting quotes, escaped quotes (""),
+ * and embedded newlines within quoted fields without corrupting row boundaries.
  * @param {string} rawText
  * @param {string} delimiter
  * @returns {Object}
  */
 function parseDelimitedText(rawText, delimiter) {
+  if (!rawText || !rawText.trim()) {
+    return {
+      headers: [],
+      rowCount: 0,
+      columnCount: 0,
+      previewRows: [],
+      markdownTable: ''
+    };
+  }
+
   const rows = [];
-  const lines = rawText.split(/\r?\n/);
+  let currentRow = [];
+  let currentCell = '';
+  let insideQuotes = false;
+  const len = rawText.length;
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const cells = [];
-    let insideQuotes = false;
-    let currentCell = '';
+  for (let i = 0; i < len; i++) {
+    const char = rawText[i];
 
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (insideQuotes && line[i + 1] === '"') {
-          currentCell += '"';
-          i++;
-        } else {
-          insideQuotes = !insideQuotes;
-        }
-      } else if (char === delimiter && !insideQuotes) {
-        cells.push(currentCell.trim());
-        currentCell = '';
+    if (char === '"') {
+      if (insideQuotes && i + 1 < len && rawText[i + 1] === '"') {
+        currentCell += '"';
+        i++; // Skip escaped quote
       } else {
-        currentCell += char;
+        insideQuotes = !insideQuotes;
       }
+    } else if (char === delimiter && !insideQuotes) {
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      // Row delimiter outside quotes
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+      if (currentRow.some((c) => c.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      // Handle \r\n
+      if (char === '\r' && i + 1 < len && rawText[i + 1] === '\n') {
+        i++;
+      }
+    } else {
+      currentCell += char;
     }
-    cells.push(currentCell.trim());
-    rows.push(cells);
+  }
+
+  // Flush last pending cell/row
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some((c) => c.length > 0)) {
+      rows.push(currentRow);
+    }
   }
 
   if (rows.length === 0) {
@@ -145,18 +211,27 @@ function parseDelimitedText(rawText, delimiter) {
   const dataRows = rows.slice(1);
   const maxCols = Math.max(...rows.map((r) => r.length));
 
-  // Build markdown table
+  // Build markdown table representation
   const colWidths = new Array(maxCols).fill(3);
   for (const row of rows) {
-    for (let c = 0; c < row.length; c++) {
-      colWidths[c] = Math.max(colWidths[c], Math.min((row[c] || '').length, 40));
+    for (let c = 0; c < maxCols; c++) {
+      const cellClean = (row[c] || '').replace(/[\r\n]+/g, ' ').replace(/\|/g, '\\|');
+      colWidths[c] = Math.max(colWidths[c], Math.min(cellClean.length, 40));
     }
   }
 
-  const headerRow = '| ' + headers.map((h, i) => (h || `Col ${i + 1}`).padEnd(colWidths[i])).join(' | ') + ' |';
+  const headerRow = '| ' + Array.from({ length: maxCols }, (_, i) => {
+    const h = (headers[i] || `Col ${i + 1}`).replace(/[\r\n]+/g, ' ').replace(/\|/g, '\\|');
+    return h.padEnd(colWidths[i]);
+  }).join(' | ') + ' |';
+
   const dividerRow = '| ' + colWidths.map((w) => '-'.repeat(w)).join(' | ') + ' |';
+
   const previewData = dataRows.slice(0, 10).map((row) => {
-    return '| ' + row.map((cell, i) => (cell || '').padEnd(colWidths[i])).join(' | ') + ' |';
+    return '| ' + Array.from({ length: maxCols }, (_, i) => {
+      const c = (row[i] || '').replace(/[\r\n]+/g, '<br>').replace(/\|/g, '\\|');
+      return c.padEnd(colWidths[i]);
+    }).join(' | ') + ' |';
   });
 
   const markdownTable = [headerRow, dividerRow, ...previewData].join('\n');
@@ -171,12 +246,217 @@ function parseDelimitedText(rawText, delimiter) {
 }
 
 /**
- * Core Extractor for PDF documents
- * Retains page-by-page text, detects scanned/image-only PDFs and encryption
- * @param {Buffer} buffer
+ * Executes OCR on scanned or image-only PDF pages using extracted raster images.
+ * Respects page limits, preserves page numbers/boundaries, and distinguishes:
+ * - Successful OCR with extracted text ('ready')
+ * - Successful OCR with no readable text detected ('NO_TEXT_DETECTED')
+ * - OCR engine failure ('ocr_failed')
+ * - Unsupported rendering / no extractable raster images ('unsupported_rendering')
+ *
+ * @param {Buffer} buffer - PDF file bytes
+ * @param {number} totalPages - Total page count from PDF metadata
+ * @param {Array<Object>} initialPages - Initial page structure
+ * @param {Object} [options={}] - Execution options (maxPages, apiKey, offline)
  * @returns {Promise<Object>}
  */
-async function extractPdfDocument(buffer) {
+async function ocrScannedPdfPages(buffer, totalPages, initialPages = [], options = {}) {
+  let proxy = null;
+  try {
+    const { getDocumentProxy, extractImages } = await import('unpdf');
+    const uint8Array = new Uint8Array(buffer);
+
+    try {
+      proxy = await getDocumentProxy(uint8Array);
+    } catch (proxyErr) {
+      return {
+        status: 'ocr_failed',
+        success: false,
+        isScanned: true,
+        hasText: false,
+        pageCount: totalPages,
+        pages: initialPages,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        error: `Could not parse PDF for OCR: ${proxyErr?.message || proxyErr}`
+      };
+    }
+
+    const docPages = totalPages || proxy.numPages || 1;
+    const maxPagesToProcess = Math.min(docPages, options.maxPages || MAX_SCANNED_PDF_PAGES_TO_OCR);
+    const updatedPages = initialPages.length >= docPages
+      ? initialPages.map((p) => ({ ...p, text: '', charCount: 0 }))
+      : Array.from({ length: docPages }, (_, i) => ({ pageNumber: i + 1, text: '', charCount: 0 }));
+
+    const ocrTextParts = [];
+    let totalOcrCharacters = 0;
+    let totalOcrWords = 0;
+    let imagesFoundCount = 0;
+    let ocrEngineUsed = null;
+    let lastOcrError = null;
+
+    for (let pageNum = 1; pageNum <= maxPagesToProcess; pageNum++) {
+      let pageImages = [];
+      try {
+        pageImages = await extractImages(proxy, pageNum);
+      } catch (imgErr) {
+        console.warn(`[Scanned PDF OCR] Could not extract images from page ${pageNum}:`, imgErr?.message || imgErr);
+        continue;
+      }
+
+      if (!Array.isArray(pageImages) || pageImages.length === 0) {
+        continue;
+      }
+
+      // Filter out tiny icons/speckles (< 30px) that cannot be scanned document pages
+      const candidateImages = pageImages.filter(
+        (img) => img && img.width >= MIN_IMAGE_OCR_DIMENSION && img.height >= MIN_IMAGE_OCR_DIMENSION && img.data
+      );
+
+      if (candidateImages.length === 0) {
+        continue;
+      }
+
+      imagesFoundCount += candidateImages.length;
+
+      // Sort candidate images descending by pixel area (primary full-page scans first)
+      candidateImages.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+
+      const pageTextParts = [];
+
+      for (let imgIdx = 0; imgIdx < candidateImages.length; imgIdx++) {
+        const img = candidateImages[imgIdx];
+        const bmpBuffer = rawImageDataToBmp(img.width, img.height, img.channels, img.data);
+        if (!bmpBuffer) continue;
+
+        try {
+          const ocrResult = await extractImageText(
+            bmpBuffer,
+            `scanned_page_${pageNum}_img_${imgIdx + 1}.bmp`,
+            '.bmp',
+            'image/bmp',
+            `page-${pageNum}-${imgIdx}`,
+            { width: img.width, height: img.height },
+            options.apiKey || null,
+            { offline: Boolean(options.offline) }
+          );
+
+          if (ocrResult?.ocrEngine) {
+            ocrEngineUsed = ocrResult.ocrEngine;
+          }
+
+          if (ocrResult?.status === 'ready' && ocrResult?.text) {
+            pageTextParts.push(ocrResult.text.trim());
+          } else if (ocrResult?.status === 'error') {
+            lastOcrError = ocrResult.error || ocrResult.message;
+          }
+        } catch (ocrErr) {
+          console.warn(`[Scanned PDF OCR] Error OCRing page ${pageNum} image ${imgIdx + 1}:`, ocrErr?.message || ocrErr);
+          lastOcrError = ocrErr?.message || String(ocrErr);
+        }
+      }
+
+      const combinedPageOcrText = pageTextParts.filter(Boolean).join('\n\n');
+      if (combinedPageOcrText) {
+        updatedPages[pageNum - 1] = {
+          pageNumber: pageNum,
+          text: combinedPageOcrText,
+          charCount: combinedPageOcrText.length
+        };
+        ocrTextParts.push(`--- Page ${pageNum} ---\n${combinedPageOcrText}`);
+        totalOcrCharacters += combinedPageOcrText.length;
+        totalOcrWords += countWords(combinedPageOcrText);
+      }
+    }
+
+    const isTruncatedPages = docPages > maxPagesToProcess;
+
+    // Outcome 1: Readable text was extracted by OCR
+    if (totalOcrCharacters > 0) {
+      const fullText = ocrTextParts.join('\n\n');
+      return {
+        status: 'ready',
+        success: true,
+        isScanned: true,
+        hasText: true,
+        pageCount: docPages,
+        pages: updatedPages,
+        text: fullText,
+        totalCharacters: totalOcrCharacters,
+        totalWords: totalOcrWords,
+        ocrEngine: ocrEngineUsed || 'tesseract-local',
+        isTruncated: isTruncatedPages,
+        warning: isTruncatedPages
+          ? `Scanned document contains ${docPages} pages. For performance, OCR processed the first ${maxPagesToProcess} pages.`
+          : undefined
+      };
+    }
+
+    // Outcome 2: Images were extracted and OCR ran, but no readable text was detected
+    if (imagesFoundCount > 0 && !lastOcrError) {
+      return {
+        status: 'NO_TEXT_DETECTED',
+        success: true,
+        isScanned: true,
+        hasText: false,
+        pageCount: docPages,
+        pages: updatedPages,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        ocrEngine: ocrEngineUsed || 'tesseract-local',
+        message: 'No readable text detected in this scanned PDF.',
+        warning: 'Optical Character Recognition (OCR) inspected the scanned pages, but no readable text was detected.'
+      };
+    }
+
+    // Outcome 3: OCR failed due to an engine error
+    if (lastOcrError) {
+      return {
+        status: 'ocr_failed',
+        success: false,
+        isScanned: true,
+        hasText: false,
+        pageCount: docPages,
+        pages: updatedPages,
+        text: '',
+        totalCharacters: 0,
+        totalWords: 0,
+        error: `Optical Character Recognition (OCR) failed on this scanned PDF: ${lastOcrError}`
+      };
+    }
+
+    // Outcome 4: No extractable raster images found
+    return {
+      status: 'unsupported_rendering',
+      success: false,
+      isScanned: true,
+      hasText: false,
+      pageCount: docPages,
+      pages: updatedPages,
+      text: '',
+      totalCharacters: 0,
+      totalWords: 0,
+      error: 'No readable text layer was found, and page images could not be extracted for OCR processing.',
+      warning: 'This PDF appears to be scanned or rasterized, but embedded page images could not be rendered or extracted.'
+    };
+  } finally {
+    if (proxy?.loadingTask?.destroy) {
+      try {
+        await proxy.loadingTask.destroy();
+      } catch (_) {}
+    }
+  }
+}
+
+/**
+ * Core Extractor for PDF documents
+ * Retains page-by-page text, detects scanned/image-only PDFs and invokes OCR when necessary
+ * @param {Buffer} buffer
+ * @param {Object} [options={}]
+ * @returns {Promise<Object>}
+ */
+async function extractPdfDocument(buffer, options = {}) {
   try {
     const res = await extractPdfText(new Uint8Array(buffer), { mergePages: false });
     const rawPages = Array.isArray(res.text) ? res.text : [String(res.text || '')];
@@ -201,30 +481,21 @@ async function extractPdfDocument(buffer) {
 
     const fullAggregatedText = combinedTextParts.join('\n\n');
 
-    // Detect scanned or image-only PDFs
-    if (nonWhitespaceChars < 10) {
+    // 1. If native text extraction extracted meaningful text (>= 10 non-whitespace chars), preserve existing behavior!
+    if (nonWhitespaceChars >= 10) {
       return {
-        status: 'scanned_or_image_only',
-        success: false,
-        isScanned: true,
+        status: 'ready',
+        success: true,
         pageCount: totalPages,
         pages,
-        text: '',
-        totalCharacters: 0,
-        totalWords: 0,
-        warning:
-          'No readable text could be extracted from this PDF. This document appears to be scanned, image-only, or contains rasterized pages without a text layer. Optical Character Recognition (OCR) may be required.'
+        text: fullAggregatedText,
+        isScanned: false
       };
     }
 
-    return {
-      status: 'ready',
-      success: true,
-      pageCount: totalPages,
-      pages,
-      text: fullAggregatedText,
-      isScanned: false
-    };
+    // 2. Insufficient native text (< 10 chars): PDF is scanned or image-only!
+    // Attempt OCR on pages using unpdf raster image extraction and imageOcrService
+    return await ocrScannedPdfPages(buffer, totalPages, pages, options);
   } catch (err) {
     const msg = String(err?.message || err || '').toLowerCase();
     if (msg.includes('password') || msg.includes('encrypted') || msg.includes('passwordexception')) {
@@ -245,43 +516,313 @@ async function extractPdfDocument(buffer) {
 }
 
 /**
- * Core Extractor for DOCX documents using Mammoth
- * Preserves headings, lists, tables, and paragraphs
+ * Converts Mammoth HTML output into clean, structured Markdown,
+ * preserving tables as aligned Markdown tables, headings, lists, blockquotes, and text.
+ * @param {string} html
+ * @returns {string}
+ */
+export function convertMammothHtmlToMarkdown(html) {
+  if (!html || typeof html !== 'string') return '';
+
+  // 1. Process HTML tables into standard aligned Markdown tables
+  let res = html.replace(/<table\b[^>]*>([\s\S]*?)<\/table>/gi, (_, tableContent) => {
+    const rows = [];
+    const trRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+    let trMatch;
+    while ((trMatch = trRegex.exec(tableContent)) !== null) {
+      const rowContent = trMatch[1];
+      const cells = [];
+      const cellRegex = /<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
+      let cellMatch;
+      while ((cellMatch = cellRegex.exec(rowContent)) !== null) {
+        const cellText = cellMatch[1]
+          .replace(/<br\s*\/?>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .replace(/\|/g, '\\|');
+        cells.push(cellText);
+      }
+      if (cells.length > 0 && cells.some((c) => c.length > 0)) {
+        rows.push(cells);
+      }
+    }
+
+    if (rows.length === 0) return '';
+
+    const maxCols = Math.max(...rows.map((r) => r.length));
+    const colWidths = new Array(maxCols).fill(3);
+    for (const r of rows) {
+      for (let c = 0; c < maxCols; c++) {
+        colWidths[c] = Math.max(colWidths[c], Math.min((r[c] || '').length, 40));
+      }
+    }
+
+    const header = rows[0];
+    const dataRows = rows.slice(1);
+    const headerLine =
+      '| ' +
+      Array.from({ length: maxCols }, (_, i) => (header[i] || `Col ${i + 1}`).padEnd(colWidths[i])).join(' | ') +
+      ' |';
+    const dividerLine = '| ' + colWidths.map((w) => '-'.repeat(w)).join(' | ') + ' |';
+    const rowLines = dataRows.map(
+      (r) => '| ' + Array.from({ length: maxCols }, (_, i) => (r[i] || '').padEnd(colWidths[i])).join(' | ') + ' |'
+    );
+
+    return '\n\n' + [headerLine, dividerLine, ...rowLines].join('\n') + '\n\n';
+  });
+
+  // 2. Headings (h1 - h6)
+  res = res.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, content) => {
+    const text = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return '\n\n' + '#'.repeat(Number(level)) + ' ' + text + '\n\n';
+  });
+
+  // 3. Lists (ul/ol)
+  res = res.replace(/<ul\b[^>]*>([\s\S]*?)<\/ul>/gi, (_, content) => {
+    const items = [];
+    const liRegex = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
+    let liMatch;
+    while ((liMatch = liRegex.exec(content)) !== null) {
+      const text = liMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (text) items.push('- ' + text);
+    }
+    return '\n\n' + items.join('\n') + '\n\n';
+  });
+
+  res = res.replace(/<ol\b[^>]*>([\s\S]*?)<\/ol>/gi, (_, content) => {
+    const items = [];
+    const liRegex = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
+    let liMatch;
+    let idx = 1;
+    while ((liMatch = liRegex.exec(content)) !== null) {
+      const text = liMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (text) items.push(`${idx++}. ` + text);
+    }
+    return '\n\n' + items.join('\n') + '\n\n';
+  });
+
+  // 4. Blockquotes
+  res = res.replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
+    const lines = content.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, '$1\n').replace(/<[^>]+>/g, ' ').trim().split('\n');
+    return '\n\n' + lines.map((l) => '> ' + l.trim()).join('\n') + '\n\n';
+  });
+
+  // 5. Code & Pre
+  res = res.replace(/<pre\b[^>]*><code\b[^>]*>([\s\S]*?)<\/code><\/pre>/gi, '\n\n```\n$1\n```\n\n');
+  res = res.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+
+  // 6. Inline text styling
+  res = res.replace(/<strong\b[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**');
+  res = res.replace(/<b\b[^>]*>([\s\S]*?)<\/b>/gi, '**$1**');
+  res = res.replace(/<em\b[^>]*>([\s\S]*?)<\/em>/gi, '*$1*');
+  res = res.replace(/<i\b[^>]*>([\s\S]*?)<\/i>/gi, '*$1*');
+
+  // 7. Links
+  res = res.replace(/<a\b[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+
+  // 8. Paragraphs & line breaks
+  res = res.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, (_, content) => {
+    const clean = content.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim();
+    return clean ? '\n\n' + clean + '\n\n' : '';
+  });
+
+  // 9. Strip any leftover tags, decode entities, and normalize multiple blank lines
+  res = res.replace(/<[^>]+>/g, '');
+  res = decodeXmlEntities(res);
+  res = res.replace(/\n{3,}/g, '\n\n').trim();
+  return res;
+}
+
+/**
+ * Extracts text boxes from Word document XML (DrawingML wps:txbx / w:txbxContent, VML v:textbox, and a:txBody)
+ * Filters out duplicate fallback representations within mc:AlternateContent.
+ * @param {string} xml
+ * @returns {Array<string>}
+ */
+export function extractDocxTextBoxes(xml) {
+  if (!xml) return [];
+  // Strip mc:Fallback when mc:Choice is present to avoid duplicating text
+  let cleanXml = xml;
+  if (cleanXml.includes('<mc:Choice') && cleanXml.includes('<mc:Fallback')) {
+    cleanXml = cleanXml.replace(/<mc:Fallback\b[^>]*>([\s\S]*?)<\/mc:Fallback>/gi, '');
+  }
+
+  const boxes = [];
+  const txbxRegex =
+    /<(?:w:txbxContent|v:textbox|wps:txbx|a:txBody)\b[^>]*>([\s\S]*?)<\/(?:w:txbxContent|v:textbox|wps:txbx|a:txBody)>/gi;
+  let match;
+  while ((match = txbxRegex.exec(cleanXml)) !== null) {
+    const boxXml = match[1];
+    const boxParagraphs = [];
+
+    // Extract table rows if a table exists inside the text box
+    const tblRegex = /<w:tbl\b[^>]*>([\s\S]*?)<\/w:tbl>/gi;
+    let tblMatch;
+    while ((tblMatch = tblRegex.exec(boxXml)) !== null) {
+      const tableXml = tblMatch[1];
+      const trRegex = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/gi;
+      let trMatch;
+      const tableRows = [];
+      while ((trMatch = trRegex.exec(tableXml)) !== null) {
+        const tcRegex = /<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/gi;
+        let tcMatch;
+        const cells = [];
+        while ((tcMatch = tcRegex.exec(trMatch[1])) !== null) {
+          const tRegex = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi;
+          const tokens = [];
+          let tMatch;
+          while ((tMatch = tRegex.exec(tcMatch[1])) !== null) {
+            tokens.push(tMatch[1]);
+          }
+          cells.push(decodeXmlEntities(tokens.join('')).trim());
+        }
+        if (cells.length > 0 && cells.some((c) => c.length > 0)) {
+          tableRows.push(cells);
+        }
+      }
+      if (tableRows.length > 0) {
+        const maxCols = Math.max(...tableRows.map((r) => r.length));
+        const colWidths = new Array(maxCols).fill(3);
+        for (const r of tableRows) {
+          for (let c = 0; c < maxCols; c++) {
+            colWidths[c] = Math.max(colWidths[c], Math.min((r[c] || '').length, 40));
+          }
+        }
+        const header = tableRows[0];
+        const dataRows = tableRows.slice(1);
+        const headerLine =
+          '| ' +
+          Array.from({ length: maxCols }, (_, i) => (header[i] || `Col ${i + 1}`).padEnd(colWidths[i])).join(' | ') +
+          ' |';
+        const dividerLine = '| ' + colWidths.map((w) => '-'.repeat(w)).join(' | ') + ' |';
+        const rowLines = dataRows.map(
+          (r) => '| ' + Array.from({ length: maxCols }, (_, i) => (r[i] || '').padEnd(colWidths[i])).join(' | ') + ' |'
+        );
+        boxParagraphs.push([headerLine, dividerLine, ...rowLines].join('\n'));
+      }
+    }
+
+    const pRegex = /<(?:w:p|a:p)\b[^>]*>([\s\S]*?)<\/(?:w:p|a:p)>/gi;
+    let pMatch;
+    while ((pMatch = pRegex.exec(boxXml)) !== null) {
+      let pXml = pMatch[1];
+      pXml = pXml.replace(/<(?:w:tab|a:tab)\s*\/?>/gi, ' ');
+      pXml = pXml.replace(/<(?:w:br|a:br)\s*\/?>/gi, '\n');
+      const tRegex = /<(?:w:t|a:t)\b[^>]*>([\s\S]*?)<\/(?:w:t|a:t)>/gi;
+      const textTokens = [];
+      let tMatch;
+      while ((tMatch = tRegex.exec(pXml)) !== null) {
+        textTokens.push(tMatch[1]);
+      }
+      const pText = decodeXmlEntities(textTokens.join('')).trim();
+      if (pText) boxParagraphs.push(pText);
+    }
+    if (boxParagraphs.length > 0) {
+      boxes.push(boxParagraphs.join('\n'));
+    }
+  }
+  return boxes;
+}
+
+/**
+ * Core Extractor for DOCX documents using Mammoth with HTML table transformation and text box enhancement.
+ * Preserves headings, lists, tables and their cells in readable Markdown, paragraphs, text boxes (w:txbxContent), and Unicode punctuation.
  * @param {Buffer} buffer
  * @returns {Promise<Object>}
  */
 async function extractDocxDocument(buffer) {
   try {
-    const result = await mammoth.convertToMarkdown({ buffer });
-    const markdown = (result?.value || '').trim();
-
-    if (!markdown) {
-      // Fallback to raw text extraction if markdown is empty
-      const raw = await mammoth.extractRawText({ buffer });
-      const rawText = (raw?.value || '').trim();
-      if (!rawText) {
-        return {
-          status: 'empty',
-          success: false,
-          text: '',
-          warning: 'This Word document contains no readable text content.'
-        };
-      }
+    // 1. Verify docx package integrity as a valid ZIP archive containing word/document.xml
+    let zip;
+    try {
+      zip = await JSZip.loadAsync(buffer);
+    } catch (zipErr) {
       return {
-        status: 'ready',
-        success: true,
-        text: rawText,
-        sections: [{ heading: 'Content', level: 1, content: rawText, charCount: rawText.length }],
-        sectionCount: 1
+        status: 'corrupted',
+        success: false,
+        text: '',
+        error: `Failed to parse DOCX document: ${zipErr?.message || 'Invalid or corrupted Word document package.'}`
       };
     }
 
-    const sections = extractSectionsFromMarkdown(markdown);
+    if (!zip.files['word/document.xml']) {
+      return {
+        status: 'corrupted',
+        success: false,
+        text: '',
+        error: 'Failed to parse DOCX document: Missing word/document.xml in archive.'
+      };
+    }
+
+    let markdown = '';
+
+    // 2. Primary path: convert to HTML first to preserve table structures with cell alignments
+    try {
+      const htmlResult = await mammoth.convertToHtml({ buffer });
+      const rawHtml = htmlResult?.value || '';
+      if (rawHtml.trim()) {
+        markdown = convertMammothHtmlToMarkdown(rawHtml);
+      }
+    } catch (_) {}
+
+    // 3. Secondary fallback: convert to Markdown directly
+    if (!markdown) {
+      try {
+        const result = await mammoth.convertToMarkdown({ buffer });
+        markdown = (result?.value || '').trim();
+      } catch (_) {}
+    }
+
+    // 4. Tertiary fallback: extract raw text
+    if (!markdown) {
+      try {
+        const raw = await mammoth.extractRawText({ buffer });
+        markdown = (raw?.value || '').trim();
+      } catch (_) {}
+    }
+
+    // 5. Inspect docx package via existing JSZip instance for DrawingML / VML text boxes that Mammoth does not capture
+    let textBoxes = [];
+    try {
+      const docXmlFiles = Object.keys(zip.files).filter((fname) =>
+        /^word\/(?:document|header\d+|footer\d+)\.xml$/.test(fname)
+      );
+      for (const xmlPath of docXmlFiles) {
+        const xml = await zip.files[xmlPath].async('text');
+        const extractedBoxes = extractDocxTextBoxes(xml);
+        for (const box of extractedBoxes) {
+          // Avoid duplicating text if already captured by Mammoth or previous boxes
+          if (box && !markdown.includes(box) && !textBoxes.some((existing) => existing === box || existing.includes(box))) {
+            textBoxes.push(box);
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Combine markdown content and distinct text box callouts
+    let combinedText = markdown;
+    if (textBoxes.length > 0) {
+      const calloutText = textBoxes.map((b, i) => `### Text Box ${i + 1}\n${b}`).join('\n\n');
+      combinedText = combinedText ? `${combinedText}\n\n${calloutText}` : calloutText;
+    }
+
+    combinedText = combinedText.trim();
+    if (!combinedText) {
+      return {
+        status: 'empty',
+        success: false,
+        text: '',
+        warning: 'This Word document contains no readable text content.'
+      };
+    }
+
+    const sections = extractSectionsFromMarkdown(combinedText);
 
     return {
       status: 'ready',
       success: true,
-      text: markdown,
+      text: combinedText,
       sections,
       sectionCount: sections.length
     };
@@ -296,8 +837,82 @@ async function extractDocxDocument(buffer) {
 }
 
 /**
+ * Formats a PPTX DrawingML table (<a:tbl>) into a readable Markdown table
+ * Preserves multi-paragraph cells with <br> and escapes pipe characters.
+ * @param {string} tblXml
+ * @returns {string}
+ */
+export function extractTableFromPptxXml(tblXml) {
+  const rows = [];
+  const trRegex = /<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/gi;
+  let trMatch;
+  while ((trMatch = trRegex.exec(tblXml)) !== null) {
+    const trContent = trMatch[1];
+    const tcRegex = /<a:tc\b[^>]*>([\s\S]*?)<\/a:tc>/gi;
+    let tcMatch;
+    const cells = [];
+    while ((tcMatch = tcRegex.exec(trContent)) !== null) {
+      const tcContent = tcMatch[1];
+      const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/gi;
+      let pMatch;
+      const cellParagraphs = [];
+      while ((pMatch = pRegex.exec(tcContent)) !== null) {
+        let pXml = pMatch[1].replace(/<a:br\s*\/?>/gi, '\n').replace(/<a:tab\s*\/?>/gi, ' ');
+        const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi;
+        let tMatch;
+        const cellTokens = [];
+        while ((tMatch = tRegex.exec(pXml)) !== null) {
+          cellTokens.push(tMatch[1]);
+        }
+        const pText = decodeXmlEntities(cellTokens.join('')).trim();
+        if (pText) cellParagraphs.push(pText);
+      }
+      const cellValue = cellParagraphs.join('<br>').replace(/\|/g, '\\|');
+      cells.push(cellValue);
+    }
+    if (cells.length > 0 && cells.some((c) => c.length > 0)) {
+      rows.push(cells);
+    }
+  }
+
+  if (rows.length === 0) return '';
+
+  const maxCols = Math.max(...rows.map((r) => r.length));
+  const colWidths = new Array(maxCols).fill(3);
+  for (const r of rows) {
+    for (let c = 0; c < maxCols; c++) {
+      const val = (r[c] || '').replace(/[\r\n]+/g, ' ');
+      colWidths[c] = Math.max(colWidths[c], Math.min(val.length, 40));
+    }
+  }
+
+  const header = rows[0];
+  const dataRows = rows.slice(1);
+  const headerLine =
+    '| ' +
+    Array.from({ length: maxCols }, (_, i) => {
+      return ((header[i] || `Col ${i + 1}`).replace(/[\r\n]+/g, ' ')).padEnd(colWidths[i]);
+    }).join(' | ') +
+    ' |';
+
+  const dividerLine = '| ' + colWidths.map((w) => '-'.repeat(w)).join(' | ') + ' |';
+
+  const rowLines = dataRows.map((r) => {
+    return (
+      '| ' +
+      Array.from({ length: maxCols }, (_, i) => {
+        return ((r[i] || '').replace(/[\r\n]+/g, ' ')).padEnd(colWidths[i]);
+      }).join(' | ') +
+      ' |'
+    );
+  });
+
+  return [headerLine, dividerLine, ...rowLines].join('\n');
+}
+
+/**
  * Core Extractor for Modern PowerPoint (.pptx) documents
- * Retains exact slide-by-slide text and speaker notes
+ * Retains exact slide-by-slide text, tables (in p:graphicFrame), grouped shapes (in p:grpSp), and speaker notes
  * @param {Buffer} buffer
  * @returns {Promise<Object>}
  */
@@ -332,38 +947,133 @@ async function extractPptxDocument(buffer) {
       const slideNum = i + 1;
       const slideXml = await zip.files[slidePath].async('text');
 
+      // 1. Locate slide title if present in a title placeholder shape
       let slideTitle = undefined;
-      const paragraphs = [];
-
-      // Extract shapes and paragraphs
-      // Title detection: <p:sp> with <p:ph type="title"/> or <p:ph type="ctrTitle"/>
-      const spRegex = /<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/gi;
-      let spMatch;
-      while ((spMatch = spRegex.exec(slideXml)) !== null) {
-        const spXml = spMatch[1];
-        const isTitleShape = /<p:ph\b[^>]*\btype=["'](?:title|ctrTitle)["']/i.test(spXml);
-
+      const titleShapeRegex = /<p:sp\b[^>]*>[\s\S]*?<p:ph\b[^>]*\btype=["'](?:title|ctrTitle)["'][\s\S]*?<\/p:sp>/gi;
+      const titleShapeMatch = titleShapeRegex.exec(slideXml);
+      if (titleShapeMatch) {
+        const titleParas = [];
         const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/gi;
         let pMatch;
-        while ((pMatch = pRegex.exec(spXml)) !== null) {
-          const pXml = pMatch[1];
+        while ((pMatch = pRegex.exec(titleShapeMatch[0])) !== null) {
+          let pXml = pMatch[1].replace(/<a:br\s*\/?>/gi, '\n').replace(/<a:tab\s*\/?>/gi, ' ');
           const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi;
-          const textTokens = [];
+          const tokens = [];
           let tMatch;
           while ((tMatch = tRegex.exec(pXml)) !== null) {
-            textTokens.push(tMatch[1]);
+            tokens.push(tMatch[1]);
           }
-          const paragraphText = textTokens.join('').trim();
-          if (paragraphText) {
-            if (isTitleShape && !slideTitle) {
-              slideTitle = paragraphText;
-            }
-            paragraphs.push(paragraphText);
-          }
+          const text = decodeXmlEntities(tokens.join('')).trim();
+          if (text) titleParas.push(text);
+        }
+        if (titleParas.length > 0) {
+          slideTitle = titleParas.join(' ');
         }
       }
 
-      // Check corresponding speaker notes slide: ppt/notesSlides/notesSlide{N}.xml
+      // 2. Iterate through slide elements in document order (<p:graphicFrame>, <p:sp>, <p:grpSp>)
+      const slideElements = [];
+      const elementRegex = /<(p:graphicFrame|p:sp|p:grpSp)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+      let elemMatch;
+      while ((elemMatch = elementRegex.exec(slideXml)) !== null) {
+        const tag = elemMatch[1];
+        const content = elemMatch[2];
+
+        // Case A: Table inside <p:graphicFrame> (or directly <a:tbl>)
+        if (tag === 'p:graphicFrame') {
+          const tblMatch = /<a:tbl\b[^>]*>([\s\S]*?)<\/a:tbl>/i.exec(content);
+          if (tblMatch) {
+            const mdTable = extractTableFromPptxXml(tblMatch[1]);
+            if (mdTable) {
+              slideElements.push(mdTable);
+            }
+          } else {
+            // Also check if graphicFrame contains text runs or diagram shapes
+            const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/gi;
+            let pMatch;
+            const extraParas = [];
+            while ((pMatch = pRegex.exec(content)) !== null) {
+              let pXml = pMatch[1].replace(/<a:br\s*\/?>/gi, '\n').replace(/<a:tab\s*\/?>/gi, ' ');
+              const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi;
+              const tokens = [];
+              let tMatch;
+              while ((tMatch = tRegex.exec(pXml)) !== null) {
+                tokens.push(tMatch[1]);
+              }
+              const pText = decodeXmlEntities(tokens.join('')).trim();
+              if (pText) extraParas.push(pText);
+            }
+            if (extraParas.length > 0) {
+              slideElements.push(extraParas.join('\n'));
+            }
+          }
+          continue;
+        }
+
+        // Case B: Grouped shapes <p:grpSp>
+        if (tag === 'p:grpSp') {
+          // Extract tables if any exist inside the group
+          const tblRegex = /<a:tbl\b[^>]*>([\s\S]*?)<\/a:tbl>/gi;
+          let tblMatch;
+          while ((tblMatch = tblRegex.exec(content)) !== null) {
+            const mdTable = extractTableFromPptxXml(tblMatch[1]);
+            if (mdTable) {
+              slideElements.push(mdTable);
+            }
+          }
+          // Extract shapes inside grouped shape in order
+          const childSpRegex = /<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/gi;
+          let childSpMatch;
+          const groupParas = [];
+          while ((childSpMatch = childSpRegex.exec(content)) !== null) {
+            const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/gi;
+            let pMatch;
+            while ((pMatch = pRegex.exec(childSpMatch[1])) !== null) {
+              let pXml = pMatch[1].replace(/<a:br\s*\/?>/gi, '\n').replace(/<a:tab\s*\/?>/gi, ' ');
+              const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi;
+              const tokens = [];
+              let tMatch;
+              while ((tMatch = tRegex.exec(pXml)) !== null) {
+                tokens.push(tMatch[1]);
+              }
+              const pText = decodeXmlEntities(tokens.join('')).trim();
+              if (pText) groupParas.push(pText);
+            }
+          }
+          if (groupParas.length > 0) {
+            slideElements.push(groupParas.join('\n'));
+          }
+          continue;
+        }
+
+        // Case C: Standard shape <p:sp>
+        const isTitleShape = /<p:ph\b[^>]*\btype=["'](?:title|ctrTitle)["']/i.test(content);
+        const pRegex = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/gi;
+        let pMatch;
+        const shapeParas = [];
+        while ((pMatch = pRegex.exec(content)) !== null) {
+          let pXml = pMatch[1].replace(/<a:br\s*\/?>/gi, '\n').replace(/<a:tab\s*\/?>/gi, ' ');
+          const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi;
+          const tokens = [];
+          let tMatch;
+          while ((tMatch = tRegex.exec(pXml)) !== null) {
+            tokens.push(tMatch[1]);
+          }
+          const pText = decodeXmlEntities(tokens.join('')).trim();
+          if (pText) {
+            if (isTitleShape && pText === slideTitle) {
+              // Avoid duplicating the exact title line in body elements
+            } else {
+              shapeParas.push(pText);
+            }
+          }
+        }
+        if (shapeParas.length > 0) {
+          slideElements.push(shapeParas.join('\n'));
+        }
+      }
+
+      // 3. Check corresponding speaker notes slide: ppt/notesSlides/notesSlide{N}.xml
       let notesText = undefined;
       const notesPath = `ppt/notesSlides/notesSlide${slideNum}.xml`;
       if (zip.files[notesPath]) {
@@ -373,7 +1083,7 @@ async function extractPptxDocument(buffer) {
           const tRegex = /<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi;
           let tMatch;
           while ((tMatch = tRegex.exec(notesXml)) !== null) {
-            const token = tMatch[1].trim();
+            const token = decodeXmlEntities(tMatch[1]).trim();
             if (token && !token.startsWith('Slide ') && !/^\d+$/.test(token)) {
               noteParagraphs.push(token);
             }
@@ -384,17 +1094,22 @@ async function extractPptxDocument(buffer) {
         } catch (_) {}
       }
 
-      const slideBody = paragraphs.join('\n');
+      // Assemble slide body components in clean reading order
+      const slideBody = slideElements.join('\n\n').trim();
+      const effectiveText = slideTitle
+        ? (slideBody ? `${slideTitle}\n\n${slideBody}` : slideTitle)
+        : (slideBody || '');
+
       slides.push({
         slideNumber: slideNum,
         title: slideTitle,
-        text: slideBody,
+        text: effectiveText,
         notes: notesText,
-        charCount: slideBody.length
+        charCount: effectiveText.length
       });
 
       const titleHeader = slideTitle ? `: ${slideTitle}` : '';
-      let slideFormatted = `--- Slide ${slideNum}${titleHeader} ---\n${slideBody || '[Empty slide]'}`;
+      let slideFormatted = `--- Slide ${slideNum}${titleHeader} ---\n${effectiveText || '[Empty slide]'}`;
       if (notesText) {
         slideFormatted += `\n[Speaker Notes]: ${notesText}`;
       }
@@ -454,7 +1169,8 @@ function handleLegacyPptDocument() {
 }
 
 /**
- * Core Extractor for Plain Text, Markdown, and Code formats
+ * Core Extractor for Plain Text, Markdown, Log, and Code formats
+ * Preserves line breaks, Unicode characters, and encoding
  * @param {Buffer} buffer
  * @param {string} ext
  * @returns {Object}
@@ -465,9 +1181,16 @@ function extractPlainTextDocument(buffer, ext) {
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
     text = buffer.toString('utf16le');
   } else if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
-    text = buffer.swap16().toString('utf16le');
+    const evenLen = buffer.length - (buffer.length % 2);
+    const copy = Buffer.from(buffer.subarray(0, evenLen));
+    text = copy.swap16().toString('utf16le');
   } else {
     text = buffer.toString('utf-8');
+  }
+
+  // Strip leading UTF-8 BOM if present
+  if (text.charCodeAt(0) === 0xfeff) {
+    text = text.slice(1);
   }
 
   text = text.trim();
@@ -476,7 +1199,7 @@ function extractPlainTextDocument(buffer, ext) {
       status: 'empty',
       success: false,
       text: '',
-      warning: 'The text file is empty.'
+      warning: ext === '.log' ? 'The log file is empty.' : 'The text file is empty.'
     };
   }
 
@@ -505,7 +1228,12 @@ function extractPlainTextDocument(buffer, ext) {
  * @returns {Object}
  */
 function extractDelimitedDocument(buffer, ext) {
-  const rawText = buffer.toString('utf-8').trim();
+  let rawText = buffer.toString('utf-8');
+  if (rawText.charCodeAt(0) === 0xfeff) {
+    rawText = rawText.slice(1);
+  }
+  rawText = rawText.trim();
+
   if (!rawText) {
     return {
       status: 'empty',
@@ -522,17 +1250,24 @@ function extractDelimitedDocument(buffer, ext) {
     status: 'ready',
     success: true,
     text: tableData.markdownTable || rawText,
+    rowCount: tableData.rowCount,
+    columnCount: tableData.columnCount,
     table: tableData
   };
 }
 
 /**
  * Core Extractor for JSON documents
+ * Strips UTF-8 BOM if present, preserves all nested keys, values, arrays, strings, and Unicode characters
  * @param {Buffer} buffer
  * @returns {Object}
  */
 function extractJsonDocument(buffer) {
-  const raw = buffer.toString('utf-8').trim();
+  let raw = buffer.toString('utf-8').trim();
+  if (raw.charCodeAt(0) === 0xfeff) {
+    raw = raw.slice(1).trim();
+  }
+
   if (!raw) {
     return {
       status: 'empty',
@@ -562,11 +1297,17 @@ function extractJsonDocument(buffer) {
 
 /**
  * Core Extractor for XML documents
+ * Preserves readable element text and meaningful paragraph/block structure
+ * with decoded XML entities without merging unrelated paragraphs.
  * @param {Buffer} buffer
  * @returns {Object}
  */
 function extractXmlDocument(buffer) {
-  const raw = buffer.toString('utf-8').trim();
+  let raw = buffer.toString('utf-8').trim();
+  if (raw.charCodeAt(0) === 0xfeff) {
+    raw = raw.slice(1).trim();
+  }
+
   if (!raw) {
     return {
       status: 'empty',
@@ -576,16 +1317,37 @@ function extractXmlDocument(buffer) {
     };
   }
 
-  // Strip tags for clean text content while retaining structure
-  const textWithoutTags = raw
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // Preserve CDATA content before tag stripping
+  const unwrappedCdata = raw.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1');
+
+  // Insert line breaks at block-level closing tags to retain natural paragraphs/sections
+  const structured = unwrappedCdata
+    .replace(/<\/(?:p|div|section|article|item|entry|row|record|message|h[1-6]|li|title)>/gi, '\n')
+    .replace(/<(?:br|hr)\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ');
+
+  // Decode XML entities and clean up whitespace per line
+  const decoded = decodeXmlEntities(structured);
+  const cleanLines = decoded
+    .split('\n')
+    .map((l) => l.replace(/[ \t]+/g, ' ').trim())
+    .filter((l) => l.length > 0);
+
+  const cleanText = cleanLines.join('\n\n');
+
+  if (!cleanText) {
+    return {
+      status: 'empty',
+      success: false,
+      text: '',
+      warning: 'The XML file contains tags but no readable text content.'
+    };
+  }
 
   return {
     status: 'ready',
     success: true,
-    text: `\`\`\`xml\n${raw.slice(0, 100_000)}\n\`\`\`\n\n### Extracted Text Content\n${textWithoutTags}`
+    text: `\`\`\`xml\n${raw.slice(0, 100_000)}\n\`\`\`\n\n### Extracted Text Content\n${cleanText}`
   };
 }
 
@@ -599,7 +1361,14 @@ function extractXmlDocument(buffer) {
  * @param {string} fileId System-generated UUID
  * @returns {Promise<Object>}
  */
-export async function extractDocumentContent(filePathOrBuffer, originalName, ext, mimeType, fileId) {
+export async function extractDocumentContent(
+  filePathOrBuffer,
+  originalName,
+  ext,
+  mimeType,
+  fileId,
+  options = {}
+) {
   const isBuf = Buffer.isBuffer(filePathOrBuffer);
   const displayFilename = isBuf
     ? originalName || 'document'
@@ -700,7 +1469,7 @@ export async function extractDocumentContent(filePathOrBuffer, originalName, ext
   try {
     switch (normalizedExt) {
       case '.pdf':
-        partialResult = await extractPdfDocument(buffer);
+        partialResult = await extractPdfDocument(buffer, options);
         break;
 
       case '.docx':
@@ -716,6 +1485,7 @@ export async function extractDocumentContent(filePathOrBuffer, originalName, ext
         break;
 
       case '.txt':
+      case '.log':
       case '.md':
       case '.markdown':
         partialResult = extractPlainTextDocument(buffer, normalizedExt);
@@ -779,8 +1549,13 @@ export async function extractDocumentContent(filePathOrBuffer, originalName, ext
     slides: partialResult.slides,
     sectionCount: partialResult.sectionCount,
     sections: partialResult.sections,
+    rowCount: partialResult.rowCount,
+    columnCount: partialResult.columnCount,
     table: partialResult.table,
     isScanned: partialResult.isScanned,
+    hasText: partialResult.hasText !== undefined ? partialResult.hasText : (totalCharacters > 0),
+    ocrEngine: partialResult.ocrEngine,
+    message: partialResult.message,
     isTruncated: isTruncated || partialResult.isTruncated,
     warning: partialResult.warning,
     error: partialResult.error,

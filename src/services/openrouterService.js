@@ -57,7 +57,7 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
     const docs = normalizeAttachments(attachments);
 
     if (docs.length > 0) {
-      const prepDoc = prepareDocumentContext(prompt, docs);
+      const prepDoc = prepareDocumentContext(prompt, docs, { provider: 'openrouter' });
       const adapted = adaptDocumentContextForProvider({
         provider: 'openrouter',
         prompt,

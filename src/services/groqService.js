@@ -56,7 +56,7 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
     const docs = normalizeAttachments(attachments);
 
     if (docs.length > 0) {
-      const prepDoc = prepareDocumentContext(prompt, docs);
+      const prepDoc = prepareDocumentContext(prompt, docs, { provider: 'groq' });
       const adapted = adaptDocumentContextForProvider({
         provider: 'groq',
         prompt,

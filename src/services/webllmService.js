@@ -1489,7 +1489,9 @@ export async function streamWebLLMMessage({
         });
       }
 
-      const preparedContext = prepareDocumentContext(cleanPrompt, normalizedDocs);
+      const preparedContext = prepareDocumentContext(cleanPrompt, normalizedDocs, {
+        provider: WEBLLM_PROVIDER_ID
+      });
 
       // Direct deterministic response when attached image/document has NO_TEXT_DETECTED or unreadable notice
       if (preparedContext.directAnswer && !preparedContext.formattedContext) {
