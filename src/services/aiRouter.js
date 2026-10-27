@@ -286,6 +286,15 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   return err;
 }
 
+function createRouterAbortError(cause = null) {
+  if (cause && cause.name === 'AbortError') {
+    return cause;
+  }
+  const abortErr = new Error('Generation cancelled by user.');
+  abortErr.name = 'AbortError';
+  return abortErr;
+}
+
 export async function streamAIMessage({
   provider = DEFAULT_PROVIDER,
   model = null,
@@ -297,6 +306,7 @@ export async function streamAIMessage({
   onChunk,
   onStart,
   signal,
+  isRequestActive = null,
   conversationId = null,
   attachments = [],
   isContinuation = false,
@@ -306,6 +316,12 @@ export async function streamAIMessage({
 }) {
   const normalizedProvider = provider.toLowerCase();
   const normalizedMode = (mode || 'general').toLowerCase();
+  const isActive = () =>
+    !signal?.aborted && (typeof isRequestActive !== 'function' || Boolean(isRequestActive()));
+
+  if (!isActive()) {
+    throw createRouterAbortError();
+  }
 
   // Strictly local browser inference: route Browser AI (WebLLM) directly to webllmService.js.
   // Never send Browser AI requests to /api/chat, Ollama, Firebase, or any cloud provider.
@@ -331,8 +347,14 @@ export async function streamAIMessage({
       attachments: Array.isArray(attachments)
         ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
         : [],
-      onStart,
-      onChunk,
+      onStart: (info) => {
+        if (!isActive()) return;
+        onStart?.(info);
+      },
+      onChunk: (chunkText, acc) => {
+        if (!isActive()) return;
+        onChunk?.(chunkText, acc);
+      },
       signal
     });
   }
@@ -345,6 +367,10 @@ export async function streamAIMessage({
   while (clientAttempt < maxClientAttempts) {
     clientAttempt++;
     try {
+      if (!isActive()) {
+        throw createRouterAbortError();
+      }
+
       const requestBody = prepareChatRequestBody({
         provider: normalizedProvider,
         model: model ? String(model).trim() : null,
@@ -372,8 +398,18 @@ export async function streamAIMessage({
         signal
       });
 
+      if (!isActive()) {
+        try {
+          void res.body?.cancel?.().catch(() => {});
+        } catch (_) {}
+        throw createRouterAbortError();
+      }
+
       if (!res.ok) {
         const errJson = await res.json().catch(() => null);
+        if (!isActive()) {
+          throw createRouterAbortError();
+        }
         const parsedErr = parseRouterError(
           errJson?.error || `Server request failed (${res.status})`,
           res.status,
@@ -403,7 +439,27 @@ export async function streamAIMessage({
         let finalProvider = normalizedProvider;
         let receivedDone = false;
 
+        const onSignalAbort = () => {
+          try {
+            void reader.cancel().catch(() => {});
+          } catch (_) {}
+        };
+
+        if (signal) {
+          if (signal.aborted) {
+            onSignalAbort();
+            try {
+              reader.releaseLock();
+            } catch (_) {}
+            throw createRouterAbortError();
+          }
+          signal.addEventListener('abort', onSignalAbort, { once: true });
+        }
+
         const handleSSELine = (line) => {
+          if (!isActive()) {
+            throw createRouterAbortError();
+          }
           const trimmed = line.trim();
           // Transparently ignore keep-alive heartbeats (lines starting with ':') and blank lines
           if (!trimmed || trimmed.startsWith(':')) return null;
@@ -416,13 +472,22 @@ export async function streamAIMessage({
           try {
             const data = JSON.parse(dataStr);
             if (data.type === 'start') {
+              if (!isActive()) {
+                throw createRouterAbortError();
+              }
               modelUsed = data.modelUsed;
               finalProvider = data.provider || normalizedProvider;
               onStart?.({ modelUsed, provider: finalProvider });
             } else if (data.type === 'chunk' && data.text) {
+              if (!isActive()) {
+                throw createRouterAbortError();
+              }
               accumulatedText += data.text;
               onChunk?.(data.text, accumulatedText);
             } else if (data.type === 'done') {
+              if (!isActive()) {
+                throw createRouterAbortError();
+              }
               receivedDone = true;
               if (data.modelUsed) modelUsed = data.modelUsed;
               if (data.provider) finalProvider = data.provider;
@@ -436,6 +501,9 @@ export async function streamAIMessage({
                 }
               };
             } else if (data.type === 'error') {
+              if (!isActive()) {
+                throw createRouterAbortError();
+              }
               const streamErr = parseRouterError(
                 data.error || 'Stream error occurred.',
                 data.code || 500,
@@ -449,6 +517,9 @@ export async function streamAIMessage({
               throw streamErr;
             }
           } catch (jsonErr) {
+            if (jsonErr?.name === 'AbortError') {
+              throw jsonErr;
+            }
             if (jsonErr.message && !jsonErr.message.includes('JSON')) {
               throw jsonErr;
             }
@@ -458,7 +529,13 @@ export async function streamAIMessage({
 
         try {
           while (true) {
+            if (!isActive()) {
+              throw createRouterAbortError();
+            }
             const { done, value } = await reader.read();
+            if (!isActive()) {
+              throw createRouterAbortError();
+            }
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
@@ -466,11 +543,16 @@ export async function streamAIMessage({
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const res = handleSSELine(line);
-              if (res?.result) {
-                return res.result;
+              const lineRes = handleSSELine(line);
+              if (lineRes?.result) {
+                return lineRes.result;
               }
             }
+          }
+
+          // Never process trailing buffered bytes or trigger auto-continuation if cancelled/superseded
+          if (!isActive()) {
+            throw createRouterAbortError();
           }
 
           // Process any trailing bytes and buffered events
@@ -481,11 +563,15 @@ export async function streamAIMessage({
           if (buffer) {
             const trailingLines = buffer.split('\n');
             for (const tLine of trailingLines) {
-              const res = handleSSELine(tLine);
-              if (res?.result) {
-                return res.result;
+              const lineRes = handleSSELine(tLine);
+              if (lineRes?.result) {
+                return lineRes.result;
               }
             }
+          }
+
+          if (!isActive()) {
+            throw createRouterAbortError();
           }
 
           // If standard completion was signaled
@@ -497,17 +583,11 @@ export async function streamAIMessage({
             };
           }
 
-          // If the client explicitly requested cancellation, stop cleanly
-          if (signal?.aborted) {
-            const abortErr = new Error('Generation cancelled by user.');
-            abortErr.name = 'AbortError';
-            throw abortErr;
-          }
-
           // If the connection was abruptly dropped mid-stream (e.g. Vercel Hobby 60s serverless execution limit
-          // or intermediate network drop), seamlessly continue generation without aborting or losing tokens:
-          if (accumulatedText.length > 0 && (partNumber || 1) < 10) {
+          // or intermediate network drop), seamlessly continue generation ONLY if the request is still active:
+          if (isActive() && accumulatedText.length > 0 && (partNumber || 1) < 10) {
             console.log(`[Stream Continuation] Connection closed before 'done' event at ${accumulatedText.length} chars. Auto-continuing stream...`);
+            const basePrefix = accumulatedText;
             const continuationPrompt = 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.';
             const contResult = await streamAIMessage({
               provider: finalProvider || normalizedProvider,
@@ -517,26 +597,45 @@ export async function streamAIMessage({
               history: [
                 ...history,
                 { sender: 'user', content: prompt },
-                { sender: 'assistant', content: accumulatedText }
+                { sender: 'assistant', content: basePrefix }
               ],
               username,
               preferences,
               onChunk: (chunkText) => {
+                if (!isActive()) return;
                 accumulatedText += chunkText;
                 onChunk?.(chunkText, accumulatedText);
               },
               onStart: (info) => {
+                if (!isActive()) return;
                 if (info?.modelUsed) modelUsed = info.modelUsed;
               },
               signal,
+              isRequestActive,
               conversationId,
               attachments: [],
               isContinuation: true,
               partNumber: (partNumber || 1) + 1,
               originalPrompt: originalPrompt || prompt,
-              previousContentSummary: accumulatedText.slice(-300)
+              previousContentSummary: basePrefix.slice(-300)
             });
-            return contResult;
+
+            if (!isActive()) {
+              throw createRouterAbortError();
+            }
+
+            const mergedText =
+              typeof contResult?.text === 'string' &&
+              contResult.text.length >= accumulatedText.length - basePrefix.length
+                ? basePrefix + contResult.text
+                : accumulatedText;
+
+            return {
+              ...contResult,
+              text: mergedText,
+              modelUsed: contResult?.modelUsed || modelUsed || 'AI Model',
+              provider: contResult?.provider || finalProvider
+            };
           }
 
           if (!accumulatedText && !receivedDone) {
@@ -553,11 +652,19 @@ export async function streamAIMessage({
             provider: finalProvider
           };
         } finally {
-          reader.releaseLock();
+          if (signal) {
+            signal.removeEventListener('abort', onSignalAbort);
+          }
+          try {
+            reader.releaseLock();
+          } catch (_) {}
         }
       } else {
         // Non-streaming response fallback
         const data = await res.json();
+        if (!isActive()) {
+          throw createRouterAbortError();
+        }
         onChunk?.(data.text, data.text);
         return {
           text: data.text,
@@ -566,15 +673,35 @@ export async function streamAIMessage({
         };
       }
     } catch (apiErr) {
-      if (signal?.aborted) throw apiErr;
+      if (!isActive() || apiErr?.name === 'AbortError') {
+        throw createRouterAbortError(apiErr);
+      }
 
       if (apiErr?.retryable && clientAttempt < maxClientAttempts) {
         const delay = 1000 + Math.random() * 500;
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, delay);
+          if (signal) {
+            signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                resolve(undefined);
+              },
+              { once: true }
+            );
+          }
+        });
+        if (!isActive()) {
+          throw createRouterAbortError();
+        }
         continue;
       }
 
       if (apiErr.name === 'TypeError' && isProviderConfigured(normalizedProvider)) {
+        if (!isActive()) {
+          throw createRouterAbortError();
+        }
         console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
         break;
       }
@@ -589,10 +716,26 @@ export async function streamAIMessage({
     }
   }
 
+  if (!isActive()) {
+    throw createRouterAbortError();
+  }
+
   // Client-side direct service fallback
   switch (normalizedProvider) {
     case AI_PROVIDERS.GROQ: {
-      const result = await streamGroqMessage({ prompt, history, mode: normalizedMode, onChunk, signal, attachments, conversationId });
+      const result = await streamGroqMessage({
+        prompt,
+        history,
+        mode: normalizedMode,
+        onChunk: (c, acc) => {
+          if (!isActive()) return;
+          onChunk?.(c, acc);
+        },
+        signal,
+        attachments,
+        conversationId
+      });
+      if (!isActive()) throw createRouterAbortError();
       return {
         ...result,
         provider: AI_PROVIDERS.GROQ
@@ -600,7 +743,19 @@ export async function streamAIMessage({
     }
 
     case AI_PROVIDERS.OPENROUTER: {
-      const result = await streamOpenRouterMessage({ prompt, history, mode: normalizedMode, onChunk, signal, attachments, conversationId });
+      const result = await streamOpenRouterMessage({
+        prompt,
+        history,
+        mode: normalizedMode,
+        onChunk: (c, acc) => {
+          if (!isActive()) return;
+          onChunk?.(c, acc);
+        },
+        signal,
+        attachments,
+        conversationId
+      });
+      if (!isActive()) throw createRouterAbortError();
       return {
         ...result,
         provider: AI_PROVIDERS.OPENROUTER
@@ -637,15 +792,34 @@ export async function streamAIMessage({
         attachments: Array.isArray(attachments)
           ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
           : [],
-        onStart,
-        onChunk,
+        onStart: (info) => {
+          if (!isActive()) return;
+          onStart?.(info);
+        },
+        onChunk: (c, acc) => {
+          if (!isActive()) return;
+          onChunk?.(c, acc);
+        },
         signal
       });
     }
 
     case AI_PROVIDERS.GEMINI:
     default: {
-      const result = await streamGeminiMessage({ prompt, history, username, mode: normalizedMode, onChunk, signal, attachments, conversationId });
+      const result = await streamGeminiMessage({
+        prompt,
+        history,
+        username,
+        mode: normalizedMode,
+        onChunk: (c, acc) => {
+          if (!isActive()) return;
+          onChunk?.(c, acc);
+        },
+        signal,
+        attachments,
+        conversationId
+      });
+      if (!isActive()) throw createRouterAbortError();
       return {
         ...result,
         provider: AI_PROVIDERS.GEMINI

@@ -1433,6 +1433,10 @@ export async function streamWebLLMMessage({
       signal
     });
 
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+
     const catalogEntry = WEBLLM_MODEL_CATALOG[modelId];
     const baseSystemInstruction = buildLocalSystemInstruction(username, preferences, mode);
 
@@ -1495,6 +1499,9 @@ export async function streamWebLLMMessage({
 
       // Direct deterministic response when attached image/document has NO_TEXT_DETECTED or unreadable notice
       if (preparedContext.directAnswer && !preparedContext.formattedContext) {
+        if (signal?.aborted) {
+          throw createAbortError();
+        }
         if (typeof onStart === 'function') {
           onStart({ modelUsed: modelId, provider: WEBLLM_PROVIDER_ID });
         }
@@ -1537,21 +1544,12 @@ export async function streamWebLLMMessage({
           ? 1536
           : catalogEntry?.defaultMaxTokens || 1024;
 
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+
     manualStopRequested = false;
     isGeneratingNow = true;
-
-    updateEngineState({
-      status: 'generating',
-      modelId,
-      error: null
-    });
-
-    if (typeof onStart === 'function') {
-      onStart({
-        modelUsed: modelId,
-        provider: WEBLLM_PROVIDER_ID
-      });
-    }
 
     let removeAbortHandler = null;
     if (signal) {
@@ -1564,6 +1562,19 @@ export async function streamWebLLMMessage({
       }
       signal.addEventListener('abort', handleAbort, { once: true });
       removeAbortHandler = () => signal.removeEventListener('abort', handleAbort);
+    }
+
+    updateEngineState({
+      status: 'generating',
+      modelId,
+      error: null
+    });
+
+    if (typeof onStart === 'function' && !signal?.aborted && !manualStopRequested) {
+      onStart({
+        modelUsed: modelId,
+        provider: WEBLLM_PROVIDER_ID
+      });
     }
 
     let accumulatedText = '';
@@ -1590,7 +1601,7 @@ export async function streamWebLLMMessage({
         }
 
         const delta = chunk?.choices?.[0]?.delta?.content;
-        if (delta) {
+        if (delta && !signal?.aborted && !manualStopRequested) {
           accumulatedText += delta;
           if (typeof onChunk === 'function') {
             onChunk(delta, accumulatedText);
