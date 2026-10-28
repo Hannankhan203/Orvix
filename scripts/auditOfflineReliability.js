@@ -416,7 +416,6 @@ test('isVisionCapableProvider correctly identifies vision-capable models vs text
   assert.strictEqual(isVisionCapableProvider('groq'), false);
   assert.strictEqual(isVisionCapableProvider('openrouter'), false);
   assert.strictEqual(isVisionCapableProvider('cloudflare'), false);
-  assert.strictEqual(isVisionCapableProvider('ollama'), false);
   assert.strictEqual(isVisionCapableProvider('webllm'), false);
   assert.strictEqual(isVisionCapableProvider(''), false);
   assert.strictEqual(isVisionCapableProvider(null), false);
@@ -426,7 +425,6 @@ test('isVisionCapableProvider correctly identifies vision-capable models vs text
   assert.strictEqual(PROVIDER_PROFILES.groq.supportsVision, false);
   assert.strictEqual(PROVIDER_PROFILES.openrouter.supportsVision, false);
   assert.strictEqual(PROVIDER_PROFILES.cloudflare.supportsVision, false);
-  assert.strictEqual(PROVIDER_PROFILES.ollama.supportsVision, false);
   assert.strictEqual(PROVIDER_PROFILES.webllm.supportsVision, false);
 });
 
@@ -550,7 +548,7 @@ test('Phase 2A Acceptance Test 4: Text-only models receive appropriate no-text n
     totalWords: 0
   };
 
-  const textProviders = ['groq', 'openrouter', 'cloudflare', 'ollama', 'webllm'];
+  const textProviders = ['groq', 'openrouter', 'cloudflare', 'webllm'];
   for (const prov of textProviders) {
     const prep = prepareDocumentContext('What is in this picture?', [photoDoc], {
       provider: prov

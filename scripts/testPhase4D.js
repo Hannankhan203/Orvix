@@ -1010,13 +1010,11 @@ async function main() {
       assert.equal(PROVIDER_DEFAULT_MODELS.gemini, 'gemini-3.8-flash');
       assert.equal(PROVIDER_DEFAULT_MODELS.openrouter, 'openrouter/free');
       assert.equal(PROVIDER_DEFAULT_MODELS.cloudflare, '@cf/meta/llama-3.1-8b-instruct');
-      assert.equal(PROVIDER_DEFAULT_MODELS.ollama, 'qwen2.5:1.5b');
       assert.equal(PROVIDER_DEFAULT_MODELS.webllm, 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC');
 
       assert.equal(checkModelCompatibilityForProvider('gemini', 'gemini-2.5-pro').compatible, true);
       assert.equal(checkModelCompatibilityForProvider('openrouter', 'meta-llama/llama-3.3-70b-instruct:free').compatible, true);
       assert.equal(checkModelCompatibilityForProvider('cloudflare', '@cf/meta/llama-3.1-8b-instruct').compatible, true);
-      assert.equal(checkModelCompatibilityForProvider('ollama', 'qwen2.5:1.5b').compatible, true);
       assert.equal(checkModelCompatibilityForProvider('webllm', 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC').compatible, true);
 
       // Cross-provider isolation checks

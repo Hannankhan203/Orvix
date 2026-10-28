@@ -41,7 +41,7 @@ export default function AuthScreen() {
     clearError();
 
     if (isOffline) {
-      setLocalValidation('Cloud sign-in requires an internet connection. Use Continue as Guest below to chat offline with Browser AI (WebLLM) or Local AI (Ollama).');
+      setLocalValidation('Cloud sign-in requires an internet connection. Use Continue as Guest below to chat offline with Browser AI (WebLLM).');
       return;
     }
 
@@ -132,7 +132,7 @@ export default function AuthScreen() {
             <div className="notice-content">
               <strong>Offline Mode</strong>
               <p>
-                Cloud authentication requires an internet connection. Click <strong>Continue as Guest</strong> below to use Browser AI (WebLLM) or Local AI (Ollama) with local chat storage.
+                Cloud authentication requires an internet connection. Click <strong>Continue as Guest</strong> below to use Browser AI (WebLLM) with local chat storage.
               </p>
             </div>
           </div>

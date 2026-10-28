@@ -118,13 +118,12 @@ await runTest('4. Selecting Cloudflare routes to Cloudflare and uses valid Cloud
   assert.equal(opt.defaultModel, '@cf/meta/llama-3.1-8b-instruct');
 });
 
-// Test 5: Selecting Ollama routes to Ollama without cloud leakage
-await runTest('5. Selecting Ollama routes to Ollama without cloud leakage', async () => {
+// Test 5: Selecting legacy 'ollama' safely maps to 'gemini'
+await runTest('5. Selecting legacy ollama safely maps to gemini', async () => {
   const model = resolveModelForProviderSwitch('ollama', null);
-  assert.equal(model, 'qwen2.5:1.5b');
+  assert.equal(model, 'gemini-3.8-flash');
   const opt = PROVIDER_OPTIONS.find((p) => p.id === 'ollama');
-  assert.ok(opt);
-  assert.equal(opt.defaultModel, 'qwen2.5:1.5b');
+  assert.equal(opt, undefined, 'Ollama must not appear in PROVIDER_OPTIONS');
 });
 
 // Test 6: Selecting WebLLM routes strictly to on-device WebLLM service
@@ -168,15 +167,6 @@ await runTest('10. Switching to OpenRouter preserves dynamic router openrouter/f
   assert.equal(vendorRes, 'meta-llama/llama-3.3-70b-instruct:free');
 });
 
-// Test 11: Switching to Ollama preserves namespaced tags and strips foreign models
-await runTest('11. Switching to Ollama preserves namespaced tags and strips foreign models', async () => {
-  const validTag = resolveModelForProviderSwitch('ollama', 'library/qwen2.5:1.5b');
-  assert.equal(validTag, 'library/qwen2.5:1.5b');
-
-  const stripped = resolveModelForProviderSwitch('ollama', '@cf/meta/llama-3.1-8b-instruct');
-  assert.equal(stripped, 'qwen2.5:1.5b');
-});
-
 // Test 12: Switching to WebLLM preserves exact supported MLC identifier and rejects arbitrary foreign models
 await runTest('12. Switching to WebLLM preserves exact supported MLC identifier and rejects arbitrary foreign models', async () => {
   const validMlc = resolveModelForProviderSwitch('webllm', 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC');
@@ -192,7 +182,7 @@ await runTest('13. resolveModelForProviderSwitch returns provider default when i
   assert.equal(resolveModelForProviderSwitch('groq', undefined), 'openai/gpt-oss-120b');
   assert.equal(resolveModelForProviderSwitch('openrouter', ''), 'openrouter/free');
   assert.equal(resolveModelForProviderSwitch('cloudflare', '   '), '@cf/meta/llama-3.1-8b-instruct');
-  assert.equal(resolveModelForProviderSwitch('ollama', null), 'qwen2.5:1.5b');
+  assert.equal(resolveModelForProviderSwitch('ollama', null), 'gemini-3.8-flash');
   assert.equal(resolveModelForProviderSwitch('webllm', undefined), 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC');
 });
 
@@ -599,17 +589,6 @@ await runTest('27. Fallback is disabled when canFallback: false on canonical err
   const noFallbackErr = normalizeAIError({ code: 400, message: 'Invalid argument', canFallback: false }, { provider: 'gemini' });
   assert.equal(noFallbackErr.canFallback, false);
   assert.equal(isFallbackEligible(noFallbackErr), false);
-});
-
-// Test 28: Ollama failure never triggers fallback to cloud providers (canFallback: false)
-await runTest('28. Ollama failure never triggers fallback to cloud providers (canFallback: false)', async () => {
-  const ollamaErr = normalizeAIError({ code: 503, message: 'Unable to connect to Ollama', canFallback: true }, { provider: 'ollama' });
-  assert.equal(ollamaErr.provider, 'ollama');
-  assert.equal(ollamaErr.canFallback, false, 'Ollama local privacy boundary requires canFallback === false');
-  assert.equal(isFallbackEligible(ollamaErr), false);
-
-  const chain = getDeterministicFallbackChain('ollama');
-  assert.deepEqual(chain, [], 'Ollama fallback chain must strictly be empty');
 });
 
 // Test 29: WebLLM failure never triggers fallback to cloud providers (canFallback: false)
@@ -1267,18 +1246,8 @@ await runTest('52. Fallback errors do not leak raw private user prompts or reque
   assert.ok(!norm.message.includes(privatePrompt));
 });
 
-// Test 53: Local Ollama / WebLLM privacy boundary is enforced even if raw error claims canFallback: true
-await runTest('53. Local Ollama / WebLLM privacy boundary is enforced even if raw error claims canFallback: true', async () => {
-  const rawOllama = {
-    code: 503,
-    status: 'UNAVAILABLE',
-    message: 'Local Ollama connection failed',
-    canFallback: true // Adversarial or faulty raw hint
-  };
-
-  const norm = normalizeAIError(rawOllama, { provider: 'ollama' });
-  assert.equal(norm.canFallback, false, 'Local privacy invariant strictly forces canFallback to false');
-  assert.equal(isFallbackEligible(norm), false);
+// Test 53: Local WebLLM privacy boundary is enforced even if raw error claims canFallback: true
+await runTest('53. Local WebLLM privacy boundary is enforced even if raw error claims canFallback: true', async () => {
 
   const rawWebLLM = {
     code: 400,

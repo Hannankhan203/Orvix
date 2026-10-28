@@ -35,9 +35,6 @@ function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID
       WEBLLM_MODEL_CATALOG[webllmModelId]?.shortLabel || 'Qwen 2.5 1.5B';
     return `Orvix is powered by Browser AI (WebLLM) (${modelLabel}). On-device WebGPU inference — verify important facts independently.`;
   }
-  if (providerId === 'ollama') {
-    return 'Orvix is powered by Local AI (Ollama) (qwen2.5:1.5b). Local offline inference — verify important facts independently.';
-  }
   if (providerId === 'groq') {
     return 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.';
   }

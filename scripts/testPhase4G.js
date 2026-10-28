@@ -1241,7 +1241,7 @@ await runTest('40. WebLLM failures do not silently transfer prompts to cloud pro
 await runTest('41. Unconfigured fallback providers are excluded', async () => {
   const { getConfiguredFallbackProviders } = await import('../server.ts');
   const fallbacks = getConfiguredFallbackProviders('webllm');
-  // Ollama and WebLLM are local; cloud providers require configured keys
+  // WebLLM is local; cloud providers require configured keys
   assert.ok(Array.isArray(fallbacks));
   assert.ok(!fallbacks.includes('webllm'), 'Excludes the current provider');
 });
@@ -1296,7 +1296,7 @@ await runTest('45. Existing request-isolation and shared-provider behavior remai
   assert.strictEqual(isSupportedProvider('groq'), true);
   assert.strictEqual(isSupportedProvider('openrouter'), true);
   assert.strictEqual(isSupportedProvider('cloudflare'), true);
-  assert.strictEqual(isSupportedProvider('ollama'), true);
+  assert.strictEqual(isSupportedProvider('ollama'), false);
   assert.strictEqual(isSupportedProvider('webllm'), true);
 });
 

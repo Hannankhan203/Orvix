@@ -97,7 +97,7 @@ await runTest('2. Unknown errors become a safe structured error', async () => {
 
 // Test 3: Provider attribution is preserved when known.
 await runTest('3. Provider attribution is preserved when known', async () => {
-  const providers = ['gemini', 'groq', 'openrouter', 'cloudflare', 'ollama', 'webllm'];
+  const providers = ['gemini', 'groq', 'openrouter', 'cloudflare', 'webllm'];
   for (const prov of providers) {
     const normFromCtx = normalizeAIError('Some failure', { provider: prov });
     assert.equal(normFromCtx.provider, prov);
@@ -259,12 +259,12 @@ await runTest('14. Invalid request parameters are classified correctly', async (
 
 // Test 15: Connection refusal is distinguished from a timeout.
 await runTest('15. Connection refusal is distinguished from a timeout', async () => {
-  const connRefused = normalizeAIError('connect ECONNREFUSED 127.0.0.1:11434', { provider: 'ollama' });
+  const connRefused = normalizeAIError('connect ECONNREFUSED api.groq.com:443', { provider: 'groq' });
   assert.equal(connRefused.code, STANDARD_ERROR_CODES.CONNECTION_REFUSED);
   assert.equal(connRefused.category, ERROR_CATEGORIES.CONNECTIVITY_AND_TRANSPORT);
   assert.strictEqual(connRefused.timeout, false);
 
-  const timedOut = normalizeAIError('Request timed out after 30000ms', { provider: 'ollama', isTimeout: true });
+  const timedOut = normalizeAIError('Request timed out after 30000ms', { provider: 'groq', isTimeout: true });
   assert.equal(timedOut.code, STANDARD_ERROR_CODES.DEADLINE_EXCEEDED);
   assert.equal(timedOut.category, ERROR_CATEGORIES.TIMEOUTS_AND_RESOURCE_LIMITS);
   assert.strictEqual(timedOut.timeout, true);
@@ -413,32 +413,6 @@ await runTest('26. Cloudflare account, authentication, and model errors are dist
   }, { provider: 'cloudflare' });
   assert.equal(cfModel.code, STANDARD_ERROR_CODES.MODEL_NOT_FOUND);
   assert.equal(cfModel.httpStatus, 404);
-});
-
-// Test 27: Ollama connection failures are not mistaken for missing models.
-await runTest('27. Ollama connection failures are not mistaken for missing models', async () => {
-  const ollamaConn = normalizeAIError({
-    code: 503,
-    status: 'NETWORK_FAILURE',
-    message: 'fetch failed (ECONNREFUSED)'
-  }, { provider: 'ollama' });
-  assert.equal(ollamaConn.code, STANDARD_ERROR_CODES.CONNECTION_REFUSED);
-  assert.equal(ollamaConn.httpStatus, 503);
-  assert.ok(ollamaConn.message.includes('ollama serve'));
-  assert.notEqual(ollamaConn.code, STANDARD_ERROR_CODES.MODEL_NOT_FOUND);
-});
-
-// Test 28: Ollama model-not-found errors are classified correctly.
-await runTest('28. Ollama model-not-found errors are classified correctly', async () => {
-  const ollamaModelNotFound = normalizeAIError({
-    code: 404,
-    status: 'NOT_FOUND',
-    message: 'model "qwen2.5:1.5b" not found, try pulling it first'
-  }, { provider: 'ollama' });
-  assert.equal(ollamaModelNotFound.code, STANDARD_ERROR_CODES.MODEL_NOT_FOUND);
-  assert.equal(ollamaModelNotFound.httpStatus, 404);
-  assert.ok(ollamaModelNotFound.message.includes('ollama pull'));
-  assert.strictEqual(ollamaModelNotFound.canFallback, false);
 });
 
 // Test 29: WebLLM missing-WebGPU errors are classified correctly.
@@ -668,20 +642,6 @@ await runTest('44. Error messages do not expose raw private prompts or request b
   assert.ok(sanitized.includes('[USER_PROMPT]'));
 });
 
-// Test 45: Ollama privacy restrictions survive normalization.
-await runTest('45. Ollama privacy restrictions survive normalization', async () => {
-  const testErrors = [
-    { code: 503, status: 'UNAVAILABLE' },
-    { code: 404, status: 'NOT_FOUND' },
-    { code: 504, status: 'DEADLINE_EXCEEDED' },
-    { code: 500, status: 'INTERNAL', canFallback: true }
-  ];
-  for (const err of testErrors) {
-    const norm = normalizeAIError(err, { provider: 'ollama' });
-    assert.strictEqual(norm.canFallback, false, `Ollama must never have canFallback: true (${norm.code})`);
-  }
-});
-
 // Test 46: WebLLM privacy restrictions survive normalization.
 await runTest('46. WebLLM privacy restrictions survive normalization', async () => {
   const testErrors = [
@@ -698,16 +658,13 @@ await runTest('46. WebLLM privacy restrictions survive normalization', async () 
 // Test 47: Unconfigured providers are not incorrectly marked as available fallbacks.
 await runTest('47. Unconfigured providers are not incorrectly marked as available fallbacks', async () => {
   const candidates = getConfiguredFallbackProviders('gemini');
-  // Ollama and WebLLM are local, but unconfigured cloud providers with dummy keys must be excluded
+  // WebLLM is local, but unconfigured cloud providers with dummy keys must be excluded
   assert.ok(Array.isArray(candidates));
   assert.ok(!candidates.includes('gemini'));
 });
 
 // Test 48: User-facing messages provide accurate guidance for known failures.
 await runTest('48. User-facing messages provide accurate guidance for known failures', async () => {
-  const ollamaErr = normalizeAIError({ code: 503, message: 'fetch failed' }, { provider: 'ollama' });
-  assert.ok(ollamaErr.message.includes('ollama serve'));
-
   const webGpuErr = normalizeAIError(new WebLLMError('No WebGPU', { code: WEBLLM_ERROR_CODES.WEBGPU_UNSUPPORTED }), { provider: 'webllm' });
   assert.ok(webGpuErr.message.includes('WebGPU'));
 

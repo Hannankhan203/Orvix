@@ -985,8 +985,8 @@ await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB a
 // ---------------------------------------------------------------------------
 // Phase 2B.3 — Test 11: Text-only providers do NOT trigger IndexedDB hydration or upload raw image bytes
 // ---------------------------------------------------------------------------
-await test('Phase 2B.3 — Groq, OpenRouter, Cloudflare, Ollama, and WebLLM skip IndexedDB hydration and never upload raw image bytes', async () => {
-  const textOnlyProviders = ['groq', 'openrouter', 'cloudflare', 'ollama', 'webllm'];
+await test('Phase 2B.3 — Groq, OpenRouter, Cloudflare, and WebLLM skip IndexedDB hydration and never upload raw image bytes', async () => {
+  const textOnlyProviders = ['groq', 'openrouter', 'cloudflare', 'webllm'];
 
   const idbImageId = 'att-2b3-textonly-idb';
   await saveAttachmentBlob(idbImageId, new Blob([VALID_1X1_PNG_BYTES], { type: 'image/png' }), {
@@ -1090,7 +1090,7 @@ await test('Phase 2B.3 — Groq, OpenRouter, Cloudflare, Ollama, and WebLLM skip
     assert.strictEqual(prepared[2].extraction.status, 'NO_TEXT_DETECTED');
   }
 
-  // Verify streamAIMessage outgoing /api/chat network payloads for Groq, OpenRouter, Cloudflare, and Ollama
+  // Verify streamAIMessage outgoing /api/chat network payloads for Groq, OpenRouter, and Cloudflare
   // strip base64/dataUrl even if caller passed pre-encoded image strings, while preserving OCR text
   const originalFetch = globalThis.fetch;
   const capturedByProvider = new Map();
@@ -1113,7 +1113,7 @@ await test('Phase 2B.3 — Groq, OpenRouter, Cloudflare, Ollama, and WebLLM skip
 
   try {
     const preEncodedSecret = VALID_1X1_PNG_BYTES.toString('base64');
-    for (const netProv of ['groq', 'openrouter', 'cloudflare', 'ollama']) {
+    for (const netProv of ['groq', 'openrouter', 'cloudflare']) {
       const res = await streamAIMessage({
         provider: netProv,
         prompt: 'What is the sprint goal?',
@@ -1230,8 +1230,8 @@ await test('Phase 2B.3 — Text-only providers receive OCR text on live /api/cha
     assert.strictEqual(cfData.provider, 'cloudflare');
   }
 
-  // Verify Cloudflare, WebLLM & Ollama context adaptation retain full OCR text without raw image bytes
-  for (const textOnlyProv of ['cloudflare', 'ollama', 'webllm']) {
+  // Verify Cloudflare & WebLLM context adaptation retain full OCR text without raw image bytes
+  for (const textOnlyProv of ['cloudflare', 'webllm']) {
     const docEntry = {
       ...cfAttachments[0].extraction,
       id: switchId,

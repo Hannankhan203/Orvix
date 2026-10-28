@@ -69,20 +69,6 @@ function getCloudflareApiBaseUrl(): string {
   return customBase || 'https://api.cloudflare.com/client/v4';
 }
 
-export function getOllamaApiBaseUrl(): string {
-  let customBase = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').trim();
-  customBase = customBase.replace(/^["']+|["']+$/g, '').trim();
-  customBase = customBase.replace(/[\r\n]/g, '').trim();
-  if (!/^https?:\/\//i.test(customBase)) {
-    customBase = `http://${customBase}`;
-  }
-  customBase = customBase.replace(/\/v1\/chat\/completions\/?$/i, '');
-  customBase = customBase.replace(/\/(?:v1|api)(?:\/chat)?\/?$/i, '');
-  customBase = customBase.replace(/\/+$/, '');
-  customBase = customBase.replace(/^(https?:\/\/)localhost(:\d+)?/i, '$1127.0.0.1$2');
-  return customBase || 'http://127.0.0.1:11434';
-}
-
 export interface DocumentData {
   fileId?: string;
   id?: string;
@@ -351,15 +337,12 @@ export function getServerProviderConfigStatus(serverlessRuntime = false) {
   const openrouterConfigured = isConfiguredCredential(openrouterKey);
   const cloudflareConfigured =
     isConfiguredCredential(cfAccountId) && isConfiguredCredential(cfToken);
-  const ollamaSupported = !serverlessRuntime;
 
   return {
     geminiConfigured,
     groqConfigured,
     openrouterConfigured,
     cloudflareConfigured,
-    ollamaConfigured: ollamaSupported,
-    ollamaSupported,
     webllmSupported: true,
     demoModeEnabled: isDemoModeEnabled(),
     whisperConfigured: groqConfigured || geminiConfigured,
@@ -374,7 +357,6 @@ export function getConfiguredFallbackProviders(excludeProvider: string, serverle
   if (status.groqConfigured) candidates.push('groq');
   if (status.openrouterConfigured) candidates.push('openrouter');
   if (status.cloudflareConfigured) candidates.push('cloudflare');
-  if (status.ollamaSupported) candidates.push('ollama');
   if (status.webllmSupported) candidates.push('webllm');
 
   return candidates.filter((p) => p !== excludeProvider);
@@ -718,20 +700,7 @@ export function parseGeminiError(err: any, provider = 'gemini'): {
     lowerCause.includes('econnrefused') ||
     lowerMsg.includes('network error');
 
-  const isOllamaProvider = provider.toLowerCase() === 'ollama';
-
   if (isNetworkFailure) {
-    if (isOllamaProvider) {
-      return {
-        statusCode: 503,
-        status: 'NETWORK_FAILURE',
-        category: 'provider network failure',
-        isUnavailable: true,
-        isRetryable: false,
-        message: 'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running locally ("ollama serve") and model "qwen2.5:1.5b" is available.',
-        retryAfterSeconds
-      };
-    }
     const detail = causeCode || (lowerMsg.includes('fetch failed') ? 'connection failed' : 'network unreachable');
     return {
       statusCode: 503,
@@ -754,17 +723,6 @@ export function parseGeminiError(err: any, provider = 'gemini'): {
     lowerMsg.includes('service unavailable') ||
     lowerMsg.includes('temporarily unavailable')
   ) {
-    if (isOllamaProvider) {
-      return {
-        statusCode: 503,
-        status: 'UNAVAILABLE',
-        category: 'provider API error',
-        isUnavailable: true,
-        isRetryable: false,
-        message: 'Local AI (Ollama) at http://127.0.0.1:11434 is currently unavailable. Please verify that Ollama is running locally ("ollama serve").',
-        retryAfterSeconds
-      };
-    }
     return {
       statusCode: 503,
       status: 'UNAVAILABLE',
@@ -2926,8 +2884,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     res.once('close', () => upstreamGuard.cleanup());
 
     // Validate target server provider & incoming model identifier before context preparation or dispatch
-    const normalizedProvider = String(provider || 'gemini').trim().toLowerCase();
-    const SERVER_SUPPORTED_PROVIDERS = new Set(['gemini', 'groq', 'openrouter', 'cloudflare', 'ollama']);
+    let normalizedProvider = String(provider || 'gemini').trim().toLowerCase();
+    // Safe legacy fallback: if client or old session sent 'ollama', gracefully route to 'gemini'
+    if (normalizedProvider === 'ollama') {
+      normalizedProvider = 'gemini';
+    }
+    const SERVER_SUPPORTED_PROVIDERS = new Set(['gemini', 'groq', 'openrouter', 'cloudflare']);
     if (!SERVER_SUPPORTED_PROVIDERS.has(normalizedProvider)) {
       upstreamGuard.cleanup();
       const errMessage =
@@ -3042,9 +3004,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             const fullDiskPath = path.join(UPLOAD_DIR, record.diskFilename);
             const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
             if (inputSource) {
-              const isOfflineChat =
-                Boolean(req.body?.offline) ||
-                String(req.body?.provider || '').toLowerCase() === 'ollama';
+              const isOfflineChat = Boolean(req.body?.offline);
               const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
 
               if (isImg) {
@@ -6075,702 +6035,6 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
-    // 5. Local AI (Ollama) Provider
-    if (normalizedProvider === 'ollama') {
-      const ollamaBaseUrl = getOllamaApiBaseUrl();
-      const rawConfiguredUrl = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || '').trim();
-      const isNativeEndpoint =
-        /\/api\/chat\/?$/i.test(rawConfiguredUrl) || process.env.OLLAMA_API_TYPE === 'native';
-      const ollamaEndpoint = isNativeEndpoint
-        ? `${ollamaBaseUrl}/api/chat`
-        : `${ollamaBaseUrl}/v1/chat/completions`;
-
-      let selectedModel = validatedClientModel || PROVIDER_DEFAULT_MODELS.ollama;
-      if (validatedClientModel && validatedClientModel.toLowerCase() === 'qwen') {
-        selectedModel = PROVIDER_DEFAULT_MODELS.ollama;
-      }
-
-      // Verify Vercel serverless / cloud execution environment isolation
-      const isLocalhostTarget = /^(https?:\/\/)?(127\.0\.0\.1|localhost)(:\d+)?/i.test(ollamaBaseUrl);
-      if (isServerless && isLocalhostTarget) {
-        const serverlessMsg =
-          "Local AI (Ollama) requires running Orvix locally on your computer. When hosted on Vercel, serverless cloud functions cannot reach localhost (http://127.0.0.1:11434) on your device. Please clone and run Orvix locally using 'npm run dev'.";
-        logAIDiagnostic({
-          category: 'provider configuration error',
-          provider: 'ollama',
-          model: selectedModel,
-          phase: 'validation',
-          upstreamStatus: 503,
-          sanitizedMessage: serverlessMsg
-        });
-
-        if (res.headersSent) {
-          sendSSE(res, {
-            type: 'error',
-            error: serverlessMsg,
-            code: 503,
-            status: 'UNAVAILABLE',
-            provider: 'ollama',
-            retryable: false,
-            canFallback: false
-          });
-          if (!res.writableEnded) res.end();
-        } else {
-          return res.status(503).json({
-            error: serverlessMsg,
-            code: 503,
-            status: 'UNAVAILABLE',
-            provider: 'ollama',
-            model: selectedModel,
-            retryable: false,
-            canFallback: false
-          });
-        }
-        return;
-      }
-
-      const messages = formatOpenAIMessages({
-        systemInstruction: effectiveSystemInstruction,
-        history,
-        prompt: effectivePrompt
-      });
-
-      if (!shouldStream) {
-        try {
-          const reqBody = isNativeEndpoint
-            ? JSON.stringify({
-                model: selectedModel,
-                messages,
-                stream: false,
-                options: { temperature: 0.7 }
-              })
-            : JSON.stringify({
-                model: selectedModel,
-                messages,
-                temperature: 0.7,
-                stream: false
-              });
-
-          const ollamaRes = await upstreamGuard.fetchUpstream(
-            ollamaEndpoint,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: reqBody
-            },
-            { provider: 'ollama' }
-          );
-
-          if (!ollamaRes.ok) {
-            const errText = await ollamaRes.text().catch(() => '');
-            let friendlyError: string;
-            const isMissingModel =
-              ollamaRes.status === 404 ||
-              errText.toLowerCase().includes('not found') ||
-              errText.toLowerCase().includes('model');
-            const isContextLength =
-              errText.toLowerCase().includes('context_length_exceeded') ||
-              errText.toLowerCase().includes('context window') ||
-              errText.toLowerCase().includes('exceeds context length');
-
-            if (isMissingModel) {
-              friendlyError = `The requested Ollama model '${selectedModel}' was not found. Please install it in your terminal using: ollama pull ${selectedModel}`;
-            } else if (isContextLength) {
-              friendlyError = `The attached document or conversation exceeds the context window for model '${selectedModel}'. Please ask about specific sections or reduce input size.`;
-            } else {
-              friendlyError = `Ollama returned HTTP ${ollamaRes.status}: ${errText.slice(0, 200) || ollamaRes.statusText}`;
-            }
-
-            const statusCode = ollamaRes.status;
-            const statusLabel = isMissingModel
-              ? 'NOT_FOUND'
-              : isContextLength
-              ? 'CONTEXT_LENGTH_EXCEEDED'
-              : statusCode === 400
-              ? 'INVALID_REQUEST'
-              : 'INTERNAL';
-
-            const isRetryable = statusCode >= 500 && statusCode !== 503;
-
-            logAIDiagnostic({
-              category: 'provider API error',
-              provider: 'ollama',
-              model: selectedModel,
-              phase: 'non-streaming',
-              upstreamStatus: statusCode,
-              sanitizedMessage: friendlyError
-            });
-
-            return res.status(statusCode).json({
-              error: friendlyError,
-              code: statusCode,
-              status: statusLabel,
-              errorCode: statusLabel,
-              provider: 'ollama',
-              model: selectedModel,
-              retryable: isRetryable,
-              canFallback: false
-            });
-          }
-
-          const data: any = await ollamaRes.json();
-          if (upstreamGuard.isClientClosed()) return;
-          let finalText =
-            data?.choices?.[0]?.message?.content ??
-            data?.message?.content ??
-            data?.response ??
-            '';
-
-          if (!finalText.trim()) {
-            logAIDiagnostic({
-              category: 'provider API error',
-              provider: 'ollama',
-              model: selectedModel,
-              phase: 'non-streaming',
-              upstreamStatus: 502,
-              upstreamErrorCode: 'EMPTY_UPSTREAM_RESPONSE',
-              sanitizedMessage: 'Local AI (Ollama) returned an empty response.'
-            });
-            return res.status(502).json({
-              error: 'Local AI (Ollama) returned an empty response.',
-              code: 502,
-              status: 'EMPTY_UPSTREAM_RESPONSE',
-              errorCode: 'EMPTY_UPSTREAM_RESPONSE',
-              provider: 'ollama',
-              model: selectedModel,
-              retryable: false,
-              canFallback: false
-            });
-          }
-
-          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
-            finalText += CONTINUATION_NOTICES.PART_1;
-          }
-
-          return res.json({
-            text: finalText,
-            modelUsed: data.model || selectedModel,
-            provider: 'ollama'
-          });
-        } catch (fetchErr: any) {
-          if (upstreamGuard.isClientDisconnected(fetchErr)) return;
-
-          if (upstreamGuard.isUpstreamTimeout(fetchErr)) {
-            logAIDiagnostic({
-              category: 'provider timeout',
-              provider: 'ollama',
-              model: selectedModel,
-              phase: 'non-streaming',
-              upstreamStatus: 504,
-              upstreamErrorCode: 'DEADLINE_EXCEEDED',
-              sanitizedMessage: fetchErr.message
-            });
-            return res.status(504).json({
-              error: fetchErr.message,
-              code: 504,
-              status: 'DEADLINE_EXCEEDED',
-              provider: 'ollama',
-              model: selectedModel,
-              retryable: false,
-              canFallback: false
-            });
-          }
-
-          const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
-          const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
-          const isConnRefused =
-            causeCode === 'ECONNREFUSED' ||
-            causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
-            causeCode === 'ENOTFOUND' ||
-            causeCode === 'ECONNRESET' ||
-            rawMsg.includes('econnrefused') ||
-            rawMsg.includes('fetch failed') ||
-            rawMsg.includes('failed to fetch') ||
-            rawMsg.includes('connect');
-
-          let friendlyError: string;
-          if (isConnRefused) {
-            friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}. Please ensure Ollama is running ('ollama serve') on your computer and that model '${selectedModel}' is available ('ollama list').`;
-          } else {
-            friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}. Please ensure Ollama is running ('ollama serve').`;
-          }
-
-          logAIDiagnostic({
-            category: 'provider network failure',
-            provider: 'ollama',
-            model: selectedModel,
-            phase: 'non-streaming',
-            upstreamStatus: 503,
-            sanitizedMessage: friendlyError
-          });
-
-          return res.status(503).json({
-            error: friendlyError,
-            code: 503,
-            status: 'NETWORK_FAILURE',
-            provider: 'ollama',
-            model: selectedModel,
-            retryable: false,
-            canFallback: false
-          });
-        }
-      } else {
-        // Streaming via Ollama OpenAI-compatible SSE or native NDJSON
-        let ollamaRes: Response | null = null;
-        let isStreamMode = true;
-
-        const streamBody = isNativeEndpoint
-          ? JSON.stringify({
-              model: selectedModel,
-              messages,
-              stream: true,
-              options: { temperature: 0.7 }
-            })
-          : JSON.stringify({
-              model: selectedModel,
-              messages,
-              temperature: 0.7,
-              stream: true
-            });
-
-        try {
-          ollamaRes = await upstreamGuard.fetchUpstream(
-            ollamaEndpoint,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: streamBody
-            },
-            { provider: 'ollama' }
-          );
-        } catch (fetchErr: any) {
-          if (upstreamGuard.isClientDisconnected(fetchErr)) {
-            return;
-          }
-          if (upstreamGuard.isUpstreamTimeout(fetchErr)) {
-            logAIDiagnostic({
-              category: 'provider timeout',
-              provider: 'ollama',
-              model: selectedModel,
-              phase: 'pre-stream',
-              upstreamStatus: 504,
-              upstreamErrorCode: 'DEADLINE_EXCEEDED',
-              sanitizedMessage: fetchErr.message
-            });
-            return res.status(504).json({
-              error: fetchErr.message,
-              code: 504,
-              status: 'DEADLINE_EXCEEDED',
-              provider: 'ollama',
-              model: selectedModel,
-              retryable: false,
-              canFallback: false
-            });
-          }
-
-          // Only attempt non-streaming fallback if initial stream connection did NOT time out, disconnect, or fail connection
-          const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
-          const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
-          const isConnRefused =
-            causeCode === 'ECONNREFUSED' ||
-            causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
-            causeCode === 'ENOTFOUND' ||
-            causeCode === 'ECONNRESET' ||
-            rawMsg.includes('econnrefused') ||
-            rawMsg.includes('fetch failed') ||
-            rawMsg.includes('failed to fetch') ||
-            rawMsg.includes('connect');
-
-          if (!isConnRefused) {
-            try {
-              const nonStreamFallbackBody = isNativeEndpoint
-                ? JSON.stringify({
-                    model: selectedModel,
-                    messages,
-                    stream: false,
-                    options: { temperature: 0.7 }
-                  })
-                : JSON.stringify({
-                    model: selectedModel,
-                    messages,
-                    temperature: 0.7,
-                    stream: false
-                  });
-
-              const fallbackRes = await upstreamGuard.fetchUpstream(
-                ollamaEndpoint,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json'
-                  },
-                  body: nonStreamFallbackBody
-                },
-                { provider: 'ollama' }
-              );
-              if (fallbackRes.ok) {
-                ollamaRes = fallbackRes;
-                isStreamMode = false;
-              }
-            } catch (_) {}
-          }
-
-          if (!ollamaRes) {
-            if (upstreamGuard.isClientClosed()) return;
-
-            let friendlyError: string;
-            if (isConnRefused) {
-              friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}. Please ensure Ollama is running ('ollama serve') on your computer and that model '${selectedModel}' is available ('ollama list').`;
-            } else {
-              friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}. Please ensure Ollama is running ('ollama serve').`;
-            }
-
-            logAIDiagnostic({
-              category: 'provider network failure',
-              provider: 'ollama',
-              model: selectedModel,
-              phase: 'pre-stream',
-              upstreamStatus: 503,
-              sanitizedMessage: friendlyError
-            });
-
-            return res.status(503).json({
-              error: friendlyError,
-              code: 503,
-              status: 'NETWORK_FAILURE',
-              provider: 'ollama',
-              model: selectedModel,
-              retryable: false,
-              canFallback: false
-            });
-          }
-        }
-
-        if (!ollamaRes.ok) {
-          const errText = await ollamaRes.text().catch(() => '');
-          let friendlyError: string;
-          const isMissingModel =
-            ollamaRes.status === 404 ||
-            errText.toLowerCase().includes('not found') ||
-            errText.toLowerCase().includes('model');
-          const isContextLength =
-            errText.toLowerCase().includes('context_length_exceeded') ||
-            errText.toLowerCase().includes('context window') ||
-            errText.toLowerCase().includes('exceeds context length');
-
-          if (isMissingModel) {
-            friendlyError = `The requested Ollama model '${selectedModel}' was not found. Please install it in your terminal using: ollama pull ${selectedModel}`;
-          } else if (isContextLength) {
-            friendlyError = `The attached document or conversation exceeds the context window for model '${selectedModel}'. Please ask about specific sections or reduce input size.`;
-          } else {
-            friendlyError = `Ollama returned HTTP ${ollamaRes.status}: ${errText.slice(0, 200) || ollamaRes.statusText}`;
-          }
-
-          const statusCode = ollamaRes.status;
-          const statusLabel = isMissingModel
-            ? 'NOT_FOUND'
-            : isContextLength
-            ? 'CONTEXT_LENGTH_EXCEEDED'
-            : statusCode === 400
-            ? 'INVALID_REQUEST'
-            : 'INTERNAL';
-
-          const isRetryable = statusCode >= 500 && statusCode !== 503;
-
-          logAIDiagnostic({
-            category: 'provider API error',
-            provider: 'ollama',
-            model: selectedModel,
-            phase: 'pre-stream',
-            upstreamStatus: statusCode,
-            sanitizedMessage: friendlyError
-          });
-
-          return res.status(statusCode).json({
-            error: friendlyError,
-            code: statusCode,
-            status: statusLabel,
-            errorCode: statusLabel,
-            provider: 'ollama',
-            model: selectedModel,
-            retryable: isRetryable,
-            canFallback: false
-          });
-        }
-
-        if (upstreamGuard.isClientClosed()) return;
-        initSSE(res);
-        const stopHeartbeat = startSSEHeartbeat(res);
-        sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'ollama' });
-
-        if (!isStreamMode || !ollamaRes.body) {
-          try {
-            const data: any = await ollamaRes.json();
-            if (upstreamGuard.isClientClosed()) {
-              stopHeartbeat();
-              return;
-            }
-            let finalText =
-              data?.choices?.[0]?.message?.content ??
-              data?.message?.content ??
-              data?.response ??
-              '';
-
-            if (!finalText.trim()) {
-              stopHeartbeat();
-              sendSSE(res, {
-                type: 'error',
-                error: 'Local AI (Ollama) returned an empty response.',
-                code: 502,
-                status: 'EMPTY_UPSTREAM_RESPONSE',
-                errorCode: 'EMPTY_UPSTREAM_RESPONSE',
-                provider: 'ollama',
-                model: selectedModel,
-                retryable: false,
-                canFallback: false
-              });
-              res.end();
-              return;
-            }
-
-            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
-              finalText += CONTINUATION_NOTICES.PART_1;
-            }
-            if (finalText) {
-              sendSSE(res, { type: 'chunk', text: finalText });
-            }
-            stopHeartbeat();
-            sendSSE(res, {
-              type: 'done',
-              text: finalText,
-              modelUsed: data?.model || selectedModel,
-              provider: 'ollama'
-            });
-            res.end();
-            return;
-          } catch (jsonErr: any) {
-            stopHeartbeat();
-            if (upstreamGuard.isClientDisconnected(jsonErr)) return;
-            if (!res.writableEnded) {
-              sendSSE(res, {
-                type: 'error',
-                error: 'Failed to parse response from Local AI (Ollama).',
-                code: 500,
-                status: 'PARSE_ERROR',
-                errorCode: 'PARSE_ERROR',
-                provider: 'ollama',
-                retryable: false,
-                canFallback: false
-              });
-              res.end();
-            }
-            return;
-          }
-        }
-
-        let fullText = '';
-
-        try {
-          const reader = ollamaRes.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let modelUsed = selectedModel;
-          let lastFinishReason: string | null = null;
-          let currentEventType: string | null = null;
-          let terminalEmitted = false;
-          let receivedDone = false;
-
-          const emitStreamError = (errMsg: string, errCode = 500, statusLabel = 'STREAM_FAILED') => {
-            if (terminalEmitted) return;
-            terminalEmitted = true;
-            stopHeartbeat();
-            logAIDiagnostic({
-              category: 'streaming failure',
-              provider: 'ollama',
-              model: selectedModel,
-              phase: 'mid-stream',
-              sanitizedMessage: errMsg
-            });
-            if (!res.writableEnded) {
-              sendSSE(res, {
-                type: 'error',
-                error: errMsg,
-                code: errCode,
-                status: statusLabel,
-                errorCode: statusLabel,
-                provider: 'ollama',
-                model: selectedModel,
-                retryable: false,
-                canFallback: false,
-                partial: fullText.length > 0,
-                partialText: fullText
-              });
-              res.end();
-            }
-          };
-
-          const processOllamaLine = (rawLine: string): boolean => {
-            const trimmed = rawLine.trim();
-            if (!trimmed) {
-              currentEventType = null;
-              return false;
-            }
-            if (trimmed.startsWith(':')) return false; // SSE heartbeat comment
-
-            if (trimmed.startsWith('event:')) {
-              currentEventType = trimmed.slice(6).trim().toLowerCase();
-              return false;
-            }
-
-            let dataStr = trimmed;
-            let isSseData = false;
-            if (trimmed.startsWith('data:')) {
-              dataStr = trimmed.slice(5).trim();
-              isSseData = true;
-            }
-
-            if (dataStr === '[DONE]') {
-              receivedDone = true;
-              return false;
-            }
-
-            const lineEvt = currentEventType;
-            currentEventType = null;
-
-            if (lineEvt === 'error') {
-              emitStreamError(dataStr || 'Ollama reported a streaming error.', 500, 'STREAM_FAILED');
-              return true;
-            }
-
-            // Must be a valid JSON record (either native NDJSON or SSE payload)
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed && typeof parsed === 'object' && parsed.error) {
-                const errDetail = typeof parsed.error === 'string'
-                  ? parsed.error
-                  : parsed.error?.message || 'Error reported by Local AI (Ollama)';
-                emitStreamError(errDetail, 500, 'STREAM_FAILED');
-                return true;
-              }
-
-              if (parsed.model) modelUsed = parsed.model;
-              if (parsed.done === true) receivedDone = true;
-
-              const finishReason = parsed?.choices?.[0]?.finish_reason ?? parsed?.done_reason;
-              if (finishReason) {
-                lastFinishReason = finishReason;
-                if (finishReason === 'stop' || finishReason === 'length') {
-                  receivedDone = true;
-                }
-              }
-
-              const delta = parsed?.choices?.[0]?.delta?.content ?? (parsed?.message?.content || parsed?.response);
-              if (typeof delta === 'string' && delta.length > 0) {
-                fullText += delta;
-                sendSSE(res, { type: 'chunk', text: delta });
-              }
-              return false;
-            } catch (err: any) {
-              // If it started with data: or { and is not valid JSON, treat as a malformed record
-              if (isSseData || trimmed.startsWith('{')) {
-                emitStreamError('Malformed response record received from Local AI (Ollama).', 500, 'PARSE_ERROR');
-                return true;
-              }
-              return false;
-            }
-          };
-
-          while (true) {
-            if (upstreamGuard.isClientClosed() || res.writableEnded) {
-              try { await reader.cancel(); } catch (_) {}
-              break;
-            }
-            const { done, value } = await reader.read();
-            if (upstreamGuard.isClientClosed() || res.writableEnded) {
-              try { await reader.cancel(); } catch (_) {}
-              break;
-            }
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              const halted = processOllamaLine(line);
-              if (halted) return;
-            }
-          }
-
-          const finalBytes = decoder.decode();
-          if (finalBytes) buffer += finalBytes;
-          if (!terminalEmitted && !upstreamGuard.isClientClosed() && buffer && buffer.trim()) {
-            const remainingLines = buffer.split('\n');
-            for (const rLine of remainingLines) {
-              const halted = processOllamaLine(rLine);
-              if (halted) return;
-            }
-          }
-
-          stopHeartbeat();
-          if (terminalEmitted || upstreamGuard.isClientClosed() || res.writableEnded) return;
-
-          // Enforce empty stream detection
-          if (!fullText.trim()) {
-            emitStreamError('Local AI (Ollama) stream completed without returning any response text.', 502, 'EMPTY_STREAM_RESPONSE');
-            return;
-          }
-
-          // If stream closed prematurely without completion marker and without output
-          if (!receivedDone && fullText.length === 0) {
-            emitStreamError('Local AI (Ollama) stream closed prematurely without returning a response.', 503, 'PREMATURE_TERMINATION');
-            return;
-          }
-
-          terminalEmitted = true;
-          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
-            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
-            fullText += CONTINUATION_NOTICES.PART_1;
-          }
-          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'ollama' });
-          res.end();
-          return;
-        } catch (streamErr: any) {
-          stopHeartbeat();
-          if (upstreamGuard.isClientDisconnected(streamErr)) {
-            return;
-          }
-          logAIDiagnostic({
-            category: 'streaming failure',
-            provider: 'ollama',
-            model: selectedModel,
-            phase: 'mid-stream',
-            sanitizedMessage: streamErr?.message || 'Ollama stream read interrupted'
-          });
-          if (!res.writableEnded) {
-            sendSSE(res, {
-              type: 'error',
-              error: 'Ollama streaming connection interrupted. Please ensure the local Ollama daemon remains running.',
-              code: 503,
-              status: 'STREAM_FAILED',
-              errorCode: 'STREAM_FAILED',
-              provider: 'ollama',
-              model: selectedModel,
-              retryable: false,
-              canFallback: false,
-              partial: fullText.length > 0,
-              partialText: fullText
-            });
-            res.end();
-          }
-          return;
-        }
-      }
-    }
-
     if (provider.toLowerCase() === 'webllm') {
       logAIDiagnostic({
         category: 'request validation error',
@@ -6799,7 +6063,6 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     }
     console.error('API Error in /api/chat:', sanitizeErrorLog(error?.message || String(error)));
     const providerName = String(req.body?.provider || 'unknown');
-    const isOllamaReq = providerName.toLowerCase() === 'ollama';
     const parsed = parseGeminiError(error, providerName);
     logAIDiagnostic({
       category: parsed.category || 'internal server error',
@@ -6818,9 +6081,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           code: parsed.statusCode,
           status: parsed.status,
           provider: providerName,
-          retryable: isOllamaReq ? false : parsed.isRetryable,
-          canFallback: !isOllamaReq,
-          suggestedProviders: isOllamaReq ? [] : getConfiguredFallbackProviders(providerName, isServerless)
+          retryable: parsed.isRetryable,
+          canFallback: parsed.isUnavailable ? true : false,
+          suggestedProviders: getConfiguredFallbackProviders(providerName, isServerless)
         });
         res.end();
       }
@@ -6830,9 +6093,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         code: parsed.statusCode,
         status: parsed.status,
         provider: providerName,
-        retryable: isOllamaReq ? false : parsed.isRetryable,
-        canFallback: !isOllamaReq,
-        suggestedProviders: isOllamaReq ? [] : getConfiguredFallbackProviders(providerName, isServerless)
+        retryable: parsed.isRetryable,
+        canFallback: parsed.isUnavailable ? true : false,
+        suggestedProviders: getConfiguredFallbackProviders(providerName, isServerless)
       });
     }
   }

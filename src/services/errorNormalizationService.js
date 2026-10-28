@@ -1,13 +1,12 @@
 /**
  * Orvix Global Error Classification & Normalization Service
  * Phase 4H — Unified error contract, deterministic precedence, sensitive data sanitization,
- * and strict local privacy invariants across all six AI providers:
+ * and strict local privacy invariants across all five AI providers:
  * 1. Gemini
  * 2. Groq
  * 3. OpenRouter
  * 4. Cloudflare
- * 5. Ollama
- * 6. WebLLM
+ * 5. WebLLM
  */
 
 import { normalizeProviderId } from './providerModelSanitizer.js';
@@ -173,11 +172,10 @@ export class CanonicalAIError extends Error {
     this.partialText = typeof options.partialText === 'string' ? options.partialText : '';
 
     // CRITICAL PRIVACY, CANCELLATION & PARTIAL INVARIANTS:
-    // 1. Ollama and WebLLM local providers MUST NEVER have canFallback: true
+    // 1. WebLLM local provider MUST NEVER have canFallback: true
     // 2. Cancelled or aborted requests MUST strictly have canFallback: false and retryable: false
     // 3. Partial streamed output MUST strictly have canFallback: false and retryable: false
     if (
-      this.provider === 'ollama' ||
       this.provider === 'webllm' ||
       this.cancelled ||
       this.partial ||
@@ -388,9 +386,8 @@ export function normalizeAIError(rawError, context = {}) {
     parsedData?.error?.provider ||
     '';
   const provider = normalizeProviderId(rawProviderCandidate) || 'gemini';
-  const isOllama = provider === 'ollama';
   const isWebLLM = provider === 'webllm';
-  const isLocalProvider = isOllama || isWebLLM;
+  const isLocalProvider = isWebLLM;
 
   // Resolve model
   const model =
@@ -498,12 +495,7 @@ export function normalizeAIError(rawError, context = {}) {
     retryable = !isLocalProvider && !partial;
     canFallback = !isLocalProvider;
 
-    if (isOllama) {
-      userMessage =
-        'Local AI (Ollama) timed out while waiting for a response. Verify Ollama is responsive at http://127.0.0.1:11434.';
-      retryable = false;
-      canFallback = false;
-    } else if (isWebLLM) {
+    if (isWebLLM) {
       userMessage = 'Browser AI (WebLLM) timed out during local model execution.';
       retryable = false;
       canFallback = false;
@@ -697,17 +689,10 @@ export function normalizeAIError(rawError, context = {}) {
     retryable = false;
     canFallback = !isLocalProvider;
 
-    if (isOllama) {
-      code = STANDARD_ERROR_CODES.MODEL_NOT_FOUND;
-      canFallback = false;
-      userMessage =
-        'The requested Ollama model was not found. Please ensure it is installed locally using "ollama pull qwen2.5:1.5b".';
-    } else {
-      userMessage =
-        cleanMsg && !cleanMsg.includes('Server request failed') && cleanMsg !== 'Not Found'
-          ? cleanMsg
-          : 'The requested AI model was not found or is no longer available. Please select another provider or model.';
-    }
+    userMessage =
+      cleanMsg && !cleanMsg.includes('Server request failed') && cleanMsg !== 'Not Found'
+        ? cleanMsg
+        : 'The requested AI model was not found or is no longer available. Please select another provider or model.';
   }
   // 6. PAYLOAD / ATTACHMENT BUDGET LIMITS
   else if (
@@ -778,27 +763,7 @@ export function normalizeAIError(rawError, context = {}) {
     userMessage =
       'AI rate limit or quota exceeded. Please wait a moment before trying again.';
   }
-  // 10. LOCAL OLLAMA CONNECTION FAILURES
-  else if (
-    isOllama &&
-    (httpStatus === 503 ||
-      upperStatus === 'NETWORK_FAILURE' ||
-      upperStatus === 'NETWORK_ERROR' ||
-      upperStatus === 'CONNECTION_REFUSED' ||
-      lowerMsg.includes('econnrefused') ||
-      lowerMsg.includes('failed to fetch') ||
-      lowerMsg.includes('fetch failed') ||
-      lowerMsg.includes('11434'))
-  ) {
-    code = STANDARD_ERROR_CODES.CONNECTION_REFUSED;
-    category = ERROR_CATEGORIES.CONNECTIVITY_AND_TRANSPORT;
-    httpStatus = 503;
-    retryable = false;
-    canFallback = false; // Strictly non-fallback for local provider
-    userMessage =
-      'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running ("ollama serve") and model "qwen2.5:1.5b" is installed.';
-  }
-  // 11. GENERAL NETWORK & TRANSPORT FAILURES
+  // 10. GENERAL NETWORK & TRANSPORT FAILURES
   else if (
     upperStatus === 'NETWORK_FAILURE' ||
     upperStatus === 'NETWORK_ERROR' ||
@@ -949,7 +914,7 @@ export function normalizeAIError(rawError, context = {}) {
     canFallback = false;
   }
 
-  // ENFORCE PRIVACY INVARIANT: Ollama and WebLLM must strictly have canFallback: false
+  // ENFORCE PRIVACY INVARIANT: WebLLM must strictly have canFallback: false
   if (isLocalProvider) {
     canFallback = false;
   }

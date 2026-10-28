@@ -3,7 +3,7 @@
  * Runs Qwen 2.5 Instruct models directly on the visitor's GPU via WebGPU inside a dedicated Web Worker.
  *
  * Key architectural guarantees (verified against @mlc-ai/web-llm@0.2.86):
- * 1. Strictly local browser inference — never routes requests to /api/chat, Ollama, Firebase, or cloud APIs.
+ * 1. Strictly local browser inference — never routes requests to /api/chat, Firebase, or cloud APIs.
  * 2. Strictly lazy runtime loading — @mlc-ai/web-llm and the dedicated worker are dynamically loaded ONLY
  *    when Browser AI cache inspection or initialization is explicitly invoked.
  * 3. Non-blocking UI — tokenization, WASM execution, model weight loading, and WebGPU prefill/decode

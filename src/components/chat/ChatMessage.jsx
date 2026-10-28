@@ -63,7 +63,6 @@ function getErrorTitle(content = '', providerId = '', errorCode = '') {
   const text = String(content || '').toLowerCase();
   const normalizedCode = String(errorCode || '').toUpperCase();
   const normalizedProvider = String(providerId || '').toLowerCase();
-  const isOllama = normalizedProvider === 'ollama';
   const isWebLLM = normalizedProvider === 'webllm';
 
   if (
@@ -84,12 +83,6 @@ function getErrorTitle(content = '', providerId = '', errorCode = '') {
     text.includes('timed out')
   ) {
     return 'Provider Request Timed Out';
-  }
-  if ((isOllama || text.includes('ollama')) && (text.includes('not found') || text.includes('pull'))) {
-    return 'Local Model Not Found';
-  }
-  if (isOllama || text.includes('ollama') || text.includes('11434')) {
-    return 'Local AI Unavailable';
   }
   if (isWebLLM || text.includes('webgpu') || text.includes('browser ai')) {
     if (text.includes('webgpu') || text.includes('adapter') || text.includes('secure context') || text.includes('shader-f16')) {
@@ -965,7 +958,6 @@ function ChatMessage({
                 )}
                 {onSwitchProvider &&
                   message.canSwitchProvider !== false &&
-                  currentProviderId !== 'ollama' &&
                   currentProviderId !== 'webllm' &&
                   fallbackProviders.map((p) => (
                     <Button

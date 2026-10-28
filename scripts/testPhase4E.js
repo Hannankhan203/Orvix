@@ -477,7 +477,7 @@ async function main() {
     // =========================================================================
     // 3. Cross-provider model IDs are rejected
     // =========================================================================
-    await runTest('3. Cross-provider model IDs (Gemini, Cloudflare, Ollama, WebLLM, Whisper audio) are rejected for OpenRouter', async () => {
+    await runTest('3. Cross-provider model IDs (Gemini, Cloudflare, WebLLM, Whisper audio) are rejected for OpenRouter', async () => {
       const foreignModels = [
         'gemini-2.5-flash',
         'models/gemini-2.5-flash',
@@ -2170,9 +2170,9 @@ async function main() {
     });
 
     // =========================================================================
-    // CF-30. Switching from Gemini/Groq/OpenRouter/Ollama/WebLLM to Cloudflare uses a valid Cloudflare model
+    // CF-30. Switching from Gemini/Groq/OpenRouter/WebLLM to Cloudflare uses a valid Cloudflare model
     // =========================================================================
-    await runTest('CF-30. Switching from Gemini/Groq/OpenRouter/Ollama/WebLLM to Cloudflare sanitizes foreign models and uses default @cf/meta/llama-3.1-8b-instruct', async () => {
+    await runTest('CF-30. Switching from Gemini/Groq/OpenRouter/WebLLM to Cloudflare sanitizes foreign models and uses default @cf/meta/llama-3.1-8b-instruct', async () => {
       const foreignModels = [
         'gemini-2.5-flash',
         'llama-3.3-70b-versatile',
@@ -2202,9 +2202,9 @@ async function main() {
     // =========================================================================
     // CF-31. Switching away from Cloudflare does not leak @cf/... model IDs into other providers
     // =========================================================================
-    await runTest('CF-31. Switching away from Cloudflare strips @cf/... model IDs for Gemini, Groq, OpenRouter, Ollama, and WebLLM', async () => {
+    await runTest('CF-31. Switching away from Cloudflare strips @cf/... model IDs for Gemini, Groq, OpenRouter, and WebLLM', async () => {
       const cfModel = '@cf/meta/llama-3.1-8b-instruct';
-      for (const targetProvider of ['gemini', 'groq', 'openrouter', 'ollama', 'webllm']) {
+      for (const targetProvider of ['gemini', 'groq', 'openrouter', 'webllm']) {
         const compat = checkModelCompatibilityForProvider(targetProvider, cfModel);
         assert.equal(compat.compatible, false, `Expected ${cfModel} to be incompatible with ${targetProvider}`);
         const sanitized = sanitizeModelForProvider(targetProvider, cfModel);

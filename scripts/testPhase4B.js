@@ -203,7 +203,7 @@ async function startEphemeralAppServer(envOverrides = {}) {
 }
 
 /**
- * Starts a lightweight local HTTP server for mocking `/api/chat` or upstream Ollama endpoints.
+ * Starts a lightweight local HTTP server for mocking `/api/chat` or upstream provider endpoints.
  */
 async function startLocalMockServer() {
   /** @type {Array<{ url: string, method: string, body: any, headers: Record<string, any> }>} */
@@ -335,7 +335,6 @@ try {
           assert.strictEqual(payload.retryable, false);
           assert.strictEqual(payload.canFallback, true);
           assert.ok(Array.isArray(payload.suggestedProviders));
-          assert.ok(payload.suggestedProviders.includes('ollama'));
           assert.ok(payload.suggestedProviders.includes('webllm'));
           assert.ok(
             !payload.suggestedProviders.includes('groq'),
@@ -423,7 +422,6 @@ try {
         assert.strictEqual(cfg.groqConfigured, false);
         assert.strictEqual(cfg.openrouterConfigured, false, 'Placeholder key must report false');
         assert.strictEqual(cfg.cloudflareConfigured, true);
-        assert.strictEqual(cfg.ollamaSupported, true);
         assert.strictEqual(cfg.webllmSupported, true);
         assert.strictEqual(cfg.demoModeEnabled, false);
 
@@ -452,7 +450,6 @@ try {
           ).map((p) => p.id);
           assert.ok(fallbacksFromGroq.includes('gemini'));
           assert.ok(fallbacksFromGroq.includes('cloudflare'));
-          assert.ok(fallbacksFromGroq.includes('ollama'));
           assert.ok(fallbacksFromGroq.includes('webllm'));
           assert.ok(
             !fallbacksFromGroq.includes('openrouter'),
@@ -519,10 +516,6 @@ try {
       assert.strictEqual(sanitizeModelForProvider('openrouter', 'gemini-2.5-flash'), null);
       assert.strictEqual(sanitizeModelForProvider('openrouter', '@cf/meta/llama-3.1-8b-instruct'), null);
       assert.strictEqual(sanitizeModelForProvider('cloudflare', 'openai/gpt-oss-120b'), null);
-      assert.strictEqual(
-        sanitizeModelForProvider('ollama', 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC'),
-        null
-      );
       assert.strictEqual(sanitizeModelForProvider('webllm', 'qwen2.5:1.5b'), null);
 
       // Valid provider models preserved (and retired Llama 3.3 migrated on Groq)
@@ -539,7 +532,6 @@ try {
         sanitizeModelForProvider('cloudflare', '@cf/meta/llama-3.1-8b-instruct'),
         '@cf/meta/llama-3.1-8b-instruct'
       );
-      assert.strictEqual(sanitizeModelForProvider('ollama', 'qwen2.5:1.5b'), 'qwen2.5:1.5b');
       assert.strictEqual(
         sanitizeModelForProvider('webllm', 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC'),
         'Qwen2.5-1.5B-Instruct-q4f16_1-MLC'
@@ -596,7 +588,6 @@ try {
         { provider: 'groq', model: 'gemini-2.5-flash' },
         { provider: 'openrouter', model: '@cf/meta/llama-3.1-8b-instruct' },
         { provider: 'cloudflare', model: 'openrouter/free' },
-        { provider: 'ollama', model: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC' },
         { provider: 'gemini', model: 'bad model with spaces' }
       ];
 
@@ -645,14 +636,14 @@ await runTest(
   async () => {
     const mockServer = await startLocalMockServer();
     try {
-      // 5A: Stopped local Ollama 503 with retryable: false
+      // 5A: Stopped cloud 503 with retryable: false
       mockServer.setHandler((_req, res) => {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
-            error: 'Local AI (Ollama) is unavailable at http://127.0.0.1:11434.',
+            error: 'Groq service is unavailable.',
             status: 'UNAVAILABLE',
-            provider: 'ollama',
+            provider: 'groq',
             retryable: false,
             canFallback: false
           })
@@ -661,7 +652,7 @@ await runTest(
 
       await withRelativeFetchBase(mockServer.baseUrl, async () => {
         await assert.rejects(
-          () => streamAIMessage({ provider: 'ollama', prompt: 'Hello local' }),
+          () => streamAIMessage({ provider: 'groq', prompt: 'Hello cloud' }),
           (err) => {
             assert.strictEqual(err.code, 503);
             assert.strictEqual(err.retryable, false);
@@ -672,7 +663,7 @@ await runTest(
       assert.strictEqual(
         mockServer.requests.length,
         1,
-        'Stopped Ollama 503 with retryable: false must execute exactly 1 request'
+        'Stopped provider 503 with retryable: false must execute exactly 1 request'
       );
 
       // 5B: Gemini 503 where server already exhausted its internal retry loop
@@ -1020,7 +1011,7 @@ await runTest(
 // 10. Offline guards across all 6 chat actions
 // ---------------------------------------------------------------------------
 await runTest(
-  '10. Offline guards block cloud providers across all 6 chat actions before mutating state while permitting WebLLM & Ollama',
+  '10. Offline guards block cloud providers across all 6 chat actions before mutating state while permitting WebLLM',
   async () => {
     // 10A: Unit verification across all providers online vs offline
     for (const cloudProv of ['gemini', 'groq', 'openrouter', 'cloudflare']) {
@@ -1033,7 +1024,7 @@ await runTest(
       assert.strictEqual(onlineRes.allowed, true);
     }
 
-    for (const localProv of ['webllm', 'ollama']) {
+    for (const localProv of ['webllm']) {
       const offlineLocal = evaluateOfflineProviderGuard({ provider: localProv, isOnline: false });
       assert.strictEqual(offlineLocal.allowed, true);
     }
@@ -1182,7 +1173,7 @@ await runTest(
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(
         `data: ${JSON.stringify({
-          model: 'qwen2.5:1.5b',
+          model: 'openai/gpt-oss-120b',
           choices: [{ delta: { content: 'First token ' } }]
         })}\n\n`
       );
@@ -1194,7 +1185,8 @@ await runTest(
     });
 
     const appServer = await startEphemeralAppServer({
-      OLLAMA_BASE_URL: mockUpstream.baseUrl,
+      ORVIX_GROQ_BASE_URL: mockUpstream.baseUrl,
+      GROQ_API_KEY: 'gsk_mock_test_key_valid_12345',
       ORVIX_UPSTREAM_HEADERS_TIMEOUT_MS: '5000'
     });
 
@@ -1204,7 +1196,8 @@ await runTest(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          provider: 'ollama',
+          provider: 'groq',
+          model: 'openai/gpt-oss-120b',
           stream: true,
           prompt: 'Stream until client disconnects'
         }),
@@ -1230,7 +1223,7 @@ await runTest(
       assert.strictEqual(
         mockUpstream.requests.length,
         1,
-        'Disconnected request must NOT trigger Ollama stream=false fallback request'
+        'Disconnected request must NOT trigger secondary stream=false fallback request'
       );
     } finally {
       await appServer.close();
@@ -1262,21 +1255,21 @@ await runTest(
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(
         `data: ${JSON.stringify({
-          model: 'qwen2.5:1.5b',
+          model: 'openai/gpt-oss-120b',
           choices: [{ delta: { content: 'Chunk A ' } }]
         })}\n\n`
       );
       await sleep(180);
       res.write(
         `data: ${JSON.stringify({
-          model: 'qwen2.5:1.5b',
+          model: 'openai/gpt-oss-120b',
           choices: [{ delta: { content: 'Chunk B ' } }]
         })}\n\n`
       );
       await sleep(180);
       res.write(
         `data: ${JSON.stringify({
-          model: 'qwen2.5:1.5b',
+          model: 'openai/gpt-oss-120b',
           choices: [{ delta: { content: 'Chunk C' } }]
         })}\n\n`
       );
@@ -1285,7 +1278,8 @@ await runTest(
     });
 
     const appServer = await startEphemeralAppServer({
-      OLLAMA_BASE_URL: mockUpstream.baseUrl,
+      ORVIX_GROQ_BASE_URL: mockUpstream.baseUrl,
+      GROQ_API_KEY: 'gsk_mock_test_key_valid_12345',
       ORVIX_UPSTREAM_HEADERS_TIMEOUT_MS: '250'
     });
 
@@ -1295,7 +1289,8 @@ await runTest(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          provider: 'ollama',
+          provider: 'groq',
+          model: 'openai/gpt-oss-120b',
           stream: true,
           prompt: 'Trigger header timeout'
         })
@@ -1304,13 +1299,13 @@ await runTest(
       assert.strictEqual(stallRes.status, 504, `Expected HTTP 504, got ${stallRes.status}`);
       const stallData = await stallRes.json();
       assert.strictEqual(stallData.status, 'DEADLINE_EXCEEDED');
-      assert.strictEqual(stallData.retryable, false, 'Ollama header timeout sets retryable=false');
+      assert.strictEqual(stallData.retryable, true, 'Upstream header timeout sets retryable=true');
       await sleep(80);
       assert.strictEqual(stalledReqClosed, true, 'Timed-out upstream socket must be aborted');
       assert.strictEqual(
         mockUpstream.requests.length,
         1,
-        'Header timeout must not trigger secondary non-streaming Ollama request'
+        'Header timeout must not trigger secondary non-streaming request'
       );
 
       // 12B: Active SSE stream (~360ms total > 250ms header timeout) completes cleanly once headers arrive
@@ -1318,7 +1313,8 @@ await runTest(
       mockUpstream.reset();
       const streamResult = await withRelativeFetchBase(appServer.baseUrl, () =>
         streamAIMessage({
-          provider: 'ollama',
+          provider: 'groq',
+          model: 'openai/gpt-oss-120b',
           prompt: 'Long active stream after fast headers'
         })
       );

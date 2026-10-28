@@ -162,7 +162,6 @@ runTest('1. Documented Gemini model validation and verified default model select
     { provider: 'groq', model: 'gemini-3.8-flash' },
     { provider: 'openrouter', model: 'gemini-3.8-flash' },
     { provider: 'cloudflare', model: 'gemini-3.8-flash' },
-    { provider: 'ollama', model: 'gemini-3.8-flash' },
     { provider: 'webllm', model: 'gemini-3.8-flash' }
   ];
   for (const { provider, model } of crossProviderModels) {

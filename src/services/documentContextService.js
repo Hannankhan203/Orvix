@@ -242,7 +242,7 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
 /**
  * Determines whether a given provider and model have visual / multimodal capabilities.
  * Google Gemini natively accepts image bytes / parts in Orvix.
- * Other configured providers (Groq, OpenRouter, Cloudflare, Ollama, WebLLM) are text-only.
+ * Other configured providers (Groq, OpenRouter, Cloudflare, WebLLM) are text-only.
  * @param {string} provider
  * @param {string} [model]
  * @returns {boolean}
@@ -1051,16 +1051,6 @@ export const PROVIDER_PROFILES = {
     messageFormat: 'cloudflare',
     notes: 'Serverless Llama 3.1 8B inference with 8k token context window'
   },
-  ollama: {
-    id: 'ollama',
-    name: 'Local AI (Ollama)',
-    modelTag: 'qwen2.5:1.5b',
-    maxDocChars: 16_000,
-    supportsSystemInstruction: true,
-    supportsVision: false,
-    messageFormat: 'openai',
-    notes: 'Local offline Ollama instance with Qwen 2.5 1.5B'
-  },
   webllm: {
     id: 'webllm',
     name: 'Browser AI (WebLLM)',
@@ -1130,10 +1120,10 @@ export function adaptDocumentContextForProvider({
     finalDocContext = `${providerNotice}\n\n${headPortion}${tailSummary}`;
   }
 
-  // For Local AI (Ollama) and Browser AI (WebLLM), place extracted document and image OCR content directly in the user prompt.
+  // For Browser AI (WebLLM), place extracted document and image OCR content directly in the user prompt.
   // Small local models (like Qwen 2.5) heavily attend to user turn content, avoiding hallucinations
   // or claiming that no text/file/image was provided.
-  if (normProvider === 'ollama' || normProvider === 'webllm') {
+  if (normProvider === 'webllm') {
     const isAutoAttachmentPrompt = /^\[User attached \d+ files?:/.test((prompt || '').trim());
     const userQuestionText = isAutoAttachmentPrompt
       ? `${prompt}\nRead the extracted text above and clearly summarize or transcribe what is written in the attachment.`

@@ -1,7 +1,7 @@
 /**
  * Orvix AI Provider Router
  * Central dispatch service routing chat requests to the selected provider
- * (Gemini, Groq, OpenRouter, Cloudflare, Ollama, WebLLM).
+ * (Gemini, Groq, OpenRouter, Cloudflare, WebLLM).
  * Normalizes parameters, model identifiers, retry semantics, stream continuation, and error formats.
  */
 
@@ -42,7 +42,6 @@ export const AI_PROVIDERS = {
   GROQ: 'groq',
   OPENROUTER: 'openrouter',
   CLOUDFLARE: 'cloudflare',
-  OLLAMA: 'ollama',
   WEBLLM: 'webllm'
 };
 
@@ -76,15 +75,6 @@ export const PROVIDER_OPTIONS = [
     defaultModel: '@cf/meta/llama-3.1-8b-instruct',
     description: 'Serverless inference',
     label: 'Cloudflare Workers AI — Llama 3.1 8B'
-  },
-  {
-    id: AI_PROVIDERS.OLLAMA,
-    name: 'Local AI (Ollama)',
-    shortName: 'Ollama',
-    modelTag: 'Qwen 2.5 1.5B',
-    defaultModel: 'qwen2.5:1.5b',
-    description: 'Local offline inference',
-    label: 'Local AI (Ollama) — Qwen 2.5 1.5B'
   },
   {
     id: AI_PROVIDERS.WEBLLM,
@@ -206,7 +196,7 @@ export async function fetchProviderConfig({ signal, forceRefresh = false } = {})
 
 /**
  * Checks if a given provider is confirmed configured according to `/api/config` (or local execution).
- * Returns `true` for local providers (`ollama`, `webllm`) and confirmed-configured cloud providers.
+ * Returns `true` for local provider (`webllm`) and confirmed-configured cloud providers.
  * Returns `false` when `/api/config` reports the cloud provider is unconfigured or when config has not loaded.
  * Use `getProviderConfigAvailability()` when UI needs to distinguish `'unconfigured'` from `'unknown'`.
  *
@@ -327,11 +317,6 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
     upperStatus === 'NETWORK_FAILURE' ||
     upperStatus === 'NETWORK_ERROR';
 
-  const isOllamaContext =
-    normalizedHint === AI_PROVIDERS.OLLAMA ||
-    lowerMsg.includes('11434') ||
-    lowerMsg.includes('ollama');
-
   const isWebLLMContext =
     normalizedHint === AI_PROVIDERS.WEBLLM ||
     (isObjectInput && normalizeProviderId(rawError.provider) === AI_PROVIDERS.WEBLLM) ||
@@ -340,41 +325,7 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
     upperStatus.startsWith('WEBLLM_') ||
     upperStatus.startsWith('WEBGPU_');
 
-  // 3. Dedicated Ollama local connection, timeout, & missing model handling
-  if (isOllamaContext) {
-    if (code === 504 || upperStatus === 'DEADLINE_EXCEEDED') {
-      code = 504;
-      status = 'DEADLINE_EXCEEDED';
-      retryable = false;
-      if (!cleanMsg || cleanMsg.includes('Server request failed')) {
-        cleanMsg =
-          'Local AI (Ollama) timed out while waiting for response headers. Verify Ollama is responsive at http://127.0.0.1:11434.';
-      }
-    } else {
-      code = code === 404 ? 404 : code === 400 ? 400 : 503;
-      status = (isObjectInput && rawError.status) ? String(rawError.status) : (code === 404 ? 'NOT_FOUND' : code === 400 ? 'INVALID_ARGUMENT' : 'NETWORK_ERROR');
-      retryable = false;
-      const isGeneric =
-        !cleanMsg ||
-        cleanMsg === 'Service Unavailable' ||
-        cleanMsg === 'Bad Gateway' ||
-        cleanMsg === 'Not Found' ||
-        cleanMsg.includes('Server request failed') ||
-        cleanMsg.includes('Stream connection was closed');
-      if (isGeneric || (!cleanMsg.includes('Unable to connect') && (lowerMsg === 'failed to fetch' || lowerMsg === 'fetch failed'))) {
-        if (code === 404 || (code !== 503 && (lowerMsg.includes('not found') || lowerMsg.includes('model not found')))) {
-          cleanMsg =
-            'The requested Ollama model was not found. Please ensure it is installed locally using "ollama pull qwen2.5:1.5b".';
-        } else if (lowerMsg === 'failed to fetch' || lowerMsg === 'fetch failed') {
-          cleanMsg =
-            'Local AI (Ollama) requires the local Orvix backend server and Ollama daemon. Please verify the local server is running and Ollama is active at http://127.0.0.1:11434.';
-        } else {
-          cleanMsg =
-            'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running ("ollama serve") and model "qwen2.5:1.5b" is installed.';
-        }
-      }
-    }
-  } else if (isNetwork) {
+  if (isNetwork) {
     code = code === 500 ? 503 : code;
     status = 'NETWORK_ERROR';
     retryable = explicitRetryable ?? true;
@@ -504,7 +455,7 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
   err.partialText = typeof rawError?.partialText === 'string' ? rawError.partialText : '';
   if (err.partial || (typeof err.partialText === 'string' && err.partialText.trim().length > 0)) {
     err.retryable = false;
-  } else if (explicitRetryable === false || isOllamaContext) {
+  } else if (explicitRetryable === false) {
     err.retryable = false;
   } else if (typeof explicitRetryable === 'boolean') {
     err.retryable = explicitRetryable;
@@ -512,10 +463,7 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
     err.retryable = Boolean(retryable ?? (code === 502 || code === 503 || code === 504 || code === 429));
   }
 
-  if (isOllamaContext) {
-    err.provider = AI_PROVIDERS.OLLAMA;
-    err.canFallback = false;
-  } else if (isWebLLMContext) {
+  if (isWebLLMContext) {
     err.provider = AI_PROVIDERS.WEBLLM;
     err.canFallback = false;
   } else if (code === 413 || status === 'PAYLOAD_TOO_LARGE') {
@@ -523,22 +471,22 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
     err.canFallback = false;
   } else {
     if (normalizedHint) err.provider = normalizedHint;
-    const defaultCanFallback = !isOllamaContext && !isWebLLMContext && code !== 400 && code !== 413;
+    const defaultCanFallback = !isWebLLMContext && code !== 400 && code !== 413;
     err.canFallback =
       isObjectInput && typeof rawError.canFallback === 'boolean'
         ? rawError.canFallback
         : defaultCanFallback;
   }
   if (isObjectInput && typeof rawError.canFallback === 'boolean') {
-    // Local privacy invariant: Ollama and WebLLM must NEVER have canFallback: true
-    if (!isOllamaContext && !isWebLLMContext) {
+    // Local privacy invariant: WebLLM must NEVER have canFallback: true
+    if (!isWebLLMContext) {
       err.canFallback = rawError.canFallback;
     } else {
       err.canFallback = false;
     }
   }
   // Enforce strict invariants: partial output, cancellation, and local providers can never fallback
-  if (err.partial || err.cancelled || isOllamaContext || isWebLLMContext) {
+  if (err.partial || err.cancelled || isWebLLMContext) {
     err.canFallback = false;
     if (err.partial || err.cancelled) {
       err.retryable = false;
@@ -649,7 +597,7 @@ export async function streamAIMessage(params = {}) {
   }
 
   // Strictly local browser inference: route Browser AI (WebLLM) directly to webllmService.js.
-  // Never send Browser AI requests to /api/chat, Ollama, Firebase, or any cloud provider.
+  // Never send Browser AI requests to /api/chat, Firebase, or any cloud provider.
   if (normalizedProvider === AI_PROVIDERS.WEBLLM) {
     if (model && typeof model === 'string' && model.trim()) {
       const compat = checkModelCompatibilityForProvider('webllm', model.trim());
@@ -771,8 +719,6 @@ export async function streamAIMessage(params = {}) {
         parsedErr.provider = errJson?.provider || errJson?.error?.provider || normalizedProvider;
         if (typeof errJson?.canFallback === 'boolean') {
           parsedErr.canFallback = errJson.canFallback;
-        } else if (normalizedProvider === AI_PROVIDERS.OLLAMA) {
-          parsedErr.canFallback = false;
         }
         if (Array.isArray(errJson?.suggestedProviders)) {
           parsedErr.suggestedProviders = errJson.suggestedProviders;
@@ -1158,7 +1104,7 @@ export { resolveModelForProviderSwitch, getDeterministicFallbackChain };
  * Strict policy:
  * - CANNOT fallback if cancelled, aborted, or superseded.
  * - CANNOT fallback if partial output has already been emitted (prevents duplicate text).
- * - CANNOT fallback if provider is local (Ollama or WebLLM) — strict local privacy boundary.
+ * - CANNOT fallback if provider is local (WebLLM) — strict local privacy boundary.
  * - CANNOT fallback if error is non-fallback (400, 401, 403, 413, invalid model, safety, quota, context length).
  * - CANNOT fallback if canFallback !== true.
  * - MAY fallback on transient 500, 502, 503, 504, timeout, network failure, or retry-exhausted provider outages.
@@ -1194,7 +1140,7 @@ export function isFallbackEligible(error, { signal = null, isRequestActive = nul
 
   // 3. Local provider privacy boundary
   const normProvider = normalizeProviderId(error.provider);
-  if (normProvider === 'ollama' || normProvider === 'webllm') {
+  if (normProvider === 'webllm') {
     return false;
   }
 

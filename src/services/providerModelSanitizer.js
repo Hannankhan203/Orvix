@@ -11,7 +11,6 @@ export const SUPPORTED_PROVIDER_IDS = Object.freeze([
   'groq',
   'openrouter',
   'cloudflare',
-  'ollama',
   'webllm'
 ]);
 
@@ -22,7 +21,7 @@ export const CLOUD_PROVIDER_IDS = Object.freeze([
   'cloudflare'
 ]);
 
-export const LOCAL_PROVIDER_IDS = Object.freeze(['ollama', 'webllm']);
+export const LOCAL_PROVIDER_IDS = Object.freeze(['webllm']);
 
 const CLOUD_PROVIDER_SET = new Set(CLOUD_PROVIDER_IDS);
 const LOCAL_PROVIDER_SET = new Set(LOCAL_PROVIDER_IDS);
@@ -33,7 +32,6 @@ export const PROVIDER_DISPLAY_NAMES = Object.freeze({
   groq: 'Groq',
   openrouter: 'OpenRouter',
   cloudflare: 'Cloudflare Workers AI',
-  ollama: 'Local AI (Ollama)',
   webllm: 'Browser AI (WebLLM)'
 });
 
@@ -135,7 +133,6 @@ export const PROVIDER_DEFAULT_MODELS = Object.freeze({
   groq: 'openai/gpt-oss-120b',
   openrouter: 'openrouter/free',
   cloudflare: '@cf/meta/llama-3.1-8b-instruct',
-  ollama: 'qwen2.5:1.5b',
   webllm: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC'
 });
 
@@ -174,9 +171,6 @@ const KNOWN_UI_DISPLAY_LABELS = new Set([
   'cloudflare workers ai',
   'cloudflare workers ai — llama 3.1 8b',
   'cloudflare workers ai - llama 3.1 8b',
-  'local ai (ollama)',
-  'local ai (ollama) — qwen 2.5 1.5b',
-  'local ai (ollama) - qwen 2.5 1.5b',
   'browser ai (webllm)',
   'browser ai (webllm) — qwen 2.5 1.5b',
   'browser ai (webllm) - qwen 2.5 1.5b',
@@ -194,6 +188,8 @@ const KNOWN_UI_DISPLAY_LABELS = new Set([
 export function normalizeProviderId(provider) {
   if (!provider || typeof provider !== 'string') return 'gemini';
   const trimmed = provider.trim().toLowerCase();
+  // Safe legacy fallback: if user previously selected ollama, gracefully route to gemini
+  if (trimmed === 'ollama') return 'gemini';
   return trimmed || 'gemini';
 }
 
@@ -203,25 +199,28 @@ export function normalizeProviderId(provider) {
  * @returns {boolean}
  */
 export function isCloudProvider(provider) {
-  return CLOUD_PROVIDER_SET.has(normalizeProviderId(provider));
+  if (!provider || typeof provider !== 'string') return false;
+  return CLOUD_PROVIDER_SET.has(provider.trim().toLowerCase());
 }
 
 /**
- * Returns true if the provider executes locally (Ollama daemon or Browser WebLLM).
+ * Returns true if the provider executes locally (Browser WebLLM).
  * @param {string|null|undefined} provider
  * @returns {boolean}
  */
 export function isLocalProvider(provider) {
-  return LOCAL_PROVIDER_SET.has(normalizeProviderId(provider));
+  if (!provider || typeof provider !== 'string') return false;
+  return LOCAL_PROVIDER_SET.has(provider.trim().toLowerCase());
 }
 
 /**
- * Returns true if the provider identifier is one of the 6 supported Orvix providers.
+ * Returns true if the provider identifier is one of the 5 supported Orvix providers.
  * @param {string|null|undefined} provider
  * @returns {boolean}
  */
 export function isSupportedProvider(provider) {
-  return SUPPORTED_PROVIDER_SET.has(normalizeProviderId(provider));
+  if (!provider || typeof provider !== 'string') return false;
+  return SUPPORTED_PROVIDER_SET.has(provider.trim().toLowerCase());
 }
 
 /**
@@ -257,7 +256,7 @@ export function isSyntheticAnalyzerModel(model) {
 
 /**
  * Detects whether a model string is a human-readable UI display label rather than an API ID.
- * Note: No supported upstream provider (Gemini, Groq, OpenRouter, Cloudflare, Ollama, WebLLM)
+ * Note: No supported upstream provider (Gemini, Groq, OpenRouter, Cloudflare, WebLLM)
  * uses whitespace, parentheses, or em-dashes in raw model identifiers.
  * @param {unknown} model
  * @returns {boolean}
@@ -276,7 +275,7 @@ export function isDisplayOnlyModelLabel(model) {
 
 /**
  * Checks whether a clean, single-token model ID is structurally valid for a specific provider.
- * Rejects cross-provider model leakage (e.g., `@cf/...` sent to Gemini, `qwen2.5:1.5b` sent to Groq,
+ * Rejects cross-provider model leakage (e.g., `@cf/...` sent to Gemini,
  * `Qwen2.5-...-MLC` sent to OpenRouter, `gemini-2.5-flash` sent to Cloudflare).
  *
  * @param {string} provider
@@ -341,7 +340,7 @@ export function checkModelCompatibilityForProvider(provider, candidateModel) {
         };
       }
       // Reject foreign provider formats: Cloudflare (@cf/@hf), OpenRouter (openrouter/* or :free/:variant),
-      // Ollama tags (:), Gemini (gemini-*/models/*), WebLLM (*-MLC)
+      // Gemini (gemini-*/models/*), WebLLM (*-MLC)
       if (
         lower.startsWith('@cf/') ||
         lower.startsWith('@hf/') ||
@@ -426,40 +425,8 @@ export function checkModelCompatibilityForProvider(provider, candidateModel) {
       };
     }
 
-    case 'ollama': {
-      // Reject cross-provider model IDs (Cloudflare, Gemini, OpenRouter, WebLLM, Groq chat & Whisper transcription)
-      if (
-        lower.startsWith('@') ||
-        lower.startsWith('gemini-') ||
-        lower.startsWith('models/') ||
-        lower.startsWith('openrouter/') ||
-        lower.endsWith('-mlc') ||
-        GROQ_TRANSCRIPTION_MODEL_SET.has(lower) ||
-        lower.startsWith('whisper-') ||
-        lower.startsWith('distil-whisper') ||
-        GROQ_CHAT_MODELS.includes(lower) ||
-        RETIRED_GROQ_MODEL_SET.has(lower)
-      ) {
-        return {
-          compatible: false,
-          normalizedModel: null,
-          reason: `Model "${trimmed}" belongs to another provider and is not valid for Local AI (Ollama).`
-        };
-      }
-      // Valid Ollama model format: standard tag (`qwen2.5:1.5b`, `llama3.2:latest`, `deepseek-r1:8b`)
-      // or namespaced model tag (`library/llama3.2:1b`, `user/custom-model:latest`)
-      if (/^(?:[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/i.test(trimmed)) {
-        return { compatible: true, normalizedModel: trimmed };
-      }
-      return {
-        compatible: false,
-        normalizedModel: null,
-        reason: `Model "${trimmed}" is not a valid Local AI (Ollama) model tag.`
-      };
-    }
-
     case 'webllm': {
-      // Reject cross-provider model IDs (Gemini, Groq chat & Whisper transcription, OpenRouter, Cloudflare, Ollama tags)
+      // Reject cross-provider model IDs (Gemini, Groq chat & Whisper transcription, OpenRouter, Cloudflare)
       if (
         lower.startsWith('@') ||
         lower.startsWith('gemini-') ||
@@ -680,8 +647,6 @@ export function normalizeProviderConfigPayload(raw) {
     groqConfigured: Boolean(raw.groqConfigured),
     openrouterConfigured: Boolean(raw.openrouterConfigured),
     cloudflareConfigured: Boolean(raw.cloudflareConfigured),
-    ollamaConfigured: raw.ollamaConfigured !== undefined ? Boolean(raw.ollamaConfigured) : true,
-    ollamaSupported: raw.ollamaSupported !== undefined ? Boolean(raw.ollamaSupported) : true,
     webllmSupported: raw.webllmSupported !== undefined ? Boolean(raw.webllmSupported) : true,
     demoModeEnabled: Boolean(raw.demoModeEnabled),
     whisperConfigured: Boolean(raw.whisperConfigured),
@@ -715,13 +680,6 @@ export function getProviderConfigAvailability(provider, providerConfig) {
       state: 'local',
       configured: data.webllmSupported !== false
     };
-  }
-
-  if (norm === 'ollama') {
-    if (data.ollamaSupported === false) {
-      return { state: 'unavailable', configured: false };
-    }
-    return { state: 'local', configured: true };
   }
 
   if (data.demoModeEnabled) {
@@ -776,7 +734,7 @@ export function filterAvailableFallbackProviders(candidates, failedProvider, pro
  * Evaluates whether an interactive chat action should be blocked immediately because the browser
  * is offline and the target provider requires cloud connectivity.
  *
- * Local providers (`webllm`, `ollama`) are permitted offline; cloud providers (`gemini`, `groq`,
+ * Local provider (`webllm`) is permitted offline; cloud providers (`gemini`, `groq`,
  * `openrouter`, `cloudflare`) are blocked before any loading or message-mutation side effects.
  *
  * @param {Object} params
@@ -805,7 +763,7 @@ export function evaluateOfflineProviderGuard({ provider, isOnline }) {
     code: 'OFFLINE_CLOUD_PROVIDER',
     provider: normProvider,
     providerLabel,
-    message: `You are currently offline. ${providerLabel} requires an internet connection — switch to Browser AI (WebLLM) or Local AI (Ollama) to continue offline, or reconnect and try again.`
+    message: `You are currently offline. ${providerLabel} requires an internet connection — switch to Browser AI (WebLLM) to continue offline, or reconnect and try again.`
   };
 }
 
@@ -861,7 +819,7 @@ export function isProviderCapableOfTask(provider, { requiresVision = false, hasI
  * Computes a deterministic fallback chain starting from a failed provider.
  *
  * Invariants:
- * 1. Strict Local Privacy: Ollama and WebLLM local providers NEVER fallback to cloud.
+ * 1. Strict Local Privacy: WebLLM local provider NEVER fallbacks to cloud.
  * 2. Vision Guard: If vision is required, no text-only provider can serve as fallback.
  * 3. Visited Protection: Providers already attempted in the request are excluded (no cycles).
  * 4. Availability: Unconfigured providers are excluded according to providerConfig availability.
@@ -876,8 +834,8 @@ export function isProviderCapableOfTask(provider, { requiresVision = false, hasI
 export function getDeterministicFallbackChain(currentProvider, { providerConfig = null, requiresVision = false, visited = [] } = {}) {
   const normCurrent = normalizeProviderId(currentProvider);
 
-  // STRICT LOCAL PRIVACY INVARIANT: Ollama and WebLLM local providers MUST NEVER fallback to cloud
-  if (normCurrent === 'ollama' || normCurrent === 'webllm') {
+  // STRICT LOCAL PRIVACY INVARIANT: WebLLM local provider MUST NEVER fallback to cloud
+  if (normCurrent === 'webllm') {
     return [];
   }
 

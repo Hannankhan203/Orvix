@@ -18,7 +18,7 @@ export const isServerlessRuntime = Boolean(
   process.env.SERVERLESS
 );
 
-// Reasonable processing limits: generous locally (when CPU is shared with Ollama), bounded in serverless
+// Reasonable processing limits: generous locally, bounded in serverless
 const OCR_WORKER_TIMEOUT_MS = isServerlessRuntime ? 8000 : 30000;
 const OCR_RECOGNIZE_TIMEOUT_MS = isServerlessRuntime ? 15000 : 60000;
 const VISION_TIMEOUT_MS = 4000; // Fast 4s Gemini Vision limit so offline fallback is immediate
