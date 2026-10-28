@@ -239,9 +239,11 @@ export function resetWebLLMRuntimeForTesting() {
   activeInitPromise = null;
   activeInitModelId = null;
   activeInitAbortReject = null;
+  loadedModelId = null;
   updateEngineState({
     status: 'idle',
     modelId: DEFAULT_WEBLLM_MODEL_ID,
+    loadedModelId: null,
     progress: 0,
     progressPercent: null,
     progressText: '',
@@ -257,6 +259,7 @@ const stateListeners = new Set();
 let engineState = {
   status: 'idle', // 'idle' | 'checking' | 'downloading' | 'loading' | 'ready' | 'generating' | 'error'
   modelId: DEFAULT_WEBLLM_MODEL_ID,
+  loadedModelId: null,
   progress: 0,
   progressPercent: null,
   progressText: '',
@@ -286,7 +289,10 @@ function updateEngineState(patch) {
  * Returns a shallow snapshot of the current Browser AI engine state.
  */
 export function getWebLLMState() {
-  return { ...engineState };
+  return {
+    ...engineState,
+    loadedModelId
+  };
 }
 
 /**
@@ -688,6 +694,7 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
     updateEngineState({
       isCached: false,
       modelId: resolvedId,
+      loadedModelId,
       hasShaderF16: false
     });
     return {
@@ -698,9 +705,20 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
   }
 
   const isCached = await isWebLLMModelCached(resolvedId);
+
+  // If status is 'ready' or 'generating', ensure it matches actual loaded engine in GPU memory
+  let nextStatus = engineState.status;
+  if (engineState.status === 'ready' || engineState.status === 'generating') {
+    if (!loadedModelId || !engineInstance) {
+      nextStatus = 'idle';
+    }
+  }
+
   updateEngineState({
+    status: nextStatus,
     isCached,
     modelId: resolvedId,
+    loadedModelId,
     hasShaderF16: gpuSupport.hasShaderF16
   });
 
@@ -973,6 +991,7 @@ export async function destroyWebLLMEngine() {
 
   updateEngineState({
     status: 'idle',
+    loadedModelId: null,
     progress: 0,
     progressPercent: null,
     progressText: '',
@@ -1229,6 +1248,7 @@ export async function ensureWebLLMEngine(options = {}) {
       updateEngineState({
         status: initialStatus,
         modelId: resolvedModelId,
+        loadedModelId: null,
         progress: 0,
         progressPercent: null,
         progressText: initialText,
@@ -1334,6 +1354,7 @@ export async function ensureWebLLMEngine(options = {}) {
         updateEngineState({
           status: stepStatus,
           modelId: resolvedModelId,
+          loadedModelId: null,
           progress: rawProgress ?? 0,
           progressPercent,
           progressText: text || initialText,
@@ -1391,6 +1412,7 @@ export async function ensureWebLLMEngine(options = {}) {
         terminateWorkerImmediate();
         updateEngineState({
           status: 'error',
+          loadedModelId: null,
           error: 'Browser AI worker stopped unexpectedly (possible GPU memory limit). Next message will reload the engine.'
         });
       };
@@ -1401,6 +1423,7 @@ export async function ensureWebLLMEngine(options = {}) {
       const readyReport = {
         status: 'ready',
         modelId: resolvedModelId,
+        loadedModelId: resolvedModelId,
         progress: 1,
         progressPercent: 100,
         progressText: 'Model ready on device',
@@ -1434,12 +1457,32 @@ export async function ensureWebLLMEngine(options = {}) {
       if (isAbortError(rawErr)) {
         updateEngineState({
           status: 'idle',
+          loadedModelId: null,
           progress: 0,
           progressPercent: null,
           progressText: '',
           error: null
         });
         throw rawErr;
+      }
+
+      const rawMsg = String(rawErr?.message || rawErr || '').toLowerCase();
+      const isShaderF16Err = rawMsg.includes('shaderf16') || rawMsg.includes('shader-f16');
+      if (
+        isShaderF16Err &&
+        allowF32Fallback &&
+        catalogEntry?.f32FallbackModelId &&
+        resolvedModelId !== catalogEntry.f32FallbackModelId
+      ) {
+        console.warn(
+          `[Orvix WebLLM] WebGPU shader-f16 failed for ${resolvedModelId}; automatically falling back to FP32 variant ${catalogEntry.f32FallbackModelId}`
+        );
+        return await ensureWebLLMEngine({
+          modelId: catalogEntry.f32FallbackModelId,
+          allowF32Fallback: false,
+          onProgress,
+          signal
+        });
       }
 
       const normalizedError = normalizeWebLLMError(rawErr, {
@@ -1451,6 +1494,7 @@ export async function ensureWebLLMEngine(options = {}) {
       updateEngineState({
         status: 'error',
         modelId: resolvedModelId,
+        loadedModelId: null,
         progress: 0,
         progressPercent: null,
         progressText: '',

@@ -50,12 +50,17 @@ export default function BrowserAIStatusBar({
 
   const selectedCatalog =
     WEBLLM_MODEL_CATALOG[selectedModelId] || WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID];
-  const activeCatalog = WEBLLM_MODEL_CATALOG[stateModelId] || selectedCatalog;
+  const loadedModelId = webllmState?.loadedModelId || null;
+  const isLoadedInGpu = Boolean(loadedModelId && (status === 'ready' || status === 'generating'));
+  const activeCatalog =
+    (loadedModelId && WEBLLM_MODEL_CATALOG[loadedModelId]) ||
+    WEBLLM_MODEL_CATALOG[stateModelId] ||
+    selectedCatalog;
 
   const loadedMatchesSelected =
-    (status === 'ready' || status === 'generating') &&
-    (stateModelId === selectedModelId ||
-      selectedCatalog?.f32FallbackModelId === stateModelId);
+    isLoadedInGpu &&
+    (loadedModelId === selectedModelId ||
+      selectedCatalog?.f32FallbackModelId === loadedModelId);
 
   const isChecking = status === 'checking' || Boolean(gpuCheck?.checking && status === 'idle');
   const isDownloading = status === 'downloading';
@@ -112,7 +117,7 @@ export default function BrowserAIStatusBar({
     detail = isGenerating
       ? 'Generating response locally via WebGPU (no server or API calls).'
       : 'Running locally in your browser via WebGPU. Cached for repeat use.';
-  } else if (status === 'ready' && !loadedMatchesSelected) {
+  } else if (isLoadedInGpu && !loadedMatchesSelected) {
     tone = isUncachedOffline ? 'warning' : 'neutral';
     statusBadge = isCached
       ? { label: 'Cached', variant: 'ready' }
@@ -120,7 +125,7 @@ export default function BrowserAIStatusBar({
       ? { label: 'Offline • Not Cached', variant: 'warning' }
       : { label: 'Switch Model', variant: 'neutral' };
     headline = `${selectedCatalog.shortLabel} selected`;
-    detail = `${activeCatalog.shortLabel} is currently loaded in GPU memory. Load now or send a message to switch.`;
+    detail = `${activeCatalog.shortLabel} is currently loaded in GPU memory. Click "${isCached ? 'Load Model' : 'Download & Load'}" or send a message to switch.`;
   } else if (isUncachedOffline) {
     tone = 'warning';
     statusBadge = { label: 'Offline • Not Cached', variant: 'warning' };

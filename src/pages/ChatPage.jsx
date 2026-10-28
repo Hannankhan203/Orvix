@@ -326,7 +326,6 @@ export default function ChatPage() {
 
   const handleLoadWebLLMModel = () => {
     if (
-      webllmState.status === 'checking' ||
       webllmState.status === 'downloading' ||
       webllmState.status === 'loading' ||
       webllmState.status === 'generating'
