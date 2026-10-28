@@ -79,11 +79,11 @@ export const PROVIDER_OPTIONS = [
   {
     id: AI_PROVIDERS.WEBLLM,
     name: 'Browser AI (WebLLM)',
-    shortName: 'Browser AI',
+    shortName: 'Browser AI WebLLM',
     modelTag: 'Qwen 2.5 1.5B',
     defaultModel: DEFAULT_WEBLLM_MODEL_ID,
     description: 'On-device WebGPU inference',
-    label: 'Browser AI (WebLLM) — Qwen 2.5 1.5B'
+    label: 'Browser AI WebLLM'
   }
 ];
 

@@ -31,7 +31,9 @@ export default function ModelSelector({
 
   const currentAvailability = getProviderConfigAvailability(currentProvider.id, providerConfig);
   const currentBaseLabel =
-    currentProvider.label || `${currentProvider.name} (${currentProvider.modelTag})`;
+    currentProvider.id === 'webllm'
+      ? 'Browser AI WebLLM'
+      : (currentProvider.label || `${currentProvider.name} (${currentProvider.modelTag})`);
   const selectorTitle =
     currentAvailability.state === 'unconfigured'
       ? `AI Model: ${currentBaseLabel} — Server API key not configured`
@@ -67,9 +69,12 @@ export default function ModelSelector({
           {PROVIDER_OPTIONS.map((provider) => {
             const availability = getProviderConfigAvailability(provider.id, providerConfig);
             const isConfirmedUnconfigured = availability.state === 'unconfigured';
-            const baseText = compact
-              ? (provider.shortName || provider.name)
-              : (provider.label || `${provider.name} (${provider.modelTag})`);
+            const baseText =
+              provider.id === 'webllm'
+                ? 'Browser AI WebLLM'
+                : compact
+                ? (provider.shortName || provider.name)
+                : (provider.label || `${provider.name} (${provider.modelTag})`);
             const suffix = isConfirmedUnconfigured
               ? (compact ? ' (Setup)' : ' — Setup required')
               : '';
