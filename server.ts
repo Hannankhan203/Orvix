@@ -2716,23 +2716,44 @@ Preserve exact words, technical terminology (e.g. Orvix, JavaScript, TypeScript,
 ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
-        const geminiRes = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: [
-            {
-              role: 'user',
-              parts: [
+        const transcriptionCandidates = ['gemini-3.5-transcribe', 'gemini-3.8-flash'];
+        let geminiRes: any = null;
+        let modelUsed = 'gemini-3.5-transcribe';
+        let lastGeminiErr: any = null;
+
+        for (const candidateModel of transcriptionCandidates) {
+          try {
+            geminiRes = await ai.models.generateContent({
+              model: candidateModel,
+              contents: [
                 {
-                  inlineData: {
-                    mimeType: cleanMime,
-                    data: base64Data
-                  }
-                },
-                { text: geminiPrompt }
+                  role: 'user',
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: cleanMime,
+                        data: base64Data
+                      }
+                    },
+                    { text: geminiPrompt }
+                  ]
+                }
               ]
+            });
+            modelUsed = candidateModel;
+            break;
+          } catch (tErr: any) {
+            lastGeminiErr = tErr;
+            const parsed = parseGeminiError(tErr, 'gemini');
+            if (parsed.statusCode !== 404 && !parsed.isRetryable) {
+              break;
             }
-          ]
-        });
+          }
+        }
+
+        if (!geminiRes) {
+          throw lastGeminiErr || new Error('Gemini audio transcription failed');
+        }
 
         const text = (geminiRes?.text || '').trim();
         return res.status(200).json({
@@ -2740,7 +2761,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           text,
           language: isoLang || 'en',
           duration: 0,
-          model: 'gemini-2.5-flash',
+          model: modelUsed,
           provider: 'gemini',
           highAccuracy: true
         });
@@ -2748,7 +2769,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
         logAIDiagnostic({
           category: 'provider API error',
           provider: 'gemini',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.8-flash',
           phase: 'dispatch',
           sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
         });
@@ -3284,7 +3305,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-2.5-flash (demo)';
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.8-flash (demo)';
         if (!shouldStream) {
           return res.json({
             text,
@@ -3340,9 +3361,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       const imageParts: Array<{ mimeType: string; data: string }> = validatedGeminiImageParts;
       const contents = formatGeminiHistory(history, effectivePrompt, 12, imageParts);
       // Attempt sequence: max 3 attempts total (initial attempt + valid fallbacks)
-      // Uses the validated Gemini model if specified, falling back to gemini-flash-latest
-      const requestedGeminiModel = validatedClientModel || 'gemini-2.5-flash';
-      const fallbackCandidates = ['gemini-2.5-flash', 'gemini-flash-latest'];
+      // Uses the validated Gemini model if specified, falling back to gemini-3.1-flash-lite
+      const requestedGeminiModel = validatedClientModel || 'gemini-3.8-flash';
+      const fallbackCandidates = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
       const uniquePlanModels = [requestedGeminiModel];
       for (const cand of fallbackCandidates) {
         if (!uniquePlanModels.includes(cand)) {

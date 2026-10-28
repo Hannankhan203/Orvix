@@ -1007,7 +1007,7 @@ async function main() {
     console.log('\n--- 8. Provider Isolation & Error-Contract Invariants ---');
 
     await runTest('8.1 Non-Groq provider default models, compatibility rules, and Phase 4B error contracts remain intact', () => {
-      assert.equal(PROVIDER_DEFAULT_MODELS.gemini, 'gemini-2.5-flash');
+      assert.equal(PROVIDER_DEFAULT_MODELS.gemini, 'gemini-3.8-flash');
       assert.equal(PROVIDER_DEFAULT_MODELS.openrouter, 'openrouter/free');
       assert.equal(PROVIDER_DEFAULT_MODELS.cloudflare, '@cf/meta/llama-3.1-8b-instruct');
       assert.equal(PROVIDER_DEFAULT_MODELS.ollama, 'qwen2.5:1.5b');

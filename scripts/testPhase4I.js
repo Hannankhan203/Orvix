@@ -85,10 +85,10 @@ console.log('--- Group 1: Provider Switching Semantics (1–6) ---');
 // Test 1: Selecting Gemini routes to Gemini and uses valid Gemini default/model
 await runTest('1. Selecting Gemini routes to Gemini and uses valid Gemini default/model', async () => {
   const model = resolveModelForProviderSwitch('gemini', null);
-  assert.equal(model, 'gemini-2.5-flash');
+  assert.equal(model, 'gemini-3.8-flash');
   const opt = PROVIDER_OPTIONS.find((p) => p.id === 'gemini');
   assert.ok(opt);
-  assert.equal(opt.defaultModel, 'gemini-2.5-flash');
+  assert.equal(opt.defaultModel, 'gemini-3.8-flash');
 });
 
 // Test 2: Selecting Groq routes to Groq and uses valid Groq default/model
@@ -156,7 +156,7 @@ await runTest('8. Switching from Gemini to Groq rejects Gemini model and applies
 // Test 9: Switching from Cloudflare to Gemini strips @cf/... model and applies Gemini default
 await runTest('9. Switching from Cloudflare to Gemini strips @cf/... model and applies Gemini default', async () => {
   const res = resolveModelForProviderSwitch('gemini', '@cf/meta/llama-3.1-8b-instruct', 'cloudflare');
-  assert.equal(res, 'gemini-2.5-flash');
+  assert.equal(res, 'gemini-3.8-flash');
 });
 
 // Test 10: Switching to OpenRouter preserves dynamic router openrouter/free and vendor model
@@ -188,7 +188,7 @@ await runTest('12. Switching to WebLLM preserves exact supported MLC identifier 
 
 // Test 13: resolveModelForProviderSwitch returns provider default when input model is null/undefined/empty
 await runTest('13. resolveModelForProviderSwitch returns provider default when input model is null/undefined/empty', async () => {
-  assert.equal(resolveModelForProviderSwitch('gemini', null), 'gemini-2.5-flash');
+  assert.equal(resolveModelForProviderSwitch('gemini', null), 'gemini-3.8-flash');
   assert.equal(resolveModelForProviderSwitch('groq', undefined), 'openai/gpt-oss-120b');
   assert.equal(resolveModelForProviderSwitch('openrouter', ''), 'openrouter/free');
   assert.equal(resolveModelForProviderSwitch('cloudflare', '   '), '@cf/meta/llama-3.1-8b-instruct');

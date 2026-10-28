@@ -2149,7 +2149,7 @@ export default function ChatPage() {
           ? 'openrouter/free'
           : chosenProvider === 'cloudflare'
           ? '@cf/meta/llama-3.1-8b-instruct'
-          : 'gemini-2.5-flash');
+          : 'gemini-3.8-flash');
     const chosenModel = sanitizeModelForProvider(chosenProvider, rawChosenModel);
 
     const targetAssistantId = assistantMessage.id;

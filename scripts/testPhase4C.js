@@ -104,20 +104,20 @@ runTest('1. Documented Gemini model validation and verified default model select
   // 1a. Default model check
   assert.strictEqual(
     PROVIDER_DEFAULT_MODELS.gemini,
-    'gemini-2.5-flash',
-    'PROVIDER_DEFAULT_MODELS.gemini must be gemini-2.5-flash'
+    'gemini-3.8-flash',
+    'PROVIDER_DEFAULT_MODELS.gemini must be gemini-3.8-flash'
   );
 
   // 1b. PROVIDER_OPTIONS check
   const geminiOption = PROVIDER_OPTIONS.find((p) => p.id === AI_PROVIDERS.GEMINI);
   assert.ok(geminiOption, 'Gemini provider option must exist');
-  assert.strictEqual(geminiOption.defaultModel, 'gemini-2.5-flash');
+  assert.strictEqual(geminiOption.defaultModel, 'gemini-3.8-flash');
 
   // 1c. Document context provider profile check
   assert.strictEqual(
     PROVIDER_PROFILES.gemini.modelTag,
-    'gemini-2.5-flash',
-    'PROVIDER_PROFILES.gemini.modelTag must be gemini-2.5-flash'
+    'gemini-3.8-flash',
+    'PROVIDER_PROFILES.gemini.modelTag must be gemini-3.8-flash'
   );
 
   // 1d. Documented Gemini models are accepted by client sanitizer
@@ -176,10 +176,10 @@ runTest('1. Documented Gemini model validation and verified default model select
   }
 
   // 1h. Verified default model and fallback alignment in services
-  assert.strictEqual(PROVIDER_DEFAULT_MODELS.gemini, 'gemini-2.5-flash');
+  assert.strictEqual(PROVIDER_DEFAULT_MODELS.gemini, 'gemini-3.8-flash');
   const ocrSrc = fs.readFileSync(path.join(ROOT_DIR, 'src/services/imageOcrService.js'), 'utf8');
-  assert.ok(ocrSrc.includes("'gemini-2.5-flash'"), 'imageOcrService.js must use verified gemini-2.5-flash');
-  assert.ok(ocrSrc.includes("'gemini-flash-latest'"), 'imageOcrService.js must include gemini-flash-latest fallback');
+  assert.ok(ocrSrc.includes("'gemini-3.8-flash'"), 'imageOcrService.js must use verified gemini-3.8-flash');
+  assert.ok(ocrSrc.includes("'gemini-3.1-flash-lite'"), 'imageOcrService.js must include gemini-3.1-flash-lite fallback');
 });
 
 // ----------------------------------------------------------------------------
@@ -236,21 +236,19 @@ await runAsyncTest('2. Model-not-found fallback: HTTP 404 on primary model advan
     // Verify fallback plan generation in server logic:
     // When requesting primary model 'gemini-3.8-flash', the plan progresses across distinct models
     const requested38 = 'gemini-3.8-flash';
-    const fallbackCandidates = ['gemini-2.5-flash', 'gemini-flash-latest'];
+    const fallbackCandidates = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
     const uniquePlanModels38 = [requested38];
     for (const cand of fallbackCandidates) {
       if (!uniquePlanModels38.includes(cand)) {
         uniquePlanModels38.push(cand);
       }
     }
-    assert.deepStrictEqual(uniquePlanModels38, ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest']);
+    assert.deepStrictEqual(uniquePlanModels38, ['gemini-3.8-flash', 'gemini-3.1-flash-lite']);
     assert.strictEqual(uniquePlanModels38[0], 'gemini-3.8-flash');
-    assert.strictEqual(uniquePlanModels38[1], 'gemini-2.5-flash');
-    assert.strictEqual(uniquePlanModels38[2], 'gemini-flash-latest');
+    assert.strictEqual(uniquePlanModels38[1], 'gemini-3.1-flash-lite');
     assert.notStrictEqual(uniquePlanModels38[0], uniquePlanModels38[1], 'Failing model must not be repeated');
-    assert.notStrictEqual(uniquePlanModels38[1], uniquePlanModels38[2], 'Fallback models must be distinct');
 
-    // When requesting primary model 'gemini-2.5-flash', the plan has distinct fallbacks
+    // When requesting an unavailable model like 'gemini-2.5-flash', the plan advances to gemini-3.8-flash and gemini-3.1-flash-lite without repetition
     const requested25 = 'gemini-2.5-flash';
     const uniquePlanModels25 = [requested25];
     for (const cand of fallbackCandidates) {
@@ -258,10 +256,12 @@ await runAsyncTest('2. Model-not-found fallback: HTTP 404 on primary model advan
         uniquePlanModels25.push(cand);
       }
     }
-    assert.deepStrictEqual(uniquePlanModels25, ['gemini-2.5-flash', 'gemini-flash-latest']);
+    assert.deepStrictEqual(uniquePlanModels25, ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.1-flash-lite']);
     assert.strictEqual(uniquePlanModels25[0], 'gemini-2.5-flash');
-    assert.strictEqual(uniquePlanModels25[1], 'gemini-flash-latest');
+    assert.strictEqual(uniquePlanModels25[1], 'gemini-3.8-flash');
+    assert.strictEqual(uniquePlanModels25[2], 'gemini-3.1-flash-lite');
     assert.notStrictEqual(uniquePlanModels25[0], uniquePlanModels25[1], 'Failing model must not be repeated');
+    assert.notStrictEqual(uniquePlanModels25[1], uniquePlanModels25[2], 'Fallback models must be distinct');
   } finally {
     mockServer.close();
   }
@@ -477,8 +477,8 @@ runTest('8. Vision & OCR integration: valid Gemini vision models and payload lim
 
   // 8b. OCR service candidate models check: verified production models
   const ocrSrc = fs.readFileSync(path.join(ROOT_DIR, 'src/services/imageOcrService.js'), 'utf8');
-  assert.ok(ocrSrc.includes("'gemini-2.5-flash'"), 'imageOcrService.js must use verified gemini-2.5-flash');
-  assert.ok(ocrSrc.includes("'gemini-flash-latest'"), 'imageOcrService.js must include gemini-flash-latest fallback');
+  assert.ok(ocrSrc.includes("'gemini-3.8-flash'"), 'imageOcrService.js must use verified gemini-3.8-flash');
+  assert.ok(ocrSrc.includes("'gemini-3.1-flash-lite'"), 'imageOcrService.js must include gemini-3.1-flash-lite fallback');
 
   // 8c. Payload limit preservation (3.0 MB max image, 4.2 MB total budget)
   const serverSrc = fs.readFileSync(path.join(ROOT_DIR, 'server.ts'), 'utf8');

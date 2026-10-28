@@ -619,7 +619,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
     const base64Data = imageBuffer.toString('base64');
     const cleanMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
 
-    const candidateModels = ['gemini-2.5-flash', 'gemini-flash-latest'];
+    const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
 
     for (const model of candidateModels) {
       let timer = null;

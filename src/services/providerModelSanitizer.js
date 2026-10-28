@@ -131,7 +131,7 @@ export function validateGroqTranscriptionModel(rawModel) {
 }
 
 export const PROVIDER_DEFAULT_MODELS = Object.freeze({
-  gemini: 'gemini-2.5-flash',
+  gemini: 'gemini-3.8-flash',
   groq: 'openai/gpt-oss-120b',
   openrouter: 'openrouter/free',
   cloudflare: '@cf/meta/llama-3.1-8b-instruct',
