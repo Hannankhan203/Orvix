@@ -1051,7 +1051,7 @@ export async function ensureWebLLMEngine(options = {}) {
 
   // 1. Check WebGPU compatibility before loading the heavy @mlc-ai/web-llm chunk
   updateEngineState({
-    status: engineInstance ? engineState.status : 'checking',
+    status: 'checking',
     error: null
   });
 

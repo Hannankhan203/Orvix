@@ -1366,7 +1366,21 @@ app.get(['/api/health', '/health'], (_req, res) => {
 
 // API Config Check (indicates configured providers without leaking keys or secrets)
 app.get(['/api/config', '/config'], (_req, res) => {
-  res.json(getServerProviderConfigStatus(isServerless));
+  try {
+    return res.json(getServerProviderConfigStatus(isServerless));
+  } catch (err) {
+    console.warn('[Server] Error resolving provider config status:', err);
+    return res.status(200).json({
+      geminiConfigured: false,
+      groqConfigured: false,
+      openrouterConfigured: false,
+      cloudflareConfigured: false,
+      webllmSupported: true,
+      demoModeEnabled: false,
+      whisperConfigured: false,
+      whisperProvider: null
+    });
+  }
 });
 
 /* ==========================================================================
