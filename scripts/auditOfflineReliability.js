@@ -229,8 +229,12 @@ test('Generated production service worker contains required precached chunks and
   assert.ok(/\/health/.test(swContent) || swContent.includes('\\/health'), 'Navigation denylist must exclude /health');
   assert.ok(/\/upload/.test(swContent) || swContent.includes('\\/upload'), 'Navigation denylist must exclude /upload');
 
-  // Verify NetworkOnly routes for external weights & API
-  assert.ok(swContent.includes('NetworkOnly'), 'sw.js must register NetworkOnly for API and weights');
+  // Verify NetworkOnly routes for API & Firestore while bypassing cross-origin model weight CDNs
+  assert.ok(swContent.includes('NetworkOnly'), 'sw.js must register NetworkOnly for API and Firestore routes');
+  assert.ok(
+    !swContent.includes('huggingface\\.co') && !swContent.includes('huggingface.co'),
+    'sw.js must NOT intercept cross-origin huggingface.co model weight streams via Workbox runtimeCaching'
+  );
 
   // Verify essential lazy chunks in precache
   assert.ok(swContent.includes('webllmWorker-'), 'WebLLM dedicated worker must be in precache manifest');
@@ -239,7 +243,6 @@ test('Generated production service worker contains required precached chunks and
 
   // Verify model weights are NOT in precache
   assert.ok(!swContent.includes('resolve/main/params_shard'), 'Model weights must NOT be precached via Workbox');
-  assert.ok(!swContent.includes('huggingface.co/Qwen'), 'Model weights URLs must NOT be in Workbox precache');
 });
 
 // ----------------------------------------------------------------------------

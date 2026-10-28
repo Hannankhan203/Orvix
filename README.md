@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.2.5**
+**Version: v0.2.6**
 
 <p align="center">
   <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring On-Device Browser AI (WebLLM & WebGPU), Offline PWA App-Shell Caching, Client-Side Document Extraction, Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
@@ -1123,7 +1123,13 @@ When troubleshooting streaming completions or intermittent upstream latency on s
 
 Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`). Below is the concise, scannable history of all releases and development milestones.
 
-### v0.2.5 — SmolLM2 135M Browser AI Ultra-Lightweight Model *(Current)*
+### v0.2.6 — SmolLM2 135M Download Pipeline & Service Worker Bypass Fix *(Current)*
+- **Native Browser Network Bypass for Model Shards**: Removed Workbox `runtimeCaching` interception on cross-origin model hosts (`huggingface.co` / `*.hf.co`) so multi-shard binary weight streams and `HTTP 302` redirects to regional storage bridges (`us.aws.cdn.hf.co`) flow directly through the browser network stack without Service Worker `respondWith()` stream buffering.
+- **Bounded CDN Reachability & Byte-Transfer Probe**: Added `probeWebLLMModelCDN()` (`Range: bytes=0-1023`) prior to uncached shard downloads to verify redirect resolution and actual response byte transfer before committing to full weight downloads.
+- **Streaming Byte Progress & Stall Watchdogs**: Added `downloadModelArtifactsToCache()` with real-time `ReadableStream` byte progress (`1%`–`99%`), 2-stream shard concurrency, a 30s per-chunk inactivity watchdog for `HTTP 200 Pending` stalls, and a 90s worker GPU initialization watchdog so Browser AI never remains stuck at `0%` indefinitely.
+- **Corruption-Free Cache & Resumable Retry**: Verifies exact shard byte counts (`nbytes`) before writing to Cache Storage (`webllm/model`, `webllm/config`, `webllm/wasm`) and preserves completed shards so clicking **Retry** resumes remaining shards without duplicate workers or engines.
+
+### v0.2.5 — SmolLM2 135M Browser AI Ultra-Lightweight Model
 - **SmolLM2 135M Integration**: Added the ultra-lightweight `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 compatibility fallback `SmolLM2-135M-Instruct-q0f32-MLC` as an on-device Browser AI model under the existing WebLLM provider.
 - **Qwen 2.5 1.5B Preservation**: Preserved `Qwen 2.5 1.5B Instruct` (`Qwen2.5-1.5B-Instruct-q4f16_1-MLC`) as the default Browser AI model without changing its identifier, quantization, loading, or caching behavior.
 - **5-Provider Invariant**: Maintained exactly five providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI, Browser AI), ensuring SmolLM2 operates strictly as a model inside Browser AI rather than an independent provider.

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
+  SMOLLM2_135M_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   getSupportedWebLLMModels
 } from '../../services/webllmService.js';
@@ -103,10 +104,12 @@ export default function BrowserAIStatusBar({
   } else if (status === 'error') {
     tone = 'error';
     statusBadge = { label: 'Error', variant: 'error' };
-    headline = 'Browser AI failed to initialize';
+    headline = `${activeCatalog.shortLabel} failed to load`;
     detail =
       errorMessage ||
-      'Model download or WebGPU initialization failed. Check storage/GPU memory or try the SmolLM2 135M ultra-lightweight model.';
+      (selectedCatalog.id === SMOLLM2_135M_WEBLLM_MODEL_ID
+        ? 'Model download or WebGPU initialization failed. Check your internet connection and browser storage, then click Retry.'
+        : 'Model download or WebGPU initialization failed. Check storage/GPU memory or try the SmolLM2 135M ultra-lightweight model.');
   } else if (loadedMatchesSelected) {
     tone = 'ready';
     statusBadge = {
@@ -217,7 +220,7 @@ export default function BrowserAIStatusBar({
             <button
               type="button"
               className="browser-ai-action-btn secondary"
-              onClick={onCancelLoad}
+              onClick={() => onCancelLoad()}
               title="Cancel model download or initialization"
             >
               <X size={12} />
@@ -229,12 +232,12 @@ export default function BrowserAIStatusBar({
             <button
               type="button"
               className="browser-ai-action-btn primary"
-              onClick={onLoadModel}
+              onClick={() => onLoadModel()}
               disabled={isUncachedOffline}
               title={
                 isUncachedOffline
                   ? 'Connect to the internet to download model weights'
-                  : 'Retry Browser AI initialization'
+                  : 'Retry Browser AI download and initialization'
               }
             >
               <RotateCcw size={12} />
@@ -246,7 +249,7 @@ export default function BrowserAIStatusBar({
             <button
               type="button"
               className="browser-ai-action-btn primary"
-              onClick={onLoadModel}
+              onClick={() => onLoadModel()}
               disabled={isUncachedOffline}
               title={
                 isUncachedOffline
@@ -265,7 +268,7 @@ export default function BrowserAIStatusBar({
             <button
               type="button"
               className="browser-ai-action-btn ghost"
-              onClick={onUnloadModel}
+              onClick={() => onUnloadModel()}
               title="Unload model from GPU memory (keeps browser cache intact)"
             >
               <Trash2 size={12} />

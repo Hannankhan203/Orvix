@@ -41,11 +41,10 @@ export default defineConfig(() => {
             {
               urlPattern: /^https:\/\/(firestore\.googleapis\.com|identitytoolkit\.googleapis\.com|securetoken\.googleapis\.com)\/.*/i,
               handler: 'NetworkOnly'
-            },
-            {
-              urlPattern: /^https:\/\/(huggingface\.co|cdn\.jsdelivr\.net)\/.*(resolve\/main|weights).*/i,
-              handler: 'NetworkOnly'
             }
+            // Note: Cross-origin model weight hosts (huggingface.co, *.hf.co, raw.githubusercontent.com)
+            // intentionally have NO Workbox route registered so sw.js does not call event.respondWith()
+            // on large multi-shard binary streams or 302 CDN redirects. WebLLM manages its own Cache Storage.
           ]
         },
         devOptions: {
