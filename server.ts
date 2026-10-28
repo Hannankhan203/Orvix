@@ -297,14 +297,26 @@ function logAIDiagnostic(data: DiagnosticLogData) {
   );
 }
 
+// Detect if running in a serverless cloud environment (e.g. Vercel, AWS Lambda)
+// where the application bundle root (/var/task) is strictly read-only (EROFS).
+export const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.LAMBDA_TASK_ROOT ||
+  process.env.SERVERLESS ||
+  (typeof process !== 'undefined' && process.cwd && process.cwd().startsWith('/var/task')) ||
+  (typeof __dirname !== 'undefined' && __dirname.startsWith('/var/task'))
+);
+
 const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = 30_000;
+const SERVERLESS_UPSTREAM_HEADERS_TIMEOUT_MS = 25_000;
 
 export function getUpstreamHeadersTimeoutMs(): number {
   const raw = Number(process.env.ORVIX_UPSTREAM_HEADERS_TIMEOUT_MS);
   if (Number.isFinite(raw) && raw > 0) {
     return Math.floor(raw);
   }
-  return DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
+  return isServerless ? SERVERLESS_UPSTREAM_HEADERS_TIMEOUT_MS : DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
 }
 
 export function isDemoModeEnabled(): boolean {
@@ -1403,16 +1415,6 @@ app.get(['/api/config', '/config'], (_req, res) => {
    Controlled Temporary File Upload & Storage Management Architecture
    ========================================================================== */
 
-// Detect if running in a serverless cloud environment (e.g. Vercel, AWS Lambda)
-// where the application bundle root (/var/task) is strictly read-only (EROFS).
-export const isServerless = Boolean(
-  process.env.VERCEL ||
-  process.env.AWS_LAMBDA_FUNCTION_NAME ||
-  process.env.LAMBDA_TASK_ROOT ||
-  process.env.SERVERLESS ||
-  (typeof process !== 'undefined' && process.cwd && process.cwd().startsWith('/var/task')) ||
-  (typeof __dirname !== 'undefined' && __dirname.startsWith('/var/task'))
-);
 
 /**
  * Resolves the upload directory according to runtime environment:
@@ -3443,7 +3445,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
             const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
             const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
-            const willRetry = (parsed.isRetryable || willAdvanceFallback) && hasMoreAttempts && !upstreamGuard.isClientClosed();
+            const isTimeoutFailure = parsed.statusCode === 504 || parsed.status === 'DEADLINE_EXCEEDED';
+            const willRetry =
+              (parsed.isRetryable || willAdvanceFallback) &&
+              hasMoreAttempts &&
+              !upstreamGuard.isClientClosed() &&
+              !(isServerless && isTimeoutFailure);
 
             logAIDiagnostic({
               category: parsed.category,
@@ -3506,11 +3513,21 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
         });
       } else {
-        // Genuine streaming via ai.models.generateContentStream with delayed header initiation
-        let lastParsedErr = null;
+        // Genuine streaming via ai.models.generateContentStream with early SSE priming
+        initSSE(res);
+        const stopHeartbeat = startSSEHeartbeat(res, 8000);
+        // Prime the stream with an initial keepalive comment so Vercel edge proxy receives HTTP 200 and initial bytes immediately (<10ms)
+        res.write(': prime\n\n');
+        res.flushHeaders?.();
+
+        let lastParsedErr: any = null;
+        let streamedAnyChunk = false;
 
         for (let i = 0; i < attemptPlan.length; i++) {
-          if (upstreamGuard.isClientClosed()) return;
+          if (upstreamGuard.isClientClosed() || res.writableEnded) {
+            stopHeartbeat();
+            return;
+          }
           const { model, attemptNum } = attemptPlan[i];
 
           try {
@@ -3529,10 +3546,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               { provider: 'gemini' }
             );
 
-            if (upstreamGuard.isClientClosed()) return;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+              stopHeartbeat();
+              return;
+            }
 
-            initSSE(res);
-            const stopHeartbeat = startSSEHeartbeat(res);
             sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
 
             const iterator = responseStream[Symbol.asyncIterator]();
@@ -3554,6 +3572,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
                 const chunkText = value?.text;
                 if (chunkText) {
+                  streamedAnyChunk = true;
                   fullText += chunkText;
                   sendSSE(res, { type: 'chunk', text: chunkText });
                 }
@@ -3569,9 +3588,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                     error: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
                     code: 400,
                     status: 'SAFETY_BLOCKED',
+                    category: 'request validation error',
                     provider: 'gemini',
                     model,
                     retryable: false,
+                    canFallback: false,
                     finishReason: 'SAFETY'
                   });
                   res.end();
@@ -3619,10 +3640,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   error: parsedMid.message,
                   code: parsedMid.statusCode,
                   status: parsedMid.status,
+                  category: parsedMid.category,
                   provider: 'gemini',
                   model,
                   retryable: false,
+                  canFallback: !streamedAnyChunk && parsedMid.statusCode !== 400 && parsedMid.statusCode !== 413,
                   partial: fullText.length > 0,
+                  partialText: fullText.length > 0 ? fullText : undefined,
                   ...(parsedMid.status === 'SAFETY_BLOCKED' ? { finishReason: 'SAFETY' } : {})
                 });
                 res.end();
@@ -3631,16 +3655,21 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
           } catch (initialErr: any) {
             if (upstreamGuard.isClientDisconnected(initialErr)) {
+              stopHeartbeat();
               return;
             }
-            // Initial connection failed BEFORE headers were sent!
             const parsed = parseGeminiError(initialErr, 'gemini');
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
 
             const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
             const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
-            const willRetry = (parsed.isRetryable || willAdvanceFallback) && hasMoreAttempts && !upstreamGuard.isClientClosed();
+            const isTimeoutFailure = parsed.statusCode === 504 || parsed.status === 'DEADLINE_EXCEEDED';
+            const willRetry =
+              (parsed.isRetryable || willAdvanceFallback) &&
+              hasMoreAttempts &&
+              !upstreamGuard.isClientClosed() &&
+              !(isServerless && isTimeoutFailure);
 
             logAIDiagnostic({
               category: parsed.category,
@@ -3657,51 +3686,69 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             });
 
             if (!parsed.isRetryable && !willAdvanceFallback) {
-              return res.status(parsed.statusCode).json({
-                error: parsed.message,
-                code: parsed.statusCode,
-                status: parsed.status,
-                provider: 'gemini',
-                model,
-                retryable: false,
-                canFallback: true,
-                suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
-              });
+              stopHeartbeat();
+              if (!res.writableEnded) {
+                sendSSE(res, {
+                  type: 'error',
+                  error: parsed.message,
+                  code: parsed.statusCode,
+                  status: parsed.status,
+                  category: parsed.category,
+                  provider: 'gemini',
+                  model,
+                  retryable: false,
+                  canFallback: parsed.statusCode !== 400 && parsed.statusCode !== 413,
+                  suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
+                });
+                res.end();
+              }
+              return;
             }
 
             if (willRetry) {
               if (willAdvanceFallback) {
-                // Immediately try fallback model without delay
                 continue;
               }
               const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);
               const continueExecution = await sleepWithAbort(delay, () => upstreamGuard.isClientClosed());
-              if (!continueExecution) return;
+              if (!continueExecution) {
+                stopHeartbeat();
+                return;
+              }
               continue;
             }
             break;
           }
         }
 
+        stopHeartbeat();
         if (upstreamGuard.isClientClosed()) return;
 
         const finalErr = lastParsedErr || {
           statusCode: 503,
           status: 'UNAVAILABLE',
+          category: 'provider API error' as const,
           message: 'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.',
           isRetryable: true
         };
-        return res.status(finalErr.statusCode).json({
-          error: finalErr.message,
-          code: finalErr.statusCode,
-          status: finalErr.status,
-          provider: 'gemini',
-          model: requestedGeminiModel,
-          retryable: finalErr.isRetryable,
-          serverRetriesExhausted: true,
-          canFallback: true,
-          suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
-        });
+
+        if (!res.writableEnded) {
+          sendSSE(res, {
+            type: 'error',
+            error: finalErr.message,
+            code: finalErr.statusCode,
+            status: finalErr.status,
+            category: finalErr.category,
+            provider: 'gemini',
+            model: requestedGeminiModel,
+            retryable: false,
+            serverRetriesExhausted: true,
+            canFallback: finalErr.statusCode !== 400 && finalErr.statusCode !== 413,
+            suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
+          });
+          res.end();
+        }
+        return;
       }
     }
 

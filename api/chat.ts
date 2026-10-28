@@ -5,8 +5,17 @@ export default function handler(req: Request, res: Response) {
   // Ensure no socket or response timeouts cut off streaming
   req.setTimeout?.(0);
   res.setTimeout?.(0);
-  if (req.socket) req.socket.setTimeout?.(0);
-  if (res.socket) res.socket.setTimeout?.(0);
+  if (req.socket) {
+    req.socket.setTimeout?.(0);
+    req.socket.setNoDelay?.(true);
+    req.socket.setKeepAlive?.(true, 5000);
+  }
+  if (res.socket) {
+    res.socket.setTimeout?.(0);
+    res.socket.setNoDelay?.(true);
+    res.socket.setKeepAlive?.(true, 5000);
+  }
+  res.setHeader?.('X-Accel-Buffering', 'no');
 
   if (req.url === '/' || !req.url) {
     req.url = '/api/chat';

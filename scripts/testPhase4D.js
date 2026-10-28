@@ -198,20 +198,23 @@ function startMockGroqUpstream() {
  * Starts an ephemeral server.ts process on an available local port wired to mockGroqBaseUrl.
  */
 async function startTestServer(port, mockGroqBaseUrl) {
+  const childEnv = {
+    ...process.env,
+    PORT: String(port),
+    NODE_ENV: 'production',
+    ORVIX_GROQ_BASE_URL: mockGroqBaseUrl,
+    GROQ_API_KEY: 'gsk_test_phase4d_valid_key',
+    VITE_GROQ_API_KEY: '',
+    GEMINI_API_KEY: '',
+    VITE_GEMINI_API_KEY: '',
+    OPENROUTER_API_KEY: 'sk-or-v1-test-fallback-key',
+    CLOUDFLARE_API_TOKEN: '',
+    CLOUDFLARE_ACCOUNT_ID: ''
+  };
+  delete childEnv.TESTING;
+
   const child = spawn('npx', ['tsx', 'server.ts'], {
-    env: {
-      ...process.env,
-      PORT: String(port),
-      NODE_ENV: 'production',
-      ORVIX_GROQ_BASE_URL: mockGroqBaseUrl,
-      GROQ_API_KEY: 'gsk_test_phase4d_valid_key',
-      VITE_GROQ_API_KEY: '',
-      GEMINI_API_KEY: '',
-      VITE_GEMINI_API_KEY: '',
-      OPENROUTER_API_KEY: 'sk-or-v1-test-fallback-key',
-      CLOUDFLARE_API_TOKEN: '',
-      CLOUDFLARE_ACCOUNT_ID: ''
-    },
+    env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
