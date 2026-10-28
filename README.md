@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.2.8**
+**Version: v0.2.9**
 
 <p align="center">
   <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring On-Device Browser AI (WebLLM & WebGPU), Offline PWA App-Shell Caching, Client-Side Document Extraction, Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
@@ -1127,7 +1127,14 @@ When troubleshooting streaming completions or intermittent upstream latency on s
 
 Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`). Below is the concise, scannable history of all releases and development milestones.
 
-### v0.2.8 — Qwen3 0.6B Browser AI Lightweight Model *(Current)*
+### v0.2.9 — Refined Response Profiles for SmolLM2 135M, SmolLM2 360M, and Qwen3 0.6B *(Current)*
+- **Model-Calibrated Response Profiles**: Established dedicated, isolated response profiles for SmolLM2 135M, SmolLM2 360M Instruct, and Qwen3 0.6B tuned to each model's specific parameter capacity, reasoning bounds, and chat conventions.
+- **Compact & Focused Instruction Layer**: Designed lightweight, model-appropriate system instructions that encourage answering the user's prompt directly first, admitting uncertainty, following requested formats and length constraints, and eliminating conversational preamble or repetitive filler without consuming precious context tokens.
+- **Calibrated Generation Hyperparameters**: Tuned model-specific sampling temperatures (general: 0.3 for 135M, 0.45 for 360M, 0.5 for Qwen3; coding: 0.15 for 135M, 0.2 for 360M, 0.25 for Qwen3), repetition penalties (1.15 for 135M, 1.10 for 360M, 1.08 for Qwen3), calibrated max-tokens thresholds, and comprehensive stop token sequences (`<|endoftext|>`, `<|im_end|>`, `<|im_start|>`, turn delimiters).
+- **Clean Streaming & Artifact Sanitization**: Enhanced output sanitization and real-time streaming buffering to prevent control token leakage, simulated turn runaway loops, thinking block (`<think>`) exposures, and prefix echoes without clipping valid responses.
+- **Strict Scope & Zero Cloud Regression**: Maintained 100% preservation of the baseline default Browser AI model (Qwen 2.5 1.5B Instruct) and all four cloud providers (Gemini, Groq, OpenRouter, Cloudflare) with zero behavioral changes.
+
+### v0.2.8 — Qwen3 0.6B Browser AI Lightweight Model
 - **Qwen3 0.6B Integration**: Added `Qwen3-0.6B-q4f16_1-MLC` (4-bit `q4f16_1`, ~335 MB download across 9 shards, ~1,403 MB VRAM, 4,096-token context window) and its FP32 compatibility fallback `Qwen3-0.6B-q4f32_1-MLC` (~335 MB download, ~1,925 MB VRAM) as the fourth selectable offline model in the Browser AI model-selection interface.
 - **Hardened Shared Infrastructure**: Reuses the proven multi-shard CDN reachability probe, byte-based download progress tracking, partitioned Cache Storage isolation (`webllm/config`, `webllm/wasm`, `webllm/model`), stall watchdogs, and dedicated worker WebGPU compilation without artifact collisions across models.
 - **Strict Invariants Preserved**: Preserved `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` as the default model, kept `SmolLM2 360M` and `SmolLM2 135M` fully functional, preserved the main provider selector label `Browser AI WebLLM`, and maintained the 5-provider architecture. Note: Automated pipeline validation is complete; real-browser WebGPU execution verification remains pending testing on Chrome/Edge.

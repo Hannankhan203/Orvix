@@ -20,6 +20,14 @@ import {
   formatOpenAIMessages
 } from './documentContextService.js';
 import { checkModelCompatibilityForProvider } from './providerModelSanitizer.js';
+import {
+  isRefinedTargetModel,
+  getBrowserAiModelProfile,
+  resolveProfileGenerationParams,
+  buildProfileSystemInstruction,
+  cleanModelOutput,
+  createStreamingResponseSanitizer
+} from './browserAiProfiles.js';
 
 function isClientOnline() {
   if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') {
@@ -3596,7 +3604,9 @@ export async function streamWebLLMMessage({
   top_p = undefined,
   topP = undefined,
   max_tokens = undefined,
-  maxTokens = undefined
+  maxTokens = undefined,
+  repetition_penalty = undefined,
+  repetitionPenalty = undefined
 } = {}) {
   const cleanPrompt = typeof prompt === 'string' ? prompt.trim() : '';
   if (!cleanPrompt) {
@@ -3658,6 +3668,23 @@ export async function streamWebLLMMessage({
     customMaxTokens = Math.floor(numMax);
   }
 
+  const rawRepPenalty = repetition_penalty !== undefined ? repetition_penalty : repetitionPenalty;
+  let customRepetitionPenalty = undefined;
+  if (rawRepPenalty !== undefined) {
+    const numRep = Number(rawRepPenalty);
+    if (!Number.isFinite(numRep) || numRep <= 0 || numRep > 2) {
+      throw new WebLLMError(
+        `Invalid repetition_penalty parameter: expected a finite positive number up to 2, got ${rawRepPenalty}.`,
+        {
+          code: 'INVALID_ARGUMENT',
+          httpCode: 400,
+          retryable: false
+        }
+      );
+    }
+    customRepetitionPenalty = numRep;
+  }
+
   if (signal?.aborted) {
     throw createAbortError();
   }
@@ -3687,7 +3714,9 @@ export async function streamWebLLMMessage({
     }
 
     const catalogEntry = WEBLLM_MODEL_CATALOG[modelId];
-    const baseSystemInstruction = buildLocalSystemInstruction(username, preferences, mode);
+    const baseSystemInstruction = isRefinedTargetModel(modelId)
+      ? buildProfileSystemInstruction(modelId, { username, preferences, mode })
+      : buildLocalSystemInstruction(username, preferences, mode);
 
     // Handle local pre-extracted attachments (PDF, DOCX, TXT, offline Tesseract OCR) without server round-trips
     const rawAttachments = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
@@ -3784,15 +3813,18 @@ export async function streamWebLLMMessage({
       maxContextMessages: catalogEntry?.maxHistoryMessages || 8
     });
 
-    const boundedMessages = trimMessagesToContextBudget(rawMessages, 12_500);
+    const genParams = resolveProfileGenerationParams(modelId, {
+      mode,
+      preferences,
+      temperature,
+      top_p,
+      topP,
+      max_tokens,
+      maxTokens,
+      repetition_penalty: customRepetitionPenalty
+    });
 
-    const maxTokens =
-      customMaxTokens ||
-      (preferences?.responseLength === 'concise'
-        ? 512
-        : preferences?.responseLength === 'detailed'
-          ? 1536
-          : catalogEntry?.defaultMaxTokens || 1024);
+    const boundedMessages = trimMessagesToContextBudget(rawMessages, genParams.maxInputChars);
 
     if (signal?.aborted) {
       throw createAbortError();
@@ -3830,18 +3862,38 @@ export async function streamWebLLMMessage({
     let accumulatedText = '';
     let finalUsage = undefined;
 
+    const streamSanitizer = createStreamingResponseSanitizer(modelId, {
+      onChunk,
+      onStopDetected: () => {
+        try {
+          engine.interruptGenerate();
+        } catch (_) {
+          // Ignore
+        }
+      }
+    });
+
     try {
-      const asyncChunkGenerator = await engine.chat.completions.create({
+      const completionPayload = {
         messages: boundedMessages,
-        temperature: effectiveTemperature,
-        top_p: effectiveTopP,
-        max_tokens: maxTokens,
+        temperature: genParams.temperature,
+        top_p: genParams.top_p,
+        max_tokens: genParams.max_tokens,
         stream: true,
         stream_options: { include_usage: true }
-      });
+      };
+
+      if (genParams.repetition_penalty !== undefined) {
+        completionPayload.repetition_penalty = genParams.repetition_penalty;
+      }
+      if (genParams.stop !== undefined && Array.isArray(genParams.stop)) {
+        completionPayload.stop = genParams.stop;
+      }
+
+      const asyncChunkGenerator = await engine.chat.completions.create(completionPayload);
 
       for await (const chunk of asyncChunkGenerator) {
-        if (signal?.aborted || manualStopRequested) {
+        if (signal?.aborted || manualStopRequested || streamSanitizer.isStopped()) {
           try {
             engine.interruptGenerate();
           } catch (_) {
@@ -3853,9 +3905,7 @@ export async function streamWebLLMMessage({
         const delta = chunk?.choices?.[0]?.delta?.content;
         if (delta && !signal?.aborted && !manualStopRequested) {
           accumulatedText += delta;
-          if (typeof onChunk === 'function') {
-            onChunk(delta, accumulatedText);
-          }
+          streamSanitizer.feed(delta, accumulatedText);
         }
 
         if (chunk?.usage) {
@@ -3863,11 +3913,14 @@ export async function streamWebLLMMessage({
         }
       }
 
+      streamSanitizer.flush();
+
       if (signal?.aborted || manualStopRequested) {
         throw createAbortError();
       }
 
-      const finalText = accumulatedText.trim();
+      const cleanedText = cleanModelOutput(accumulatedText, modelId);
+      const finalText = cleanedText.trim();
       if (!finalText) {
         throw new WebLLMError('Browser AI returned an empty response. Please try phrasing your prompt again.', {
           code: WEBLLM_ERROR_CODES.GENERATION_FAILED,
@@ -3883,7 +3936,7 @@ export async function streamWebLLMMessage({
       });
 
       return {
-        text: accumulatedText,
+        text: cleanedText,
         modelUsed: modelId,
         provider: WEBLLM_PROVIDER_ID,
         usage: finalUsage
@@ -3920,7 +3973,7 @@ export async function streamWebLLMMessage({
       if (accumulatedText && accumulatedText.length > 0) {
         normalized.retryable = false;
         normalized.partial = true;
-        normalized.partialText = accumulatedText;
+        normalized.partialText = cleanModelOutput(accumulatedText, modelId);
       }
 
       updateEngineState({
