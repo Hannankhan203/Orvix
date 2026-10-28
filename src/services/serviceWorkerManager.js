@@ -82,11 +82,15 @@ export function initServiceWorker() {
 
   // Check if controller is already controlling the page
   if (navigator.serviceWorker.controller) {
+    console.log('[Orvix PWA] Active service worker controller detected on boot.');
     markAppShellCached();
   }
 
   // Listen for controller changes without causing reload loops
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    console.log(
+      '[Orvix PWA] Updated service worker claimed this tab. Reload once if an older cached app bundle was loaded before activation.'
+    );
     markAppShellCached();
   });
 
@@ -98,7 +102,9 @@ export function initServiceWorker() {
         markAppShellCached();
       },
       onNeedRefresh() {
-        console.log('[Orvix PWA] New service worker version available. Activating in background.');
+        console.log(
+          '[Orvix PWA] New service worker version available. Activating in background (refresh tab once to run latest bundle).'
+        );
         // Pass false so skipWaiting is sent WITHOUT triggering a forced window.location.reload()
         // which would destroy active user conversations or cause refresh loops.
         if (typeof updateSWFunction === 'function') {

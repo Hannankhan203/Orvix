@@ -43,6 +43,9 @@ import {
   stopWebLLMGeneration,
   getWebLLMState,
   subscribeWebLLMState,
+  sanitizeUrlForDiagnostics,
+  logWebLLMStage,
+  getWebLLMDiagnostics,
   resetWebLLMRuntimeForTesting,
   setWebLLMWorkerFactoryForTesting,
   setWebLLMEngineFactoryForTesting,
@@ -579,6 +582,233 @@ await runCase('Worker GPU initialization watchdog aborts hung engine reload inst
     assert.strictEqual(workerTerminated, true, 'Hung worker must be terminated immediately');
     assert.strictEqual(getWebLLMState().status, 'error');
   } finally {
+    resetWebLLMRuntimeForTesting();
+  }
+});
+
+// 9. Non-blocking reader.cancel() when proxy ignores Range and returns HTTP 200 stream whose cancel() hangs
+await runCase('CDN probe does not hang at 0% if HTTP 200 stream reader.cancel() never resolves and strips signed URLs', async () => {
+  const firstChunk = new Uint8Array(1024).fill(3);
+  const signedRedirectUrl =
+    'https://us.aws.cdn.hf.co/xet-bridge-us/67ab12cd/aa11bb22cc33dd44ee55ff6677889900aa11bb22cc33dd44?X-Amz-Signature=supersecret123&token=privatetoken456';
+
+  const mockRangeIgnoredFetch = async () => {
+    let delivered = false;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (!delivered) {
+          delivered = true;
+          controller.enqueue(firstChunk);
+          return Promise.resolve();
+        }
+        return new Promise(() => {
+          // Remaining 56 MB hangs forever
+        });
+      },
+      cancel() {
+        // Simulate middlebox/browser bug where reader.cancel() never resolves
+        return new Promise(() => {});
+      }
+    });
+    const res = new Response(stream, { status: 200 });
+    Object.defineProperty(res, 'url', { value: signedRedirectUrl, configurable: true });
+    return res;
+  };
+
+  const t0 = Date.now();
+  const probe = await probeWebLLMModelCDN(
+    'https://huggingface.co/mlc-ai/SmolLM2-135M-Instruct-q0f16-MLC/resolve/main/params_shard_0.bin',
+    {
+      modelLabel: 'SmolLM2 135M',
+      timeoutMs: 1000,
+      fetchImpl: mockRangeIgnoredFetch
+    }
+  );
+  const elapsed = Date.now() - t0;
+
+  assert.strictEqual(probe.ok, true);
+  assert.strictEqual(probe.transferredBytes, 1024);
+  assert.strictEqual(probe.redirectedHost, 'us.aws.cdn.hf.co');
+  assert.strictEqual('redirectedUrl' in probe, false, 'probeResult must not retain signed redirectedUrl');
+  assert.ok(elapsed < 400, `Probe must resolve immediately without awaiting hung cancel() (took ${elapsed}ms)`);
+});
+
+// 10. Hard Promise.race deadline catches fetch/reader hangs that completely ignore AbortSignal
+await runCase('Hard stage deadline surfaces error in UI even when hung fetch/stream ignores AbortSignal', async () => {
+  resetWebLLMRuntimeForTesting();
+  const cacheStorage = createInMemoryCacheStorage();
+  installMockBrowserGlobals({ cacheStorage, isOnline: true, hasShaderF16: true });
+
+  setWebLLMDownloadConfigForTesting({
+    probeTimeoutMs: 110,
+    stallTimeoutMs: 110,
+    concurrency: 1,
+    workerStallTimeoutMs: 500
+  });
+
+  // Fetch for metadata succeeds, but shard fetch ignores init.signal completely and never settles!
+  setWebLLMFetchForTesting(async (url) => {
+    const href = String(url);
+    if (href.endsWith('mlc-chat-config.json')) {
+      return new Response(JSON.stringify({ tokenizer_files: ['tokenizer.json'], context_window_size: 4096 }), {
+        status: 200
+      });
+    }
+    if (href.endsWith('tensor-cache.json')) {
+      return new Response(
+        JSON.stringify({
+          records: [{ name: 'w0', dataPath: 'params_shard_0.bin', nbytes: 2048 }]
+        }),
+        { status: 200 }
+      );
+    }
+    // Hang forever AND ignore AbortSignal!
+    return new Promise(() => {});
+  });
+
+  setWebLLMWorkerFactoryForTesting(() => ({ terminate: () => {}, onerror: null, onmessageerror: null }));
+  setWebLLMEngineFactoryForTesting(async () => ({ unload: async () => {}, interruptGenerate: () => {} }));
+
+  try {
+    await assert.rejects(
+      () => ensureWebLLMEngine({ modelId: SMOLLM2_135M_WEBLLM_MODEL_ID }),
+      (err) => {
+        assert.strictEqual(err.timeout, true, 'Must reject with timeout=true via hard deadline');
+        assert.strictEqual(err.retryable, true);
+        return true;
+      }
+    );
+
+    const stateAfterTimeout = getWebLLMState();
+    assert.strictEqual(
+      stateAfterTimeout.status,
+      'error',
+      'UI state must transition to error instead of remaining stuck at 0% forever'
+    );
+    assert.ok(stateAfterTimeout.error && stateAfterTimeout.error.length > 0);
+  } finally {
+    resetWebLLMRuntimeForTesting();
+  }
+});
+
+// 11. Diagnostic URL sanitization never logs signed CDN tokens, query params, or credentials
+await runCase('Diagnostic logs include stage + elapsed time and strip signed CDN query strings/tokens', async () => {
+  resetWebLLMRuntimeForTesting();
+  const rawSignedUrl =
+    'https://user:pass@us.aws.cdn.hf.co/xet-bridge-us/62f4b8/9f8e7d6c5b4a392817263544556677889900aabbccddeeff?X-Amz-Signature=SECRET_SIG_999&Key-Pair-Id=APKAIEXAMPLE';
+
+  const sanitized = sanitizeUrlForDiagnostics(rawSignedUrl);
+  assert.strictEqual(sanitized, 'us.aws.cdn.hf.co');
+  assert.ok(!sanitized.includes('SECRET_SIG_999'));
+  assert.ok(!sanitized.includes('user:pass'));
+
+  logWebLLMStage('test_sanitization', { url: rawSignedUrl }, { startMs: Date.now() - 25 });
+  const events = getWebLLMDiagnostics();
+  assert.strictEqual(events.length, 1);
+  assert.ok(events[0].line.includes('[stage=test_sanitization]'));
+  assert.ok(events[0].line.includes('(+'));
+  assert.ok(!JSON.stringify(events[0]).includes('SECRET_SIG_999'), 'Diagnostics buffer must never retain secrets');
+  resetWebLLMRuntimeForTesting();
+});
+
+// 12. Verify @mlc-ai/web-llm@0.2.86 recognizes custom downloader Cache Storage keys directly (cacheOnly=true)
+await runCase('Installed @mlc-ai/web-llm@0.2.86 hasModelInCache recognizes custom downloader artifacts & avoids post-download 0% reset', async () => {
+  resetWebLLMRuntimeForTesting();
+  const cacheStorage = createInMemoryCacheStorage();
+  installMockBrowserGlobals({ cacheStorage, isOnline: true, hasShaderF16: true });
+
+  const modelRecord = webllmPkg.prebuiltAppConfig.model_list.find(
+    (m) => m.model_id === SMOLLM2_135M_WEBLLM_MODEL_ID
+  );
+  assert.ok(modelRecord);
+
+  const shardBytes = new Uint8Array(1024).fill(5);
+  const customFetch = async (url, init = {}) => {
+    const href = String(url);
+    const isRange = Boolean(init?.headers?.Range || init?.headers?.range);
+    if (href.endsWith('mlc-chat-config.json')) {
+      return new Response(JSON.stringify({ tokenizer_files: ['tokenizer.json'], context_window_size: 4096 }), {
+        status: 200
+      });
+    }
+    if (href.endsWith('tensor-cache.json')) {
+      return new Response(
+        JSON.stringify({
+          records: [
+            { name: 'p0', dataPath: 'params_shard_0.bin', nbytes: shardBytes.byteLength },
+            { name: 'p1', dataPath: 'params_shard_1.bin', nbytes: shardBytes.byteLength }
+          ]
+        }),
+        { status: 200 }
+      );
+    }
+    if (href.endsWith('tokenizer.json')) {
+      return new Response(JSON.stringify({ version: '1.0' }), { status: 200 });
+    }
+    if (href.endsWith('.wasm')) {
+      return new Response(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]), { status: 200 });
+    }
+    if (href.includes('params_shard_')) {
+      return createChunkedResponse([shardBytes], {
+        status: isRange ? 206 : 200,
+        url: 'https://us.aws.cdn.hf.co/xet-bridge-us/shard.bin',
+        headers: { 'Content-Length': String(shardBytes.byteLength) }
+      });
+    }
+    throw new Error(`Unexpected URL: ${href}`);
+  };
+
+  await downloadModelArtifactsToCache(modelRecord, {
+    modelId: SMOLLM2_135M_WEBLLM_MODEL_ID,
+    catalogEntry: WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID],
+    fetchImpl: customFetch
+  });
+
+  // Verify WebLLM 0.2.86's own hasModelInCache() inspects webllm/config, webllm/wasm, and webllm/model
+  const webllmSeesCache = await webllmPkg.hasModelInCache(
+    SMOLLM2_135M_WEBLLM_MODEL_ID,
+    webllmPkg.prebuiltAppConfig
+  );
+  assert.strictEqual(
+    webllmSeesCache,
+    true,
+    'WebLLM 0.2.86 hasModelInCache must return true for custom-downloaded Cache Storage entries'
+  );
+
+  // Also verify that during GPU loading after cache verification, WebLLM's initial progress=0 report
+  // uses indeterminate progressPercent (null) instead of flashing 0% in the UI
+  resetWebLLMRuntimeForTesting();
+  installMockBrowserGlobals({ cacheStorage, isOnline: true, hasShaderF16: true });
+
+  const loadingStates = [];
+  const unsub = subscribeWebLLMState((s) => {
+    if (s.status === 'loading') loadingStates.push({ ...s });
+  });
+
+  setWebLLMWorkerFactoryForTesting(() => ({
+    terminate: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    onerror: null,
+    onmessageerror: null
+  }));
+  setWebLLMEngineFactoryForTesting(async ({ handleInitProgress }) => {
+    handleInitProgress({ progress: 0, timeElapsed: 0, text: 'Start to fetch params' });
+    handleInitProgress({ progress: 0.5, timeElapsed: 0.2, text: 'Loading model from cache[1/2]' });
+    handleInitProgress({ progress: 1, timeElapsed: 0.4, text: 'Finish loading on WebGPU' });
+    return { unload: async () => {}, interruptGenerate: () => {} };
+  });
+
+  try {
+    await ensureWebLLMEngine({ modelId: SMOLLM2_135M_WEBLLM_MODEL_ID });
+    assert.ok(
+      loadingStates.every((st) => st.progressPercent !== 0),
+      `Cached/post-download GPU loading must use indeterminate bar (null) instead of flashing 0% (saw: ${JSON.stringify(
+        loadingStates.map((s) => s.progressPercent)
+      )})`
+    );
+  } finally {
+    unsub();
     resetWebLLMRuntimeForTesting();
   }
 });

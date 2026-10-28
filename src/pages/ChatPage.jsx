@@ -69,7 +69,8 @@ import {
   inspectWebLLMReadiness,
   ensureWebLLMEngine,
   stopWebLLMGeneration,
-  unloadWebLLMEngine
+  unloadWebLLMEngine,
+  logWebLLMStage
 } from '../services/webllmService.js';
 import {
   extractBrowserDocument,
@@ -246,7 +247,11 @@ export default function ChatPage() {
     if (typeof window !== 'undefined') {
       localStorage.setItem('orvix_webllm_model_id', nextModelId);
     }
-    void inspectWebLLMReadiness(nextModelId).catch(() => {});
+    // When Browser AI is active, the [selectedProvider, webllmModelId] effect runs inspectWebLLMReadiness;
+    // avoid firing a duplicate concurrent requestAdapter()/hasModelInCache() call on model change.
+    if (selectedProvider !== 'webllm') {
+      void inspectWebLLMReadiness(nextModelId).catch(() => {});
+    }
   };
 
   // Subscribe to real Browser AI engine state updates
@@ -325,12 +330,18 @@ export default function ChatPage() {
   }, [selectedProvider, webllmModelId]);
 
   const handleLoadWebLLMModel = () => {
-    if (
+    const busy =
       webllmState.status === 'checking' ||
       webllmState.status === 'downloading' ||
       webllmState.status === 'loading' ||
-      webllmState.status === 'generating'
-    ) {
+      webllmState.status === 'generating';
+    logWebLLMStage('ui_load_clicked', {
+      modelId: webllmModelId,
+      currentStatus: webllmState.status,
+      ignoredBusy: busy,
+      online: isBrowserOnline()
+    });
+    if (busy) {
       return;
     }
     void ensureWebLLMEngine({ modelId: webllmModelId }).catch((err) => {

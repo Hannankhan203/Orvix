@@ -10,13 +10,25 @@
 
 import { WebWorkerMLCEngineHandler } from '@mlc-ai/web-llm';
 
+const workerBootMs = Date.now();
 const handler = new WebWorkerMLCEngineHandler();
 
+console.log('[Orvix WebLLM Worker][stage=worker_boot] (+0ms) Dedicated WebLLM worker initialized');
+
 self.onmessage = (event) => {
+  const kind = typeof event?.data?.kind === 'string' ? event.data.kind : null;
+  if (kind === 'reload' || kind === 'unload') {
+    const modelId = Array.isArray(event?.data?.content?.modelId)
+      ? event.data.content.modelId.join(',')
+      : event?.data?.content?.modelId || 'default';
+    console.log(
+      `[Orvix WebLLM Worker][stage=worker_${kind}] (+${Date.now() - workerBootMs}ms) modelId=${String(modelId)}`
+    );
+  }
   try {
     handler.onmessage(event);
   } catch (err) {
-    console.error('[Orvix WebLLM Worker] Failed to handle message:', err);
+    console.error('[Orvix WebLLM Worker][stage=worker_handler_exception]', err);
   }
 };
 

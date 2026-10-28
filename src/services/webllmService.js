@@ -12,6 +12,7 @@
  *    to fail fast with a clear, actionable message if an uncached model is requested while offline.
  */
 
+import { APP_CONFIG } from '../config/appConfig.js';
 import { getChatMode } from '../config/chatModes.js';
 import {
   prepareDocumentContext,
@@ -173,6 +174,10 @@ export const WEBLLM_ERROR_CODES = Object.freeze({
   GENERATION_FAILED: 'WEBLLM_GENERATION_FAILED'
 });
 
+export const DEFAULT_GPU_CHECK_TIMEOUT_MS = 10_000;
+export const DEFAULT_MODULE_LOAD_TIMEOUT_MS = 25_000;
+export const DEFAULT_CACHE_CHECK_TIMEOUT_MS = 15_000;
+export const DEFAULT_CACHE_OP_TIMEOUT_MS = 10_000;
 export const DEFAULT_CDN_PROBE_TIMEOUT_MS = 15_000;
 export const DEFAULT_SHARD_STALL_TIMEOUT_MS = 30_000;
 export const DEFAULT_SHARD_CONCURRENCY = 2;
@@ -230,6 +235,192 @@ let customEngineFactory = null;
 let customFetchFactory = null;
 let customDownloadConfig = null;
 
+const MAX_DIAGNOSTIC_EVENTS = 80;
+const recentDiagnosticEvents = [];
+
+/**
+ * Sanitizes a URL for diagnostic logging so signed CDN query tokens, credentials,
+ * or presigned bridge paths are NEVER written to console or diagnostic buffers.
+ */
+export function sanitizeUrlForDiagnostics(rawUrl) {
+  if (!rawUrl) return 'unknown';
+  try {
+    const parsed = new URL(String(rawUrl));
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    const tail = segments.length > 0 ? segments[segments.length - 1] : '';
+    // Avoid logging opaque hash-like presigned path tokens (>40 hex chars)
+    const safeTail = tail && !/^[a-f0-9]{40,}$/i.test(tail) ? `/${tail}` : '';
+    return `${parsed.hostname}${safeTail}`;
+  } catch (_) {
+    return 'invalid-url';
+  }
+}
+
+/**
+ * Records and logs a development-safe diagnostic event with stage name, app version,
+ * and elapsed time without exposing signed URLs or secrets.
+ */
+export function logWebLLMStage(stage, details = {}, options = {}) {
+  const { startMs = null, level = 'log' } = options;
+  const now = Date.now();
+  const elapsedMs = typeof startMs === 'number' && Number.isFinite(startMs) ? Math.max(0, now - startMs) : null;
+  const elapsedTag = elapsedMs !== null ? ` (+${elapsedMs}ms)` : '';
+  const detailParts = [];
+
+  const sanitizedDetails = {};
+  if (details && typeof details === 'object') {
+    for (const [key, val] of Object.entries(details)) {
+      if (val === undefined) continue;
+      if (typeof val === 'string' && /^https?:\/\//i.test(val)) {
+        const cleanUrl = sanitizeUrlForDiagnostics(val);
+        sanitizedDetails[key] = cleanUrl;
+        detailParts.push(`${key}=${cleanUrl}`);
+      } else if (typeof val === 'object' && val !== null) {
+        sanitizedDetails[key] = val;
+        try {
+          detailParts.push(`${key}=${JSON.stringify(val)}`);
+        } catch (_) {
+          detailParts.push(`${key}=[object]`);
+        }
+      } else {
+        sanitizedDetails[key] = val;
+        detailParts.push(`${key}=${String(val)}`);
+      }
+    }
+  }
+
+  const summary = detailParts.length > 0 ? ` ${detailParts.join(' ')}` : '';
+  const line = `[Orvix WebLLM v${APP_CONFIG.version}][stage=${stage}]${elapsedTag}${summary}`;
+
+  recentDiagnosticEvents.push({
+    timestamp: now,
+    stage,
+    elapsedMs,
+    details: sanitizedDetails,
+    line
+  });
+  if (recentDiagnosticEvents.length > MAX_DIAGNOSTIC_EVENTS) {
+    recentDiagnosticEvents.shift();
+  }
+
+  if (level === 'error') {
+    console.error(line);
+  } else if (level === 'warn') {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
+export function getWebLLMDiagnostics() {
+  return [...recentDiagnosticEvents];
+}
+
+/**
+ * Races an async operation against a hard JS timer rejection so hung browser/OS
+ * promises (e.g. fetch/reader/cache/GPU calls that ignore AbortSignal) cannot leave
+ * the UI stuck at 0% indefinitely.
+ */
+async function raceWithStageDeadline(promiseFactory, timeoutMs, createTimeoutError) {
+  const boundedMs = Math.max(40, Number(timeoutMs) || 10_000);
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        reject(createTimeoutError(boundedMs));
+      } catch (err) {
+        reject(err);
+      }
+    }, boundedMs);
+  });
+
+  try {
+    const targetPromise = typeof promiseFactory === 'function' ? promiseFactory() : promiseFactory;
+    return await Promise.race([targetPromise, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Resettable inactivity watchdog that BOTH invokes `onTimeoutAbort()` AND rejects
+ * any raced promise via `watchdog.race(promise)` when no progress occurs within `timeoutMs`.
+ */
+function createResettableStallWatchdog(timeoutMs, createStallError, onTimeoutAbort) {
+  const boundedMs = Math.max(40, Number(timeoutMs) || 30_000);
+  let timer = null;
+  let stalledError = null;
+  const pendingRejectors = new Set();
+
+  const arm = () => {
+    if (stalledError) return;
+    if (timer) {
+      clearTimeout(timer);
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      stalledError = createStallError(boundedMs);
+      if (typeof onTimeoutAbort === 'function') {
+        try {
+          onTimeoutAbort();
+        } catch (_) {
+          // Ignore abort callback failure
+        }
+      }
+      for (const rejectFn of pendingRejectors) {
+        try {
+          rejectFn(stalledError);
+        } catch (_) {
+          // Ignore
+        }
+      }
+      pendingRejectors.clear();
+    }, boundedMs);
+  };
+
+  arm();
+
+  return {
+    touch() {
+      if (!stalledError) {
+        arm();
+      }
+    },
+    hasStalled() {
+      return Boolean(stalledError);
+    },
+    getError() {
+      return stalledError;
+    },
+    async race(promise) {
+      if (stalledError) {
+        throw stalledError;
+      }
+      let registeredReject = null;
+      const stallPromise = new Promise((_, reject) => {
+        registeredReject = reject;
+        pendingRejectors.add(reject);
+      });
+      try {
+        return await Promise.race([promise, stallPromise]);
+      } finally {
+        if (registeredReject) {
+          pendingRejectors.delete(registeredReject);
+        }
+      }
+    },
+    dispose() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      pendingRejectors.clear();
+    }
+  };
+}
+
 export function setWebLLMWorkerFactoryForTesting(factory) {
   customWorkerFactory = factory;
 }
@@ -251,6 +442,7 @@ export function resetWebLLMRuntimeForTesting() {
   customEngineFactory = null;
   customFetchFactory = null;
   customDownloadConfig = null;
+  recentDiagnosticEvents.length = 0;
   webllmModulePromise = null;
   if (activeInitAbortController) {
     try {
@@ -378,10 +570,34 @@ export function getSupportedWebLLMModels(options = {}) {
  * Resets the cached import promise if chunk fetching fails (e.g. temporary offline state)
  * so subsequent attempts can recover cleanly.
  */
-async function loadWebLLMModule() {
+async function loadWebLLMModule(stageStartMs = null) {
+  const timeoutMs = customDownloadConfig?.moduleLoadTimeoutMs ?? DEFAULT_MODULE_LOAD_TIMEOUT_MS;
   if (!webllmModulePromise) {
-    webllmModulePromise = import('@mlc-ai/web-llm').catch((err) => {
+    logWebLLMStage('module_import_start', { pkg: '@mlc-ai/web-llm', timeoutMs }, { startMs: stageStartMs });
+    webllmModulePromise = raceWithStageDeadline(
+      () => import('@mlc-ai/web-llm'),
+      timeoutMs,
+      (ms) => {
+        logWebLLMStage(
+          'init_timeout',
+          { subStage: 'module_import', timeoutMs: ms },
+          { startMs: stageStartMs, level: 'warn' }
+        );
+        return new WebLLMError(
+          `Timed out after ${formatDurationSeconds(ms)} loading the Browser AI runtime bundle. Please refresh the page and click Retry.`,
+          {
+            code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
+            httpCode: 504,
+            timeout: true,
+            retryable: true
+          }
+        );
+      }
+    ).catch((err) => {
       webllmModulePromise = null;
+      if (err instanceof WebLLMError) {
+        throw err;
+      }
       const offline = !isClientOnline();
       throw new WebLLMError(
         offline
@@ -396,7 +612,11 @@ async function loadWebLLMModule() {
       );
     });
   }
-  return webllmModulePromise;
+  const mod = await webllmModulePromise;
+  if (stageStartMs !== null) {
+    logWebLLMStage('module_import_done', { ok: true }, { startMs: stageStartMs });
+  }
+  return mod;
 }
 
 /**
@@ -497,10 +717,20 @@ export async function checkWebGPUSupport() {
     };
   }
 
+  const gpuTimeoutMs = customDownloadConfig?.gpuCheckTimeoutMs ?? DEFAULT_GPU_CHECK_TIMEOUT_MS;
   try {
-    const adapter = await navigator.gpu.requestAdapter({
-      powerPreference: 'high-performance'
-    });
+    const adapter = await raceWithStageDeadline(
+      () =>
+        navigator.gpu.requestAdapter({
+          powerPreference: 'high-performance'
+        }),
+      gpuTimeoutMs,
+      (ms) => {
+        const timeoutErr = new Error(`WebGPU requestAdapter timed out after ${formatDurationSeconds(ms)}`);
+        timeoutErr.code = 'WEBGPU_ADAPTER_TIMEOUT';
+        return timeoutErr;
+      }
+    );
 
     if (!adapter) {
       return {
@@ -542,11 +772,16 @@ export async function checkWebGPUSupport() {
       adapterInfo
     };
   } catch (err) {
+    const isTimeout = err?.code === 'WEBGPU_ADAPTER_TIMEOUT';
+    if (isTimeout) {
+      logWebLLMStage('init_timeout', { subStage: 'gpu_request_adapter', timeoutMs: gpuTimeoutMs }, { level: 'warn' });
+    }
     return {
       supported: false,
       reasonCode: WEBLLM_ERROR_CODES.WEBGPU_ADAPTER_UNAVAILABLE,
-      message:
-        'Failed to access the WebGPU graphics adapter. Please check that hardware acceleration is enabled in your browser.',
+      message: isTimeout
+        ? `WebGPU graphics adapter detection timed out after ${formatDurationSeconds(gpuTimeoutMs)}. Restart Chrome or update your Windows GPU driver, then retry.`
+        : 'Failed to access the WebGPU graphics adapter. Please check that hardware acceleration is enabled in your browser.',
       hasShaderF16: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
@@ -606,8 +841,13 @@ async function verifyBrowserStorageForDownload(modelId) {
   const minBytes = catalogEntry?.minStorageBytes || 1_000 * 1024 * 1024;
 
   if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.estimate === 'function') {
+    const storageTimeoutMs = customDownloadConfig?.cacheOpTimeoutMs ?? DEFAULT_CACHE_OP_TIMEOUT_MS;
     try {
-      const estimate = await navigator.storage.estimate();
+      const estimate = await raceWithStageDeadline(
+        () => navigator.storage.estimate(),
+        storageTimeoutMs,
+        (ms) => new Error(`navigator.storage.estimate timed out after ${ms}ms`)
+      );
       if (
         estimate &&
         typeof estimate.quota === 'number' &&
@@ -615,6 +855,11 @@ async function verifyBrowserStorageForDownload(modelId) {
         typeof estimate.usage === 'number'
       ) {
         const availableBytes = Math.max(0, estimate.quota - estimate.usage);
+        logWebLLMStage('storage_quota_checked', {
+          modelId,
+          availableMB: Math.round(availableBytes / (1024 * 1024)),
+          requiredMB: Math.round(minBytes / (1024 * 1024))
+        });
         if (availableBytes < minBytes) {
           const availableMB = Math.round(availableBytes / (1024 * 1024));
           const requiredMB = Math.round(minBytes / (1024 * 1024));
@@ -632,7 +877,7 @@ async function verifyBrowserStorageForDownload(modelId) {
       if (err instanceof WebLLMError) {
         throw err;
       }
-      // Non-fatal if storage.estimate() itself fails on a particular browser
+      logWebLLMStage('storage_quota_warning', { message: err?.message || String(err) }, { level: 'warn' });
     }
   }
 
@@ -665,64 +910,75 @@ export async function isWebLLMModelCached(modelId = DEFAULT_WEBLLM_MODEL_ID) {
     return false;
   }
 
+  const cacheCheckTimeoutMs = customDownloadConfig?.cacheCheckTimeoutMs ?? DEFAULT_CACHE_CHECK_TIMEOUT_MS;
   try {
-    const webllm = await loadWebLLMModule();
-    const targetId = (modelId && String(modelId).trim()) || DEFAULT_WEBLLM_MODEL_ID;
-    const record = findPrebuiltModelRecord(webllm, targetId);
-    if (!record) {
-      return false;
-    }
+    return await raceWithStageDeadline(
+      async () => {
+        const webllm = await loadWebLLMModule();
+        const targetId = (modelId && String(modelId).trim()) || DEFAULT_WEBLLM_MODEL_ID;
+        const record = findPrebuiltModelRecord(webllm, targetId);
+        if (!record) {
+          return false;
+        }
 
-    const tensorsCached = await webllm.hasModelInCache(targetId, webllm.prebuiltAppConfig);
-    if (!tensorsCached) {
-      return false;
-    }
+        const tensorsCached = await webllm.hasModelInCache(targetId, webllm.prebuiltAppConfig);
+        if (!tensorsCached) {
+          return false;
+        }
 
-    // Also verify config & WASM caches used by MLCEngine.reloadInternal() during offline startup
-    const modelBaseUrl = normalizeModelBaseUrl(record.model);
-    const chatConfigUrl = new URL('mlc-chat-config.json', modelBaseUrl).href;
+        // Also verify config & WASM caches used by MLCEngine.reloadInternal() during offline startup
+        const modelBaseUrl = normalizeModelBaseUrl(record.model);
+        const chatConfigUrl = new URL('mlc-chat-config.json', modelBaseUrl).href;
 
-    const configCache = await caches.open('webllm/config');
-    const cachedConfig = await configCache.match(new Request(chatConfigUrl));
-    if (!cachedConfig) {
-      return false;
-    }
+        const configCache = await caches.open('webllm/config');
+        const cachedConfig = await configCache.match(new Request(chatConfigUrl));
+        if (!cachedConfig) {
+          return false;
+        }
 
-    if (record.model_lib && record.model_lib.startsWith('http') && !record.model_lib.includes('localhost')) {
-      const wasmCache = await caches.open('webllm/wasm');
-      const cachedWasm = await wasmCache.match(new Request(record.model_lib));
-      if (!cachedWasm) {
-        return false;
-      }
-    }
-
-    // Also verify required tokenizer file when config JSON is readable
-    if (typeof cachedConfig.clone === 'function') {
-      try {
-        const configObj = await cachedConfig.clone().json();
-        if (configObj && Array.isArray(configObj.tokenizer_files)) {
-          const requiredTokenizerFile = configObj.tokenizer_files.includes('tokenizer.json')
-            ? 'tokenizer.json'
-            : configObj.tokenizer_files.includes('tokenizer.model')
-              ? 'tokenizer.model'
-              : null;
-          if (requiredTokenizerFile) {
-            const modelCache = await caches.open('webllm/model');
-            const tokenizerUrl = new URL(requiredTokenizerFile, modelBaseUrl).href;
-            const cachedTokenizer = await modelCache.match(new Request(tokenizerUrl));
-            if (!cachedTokenizer) {
-              return false;
-            }
+        if (record.model_lib && record.model_lib.startsWith('http') && !record.model_lib.includes('localhost')) {
+          const wasmCache = await caches.open('webllm/wasm');
+          const cachedWasm = await wasmCache.match(new Request(record.model_lib));
+          if (!cachedWasm) {
+            return false;
           }
         }
-      } catch (_) {
-        // Ignore non-JSON synthetic mock responses in unit tests
-      }
-    }
 
-    return true;
+        // Also verify required tokenizer file when config JSON is readable
+        if (typeof cachedConfig.clone === 'function') {
+          try {
+            const configObj = await cachedConfig.clone().json();
+            if (configObj && Array.isArray(configObj.tokenizer_files)) {
+              const requiredTokenizerFile = configObj.tokenizer_files.includes('tokenizer.json')
+                ? 'tokenizer.json'
+                : configObj.tokenizer_files.includes('tokenizer.model')
+                  ? 'tokenizer.model'
+                  : null;
+              if (requiredTokenizerFile) {
+                const modelCache = await caches.open('webllm/model');
+                const tokenizerUrl = new URL(requiredTokenizerFile, modelBaseUrl).href;
+                const cachedTokenizer = await modelCache.match(new Request(tokenizerUrl));
+                if (!cachedTokenizer) {
+                  return false;
+                }
+              }
+            }
+          } catch (_) {
+            // Ignore non-JSON synthetic mock responses in unit tests
+          }
+        }
+
+        return true;
+      },
+      cacheCheckTimeoutMs,
+      (ms) => new Error(`Cache inspection timed out after ${formatDurationSeconds(ms)}`)
+    );
   } catch (err) {
-    console.warn('[Orvix WebLLM] Cache inspection failed:', err?.message || err);
+    logWebLLMStage(
+      'cache_check_warning',
+      { modelId, error: err?.message || String(err) },
+      { level: 'warn' }
+    );
     return false;
   }
 }
@@ -736,6 +992,7 @@ export async function isWebLLMModelCached(modelId = DEFAULT_WEBLLM_MODEL_ID) {
  * @returns {Promise<{ modelId: string, isCached: boolean, gpuSupport: Awaited<ReturnType<typeof checkWebGPUSupport>> }>}
  */
 export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_MODEL_ID) {
+  const readinessStartMs = Date.now();
   const gpuSupport = await checkWebGPUSupport();
   const resolvedId = resolveWebLLMModelId(preferredModelId, {
     hasShaderF16: gpuSupport.hasShaderF16,
@@ -743,12 +1000,19 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
   });
 
   if (!gpuSupport.supported) {
-    updateEngineState({
-      isCached: false,
-      modelId: resolvedId,
-      loadedModelId,
-      hasShaderF16: false
-    });
+    if (!activeInitPromise) {
+      updateEngineState({
+        isCached: false,
+        modelId: resolvedId,
+        loadedModelId,
+        hasShaderF16: false
+      });
+    }
+    logWebLLMStage(
+      'readiness_inspected',
+      { modelId: resolvedId, gpuSupported: false, reasonCode: gpuSupport.reasonCode },
+      { startMs: readinessStartMs, level: 'warn' }
+    );
     return {
       modelId: resolvedId,
       isCached: false,
@@ -757,6 +1021,25 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
   }
 
   const isCached = await isWebLLMModelCached(resolvedId);
+
+  // Never clobber an active initialization's status/progress from a background readiness check
+  if (
+    activeInitPromise ||
+    engineState.status === 'checking' ||
+    engineState.status === 'downloading' ||
+    engineState.status === 'loading'
+  ) {
+    logWebLLMStage(
+      'readiness_inspected',
+      { modelId: resolvedId, isCached, skippedStatePatchDuringActiveInit: true },
+      { startMs: readinessStartMs }
+    );
+    return {
+      modelId: resolvedId,
+      isCached,
+      gpuSupport
+    };
+  }
 
   // If status is 'ready' or 'generating', ensure it matches actual loaded engine in GPU memory
   let nextStatus = engineState.status;
@@ -773,6 +1056,12 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
     loadedModelId,
     hasShaderF16: gpuSupport.hasShaderF16
   });
+
+  logWebLLMStage(
+    'readiness_inspected',
+    { modelId: resolvedId, isCached, hasShaderF16: gpuSupport.hasShaderF16, status: nextStatus },
+    { startMs: readinessStartMs }
+  );
 
   return {
     modelId: resolvedId,
@@ -863,21 +1152,27 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
     throw createAbortError();
   }
 
+  const probeStartMs = Date.now();
+  const boundedTimeoutMs = Math.max(50, Number(timeoutMs) || DEFAULT_CDN_PROBE_TIMEOUT_MS);
   const effectiveFetch = getEffectiveFetch(fetchImpl);
   const originHost = safeExtractHostname(targetUrl) || 'huggingface.co';
   const probeController = new AbortController();
   let timedOut = false;
   let onCallerAbort = null;
 
-  const timer = setTimeout(() => {
-    timedOut = true;
-    probeController.abort();
-  }, Math.max(50, timeoutMs));
+  logWebLLMStage(
+    'cdn_probe_start',
+    {
+      originHost,
+      target: sanitizeUrlForDiagnostics(targetUrl),
+      timeoutMs: boundedTimeoutMs
+    },
+    { startMs: probeStartMs }
+  );
 
   if (signal) {
     onCallerAbort = () => probeController.abort();
     if (signal.aborted) {
-      clearTimeout(timer);
       throw createAbortError();
     }
     signal.addEventListener('abort', onCallerAbort, { once: true });
@@ -886,90 +1181,131 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
   let response = null;
   let reader = null;
   try {
-    response = await effectiveFetch(targetUrl, {
-      method: 'GET',
-      headers: {
-        Range: 'bytes=0-1023'
+    const probeResult = await raceWithStageDeadline(
+      async () => {
+        response = await effectiveFetch(targetUrl, {
+          method: 'GET',
+          headers: {
+            Range: 'bytes=0-1023'
+          },
+          redirect: 'follow',
+          cache: 'no-store',
+          credentials: 'omit',
+          mode: 'cors',
+          signal: probeController.signal
+        });
+
+        const redirectedHost = safeExtractHostname(response?.url) || originHost;
+        const status = typeof response?.status === 'number' ? response.status : 0;
+
+        if (status < 200 || status >= 300) {
+          throw new WebLLMError(
+            `Model storage CDN (${redirectedHost}) returned HTTP ${status} while preparing ${modelLabel}. Check firewall, VPN, or proxy access to ${originHost} and ${redirectedHost}, then click Retry.`,
+            {
+              code: WEBLLM_ERROR_CODES.CDN_UNREACHABLE,
+              httpCode: status >= 400 ? status : 503,
+              retryable: status === 408 || status === 429 || status >= 500 || status === 403
+            }
+          );
+        }
+
+        let transferredBytes = 0;
+        if (response?.body && typeof response.body.getReader === 'function') {
+          reader = response.body.getReader();
+          while (transferredBytes === 0) {
+            const { done, value } = await reader.read();
+            if (value && value.byteLength > 0) {
+              transferredBytes += value.byteLength;
+              break;
+            }
+            if (done) {
+              break;
+            }
+          }
+          // Non-blocking cancel: if a proxy ignored Range and returned a 56MB HTTP 200 stream,
+          // awaiting reader.cancel() on a stalled connection would hang the UI at 0% forever.
+          const finishedReader = reader;
+          reader = null;
+          try {
+            const cancelResult = finishedReader.cancel();
+            if (cancelResult && typeof cancelResult.catch === 'function') {
+              cancelResult.catch(() => {});
+            }
+          } catch (_) {
+            // Ignore stream cancel errors
+          }
+          try {
+            probeController.abort();
+          } catch (_) {
+            // Ignore
+          }
+        } else if (typeof response?.arrayBuffer === 'function') {
+          const buf = await response.arrayBuffer();
+          transferredBytes = buf ? buf.byteLength : 0;
+        }
+
+        if (transferredBytes <= 0) {
+          throw new WebLLMError(
+            `Connected to model CDN (${redirectedHost}, HTTP ${status}), but 0 bytes were received for ${modelLabel}. A firewall, proxy, or antivirus HTTPS scanner may be blocking binary weight streams from ${redirectedHost}. Disable stream filtering or switch networks, then click Retry.`,
+            {
+              code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
+              httpCode: 504,
+              timeout: true,
+              retryable: true
+            }
+          );
+        }
+
+        return {
+          ok: true,
+          status,
+          originHost,
+          redirectedHost,
+          acceptRanges: response?.headers?.get?.('accept-ranges') || null,
+          transferredBytes
+        };
       },
-      redirect: 'follow',
-      cache: 'no-store',
-      credentials: 'omit',
-      mode: 'cors',
-      signal: probeController.signal
-    });
-
-    const redirectedUrl = response?.url || targetUrl;
-    const redirectedHost = safeExtractHostname(redirectedUrl) || originHost;
-    const status = typeof response?.status === 'number' ? response.status : 0;
-
-    if (status < 200 || status >= 300) {
-      throw new WebLLMError(
-        `Model storage CDN (${redirectedHost}) returned HTTP ${status} while preparing ${modelLabel}. Check firewall, VPN, or proxy access to ${originHost} and ${redirectedHost}, then click Retry.`,
-        {
-          code: WEBLLM_ERROR_CODES.CDN_UNREACHABLE,
-          httpCode: status >= 400 ? status : 503,
-          retryable: status === 408 || status === 429 || status >= 500 || status === 403
+      boundedTimeoutMs,
+      () => {
+        timedOut = true;
+        try {
+          probeController.abort();
+        } catch (_) {
+          // Ignore
         }
-      );
-    }
-
-    let transferredBytes = 0;
-    if (response?.body && typeof response.body.getReader === 'function') {
-      reader = response.body.getReader();
-      while (transferredBytes === 0) {
-        const { done, value } = await reader.read();
-        if (value && value.byteLength > 0) {
-          transferredBytes += value.byteLength;
-          break;
-        }
-        if (done) {
-          break;
-        }
+        return new Error('CDN probe deadline exceeded');
       }
-      // Cancel remaining stream immediately in case the host ignored Range and returned HTTP 200
-      try {
-        await reader.cancel();
-      } catch (_) {
-        // Ignore stream cancel errors
-      }
-      reader = null;
-    } else if (typeof response?.arrayBuffer === 'function') {
-      const buf = await response.arrayBuffer();
-      transferredBytes = buf ? buf.byteLength : 0;
-    }
-
-    if (transferredBytes <= 0) {
-      throw new WebLLMError(
-        `Connected to model CDN (${redirectedHost}, HTTP ${status}), but 0 bytes were received for ${modelLabel}. A firewall, proxy, or antivirus HTTPS scanner may be blocking binary weight streams from ${redirectedHost}. Disable stream filtering or switch networks, then click Retry.`,
-        {
-          code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
-          httpCode: 504,
-          timeout: true,
-          retryable: true
-        }
-      );
-    }
-
-    const probeResult = {
-      ok: true,
-      status,
-      originHost,
-      redirectedUrl,
-      redirectedHost,
-      acceptRanges: response?.headers?.get?.('accept-ranges') || null,
-      transferredBytes
-    };
-
-    console.info(
-      `[Orvix WebLLM] CDN diagnostic probe verified: ${originHost} -> ${redirectedHost} (HTTP ${status}, ${transferredBytes} bytes)`
     );
+
+    logWebLLMStage(
+      'cdn_probe_ok',
+      {
+        originHost: probeResult.originHost,
+        redirectedHost: probeResult.redirectedHost,
+        status: probeResult.status,
+        acceptRanges: probeResult.acceptRanges || 'none',
+        transferredBytes: probeResult.transferredBytes
+      },
+      { startMs: probeStartMs }
+    );
+
     return probeResult;
   } catch (err) {
     if (signal?.aborted) {
       throw createAbortError();
     }
     if (err instanceof WebLLMError) {
-      console.warn('[Orvix WebLLM] CDN diagnostic probe failed:', err.message);
+      logWebLLMStage(
+        'cdn_probe_failed',
+        {
+          originHost,
+          redirectedHost: safeExtractHostname(response?.url) || originHost,
+          code: err.errorCode,
+          httpCode: err.httpCode,
+          message: err.message
+        },
+        { startMs: probeStartMs, level: 'warn' }
+      );
       throw err;
     }
 
@@ -980,7 +1316,7 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
         : `${originHost} / *.hf.co`;
 
     if (timedOut) {
-      const elapsedLabel = formatDurationSeconds(timeoutMs);
+      const elapsedLabel = formatDurationSeconds(boundedTimeoutMs);
       const stallMsg = response
         ? `Connected to model CDN (${redirectedHost || originHost}, HTTP ${response.status}), but the download stalled at 0 bytes for ${elapsedLabel} while preparing ${modelLabel}. Check whether your network, VPN, or antivirus HTTPS scanner blocks large binary streams from ${redirectedHost || '*.hf.co'}, then click Retry.`
         : `Timed out after ${elapsedLabel} trying to reach the model storage CDN (${hostSummary}) for ${modelLabel}. Check your internet connection or VPN/firewall rules for huggingface.co and *.hf.co, then click Retry.`;
@@ -991,7 +1327,17 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
         retryable: true,
         cause: err
       });
-      console.warn('[Orvix WebLLM] CDN diagnostic probe timed out:', stallErr.message);
+      logWebLLMStage(
+        'cdn_probe_timeout',
+        {
+          originHost,
+          redirectedHost: redirectedHost || 'unresolved',
+          status: response?.status ?? 'none',
+          timeoutMs: boundedTimeoutMs,
+          code: stallErr.errorCode
+        },
+        { startMs: probeStartMs, level: 'warn' }
+      );
       throw stallErr;
     }
 
@@ -1006,16 +1352,27 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
         cause: err
       }
     );
-    console.warn('[Orvix WebLLM] CDN diagnostic probe network/CORS failure:', unreachableErr.message);
+    logWebLLMStage(
+      'cdn_probe_failed',
+      {
+        originHost,
+        redirectedHost: redirectedHost || 'unresolved',
+        code: unreachableErr.errorCode,
+        reason: String(err?.message || err || 'network_error').slice(0, 140)
+      },
+      { startMs: probeStartMs, level: 'warn' }
+    );
     throw unreachableErr;
   } finally {
-    clearTimeout(timer);
     if (signal && onCallerAbort) {
       signal.removeEventListener('abort', onCallerAbort);
     }
     if (reader) {
       try {
-        await reader.cancel();
+        const cancelResult = reader.cancel();
+        if (cancelResult && typeof cancelResult.catch === 'function') {
+          cancelResult.catch(() => {});
+        }
       } catch (_) {
         // Ignore
       }
@@ -1033,8 +1390,22 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
  * Automatically deletes any truncated or corrupted partial entry so retries self-heal cleanly.
  */
 async function readVerifiedCachedEntry(cache, url, expectedBytes = null) {
+  const cacheOpTimeoutMs = customDownloadConfig?.cacheOpTimeoutMs ?? DEFAULT_CACHE_OP_TIMEOUT_MS;
   const req = new Request(url);
-  const match = await cache.match(req);
+  const match = await raceWithStageDeadline(
+    () => cache.match(req),
+    cacheOpTimeoutMs,
+    (ms) =>
+      new WebLLMError(
+        `Browser Cache Storage stopped responding for ${formatDurationSeconds(ms)} while checking ${sanitizeUrlForDiagnostics(url)}. Close excess tabs or restart the browser, then click Retry.`,
+        {
+          code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
+          httpCode: 504,
+          timeout: true,
+          retryable: true
+        }
+      )
+  );
   if (!match) {
     return null;
   }
@@ -1052,10 +1423,18 @@ async function readVerifiedCachedEntry(cache, url, expectedBytes = null) {
     try {
       const cloned = match.clone();
       if (typeof cloned.blob === 'function') {
-        const b = await cloned.blob();
+        const b = await raceWithStageDeadline(
+          () => cloned.blob(),
+          cacheOpTimeoutMs,
+          () => new Error('Cache blob read timed out')
+        );
         actualBytes = b.size;
       } else if (typeof cloned.arrayBuffer === 'function') {
-        const ab = await cloned.arrayBuffer();
+        const ab = await raceWithStageDeadline(
+          () => cloned.arrayBuffer(),
+          cacheOpTimeoutMs,
+          () => new Error('Cache arrayBuffer read timed out')
+        );
         actualBytes = ab.byteLength;
       }
     } catch (_) {
@@ -1064,12 +1443,22 @@ async function readVerifiedCachedEntry(cache, url, expectedBytes = null) {
   }
 
   if (expectedBytes !== null && expectedBytes > 0 && actualBytes !== null && actualBytes !== expectedBytes) {
-    console.warn(
-      `[Orvix WebLLM] Removing incomplete cached artifact ${url} (${actualBytes} bytes !== expected ${expectedBytes} bytes)`
+    logWebLLMStage(
+      'cache_entry_corrupt_removed',
+      {
+        artifact: sanitizeUrlForDiagnostics(url),
+        actualBytes,
+        expectedBytes
+      },
+      { level: 'warn' }
     );
     if (typeof cache.delete === 'function') {
       try {
-        await cache.delete(req);
+        await raceWithStageDeadline(
+          () => cache.delete(req),
+          cacheOpTimeoutMs,
+          () => new Error('Cache delete timed out')
+        );
       } catch (_) {
         // Ignore cache delete failure
       }
@@ -1105,22 +1494,11 @@ async function streamArtifactToCache({
     throw createAbortError();
   }
 
+  const artifactStartMs = Date.now();
   const effectiveFetch = getEffectiveFetch(fetchImpl);
   const originHost = safeExtractHostname(url) || 'huggingface.co';
   const streamController = new AbortController();
-  let stalled = false;
-  let stallTimer = null;
   let onCallerAbort = null;
-
-  const resetStallWatchdog = () => {
-    if (stallTimer) {
-      clearTimeout(stallTimer);
-    }
-    stallTimer = setTimeout(() => {
-      stalled = true;
-      streamController.abort();
-    }, Math.max(50, stallTimeoutMs));
-  };
 
   if (signal) {
     onCallerAbort = () => streamController.abort();
@@ -1131,20 +1509,45 @@ async function streamArtifactToCache({
   }
 
   let response = null;
+  let reader = null;
   let receivedBytes = 0;
-  resetStallWatchdog();
+
+  const watchdog = createResettableStallWatchdog(
+    stallTimeoutMs,
+    (ms) => new Error(`Artifact stream stalled after ${ms}ms`),
+    () => {
+      try {
+        streamController.abort();
+      } catch (_) {
+        // Ignore
+      }
+    }
+  );
+
+  logWebLLMStage(
+    'artifact_fetch_start',
+    {
+      artifact: artifactName,
+      originHost,
+      expectedBytes: expectedBytes ?? 'unknown',
+      stallTimeoutMs
+    },
+    { startMs: artifactStartMs }
+  );
 
   try {
-    response = await effectiveFetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      cache: 'no-store',
-      credentials: 'omit',
-      mode: 'cors',
-      signal: streamController.signal
-    });
+    response = await watchdog.race(
+      effectiveFetch(url, {
+        method: 'GET',
+        redirect: 'follow',
+        cache: 'no-store',
+        credentials: 'omit',
+        mode: 'cors',
+        signal: streamController.signal
+      })
+    );
 
-    resetStallWatchdog();
+    watchdog.touch();
 
     const redirectedHost = safeExtractHostname(response?.url) || originHost;
     const status = typeof response?.status === 'number' ? response.status : 0;
@@ -1172,15 +1575,29 @@ async function streamArtifactToCache({
           ? declaredLength
           : null;
 
+    logWebLLMStage(
+      'artifact_response_headers',
+      {
+        artifact: artifactName,
+        status,
+        redirectedHost,
+        declaredBytes: totalExpected ?? 'unknown'
+      },
+      { startMs: artifactStartMs }
+    );
+
     const chunks = [];
+    let loggedFirstBytes = false;
+    let nextMilestonePct = 25;
+
     if (response?.body && typeof response.body.getReader === 'function') {
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await watchdog.race(reader.read());
         if (done) {
           break;
         }
-        resetStallWatchdog();
+        watchdog.touch();
         if (value && value.byteLength > 0) {
           const byteChunk =
             value instanceof Uint8Array
@@ -1188,14 +1605,47 @@ async function streamArtifactToCache({
               : new Uint8Array(value.buffer || value, value.byteOffset || 0, value.byteLength);
           chunks.push(byteChunk);
           receivedBytes += byteChunk.byteLength;
+
+          if (!loggedFirstBytes) {
+            loggedFirstBytes = true;
+            logWebLLMStage(
+              'artifact_first_bytes',
+              {
+                artifact: artifactName,
+                redirectedHost,
+                firstChunkBytes: byteChunk.byteLength,
+                totalExpected: totalExpected ?? 'unknown'
+              },
+              { startMs: artifactStartMs }
+            );
+          } else if (totalExpected && totalExpected >= 1_048_576) {
+            const pct = Math.floor((receivedBytes / totalExpected) * 100);
+            if (pct >= nextMilestonePct && nextMilestonePct < 100) {
+              logWebLLMStage(
+                'artifact_bytes_milestone',
+                {
+                  artifact: artifactName,
+                  pct,
+                  receivedMB: formatMegabytes(receivedBytes),
+                  expectedMB: formatMegabytes(totalExpected)
+                },
+                { startMs: artifactStartMs }
+              );
+              while (pct >= nextMilestonePct) {
+                nextMilestonePct += 25;
+              }
+            }
+          }
+
           if (typeof onBytesProgress === 'function') {
             onBytesProgress(receivedBytes, totalExpected);
           }
         }
       }
+      reader = null;
     } else if (typeof response?.arrayBuffer === 'function') {
-      const ab = await response.arrayBuffer();
-      resetStallWatchdog();
+      const ab = await watchdog.race(response.arrayBuffer());
+      watchdog.touch();
       const view = new Uint8Array(ab);
       if (view.byteLength > 0) {
         chunks.push(view);
@@ -1237,13 +1687,25 @@ async function streamArtifactToCache({
       }
     });
 
-    await cache.put(new Request(url), cacheResponse);
+    watchdog.touch();
+    await watchdog.race(cache.put(new Request(url), cacheResponse));
 
     let arrayBufferResult = null;
     if (returnArrayBuffer) {
       arrayBufferResult = await bodyBlob.arrayBuffer();
     }
     chunks.length = 0;
+
+    logWebLLMStage(
+      'artifact_cached',
+      {
+        artifact: artifactName,
+        redirectedHost,
+        verifiedBytes: receivedBytes,
+        verifiedMB: formatMegabytes(receivedBytes)
+      },
+      { startMs: artifactStartMs }
+    );
 
     return {
       byteLength: receivedBytes,
@@ -1255,12 +1717,22 @@ async function streamArtifactToCache({
       throw createAbortError();
     }
     if (err instanceof WebLLMError) {
+      logWebLLMStage(
+        'artifact_error',
+        {
+          artifact: artifactName,
+          code: err.errorCode,
+          receivedBytes,
+          message: err.message
+        },
+        { startMs: artifactStartMs, level: 'warn' }
+      );
       throw err;
     }
 
     const redirectedHost = safeExtractHostname(response?.url) || originHost;
-    if (stalled) {
-      throw new WebLLMError(
+    if (watchdog.hasStalled()) {
+      const stallError = new WebLLMError(
         `Download of ${artifactName} for ${modelLabel} stalled on ${redirectedHost} (${formatMegabytes(receivedBytes)}${expectedBytes ? ` / ${formatMegabytes(expectedBytes)}` : ''} MB transferred; no bytes received for ${formatDurationSeconds(stallTimeoutMs)}). Completed shards were saved in browser cache — click Retry to resume.`,
         {
           code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
@@ -1270,9 +1742,21 @@ async function streamArtifactToCache({
           cause: err
         }
       );
+      logWebLLMStage(
+        'artifact_stalled',
+        {
+          artifact: artifactName,
+          redirectedHost,
+          receivedBytes,
+          expectedBytes: expectedBytes ?? 'unknown',
+          stallTimeoutMs
+        },
+        { startMs: artifactStartMs, level: 'warn' }
+      );
+      throw stallError;
     }
 
-    throw new WebLLMError(
+    const dlError = new WebLLMError(
       !isClientOnline()
         ? `Internet connection was lost while downloading ${artifactName} for ${modelLabel}. Reconnect and click Retry — completed shards will resume automatically.`
         : `Network error while downloading ${artifactName} from ${redirectedHost} for ${modelLabel}. Check your connection or firewall/VPN settings for ${redirectedHost} and click Retry — completed shards will resume automatically.`,
@@ -1283,12 +1767,32 @@ async function streamArtifactToCache({
         cause: err
       }
     );
+    logWebLLMStage(
+      'artifact_error',
+      {
+        artifact: artifactName,
+        redirectedHost,
+        code: dlError.errorCode,
+        receivedBytes,
+        reason: String(err?.message || err || 'network_error').slice(0, 140)
+      },
+      { startMs: artifactStartMs, level: 'warn' }
+    );
+    throw dlError;
   } finally {
-    if (stallTimer) {
-      clearTimeout(stallTimer);
-    }
+    watchdog.dispose();
     if (signal && onCallerAbort) {
       signal.removeEventListener('abort', onCallerAbort);
+    }
+    if (reader) {
+      try {
+        const cancelResult = reader.cancel();
+        if (cancelResult && typeof cancelResult.catch === 'function') {
+          cancelResult.catch(() => {});
+        }
+      } catch (_) {
+        // Ignore
+      }
     }
     try {
       streamController.abort();
@@ -1328,18 +1832,55 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
   const fullLabel = catalogEntry?.label || shortLabel;
   const startMs = Date.now();
   const modelBaseUrl = normalizeModelBaseUrl(modelRecord.model);
+  const cacheOpTimeoutMs = customDownloadConfig?.cacheOpTimeoutMs ?? DEFAULT_CACHE_OP_TIMEOUT_MS;
 
-  const configCache = await caches.open('webllm/config');
-  const wasmCache = await caches.open('webllm/wasm');
-  const modelCache = await caches.open('webllm/model');
+  const openScopedCache = (scopeName) =>
+    raceWithStageDeadline(
+      () => caches.open(scopeName),
+      cacheOpTimeoutMs,
+      (ms) =>
+        new WebLLMError(
+          `Browser Cache Storage (${scopeName}) did not respond within ${formatDurationSeconds(ms)}. Ensure site data/cookies are enabled and not blocked in private browsing, then click Retry.`,
+          {
+            code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
+            httpCode: 504,
+            timeout: true,
+            retryable: true
+          }
+        )
+    );
+
+  const [configCache, wasmCache, modelCache] = await Promise.all([
+    openScopedCache('webllm/config'),
+    openScopedCache('webllm/wasm'),
+    openScopedCache('webllm/model')
+  ]);
+
+  logWebLLMStage('caches_opened', { modelId, scopes: 3 }, { startMs });
 
   let lastEmitMs = 0;
+  let lastLoggedPctBucket = -1;
   const emitDownloadProgress = ({ progress, progressPercent, progressText, force = false }) => {
     const now = Date.now();
     if (!force && now - lastEmitMs < 90) {
       return;
     }
     lastEmitMs = now;
+    if (typeof progressPercent === 'number') {
+      const bucket = Math.floor(progressPercent / 10) * 10;
+      if (bucket > lastLoggedPctBucket) {
+        lastLoggedPctBucket = bucket;
+        logWebLLMStage(
+          'download_progress_ui',
+          {
+            modelId,
+            progressPercent,
+            progressText
+          },
+          { startMs }
+        );
+      }
+    }
     if (typeof onProgress === 'function') {
       try {
         onProgress({
@@ -1367,6 +1908,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
   // 1. Ensure mlc-chat-config.json in webllm/config
   const chatConfigUrl = new URL('mlc-chat-config.json', modelBaseUrl).href;
   let chatConfigObj = null;
+  let configSource = 'cache';
   const existingConfig = await readVerifiedCachedEntry(configCache, chatConfigUrl, null);
   if (existingConfig?.response && typeof existingConfig.response.clone === 'function') {
     try {
@@ -1376,6 +1918,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
     }
   }
   if (!chatConfigObj) {
+    configSource = 'network';
     const dlConfig = await streamArtifactToCache({
       cache: configCache,
       url: chatConfigUrl,
@@ -1390,10 +1933,12 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
     });
     chatConfigObj = JSON.parse(new TextDecoder().decode(dlConfig.arrayBuffer));
   }
+  logWebLLMStage('metadata_config_ready', { modelId, source: configSource }, { startMs });
 
   // 2. Ensure tensor-cache.json in webllm/model
   const tensorCacheUrl = new URL('tensor-cache.json', modelBaseUrl).href;
   let tensorManifest = null;
+  let manifestSource = 'cache';
   const existingManifest = await readVerifiedCachedEntry(modelCache, tensorCacheUrl, null);
   if (existingManifest?.response && typeof existingManifest.response.clone === 'function') {
     try {
@@ -1403,6 +1948,13 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
     }
   }
   if (!tensorManifest) {
+    manifestSource = 'network';
+    emitDownloadProgress({
+      progress: 0,
+      progressPercent: 0,
+      progressText: `Fetching shard manifest for ${shortLabel}...`,
+      force: true
+    });
     const dlManifest = await streamArtifactToCache({
       cache: modelCache,
       url: tensorCacheUrl,
@@ -1456,6 +2008,17 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
     }
   }
 
+  logWebLLMStage(
+    'metadata_manifest_ready',
+    {
+      modelId,
+      source: manifestSource,
+      shardCount: shardItems.length,
+      totalMB: formatMegabytes(totalExpectedBytes)
+    },
+    { startMs }
+  );
+
   // Check tokenizer & WASM status as well
   const tokenizerFiles = Array.isArray(chatConfigObj?.tokenizer_files) ? chatConfigObj.tokenizer_files : [];
   const requiredTokenizerName = tokenizerFiles.includes('tokenizer.json')
@@ -1473,6 +2036,18 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       ? modelRecord.model_lib
       : null;
   const cachedWasm = wasmUrl ? await readVerifiedCachedEntry(wasmCache, wasmUrl, null) : null;
+
+  logWebLLMStage(
+    'cache_inventory',
+    {
+      modelId,
+      cachedShards: shardItems.length - missingShards.length,
+      missingShards: missingShards.length,
+      cachedTokenizer: Boolean(cachedTokenizer),
+      cachedWasm: Boolean(cachedWasm)
+    },
+    { startMs }
+  );
 
   const estimatedFallbackTotal = (catalogEntry?.estimatedDownloadMB || 270) * 1024 * 1024;
   const progressDenominator = Math.max(totalExpectedBytes || estimatedFallbackTotal, 1);
@@ -1510,6 +2085,14 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
 
   // 5. Ensure tokenizer & WASM runtime library are cached before GPU reload
   if (tokenizerUrl && !cachedTokenizer) {
+    const baseRatio = Math.min(0.99, Math.max(0.01, completedBytes / progressDenominator));
+    const basePct = Math.min(99, Math.max(1, Math.round(baseRatio * 100)));
+    emitDownloadProgress({
+      progress: baseRatio,
+      progressPercent: basePct,
+      progressText: `Downloading ${requiredTokenizerName} for ${shortLabel}...`,
+      force: true
+    });
     await streamArtifactToCache({
       cache: modelCache,
       url: tokenizerUrl,
@@ -1519,14 +2102,24 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       expectedBytes: null,
       stallTimeoutMs,
       signal,
-      fetchImpl
+      fetchImpl,
+      onBytesProgress: (bytesSoFar, totalTok) => {
+        emitDownloadProgress({
+          progress: baseRatio,
+          progressPercent: basePct,
+          progressText: `Downloading ${requiredTokenizerName} for ${shortLabel} (${formatMegabytes(bytesSoFar)}${totalTok ? ` / ${formatMegabytes(totalTok)}` : ''} MB)...`,
+          force: false
+        });
+      }
     });
   }
 
   if (wasmUrl && !cachedWasm) {
+    const baseRatio = Math.min(0.99, Math.max(0.01, completedBytes / progressDenominator));
+    const basePct = Math.min(99, Math.max(1, Math.round(baseRatio * 100)));
     emitDownloadProgress({
-      progress: Math.min(0.99, Math.max(0.01, completedBytes / progressDenominator)),
-      progressPercent: Math.min(99, Math.max(1, Math.round((completedBytes / progressDenominator) * 100))),
+      progress: baseRatio,
+      progressPercent: basePct,
       progressText: `Downloading WebGPU runtime library for ${shortLabel}...`,
       force: true
     });
@@ -1539,7 +2132,15 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       expectedBytes: null,
       stallTimeoutMs,
       signal,
-      fetchImpl
+      fetchImpl,
+      onBytesProgress: (bytesSoFar, totalWasm) => {
+        emitDownloadProgress({
+          progress: baseRatio,
+          progressPercent: basePct,
+          progressText: `Downloading WebGPU runtime library for ${shortLabel} (${formatMegabytes(bytesSoFar)}${totalWasm ? ` / ${formatMegabytes(totalWasm)}` : ''} MB)...`,
+          force: false
+        });
+      }
     });
   }
 
@@ -1623,8 +2224,16 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
     }
   }
 
-  console.info(
-    `[Orvix WebLLM] All model artifacts verified in Cache Storage for ${modelId} (${shardItems.length} shards, ${formatMegabytes(totalExpectedBytes)} MB in ${((Date.now() - startMs) / 1000).toFixed(1)}s)`
+  logWebLLMStage(
+    'artifacts_all_verified',
+    {
+      modelId,
+      shardCount: shardItems.length,
+      downloadedShards: missingShards.length,
+      totalMB: formatMegabytes(totalExpectedBytes),
+      cdnHost: verifiedCdnHost || 'local-cache'
+    },
+    { startMs }
   );
 
   return {
@@ -1922,9 +2531,25 @@ export async function ensureWebLLMEngine(options = {}) {
     signal
   } = options;
 
+  const entryStartMs = Date.now();
+
   if (signal?.aborted) {
     throw createAbortError();
   }
+
+  const hasSwController = Boolean(
+    typeof navigator !== 'undefined' && navigator?.serviceWorker?.controller
+  );
+
+  logWebLLMStage(
+    'init_entry',
+    {
+      requestedModelId: requestedModelId || DEFAULT_WEBLLM_MODEL_ID,
+      online: isClientOnline(),
+      swControlled: hasSwController
+    },
+    { startMs: entryStartMs }
+  );
 
   // Validate model identifier compatibility against supported registry
   if (requestedModelId && typeof requestedModelId === 'string' && requestedModelId.trim()) {
@@ -1944,6 +2569,11 @@ export async function ensureWebLLMEngine(options = {}) {
         modelId: trimmedCandidate,
         error: unsuppErr.message
       });
+      logWebLLMStage(
+        'init_error',
+        { modelId: trimmedCandidate, code: unsuppErr.errorCode, message: unsuppErr.message },
+        { startMs: entryStartMs, level: 'warn' }
+      );
       throw unsuppErr;
     }
   }
@@ -1954,7 +2584,18 @@ export async function ensureWebLLMEngine(options = {}) {
     error: null
   });
 
+  logWebLLMStage('gpu_check_start', { requestedModelId }, { startMs: entryStartMs });
   const gpuSupport = await checkWebGPUSupport();
+  logWebLLMStage(
+    'gpu_check_done',
+    {
+      supported: gpuSupport.supported,
+      hasShaderF16: gpuSupport.hasShaderF16,
+      reasonCode: gpuSupport.reasonCode || 'ok'
+    },
+    { startMs: entryStartMs }
+  );
+
   if (!gpuSupport.supported) {
     const gpuError = new WebLLMError(
       gpuSupport.message || 'WebGPU is unavailable on this browser or device.',
@@ -1969,6 +2610,11 @@ export async function ensureWebLLMEngine(options = {}) {
       hasShaderF16: false,
       error: gpuError.message
     });
+    logWebLLMStage(
+      'init_error',
+      { code: gpuError.errorCode, message: gpuError.message },
+      { startMs: entryStartMs, level: 'warn' }
+    );
     throw gpuError;
   }
 
@@ -1992,6 +2638,11 @@ export async function ensureWebLLMEngine(options = {}) {
       modelId: resolvedModelId,
       error: unsuppErr.message
     });
+    logWebLLMStage(
+      'init_error',
+      { modelId: resolvedModelId, code: unsuppErr.errorCode, message: unsuppErr.message },
+      { startMs: entryStartMs, level: 'warn' }
+    );
     throw unsuppErr;
   }
 
@@ -2010,6 +2661,11 @@ export async function ensureWebLLMEngine(options = {}) {
       hasShaderF16: false,
       error: f16Err.message
     });
+    logWebLLMStage(
+      'init_error',
+      { modelId: resolvedModelId, code: f16Err.errorCode, message: f16Err.message },
+      { startMs: entryStartMs, level: 'warn' }
+    );
     throw f16Err;
   }
 
@@ -2032,6 +2688,7 @@ export async function ensureWebLLMEngine(options = {}) {
     if (typeof onProgress === 'function') {
       onProgress(readyPayload);
     }
+    logWebLLMStage('init_fast_path_ready', { modelId: resolvedModelId }, { startMs: entryStartMs });
     return {
       engine: engineInstance,
       modelId: resolvedModelId,
@@ -2041,6 +2698,7 @@ export async function ensureWebLLMEngine(options = {}) {
 
   // Deduplicate concurrent initialization requests for the same model
   if (activeInitPromise && activeInitModelId === resolvedModelId) {
+    logWebLLMStage('init_deduped', { modelId: resolvedModelId }, { startMs: entryStartMs });
     let unsub = null;
     if (typeof onProgress === 'function') {
       unsub = subscribeWebLLMState((st) => {
@@ -2111,10 +2769,12 @@ export async function ensureWebLLMEngine(options = {}) {
   activeInitAbortController = initController;
   activeInitModelId = resolvedModelId;
   activeInitPromise = (async () => {
+    const initStartMs = entryStartMs;
     let wasCachedBeforeInit = false;
     let hasVerifiedLocalCache = false;
     let removeAbortListener = null;
     let clearWorkerWatchdog = null;
+    let detachWorkerDiagListener = null;
 
     try {
       if (signal?.aborted || initController.signal.aborted) {
@@ -2139,10 +2799,10 @@ export async function ensureWebLLMEngine(options = {}) {
         removeAbortListener = () => signal.removeEventListener('abort', forwardCallerAbort);
       }
 
-      console.info(`[Orvix WebLLM] Starting initialization for ${resolvedModelId}`);
+      logWebLLMStage('init_pipeline_start', { modelId: resolvedModelId }, { startMs: initStartMs });
 
       // 2. Lazily import @mlc-ai/web-llm runtime
-      const webllm = await loadWebLLMModule();
+      const webllm = await loadWebLLMModule(initStartMs);
 
       // Verify model ID exists in installed prebuiltAppConfig.model_list
       const modelRecord = findPrebuiltModelRecord(webllm, resolvedModelId);
@@ -2158,8 +2818,14 @@ export async function ensureWebLLMEngine(options = {}) {
       }
 
       // 3. Verified cache check before touching network
+      logWebLLMStage('cache_check_start', { modelId: resolvedModelId }, { startMs: initStartMs });
       wasCachedBeforeInit = await isWebLLMModelCached(resolvedModelId);
       hasVerifiedLocalCache = wasCachedBeforeInit;
+      logWebLLMStage(
+        'cache_check_done',
+        { modelId: resolvedModelId, wasCachedBeforeInit },
+        { startMs: initStartMs }
+      );
 
       if (!wasCachedBeforeInit && !isClientOnline()) {
         const label = catalogEntry?.label || resolvedModelId;
@@ -2243,12 +2909,14 @@ export async function ensureWebLLMEngine(options = {}) {
 
         hasVerifiedLocalCache = true;
         const gpuStageText = `Download complete — loading ${catalogEntry?.shortLabel || resolvedModelId} into GPU memory...`;
+        // Use indeterminate progressPercent (null) rather than resetting back to 0% while
+        // the dedicated worker boots, compiles WASM, and loads cached shards into GPU VRAM.
         updateEngineState({
           status: 'loading',
           modelId: resolvedModelId,
           loadedModelId: null,
           progress: 0,
-          progressPercent: 0,
+          progressPercent: null,
           progressText: gpuStageText,
           isCached: true
         });
@@ -2258,7 +2926,7 @@ export async function ensureWebLLMEngine(options = {}) {
               status: 'loading',
               modelId: resolvedModelId,
               progress: 0,
-              progressPercent: 0,
+              progressPercent: null,
               progressText: gpuStageText,
               timeElapsed: engineState.timeElapsed || 0,
               isCached: true
@@ -2275,6 +2943,11 @@ export async function ensureWebLLMEngine(options = {}) {
 
       // 5. Spawn dedicated ES module Web Worker
       terminateWorkerImmediate();
+      logWebLLMStage(
+        'worker_spawn',
+        { modelId: resolvedModelId, hasVerifiedLocalCache },
+        { startMs: initStartMs }
+      );
       const worker = typeof customWorkerFactory === 'function'
         ? customWorkerFactory()
         : new Worker(new URL('../workers/webllmWorker.js', import.meta.url), {
@@ -2296,6 +2969,16 @@ export async function ensureWebLLMEngine(options = {}) {
             clearTimeout(watchdogTimer);
           }
           watchdogTimer = setTimeout(() => {
+            logWebLLMStage(
+              'init_timeout',
+              {
+                subStage: 'worker_gpu_init',
+                modelId: resolvedModelId,
+                timeoutMs: workerStallTimeoutMs,
+                hasVerifiedLocalCache
+              },
+              { startMs: initStartMs, level: 'warn' }
+            );
             terminateWorkerImmediate();
             reject(
               new WebLLMError(
@@ -2323,6 +3006,11 @@ export async function ensureWebLLMEngine(options = {}) {
         worker.onerror = (event) => {
           clearWorkerWatchdog?.();
           const detail = event?.message || 'Dedicated WebLLM worker encountered an unexpected fatal error.';
+          logWebLLMStage(
+            'worker_error',
+            { modelId: resolvedModelId, detail },
+            { startMs: initStartMs, level: 'error' }
+          );
           terminateWorkerImmediate();
           reject(
             new WebLLMError(detail, {
@@ -2336,6 +3024,11 @@ export async function ensureWebLLMEngine(options = {}) {
 
         worker.onmessageerror = () => {
           clearWorkerWatchdog?.();
+          logWebLLMStage(
+            'worker_message_error',
+            { modelId: resolvedModelId },
+            { startMs: initStartMs, level: 'error' }
+          );
           terminateWorkerImmediate();
           reject(
             new WebLLMError('Communication with the Browser AI worker failed.', {
@@ -2358,6 +3051,43 @@ export async function ensureWebLLMEngine(options = {}) {
         initController.signal.addEventListener('abort', onInitAbort, { once: true });
       });
 
+      // Attach non-intrusive addEventListener('message') during initialization so WebLLM's own
+      // `worker.onmessage = ...` assignment in WebWorkerMLCEngine remains untouched while we record
+      // safe RPC lifecycle events (never logging user prompt/chat content).
+      if (typeof worker.addEventListener === 'function' && typeof worker.removeEventListener === 'function') {
+        let seenInitProgressMessages = 0;
+        const onWorkerInitMessage = (event) => {
+          resetWorkerWatchdog();
+          const kind = typeof event?.data?.kind === 'string' ? event.data.kind : 'unknown';
+          if (kind === 'initProgressCallback') {
+            seenInitProgressMessages += 1;
+            if (seenInitProgressMessages === 1) {
+              logWebLLMStage(
+                'worker_first_message',
+                { modelId: resolvedModelId, kind },
+                { startMs: initStartMs }
+              );
+            }
+          } else if (kind === 'return' || kind === 'throw') {
+            logWebLLMStage(
+              'worker_rpc_settlement',
+              { modelId: resolvedModelId, kind },
+              { startMs: initStartMs, level: kind === 'throw' ? 'warn' : 'log' }
+            );
+          }
+        };
+        worker.addEventListener('message', onWorkerInitMessage);
+        detachWorkerDiagListener = () => {
+          try {
+            worker.removeEventListener('message', onWorkerInitMessage);
+          } catch (_) {
+            // Ignore
+          }
+        };
+      }
+
+      let lastLoggedWorkerBucket = -1;
+      let lastLoggedWorkerPhase = '';
       const handleInitProgress = (report) => {
         resetWorkerWatchdog();
         const hasNumericProgress =
@@ -2365,7 +3095,15 @@ export async function ensureWebLLMEngine(options = {}) {
         const rawProgress = hasNumericProgress
           ? Math.min(1, Math.max(0, report.progress))
           : null;
-        const progressPercent = rawProgress !== null ? Math.round(rawProgress * 100) : null;
+        // When artifacts are already verified in local Cache Storage, WebLLM's initial
+        // { progress: 0, text: "Start to fetch params" } is purely internal cache-load setup;
+        // keep progressPercent indeterminate (null) until rawProgress > 0 so UI never flashes 0%.
+        const progressPercent =
+          rawProgress !== null
+            ? hasVerifiedLocalCache && rawProgress === 0
+              ? null
+              : Math.round(rawProgress * 100)
+            : null;
         const text = String(report?.text || '').trim();
         const timeElapsed = typeof report?.timeElapsed === 'number' ? report.timeElapsed : 0;
 
@@ -2386,6 +3124,27 @@ export async function ensureWebLLMEngine(options = {}) {
             : isFetchStep
               ? 'downloading'
               : 'downloading';
+
+        const pctBucket = rawProgress !== null ? Math.floor(rawProgress * 5) * 20 : -1;
+        const phaseKey = lowerText.split('[')[0].trim().slice(0, 48);
+        if (pctBucket > lastLoggedWorkerBucket || (phaseKey && phaseKey !== lastLoggedWorkerPhase)) {
+          if (pctBucket > lastLoggedWorkerBucket) {
+            lastLoggedWorkerBucket = pctBucket;
+          }
+          if (phaseKey) {
+            lastLoggedWorkerPhase = phaseKey;
+          }
+          logWebLLMStage(
+            'worker_init_progress',
+            {
+              modelId: resolvedModelId,
+              stepStatus,
+              progress: rawProgress ?? 'indeterminate',
+              text: text.slice(0, 96)
+            },
+            { startMs: initStartMs }
+          );
+        }
 
         updateEngineState({
           status: stepStatus,
@@ -2444,6 +3203,8 @@ export async function ensureWebLLMEngine(options = {}) {
           ]);
 
       clearWorkerWatchdog?.();
+      detachWorkerDiagListener?.();
+      detachWorkerDiagListener = null;
       activeInitAbortReject = null;
 
       // Keep runtime worker error listener active after init so runtime crashes recover cleanly
@@ -2477,7 +3238,11 @@ export async function ensureWebLLMEngine(options = {}) {
         error: null
       });
 
-      console.info(`[Orvix WebLLM] Engine ready on device: ${resolvedModelId}`);
+      logWebLLMStage(
+        'init_ready',
+        { modelId: resolvedModelId, wasCachedBeforeInit },
+        { startMs: initStartMs }
+      );
 
       if (typeof onProgress === 'function') {
         try {
@@ -2494,10 +3259,13 @@ export async function ensureWebLLMEngine(options = {}) {
       };
     } catch (rawErr) {
       clearWorkerWatchdog?.();
+      detachWorkerDiagListener?.();
+      detachWorkerDiagListener = null;
       activeInitAbortReject = null;
       terminateWorkerImmediate();
 
       if (isAbortError(rawErr)) {
+        logWebLLMStage('init_aborted', { modelId: resolvedModelId }, { startMs: initStartMs });
         updateEngineState({
           status: 'idle',
           loadedModelId: null,
@@ -2518,8 +3286,10 @@ export async function ensureWebLLMEngine(options = {}) {
         catalogEntry?.f32FallbackModelId &&
         resolvedModelId !== catalogEntry.f32FallbackModelId
       ) {
-        console.warn(
-          `[Orvix WebLLM] WebGPU shader-f16 failed for ${resolvedModelId}; automatically falling back to FP32 variant ${catalogEntry.f32FallbackModelId}`
+        logWebLLMStage(
+          'init_f32_fallback',
+          { fromModelId: resolvedModelId, toModelId: catalogEntry.f32FallbackModelId },
+          { startMs: initStartMs, level: 'warn' }
         );
         return await ensureWebLLMEngine({
           modelId: catalogEntry.f32FallbackModelId,
@@ -2535,8 +3305,15 @@ export async function ensureWebLLMEngine(options = {}) {
         wasCached: hasVerifiedLocalCache
       });
 
-      console.warn(
-        `[Orvix WebLLM] Initialization failed for ${resolvedModelId} [${normalizedError.errorCode}]: ${normalizedError.message}`
+      logWebLLMStage(
+        'init_error',
+        {
+          modelId: resolvedModelId,
+          code: normalizedError.errorCode,
+          wasCached: hasVerifiedLocalCache,
+          message: normalizedError.message
+        },
+        { startMs: initStartMs, level: 'warn' }
       );
 
       updateEngineState({
@@ -2553,6 +3330,7 @@ export async function ensureWebLLMEngine(options = {}) {
       throw normalizedError;
     } finally {
       clearWorkerWatchdog?.();
+      detachWorkerDiagListener?.();
       if (removeAbortListener) {
         removeAbortListener();
       }
