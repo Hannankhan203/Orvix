@@ -35,6 +35,8 @@ import {
   SMOLLM2_360M_F32_WEBLLM_MODEL_ID,
   SMOLLM2_135M_WEBLLM_MODEL_ID,
   SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
+  QWEN3_06B_WEBLLM_MODEL_ID,
+  QWEN3_06B_F32_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   getSupportedWebLLMModels,
   resolveWebLLMModelId,
@@ -158,7 +160,7 @@ runTest('Invariant: Exactly 5 AI providers exist (SmolLM2 is NOT a 6th provider)
 });
 
 // 2. Qwen 2.5 1.5B Default Preservation
-runTest('Preservation: Qwen 2.5 1.5B remains default Browser AI model (360M is NOT auto-default)', () => {
+runTest('Preservation: Qwen 2.5 1.5B remains default Browser AI model (360M, 135M, and Qwen3 are NOT auto-default)', () => {
   assert.strictEqual(DEFAULT_WEBLLM_MODEL_ID, 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC');
   assert.strictEqual(PROVIDER_DEFAULT_MODELS.webllm, 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC');
   assert.ok(WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID]);
@@ -166,10 +168,11 @@ runTest('Preservation: Qwen 2.5 1.5B remains default Browser AI model (360M is N
   assert.strictEqual(WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID].shortLabel, 'Qwen 2.5 1.5B');
   assert.strictEqual(WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID].isDefault, false);
   assert.strictEqual(WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID].isDefault, false);
+  assert.strictEqual(WEBLLM_MODEL_CATALOG[QWEN3_06B_WEBLLM_MODEL_ID].isDefault, false);
 });
 
-// 3. SmolLM2 360M & 135M Model Registration
-runTest('Registration: SmolLM2 360M and 135M are present in WEBLLM_SUPPORTED_MODELS', () => {
+// 3. SmolLM2 360M, 135M & Qwen3 0.6B Model Registration
+runTest('Registration: SmolLM2 360M, 135M, and Qwen3 0.6B are present in WEBLLM_SUPPORTED_MODELS', () => {
   assert.strictEqual(SMOLLM2_360M_WEBLLM_MODEL_ID, 'SmolLM2-360M-Instruct-q4f16_1-MLC');
   assert.strictEqual(SMOLLM2_360M_F32_WEBLLM_MODEL_ID, 'SmolLM2-360M-Instruct-q4f32_1-MLC');
   assert.ok(WEBLLM_SUPPORTED_MODELS.includes(SMOLLM2_360M_WEBLLM_MODEL_ID));
@@ -179,10 +182,15 @@ runTest('Registration: SmolLM2 360M and 135M are present in WEBLLM_SUPPORTED_MOD
   assert.strictEqual(SMOLLM2_135M_F32_WEBLLM_MODEL_ID, 'SmolLM2-135M-Instruct-q0f32-MLC');
   assert.ok(WEBLLM_SUPPORTED_MODELS.includes(SMOLLM2_135M_WEBLLM_MODEL_ID));
   assert.ok(WEBLLM_SUPPORTED_MODELS.includes(SMOLLM2_135M_F32_WEBLLM_MODEL_ID));
+
+  assert.strictEqual(QWEN3_06B_WEBLLM_MODEL_ID, 'Qwen3-0.6B-q4f16_1-MLC');
+  assert.strictEqual(QWEN3_06B_F32_WEBLLM_MODEL_ID, 'Qwen3-0.6B-q4f32_1-MLC');
+  assert.ok(WEBLLM_SUPPORTED_MODELS.includes(QWEN3_06B_WEBLLM_MODEL_ID));
+  assert.ok(WEBLLM_SUPPORTED_MODELS.includes(QWEN3_06B_F32_WEBLLM_MODEL_ID));
 });
 
 // 4. Model Catalog Metadata
-runTest('Catalog: SmolLM2 360M & 135M have complete, verified metadata', () => {
+runTest('Catalog: SmolLM2 360M, 135M & Qwen3 0.6B have complete, verified metadata', () => {
   const smol360F16 = WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID];
   assert.ok(smol360F16, 'SmolLM2 360M f16 catalog entry exists');
   assert.strictEqual(smol360F16.shortLabel, 'SmolLM2 360M');
@@ -222,6 +230,27 @@ runTest('Catalog: SmolLM2 360M & 135M have complete, verified metadata', () => {
   assert.strictEqual(f32.tier, 'ultra-lightweight-f32');
   assert.strictEqual(f32.quantization, 'q0f32');
   assert.strictEqual(f32.f32FallbackModelId, null);
+
+  const q3f16 = WEBLLM_MODEL_CATALOG[QWEN3_06B_WEBLLM_MODEL_ID];
+  assert.ok(q3f16, 'Qwen3 0.6B f16 catalog entry exists');
+  assert.strictEqual(q3f16.shortLabel, 'Qwen3 0.6B');
+  assert.strictEqual(q3f16.tier, 'lightweight');
+  assert.strictEqual(q3f16.quantization, 'q4f16_1');
+  assert.strictEqual(q3f16.estimatedDownloadMB, 335);
+  assert.strictEqual(q3f16.vramRequiredMB, 1403.34);
+  assert.strictEqual(q3f16.contextWindowSize, 4096);
+  assert.strictEqual(q3f16.f32FallbackModelId, QWEN3_06B_F32_WEBLLM_MODEL_ID);
+  assert.strictEqual(q3f16.isDefault, false);
+
+  const q3f32 = WEBLLM_MODEL_CATALOG[QWEN3_06B_F32_WEBLLM_MODEL_ID];
+  assert.ok(q3f32, 'Qwen3 0.6B f32 catalog entry exists');
+  assert.strictEqual(q3f32.shortLabel, 'Qwen3 0.6B (FP32)');
+  assert.strictEqual(q3f32.tier, 'lightweight-f32');
+  assert.strictEqual(q3f32.quantization, 'q4f32_1');
+  assert.strictEqual(q3f32.estimatedDownloadMB, 335);
+  assert.strictEqual(q3f32.vramRequiredMB, 1924.98);
+  assert.strictEqual(q3f32.f32FallbackModelId, null);
+  assert.strictEqual(q3f32.isDefault, false);
 });
 
 // 5. Compatibility Verification for webllm provider
@@ -317,14 +346,15 @@ runTest('Hardware Resolution: shader-f16 fallback for SmolLM2 360M & 135M', () =
 });
 
 // 9. UI Dropdown List
-runTest('UI Options: getSupportedWebLLMModels returns Qwen 1.5B, SmolLM2 360M, and SmolLM2 135M', () => {
+runTest('UI Options: getSupportedWebLLMModels returns Qwen 1.5B, SmolLM2 360M, SmolLM2 135M, and Qwen3 0.6B', () => {
   const models = getSupportedWebLLMModels();
-  assert.strictEqual(models.length, 3);
+  assert.strictEqual(models.length, 4);
   const ids = models.map((m) => m.id);
   assert.deepStrictEqual(ids, [
     DEFAULT_WEBLLM_MODEL_ID,
     SMOLLM2_360M_WEBLLM_MODEL_ID,
-    SMOLLM2_135M_WEBLLM_MODEL_ID
+    SMOLLM2_135M_WEBLLM_MODEL_ID,
+    QWEN3_06B_WEBLLM_MODEL_ID
   ]);
 });
 
@@ -514,7 +544,11 @@ await runAsyncTest('Switching: Seamless transition across Qwen 1.5B, SmolLM2 360
   await ensureWebLLMEngine({ modelId: SMOLLM2_135M_WEBLLM_MODEL_ID });
   assert.strictEqual(getWebLLMState().modelId, SMOLLM2_135M_WEBLLM_MODEL_ID);
 
-  // 4. Switch back to Qwen 2.5 1.5B
+  // 4. Switch to Qwen3 0.6B
+  await ensureWebLLMEngine({ modelId: QWEN3_06B_WEBLLM_MODEL_ID });
+  assert.strictEqual(getWebLLMState().modelId, QWEN3_06B_WEBLLM_MODEL_ID);
+
+  // 5. Switch back to Qwen 2.5 1.5B
   await ensureWebLLMEngine({ modelId: DEFAULT_WEBLLM_MODEL_ID });
   assert.strictEqual(getWebLLMState().modelId, DEFAULT_WEBLLM_MODEL_ID);
 
@@ -522,6 +556,7 @@ await runAsyncTest('Switching: Seamless transition across Qwen 1.5B, SmolLM2 360
     DEFAULT_WEBLLM_MODEL_ID,
     SMOLLM2_360M_WEBLLM_MODEL_ID,
     SMOLLM2_135M_WEBLLM_MODEL_ID,
+    QWEN3_06B_WEBLLM_MODEL_ID,
     DEFAULT_WEBLLM_MODEL_ID
   ]);
 

@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.2.7**
+**Version: v0.2.8**
 
 <p align="center">
   <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring On-Device Browser AI (WebLLM & WebGPU), Offline PWA App-Shell Caching, Client-Side Document Extraction, Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
@@ -171,8 +171,10 @@ Orvix packages verified prebuilt model configurations for WebGPU execution under
 | **SmolLM2 360M (FP32 Fallback)** | `SmolLM2-360M-Instruct-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~210 MB | ~580 MB | 4,096 tokens | Devices without native `shader-f16` support |
 | **SmolLM2 135M Instruct (Ultra Lightweight)** | `SmolLM2-135M-Instruct-q0f16-MLC` | 16-bit (`q0f16`) | ~270 MB | ~360 MB | 4,096 tokens | Ultra-lightweight testing, fast local responses |
 | **SmolLM2 135M (FP32 Fallback)** | `SmolLM2-135M-Instruct-q0f32-MLC` | 32-bit (`q0f32`) | ~540 MB | ~656 MB | 4,096 tokens | Devices without native `shader-f16` support |
+| **Qwen3 0.6B (Lightweight)** | `Qwen3-0.6B-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~335 MB | ~1,403 MB | 4,096 tokens | Lightweight modern reasoning, low-memory systems |
+| **Qwen3 0.6B (FP32 Fallback)** | `Qwen3-0.6B-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~335 MB | ~1,925 MB | 4,096 tokens | Devices without native `shader-f16` support |
 
-- **Default Standard Selection with Explicit Compact Alternatives**: **Qwen 2.5 1.5B Instruct** remains the default Browser AI model for balanced reasoning quality, while users can explicitly select **SmolLM2 360M Instruct** (~210 MB 4-bit `q4f16_1`) or **SmolLM2 135M Instruct** (~270 MB 16-bit `q0f16`) for fast downloads and low GPU memory footprints.
+- **Four Selectable Offline Models**: **Qwen 2.5 1.5B Instruct** remains the default Browser AI model for balanced reasoning quality, while users can explicitly select **SmolLM2 360M Instruct** (~210 MB 4-bit `q4f16_1`), **SmolLM2 135M Instruct** (~270 MB 16-bit `q0f16`), or **Qwen3 0.6B** (~335 MB 4-bit `q4f16_1`) via the Browser AI model selector.
 - **Automatic Shader-F16 Compatibility Fallback**: Before loading model weights, `checkWebGPUSupport()` inspects the active graphics adapter for the WebGPU 16-bit floating point extension (`shader-f16`). If the visitor's hardware does not support `shader-f16`, `resolveWebLLMModelId()` automatically routes to the compatible FP32 variant (`q4f32_1` or `q0f32`), preventing initialization crashes.
 - **Browser-Managed Weight Storage**: Model weights are stored in browser Cache Storage across partitioned tensor shards keyed by model-specific URLs. They are never downloaded in a single monolithic file. If a network interruption occurs during download, already-cached shards are preserved and resume automatically on the next attempt.
 
@@ -1125,7 +1127,12 @@ When troubleshooting streaming completions or intermittent upstream latency on s
 
 Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`). Below is the concise, scannable history of all releases and development milestones.
 
-### v0.2.7 — SmolLM2 360M Browser AI Compact Model *(Current)*
+### v0.2.8 — Qwen3 0.6B Browser AI Lightweight Model *(Current)*
+- **Qwen3 0.6B Integration**: Added `Qwen3-0.6B-q4f16_1-MLC` (4-bit `q4f16_1`, ~335 MB download across 9 shards, ~1,403 MB VRAM, 4,096-token context window) and its FP32 compatibility fallback `Qwen3-0.6B-q4f32_1-MLC` (~335 MB download, ~1,925 MB VRAM) as the fourth selectable offline model in the Browser AI model-selection interface.
+- **Hardened Shared Infrastructure**: Reuses the proven multi-shard CDN reachability probe, byte-based download progress tracking, partitioned Cache Storage isolation (`webllm/config`, `webllm/wasm`, `webllm/model`), stall watchdogs, and dedicated worker WebGPU compilation without artifact collisions across models.
+- **Strict Invariants Preserved**: Preserved `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` as the default model, kept `SmolLM2 360M` and `SmolLM2 135M` fully functional, preserved the main provider selector label `Browser AI WebLLM`, and maintained the 5-provider architecture. Note: Automated pipeline validation is complete; real-browser WebGPU execution verification remains pending testing on Chrome/Edge.
+
+### v0.2.7 — SmolLM2 360M Browser AI Compact Model
 - **SmolLM2 360M Instruct Integration**: Added `SmolLM2-360M-Instruct-q4f16_1-MLC` (4-bit `q4f16_1`, ~210 MB download across 7 shards, ~380 MB VRAM, 4,096-token context) and its FP32 compatibility fallback `SmolLM2-360M-Instruct-q4f32_1-MLC` (~210 MB download, ~580 MB VRAM) as an explicit user-selectable model under the existing Browser AI (`webllm`) provider.
 - **Shared Hardened Download & Cache Isolation Pipeline**: Reuses the verified CDN reachability probe, streaming byte-progress pre-downloader, stall/worker watchdogs, and URL-scoped Cache Storage buckets (`webllm/config`, `webllm/wasm`, `webllm/model`) so SmolLM2 360M, SmolLM2 135M, and Qwen 2.5 1.5B artifacts never collide.
 - **Strict Default & Provider Preservation**: Preserved `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` as the default Browser AI model, retained `SmolLM2-135M-Instruct-q0f16-MLC` unchanged, and maintained the 5-provider architecture plus Service Worker Hugging Face/CDN bypass.

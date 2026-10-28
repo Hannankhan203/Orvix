@@ -36,6 +36,8 @@ export const SMOLLM2_360M_WEBLLM_MODEL_ID = 'SmolLM2-360M-Instruct-q4f16_1-MLC';
 export const SMOLLM2_360M_F32_WEBLLM_MODEL_ID = 'SmolLM2-360M-Instruct-q4f32_1-MLC';
 export const SMOLLM2_135M_WEBLLM_MODEL_ID = 'SmolLM2-135M-Instruct-q0f16-MLC';
 export const SMOLLM2_135M_F32_WEBLLM_MODEL_ID = 'SmolLM2-135M-Instruct-q0f32-MLC';
+export const QWEN3_06B_WEBLLM_MODEL_ID = 'Qwen3-0.6B-q4f16_1-MLC';
+export const QWEN3_06B_F32_WEBLLM_MODEL_ID = 'Qwen3-0.6B-q4f32_1-MLC';
 export const LIGHTWEIGHT_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
 export const LIGHTWEIGHT_F32_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC';
 
@@ -160,6 +162,46 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     maxDocChars: 6_000,
     maxHistoryMessages: 6,
     defaultMaxTokens: 768,
+    isDefault: false
+  }),
+  [QWEN3_06B_WEBLLM_MODEL_ID]: Object.freeze({
+    id: QWEN3_06B_WEBLLM_MODEL_ID,
+    label: 'Qwen3 0.6B',
+    shortLabel: 'Qwen3 0.6B',
+    tier: 'lightweight',
+    tierLabel: 'Lightweight',
+    parameters: '~0.6B parameters',
+    description: 'Lightweight (~0.6B parameters, Offline / Browser AI)',
+    quantization: 'q4f16_1',
+    prefersShaderF16: true,
+    f32FallbackModelId: QWEN3_06B_F32_WEBLLM_MODEL_ID,
+    vramRequiredMB: 1403.34,
+    estimatedDownloadMB: 335,
+    minStorageBytes: 450 * 1024 * 1024,
+    contextWindowSize: 4096,
+    maxDocChars: 8_000,
+    maxHistoryMessages: 6,
+    defaultMaxTokens: 896,
+    isDefault: false
+  }),
+  [QWEN3_06B_F32_WEBLLM_MODEL_ID]: Object.freeze({
+    id: QWEN3_06B_F32_WEBLLM_MODEL_ID,
+    label: 'Qwen3 0.6B (FP32)',
+    shortLabel: 'Qwen3 0.6B (FP32)',
+    tier: 'lightweight-f32',
+    tierLabel: 'Lightweight (FP32)',
+    parameters: '~0.6B parameters',
+    description: 'Lightweight (~0.6B parameters, Offline / Browser AI, FP32)',
+    quantization: 'q4f32_1',
+    prefersShaderF16: false,
+    f32FallbackModelId: null,
+    vramRequiredMB: 1924.98,
+    estimatedDownloadMB: 335,
+    minStorageBytes: 450 * 1024 * 1024,
+    contextWindowSize: 4096,
+    maxDocChars: 8_000,
+    maxHistoryMessages: 6,
+    defaultMaxTokens: 896,
     isDefault: false
   }),
   [LIGHTWEIGHT_WEBLLM_MODEL_ID]: Object.freeze({
@@ -596,7 +638,8 @@ export function getSupportedWebLLMModels(options = {}) {
   const primaryModels = [
     WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID],
     WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID],
-    WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID]
+    WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID],
+    WEBLLM_MODEL_CATALOG[QWEN3_06B_WEBLLM_MODEL_ID]
   ].filter(Boolean);
 
   if (includeF32Variants) {

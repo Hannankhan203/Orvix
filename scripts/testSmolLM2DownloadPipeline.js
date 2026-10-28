@@ -36,6 +36,8 @@ import {
   SMOLLM2_360M_F32_WEBLLM_MODEL_ID,
   SMOLLM2_135M_WEBLLM_MODEL_ID,
   SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
+  QWEN3_06B_WEBLLM_MODEL_ID,
+  QWEN3_06B_F32_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   WEBLLM_ERROR_CODES,
   probeWebLLMModelCDN,
@@ -224,7 +226,7 @@ function createHangingStreamResponse({
 console.log('\n=== SmolLM2 135M Download Pipeline & Stall Protection Suite ===\n');
 
 // 1. Verify exact model IDs & quantizations against installed @mlc-ai/web-llm@0.2.86
-await runCase('Exact SmolLM2 360M, SmolLM2 135M & Qwen 2.5 1.5B IDs match installed @mlc-ai/web-llm@0.2.86 catalog', async () => {
+await runCase('Exact SmolLM2 360M, SmolLM2 135M, Qwen2.5 1.5B & Qwen3 0.6B IDs match installed @mlc-ai/web-llm@0.2.86 catalog', async () => {
   const modelList = webllmPkg.prebuiltAppConfig?.model_list;
   assert.ok(Array.isArray(modelList) && modelList.length > 0, 'prebuiltAppConfig.model_list must exist');
 
@@ -234,6 +236,8 @@ await runCase('Exact SmolLM2 360M, SmolLM2 135M & Qwen 2.5 1.5B IDs match instal
   const smolF32 = modelList.find((m) => m.model_id === SMOLLM2_135M_F32_WEBLLM_MODEL_ID);
   const qwenF16 = modelList.find((m) => m.model_id === DEFAULT_WEBLLM_MODEL_ID);
   const qwenF32 = modelList.find((m) => m.model_id === FALLBACK_F32_WEBLLM_MODEL_ID);
+  const qwen3F16 = modelList.find((m) => m.model_id === QWEN3_06B_WEBLLM_MODEL_ID);
+  const qwen3F32 = modelList.find((m) => m.model_id === QWEN3_06B_F32_WEBLLM_MODEL_ID);
 
   assert.ok(smol360F16, 'SmolLM2-360M-Instruct-q4f16_1-MLC must exist in @mlc-ai/web-llm@0.2.86');
   assert.strictEqual(
@@ -276,10 +280,36 @@ await runCase('Exact SmolLM2 360M, SmolLM2 135M & Qwen 2.5 1.5B IDs match instal
   assert.ok(qwenF16, 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC must remain valid');
   assert.ok(qwenF32, 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC must remain valid');
 
-  // Verify no unrequested extra models (e.g., SmolLM2 1.7B or Qwen3) were added
+  assert.ok(qwen3F16, 'Qwen3-0.6B-q4f16_1-MLC must exist in @mlc-ai/web-llm@0.2.86');
+  assert.strictEqual(
+    qwen3F16.model,
+    'https://huggingface.co/mlc-ai/Qwen3-0.6B-q4f16_1-MLC'
+  );
+  assert.ok(
+    qwen3F16.model_lib.includes('/v0_2_86/') &&
+      qwen3F16.model_lib.endsWith('Qwen3-0.6B-q4f16_1_cs1k-webgpu.wasm'),
+    'Qwen3 0.6B q4f16_1 WASM library URL must match v0_2_86'
+  );
+  assert.strictEqual(qwen3F16.required_features, undefined);
+  assert.strictEqual(qwen3F16.vram_required_MB, 1403.34);
+
+  assert.ok(qwen3F32, 'Qwen3-0.6B-q4f32_1-MLC must exist in @mlc-ai/web-llm@0.2.86');
+  assert.strictEqual(
+    qwen3F32.model,
+    'https://huggingface.co/mlc-ai/Qwen3-0.6B-q4f32_1-MLC'
+  );
+  assert.ok(
+    qwen3F32.model_lib.includes('/v0_2_86/') &&
+      qwen3F32.model_lib.endsWith('Qwen3-0.6B-q4f32_1_cs1k-webgpu.wasm'),
+    'Qwen3 0.6B q4f32_1 WASM library URL must match v0_2_86'
+  );
+  assert.strictEqual(qwen3F32.vram_required_MB, 1924.98);
+
+  // Verify no unrequested extra models (e.g., SmolLM2 1.7B) were added
   const catalogIds = Object.keys(WEBLLM_MODEL_CATALOG);
   assert.ok(!catalogIds.some((id) => id.includes('1.7B')), 'SmolLM2 1.7B must not be added');
-  assert.ok(!catalogIds.some((id) => id.toLowerCase().includes('qwen3')), 'Qwen3 must not be added');
+  assert.ok(catalogIds.includes(QWEN3_06B_WEBLLM_MODEL_ID), 'Qwen3 0.6B must be in catalog');
+  assert.ok(catalogIds.includes(QWEN3_06B_F32_WEBLLM_MODEL_ID), 'Qwen3 0.6B f32 must be in catalog');
 
   // Verify 4 cloud providers + local webllm & provider normalization remain intact
   assert.deepStrictEqual([...CLOUD_PROVIDER_IDS], ['gemini', 'groq', 'openrouter', 'cloudflare']);

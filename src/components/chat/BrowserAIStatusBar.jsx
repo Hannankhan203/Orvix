@@ -14,6 +14,7 @@ import {
   DEFAULT_WEBLLM_MODEL_ID,
   SMOLLM2_360M_WEBLLM_MODEL_ID,
   SMOLLM2_135M_WEBLLM_MODEL_ID,
+  QWEN3_06B_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   getSupportedWebLLMModels
 } from '../../services/webllmService.js';
@@ -119,9 +120,10 @@ export default function BrowserAIStatusBar({
     detail =
       errorMessage ||
       (selectedCatalog.id === SMOLLM2_135M_WEBLLM_MODEL_ID ||
-      selectedCatalog.id === SMOLLM2_360M_WEBLLM_MODEL_ID
+      selectedCatalog.id === SMOLLM2_360M_WEBLLM_MODEL_ID ||
+      selectedCatalog.id === QWEN3_06B_WEBLLM_MODEL_ID
         ? 'Model download or WebGPU initialization failed. Check your internet connection and browser storage, then click Retry.'
-        : 'Model download or WebGPU initialization failed. Check storage/GPU memory or try a smaller SmolLM2 (360M or 135M) model.');
+        : 'Model download or WebGPU initialization failed. Check storage/GPU memory or try a smaller model (SmolLM2 360M/135M or Qwen3 0.6B).');
   } else if (loadedMatchesSelected) {
     tone = 'ready';
     statusBadge = {

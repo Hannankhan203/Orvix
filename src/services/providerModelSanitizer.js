@@ -69,6 +69,8 @@ export const WEBLLM_SUPPORTED_MODELS = Object.freeze([
   'SmolLM2-360M-Instruct-q4f32_1-MLC',
   'SmolLM2-135M-Instruct-q0f16-MLC',
   'SmolLM2-135M-Instruct-q0f32-MLC',
+  'Qwen3-0.6B-q4f16_1-MLC',
+  'Qwen3-0.6B-q4f32_1-MLC',
   'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
   'Qwen2.5-0.5B-Instruct-q4f32_1-MLC'
 ]);
@@ -182,8 +184,12 @@ const KNOWN_UI_DISPLAY_LABELS = new Set([
   'browser ai (webllm) - smollm2 135m',
   'browser ai (webllm) — smollm2 360m',
   'browser ai (webllm) - smollm2 360m',
+  'browser ai (webllm) — qwen3 0.6b',
+  'browser ai (webllm) - qwen3 0.6b',
   'qwen 2.5 1.5b',
   'qwen 2.5 coder 1.5b',
+  'qwen3 0.6b',
+  'qwen3',
   'smollm2 135m',
   'llama 3.2 1b',
   'smollm2 360m'
