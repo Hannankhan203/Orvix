@@ -406,6 +406,209 @@ await runTest('10. Non-Streaming Timeout Contract (HTTP 504 JSON with canFallbac
   }
 });
 
+// ----------------------------------------------------------------------------
+// Test 11: Edit-and-Resend Succeeds When Gemini Responds Normally
+// ----------------------------------------------------------------------------
+await runTest('11. Edit-and-resend succeeds when Gemini responds normally', async () => {
+  let receivedPayload = null;
+
+  const mock = await createMockServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      receivedPayload = JSON.parse(body || '{}');
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'X-Accel-Buffering': 'no'
+      });
+      res.write(': prime\n\n');
+      res.write('data: {"type":"start","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+      res.write('data: {"type":"chunk","text":"Here is the updated explanation for your edited question."}\n\n');
+      res.write('data: {"type":"done","text":"Here is the updated explanation for your edited question.","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+      res.end();
+    });
+  });
+
+  try {
+    // Simulate initial conversation turns:
+    // Turn 0: User: "What is machine learning?"
+    // Turn 1: Assistant: "Machine learning is..."
+    // Turn 2: User: "Give me an example" (edited to "Give me 3 practical examples")
+    const fullConversation = [
+      { id: 'msg-1', sender: 'user', content: 'What is machine learning?' },
+      { id: 'msg-2', sender: 'assistant', content: 'Machine learning is a field of AI...' },
+      { id: 'msg-3', sender: 'user', content: 'Give me an example' },
+      { id: 'msg-4', sender: 'assistant', content: 'One example is spam filtering.' }
+    ];
+
+    // Branch truncation to messages before msg-3 (index 2)
+    const userMsgIndex = 2;
+    const earlierMessages = fullConversation.slice(0, userMsgIndex);
+    const validHistory = earlierMessages.filter((m) => !m.isError);
+    const editedPrompt = 'Give me 3 practical examples';
+
+    let streamedTokens = '';
+    const result = await streamAIMessage({
+      provider: 'gemini',
+      prompt: editedPrompt,
+      history: validHistory,
+      chatEndpoint: `${mock.url}/api/chat`,
+      onChunk: (chunk) => {
+        streamedTokens += chunk;
+      }
+    });
+
+    assert.equal(result.provider, 'gemini');
+    assert.equal(result.text, 'Here is the updated explanation for your edited question.');
+    assert.equal(streamedTokens, 'Here is the updated explanation for your edited question.');
+
+    // Verify truncated history was transmitted without contradictory subsequent turns
+    assert.equal(receivedPayload.prompt, editedPrompt);
+    assert.equal(receivedPayload.history.length, 2);
+    assert.equal(receivedPayload.history[0].content, 'What is machine learning?');
+    assert.equal(receivedPayload.history[1].content, 'Machine learning is a field of AI...');
+  } finally {
+    await mock.close();
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Test 12: Edit-and-Resend Handles Delayed First Output Without Premature Timeout
+// ----------------------------------------------------------------------------
+await runTest('12. Edit-and-resend handles delayed first output without premature frontend timeout', async () => {
+  const mock = await createMockServer(async (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'X-Accel-Buffering': 'no'
+    });
+    // Immediate priming
+    res.write(': prime\n\n');
+
+    // Simulate upstream latency where model takes 200ms before first token
+    await sleep(60);
+    res.write(': keepalive\n\n');
+    await sleep(60);
+    res.write(': keepalive\n\n');
+    await sleep(60);
+
+    res.write('data: {"type":"start","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+    res.write('data: {"type":"chunk","text":"Delayed output safely arrived"}\n\n');
+    res.write('data: {"type":"done","text":"Delayed output safely arrived","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+    res.end();
+  });
+
+  try {
+    const result = await streamAIMessage({
+      provider: 'gemini',
+      prompt: 'edited prompt with latency',
+      history: [],
+      chatEndpoint: `${mock.url}/api/chat`
+    });
+
+    assert.equal(result.text, 'Delayed output safely arrived');
+  } finally {
+    await mock.close();
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Test 13: SSE Heartbeat Comments Do Not Count as Content or Cause False Timeouts
+// ----------------------------------------------------------------------------
+await runTest('13. SSE heartbeat comments do not count as generated content or trigger false timeouts', async () => {
+  const receivedChunks = [];
+
+  const mock = await createMockServer(async (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'X-Accel-Buffering': 'no'
+    });
+    res.write(': prime\n\n');
+    res.write(':\n\n');
+    res.write(': keepalive\n\n');
+    await sleep(40);
+    res.write('data: {"type":"start","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+    res.write(': keepalive\n\n');
+    res.write('data: {"type":"chunk","text":"Clean "}\n\n');
+    res.write(': keepalive\n\n');
+    res.write('data: {"type":"chunk","text":"Content"}\n\n');
+    res.write(':\n\n');
+    res.write('data: {"type":"done","text":"Clean Content","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+    res.end();
+  });
+
+  try {
+    const result = await streamAIMessage({
+      provider: 'gemini',
+      prompt: 'check heartbeats',
+      chatEndpoint: `${mock.url}/api/chat`,
+      onChunk: (chunk) => {
+        receivedChunks.push(chunk);
+      }
+    });
+
+    assert.equal(result.text, 'Clean Content');
+    assert.deepEqual(receivedChunks, ['Clean ', 'Content']);
+    assert.ok(!result.text.includes(':'));
+    assert.ok(!result.text.includes('keepalive'));
+  } finally {
+    await mock.close();
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Test 14: Cancelled or Superseded Edit Request Cannot Corrupt Newer Request
+// ----------------------------------------------------------------------------
+await runTest('14. A cancelled or superseded edit request cannot corrupt a newer request', async () => {
+  const isolation = createRequestIsolationController();
+
+  // Edit Request 1 started
+  const edit1 = isolation.beginRequest({ chatId: 'chat-1', assistantMessageId: 'asst-1', provider: 'gemini' });
+  assert.equal(isolation.isRequestActive(edit1.requestId), true);
+
+  // Edit Request 2 arrives and supersedes Request 1
+  const edit2 = isolation.beginRequest({ chatId: 'chat-1', assistantMessageId: 'asst-2', provider: 'gemini' });
+  assert.equal(isolation.isRequestActive(edit1.requestId), false);
+  assert.equal(edit1.signal.aborted, true);
+  assert.equal(isolation.isRequestActive(edit2.requestId), true);
+
+  // Attempted mutations from edit1 are rejected
+  assert.equal(isolation.canMutateChatUI(edit1.requestId, 'chat-1', 'chat-1'), false);
+  assert.equal(isolation.canMutateChatUI(edit2.requestId, 'chat-1', 'chat-1'), true);
+
+  isolation.markFinalized(edit2.requestId);
+  assert.equal(isolation.isRequestActive(edit2.requestId), false);
+});
+
+// ----------------------------------------------------------------------------
+// Test 15: Normal New-Message Streaming Continues to Work
+// ----------------------------------------------------------------------------
+await runTest('15. Normal new-message streaming continues to work alongside edit-and-resend', async () => {
+  const mock = await createMockServer((req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'X-Accel-Buffering': 'no'
+    });
+    res.write(': prime\n\n');
+    res.write('data: {"type":"start","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+    res.write('data: {"type":"chunk","text":"Normal message response"}\n\n');
+    res.write('data: {"type":"done","text":"Normal message response","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
+    res.end();
+  });
+
+  try {
+    const result = await streamAIMessage({
+      provider: 'gemini',
+      prompt: 'regular new message',
+      chatEndpoint: `${mock.url}/api/chat`
+    });
+
+    assert.equal(result.text, 'Normal message response');
+    assert.equal(result.provider, 'gemini');
+  } finally {
+    await mock.close();
+  }
+});
+
 console.log('\n================================================================');
 console.log(`📊 Gemini Vercel Timeout Suite: ${passed} passed, ${failed} failed`);
 console.log('================================================================\n');
@@ -415,3 +618,4 @@ if (failed > 0) {
 } else {
   process.exit(0);
 }
+

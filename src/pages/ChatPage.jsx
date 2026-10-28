@@ -2296,179 +2296,196 @@ export default function ChatPage() {
 
     let currentChatId = initialChatId;
 
-    // Ensure we have an active chat ID
-    if (!currentChatId) {
-      const titleSnippet = generateChatTitle(trimmed);
-      if (isCloudEnabled && currentUser?.uid) {
-        try {
-          const createdId = await createChatDocument(currentUser.uid, titleSnippet, activeMode);
-          if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
-          currentChatId = createdId;
-          skipNextChatLoadRef.current = currentChatId;
-          const cachedList = getCachedUserChats(currentUser.uid);
-          if (cachedList.length > 0) {
-            setUserChats(cachedList);
+    try {
+      // Ensure we have an active chat ID
+      if (!currentChatId) {
+        const titleSnippet = generateChatTitle(trimmed);
+        if (isCloudEnabled && currentUser?.uid) {
+          try {
+            const createdId = await createChatDocument(currentUser.uid, titleSnippet, activeMode);
+            if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
+            currentChatId = createdId;
+            skipNextChatLoadRef.current = currentChatId;
+            const cachedList = getCachedUserChats(currentUser.uid);
+            if (cachedList.length > 0) {
+              setUserChats(cachedList);
+            }
+          } catch (error) {
+            if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
+            console.warn('Could not create Firestore chat doc for edit, using local fallback:', error);
+            currentChatId = `local-${Date.now()}`;
+            skipNextChatLoadRef.current = currentChatId;
+            setUserChats((previous) => [
+              {
+                id: currentChatId,
+                title: titleSnippet,
+                mode: activeMode || 'general',
+                timestamp: 'Just now',
+                rawUpdatedAt: Date.now(),
+                isPinned: false,
+                pinnedAt: null,
+                pendingSync: true
+              },
+              ...previous
+            ]);
           }
-        } catch (error) {
-          if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
-          console.warn('Could not create Firestore chat doc for edit, using local fallback:', error);
-          currentChatId = `local-${Date.now()}`;
-          skipNextChatLoadRef.current = currentChatId;
-          setUserChats((previous) => [
-            {
-              id: currentChatId,
-              title: titleSnippet,
-              mode: activeMode || 'general',
-              timestamp: 'Just now',
-              rawUpdatedAt: Date.now(),
-              isPinned: false,
-              pinnedAt: null,
-              pendingSync: true
-            },
-            ...previous
-          ]);
+        } else {
+          currentChatId = `guest-${Date.now()}`;
+          const newGuestChat = {
+            id: currentChatId,
+            title: titleSnippet,
+            timestamp: 'Just now',
+            rawUpdatedAt: Date.now(),
+            isPinned: false,
+            pinnedAt: null,
+            messages: []
+          };
+          setUserChats((previous) => {
+            const next = [newGuestChat, ...previous];
+            saveGuestChats(next);
+            return next;
+          });
         }
+
+        activeChatIdRef.current = currentChatId;
+        setActiveChatId(currentChatId);
+        sessionStorage.setItem('orvix_active_chat', currentChatId);
+        sessionStorage.setItem('chatora_active_chat', currentChatId);
+      }
+
+      if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
+
+      // 1. Context: identify all previous non-error messages strictly before this message
+      const earlierMessages = currentMessagesSnapshot.slice(0, userMsgIndex);
+      const validHistory = earlierMessages.filter((m) => !m.isError);
+
+      // 2. Truncation: identify all contradictory later messages to be removed from the thread
+      const laterMessages = currentMessagesSnapshot.slice(userMsgIndex + 1);
+      const laterMessageIds = laterMessages.map((m) => m.id).filter(Boolean);
+
+      // 3. Invalidate persistence cache for truncated message IDs
+      laterMessageIds.forEach((id) => {
+        persistedMessageIdsRef.current.delete(id);
+      });
+
+      // 4. Update the user message in-place with the edited prompt and current timestamp
+      //    (ensure transient base64/dataUrl fields cannot linger in React state or localStorage)
+      const updatedUserMessage = {
+        ...currentMessagesSnapshot[userMsgIndex],
+        attachments: Array.isArray(currentMessagesSnapshot[userMsgIndex]?.attachments)
+          ? currentMessagesSnapshot[userMsgIndex].attachments.map((att) => {
+              if (!att || typeof att !== 'object') return att;
+              const { base64: _b64, dataUrl: _dUrl, data: _rawData, ...cleanAtt } = att;
+              if (typeof cleanAtt.previewUrl === 'string' && cleanAtt.previewUrl.startsWith('data:')) {
+                delete cleanAtt.previewUrl;
+              }
+              return cleanAtt;
+            })
+          : currentMessagesSnapshot[userMsgIndex]?.attachments,
+        content: trimmed,
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+      };
+
+      // Remove user message ID from persistence cache to allow fresh write
+      persistedMessageIdsRef.current.delete(updatedUserMessage.id);
+
+      // 5. Create fresh assistant response placeholder
+      const now = Date.now();
+      const assistantMessageId = `${editProvider}-${now}-assistant`;
+      const initialAssistantMessage = normalizeAssistantMessage(
+        {
+          id: assistantMessageId,
+          sender: 'assistant',
+          parentMessageId: updatedUserMessage.id,
+          provider: editProvider,
+          modelUsed: null,
+          mode: activeMode || 'general',
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          content: '',
+          isStreaming: true,
+          requestStartTime,
+          referencedAttachments: undefined
+        },
+        updatedUserMessage
+      );
+
+      // 6. Truncate conversation state to: earlier + updatedUserMessage + initialAssistantMessage
+      const nextMessages = [
+        ...earlierMessages,
+        updatedUserMessage,
+        initialAssistantMessage
+      ];
+      updateMessagesState(nextMessages);
+
+      // 7. Persist changes to Cloud Firestore or Guest Storage
+      if (isCloudEnabled && currentUser?.uid) {
+        if (laterMessageIds.length > 0) {
+          deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds).catch((err) => {
+            console.warn('Could not delete truncated messages from Cloud Firestore:', err);
+          });
+        } else {
+          saveCachedChatMessages(
+            currentUser.uid,
+            currentChatId,
+            [...earlierMessages, updatedUserMessage]
+          );
+        }
+        void persistMessageSafe(currentChatId, updatedUserMessage);
       } else {
-        currentChatId = `guest-${Date.now()}`;
-        const newGuestChat = {
-          id: currentChatId,
-          title: titleSnippet,
-          timestamp: 'Just now',
-          rawUpdatedAt: Date.now(),
-          isPinned: false,
-          pinnedAt: null,
-          messages: []
-        };
         setUserChats((previous) => {
-          const next = [newGuestChat, ...previous];
+          const next = previous.map((chat) => {
+            if (chat.id !== currentChatId) return chat;
+            return {
+              ...chat,
+              rawUpdatedAt: Date.now(),
+              messages: nextMessages
+            };
+          });
           saveGuestChats(next);
           return next;
         });
       }
 
-      activeChatIdRef.current = currentChatId;
-      setActiveChatId(currentChatId);
-      sessionStorage.setItem('orvix_active_chat', currentChatId);
-      sessionStorage.setItem('chatora_active_chat', currentChatId);
-    }
-
-    if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
-
-    // 1. Context: identify all previous non-error messages strictly before this message
-    const earlierMessages = currentMessagesSnapshot.slice(0, userMsgIndex);
-    const validHistory = earlierMessages.filter((m) => !m.isError);
-
-    // 2. Truncation: identify all contradictory later messages to be removed from the thread
-    const laterMessages = currentMessagesSnapshot.slice(userMsgIndex + 1);
-    const laterMessageIds = laterMessages.map((m) => m.id).filter(Boolean);
-
-    // 3. Invalidate persistence cache for truncated message IDs
-    laterMessageIds.forEach((id) => {
-      persistedMessageIdsRef.current.delete(id);
-    });
-
-    // 4. Update the user message in-place with the edited prompt and current timestamp
-    //    (ensure transient base64/dataUrl fields cannot linger in React state or localStorage)
-    const updatedUserMessage = {
-      ...currentMessagesSnapshot[userMsgIndex],
-      attachments: Array.isArray(currentMessagesSnapshot[userMsgIndex]?.attachments)
-        ? currentMessagesSnapshot[userMsgIndex].attachments.map((att) => {
-            if (!att || typeof att !== 'object') return att;
-            const { base64: _b64, dataUrl: _dUrl, data: _rawData, ...cleanAtt } = att;
-            if (typeof cleanAtt.previewUrl === 'string' && cleanAtt.previewUrl.startsWith('data:')) {
-              delete cleanAtt.previewUrl;
-            }
-            return cleanAtt;
-          })
-        : currentMessagesSnapshot[userMsgIndex]?.attachments,
-      content: trimmed,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-    };
-
-    // Remove user message ID from persistence cache to allow fresh write
-    persistedMessageIdsRef.current.delete(updatedUserMessage.id);
-
-    // 5. Create fresh assistant response placeholder
-    const now = Date.now();
-    const assistantMessageId = `${editProvider}-${now}-assistant`;
-    const initialAssistantMessage = normalizeAssistantMessage(
-      {
-        id: assistantMessageId,
-        sender: 'assistant',
-        parentMessageId: updatedUserMessage.id,
-        provider: editProvider,
-        modelUsed: null,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
-        }),
-        content: '',
-        isStreaming: true,
-        requestStartTime,
-        referencedAttachments: undefined
-      },
-      updatedUserMessage
-    );
-
-    // 6. Truncate conversation state to: earlier + updatedUserMessage + initialAssistantMessage
-    const nextMessages = [
-      ...earlierMessages,
-      updatedUserMessage,
-      initialAssistantMessage
-    ];
-    updateMessagesState(nextMessages);
-
-    // 7. Persist changes to Cloud Firestore or Guest Storage
-    if (isCloudEnabled && currentUser?.uid) {
-      if (laterMessageIds.length > 0) {
-        deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds).catch((err) => {
-          console.warn('Could not delete truncated messages from Cloud Firestore:', err);
-        });
-      } else {
-        saveCachedChatMessages(
-          currentUser.uid,
-          currentChatId,
-          [...earlierMessages, updatedUserMessage]
-        );
+      // 8. If editing the initial message of the conversation, update the conversation title
+      if (userMsgIndex === 0) {
+        const refreshedTitle = generateChatTitle(trimmed);
+        void handleRenameChat(currentChatId, refreshedTitle);
       }
-      void persistMessageSafe(currentChatId, updatedUserMessage);
-    } else {
-      setUserChats((previous) => {
-        const next = previous.map((chat) => {
-          if (chat.id !== currentChatId) return chat;
-          return {
-            ...chat,
-            rawUpdatedAt: Date.now(),
-            messages: nextMessages
-          };
-        });
-        saveGuestChats(next);
-        return next;
-      });
-    }
 
-    // 8. If editing the initial message of the conversation, update the conversation title
-    if (userMsgIndex === 0) {
-      const refreshedTitle = generateChatTitle(trimmed);
-      void handleRenameChat(currentChatId, refreshedTitle);
+      // 9. Execute AI stream with correct earlier history and edited prompt
+      await executePrompt(
+        trimmed,
+        validHistory,
+        currentChatId,
+        assistantMessageId,
+        editProvider,
+        updatedUserMessage.attachments || [],
+        {
+          isContinuation: false,
+          partNumber: 1,
+          originalPrompt: trimmed,
+          previousContentSummary: '',
+          referencedAttachments: []
+        },
+        requestStartTime,
+        null,
+        editRequestId
+      );
+    } catch (error) {
+      console.error('Edit-and-resend execution error:', error);
+      if (requestControllerRef.current.isRequestActive(editRequestId)) {
+        requestControllerRef.current.markFinalized(editRequestId);
+      }
+      if (!requestControllerRef.current.hasActiveRequest()) {
+        setLoadingAndSubmitting(false);
+      }
     }
-
-    // 9. Execute AI stream with correct earlier history and edited prompt
-    await executePrompt(
-      trimmed,
-      validHistory,
-      currentChatId,
-      assistantMessageId,
-      editProvider,
-      updatedUserMessage.attachments || [],
-      {},
-      requestStartTime,
-      null,
-      editRequestId
-    );
   };
 
   // Export handlers for active conversation
