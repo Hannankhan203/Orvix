@@ -19,7 +19,7 @@ import {
 /**
  * Clean, non-blocking status and progress bar for Browser AI (WebLLM).
  * Surfaces real compatibility checks, shard download progress, WebGPU compilation,
- * ready state, model tier selection (1.5B Standard vs 0.5B Lightweight), and errors.
+ * ready state, model tier selection (1.5B Standard vs SmolLM2 135M Ultra Lightweight), and errors.
  */
 export default function BrowserAIStatusBar({
   visible = false,
@@ -101,7 +101,7 @@ export default function BrowserAIStatusBar({
     headline = 'Browser AI failed to initialize';
     detail =
       errorMessage ||
-      'Model download or WebGPU initialization failed. Check storage/GPU memory or try the 0.5B lightweight model.';
+      'Model download or WebGPU initialization failed. Check storage/GPU memory or try the SmolLM2 135M ultra-lightweight model.';
   } else if (loadedMatchesSelected) {
     tone = 'ready';
     statusBadge = {
@@ -200,9 +200,7 @@ export default function BrowserAIStatusBar({
               >
                 {modelOptions.map((opt) => (
                   <option key={opt.id} value={opt.id}>
-                    {opt.tier === 'lightweight'
-                      ? `${opt.shortLabel} — Browser AI (Lightweight ~${opt.estimatedDownloadMB} MB)`
-                      : `${opt.shortLabel} — Browser AI (~${opt.estimatedDownloadMB} MB)`}
+                    {`${opt.shortLabel} — ${opt.tierLabel || (opt.tier === 'ultra-lightweight' ? 'Ultra Lightweight' : opt.tier === 'lightweight' ? 'Lightweight' : 'Standard')} (~${opt.estimatedDownloadMB} MB)`}
                   </option>
                 ))}
               </select>

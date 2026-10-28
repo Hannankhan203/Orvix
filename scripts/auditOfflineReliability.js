@@ -22,6 +22,8 @@ import {
 import {
   DEFAULT_WEBLLM_MODEL_ID,
   FALLBACK_F32_WEBLLM_MODEL_ID,
+  SMOLLM2_135M_WEBLLM_MODEL_ID,
+  SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
   LIGHTWEIGHT_WEBLLM_MODEL_ID,
   LIGHTWEIGHT_F32_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
@@ -165,9 +167,11 @@ test('parseDelimitedText accurately parses quoted CSV and formats Markdown table
 // ----------------------------------------------------------------------------
 // 3. WebLLM Model Catalog & Resolution Logic
 // ----------------------------------------------------------------------------
-test('WEBLLM_MODEL_CATALOG contains verified 1.5B and 0.5B models with valid configurations', () => {
+test('WEBLLM_MODEL_CATALOG contains verified 1.5B, SmolLM2 135M, and 0.5B models with valid configurations', () => {
   assert.ok(WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID], 'Default 1.5B model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[FALLBACK_F32_WEBLLM_MODEL_ID], 'Fallback 1.5B FP32 model must exist');
+  assert.ok(WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID], 'SmolLM2 135M model must exist');
+  assert.ok(WEBLLM_MODEL_CATALOG[SMOLLM2_135M_F32_WEBLLM_MODEL_ID], 'SmolLM2 135M FP32 model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[LIGHTWEIGHT_WEBLLM_MODEL_ID], 'Lightweight 0.5B model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[LIGHTWEIGHT_F32_WEBLLM_MODEL_ID], 'Lightweight 0.5B FP32 model must exist');
 
@@ -176,6 +180,12 @@ test('WEBLLM_MODEL_CATALOG contains verified 1.5B and 0.5B models with valid con
   assert.strictEqual(defaultModel.f32FallbackModelId, FALLBACK_F32_WEBLLM_MODEL_ID);
   assert.ok(defaultModel.estimatedDownloadMB > 0);
   assert.ok(defaultModel.minStorageBytes > defaultModel.estimatedDownloadMB * 1024 * 1024);
+
+  const smollm = WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID];
+  assert.strictEqual(smollm.shortLabel, 'SmolLM2 135M');
+  assert.strictEqual(smollm.tier, 'ultra-lightweight');
+  assert.strictEqual(smollm.estimatedDownloadMB, 270);
+  assert.strictEqual(smollm.f32FallbackModelId, SMOLLM2_135M_F32_WEBLLM_MODEL_ID);
 });
 
 test('resolveWebLLMModelId correctly resolves shader-f16 vs fp32 fallback', () => {
@@ -186,6 +196,10 @@ test('resolveWebLLMModelId correctly resolves shader-f16 vs fp32 fallback', () =
   // Without shader-f16: fallback to FP32 variant
   const withoutF16 = resolveWebLLMModelId(DEFAULT_WEBLLM_MODEL_ID, { hasShaderF16: false, allowF32Fallback: true });
   assert.strictEqual(withoutF16, FALLBACK_F32_WEBLLM_MODEL_ID);
+
+  // SmolLM2 135M fallback
+  const smollmWithoutF16 = resolveWebLLMModelId(SMOLLM2_135M_WEBLLM_MODEL_ID, { hasShaderF16: false, allowF32Fallback: true });
+  assert.strictEqual(smollmWithoutF16, SMOLLM2_135M_F32_WEBLLM_MODEL_ID);
 
   // Lightweight model fallback
   const lightweightWithoutF16 = resolveWebLLMModelId(LIGHTWEIGHT_WEBLLM_MODEL_ID, { hasShaderF16: false, allowF32Fallback: true });

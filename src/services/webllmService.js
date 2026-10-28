@@ -31,12 +31,14 @@ export const WEBLLM_PROVIDER_ID = 'webllm';
 
 export const DEFAULT_WEBLLM_MODEL_ID = 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC';
 export const FALLBACK_F32_WEBLLM_MODEL_ID = 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC';
+export const SMOLLM2_135M_WEBLLM_MODEL_ID = 'SmolLM2-135M-Instruct-q0f16-MLC';
+export const SMOLLM2_135M_F32_WEBLLM_MODEL_ID = 'SmolLM2-135M-Instruct-q0f32-MLC';
 export const LIGHTWEIGHT_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
 export const LIGHTWEIGHT_F32_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC';
 
 /**
- * Verified Qwen 2.5 Instruct models present in @mlc-ai/web-llm@0.2.86 prebuiltAppConfig.model_list.
- * Structured extensibly so Phase 2B+ can expose a lightweight 0.5B fallback option without modifying the engine.
+ * Verified Browser AI models present in @mlc-ai/web-llm@0.2.86 prebuiltAppConfig.model_list.
+ * Includes primary Qwen 2.5 1.5B (Standard) and ultra-lightweight SmolLM2 135M.
  */
 export const WEBLLM_MODEL_CATALOG = Object.freeze({
   [DEFAULT_WEBLLM_MODEL_ID]: Object.freeze({
@@ -44,6 +46,8 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     label: 'Qwen 2.5 1.5B Instruct',
     shortLabel: 'Qwen 2.5 1.5B',
     tier: 'standard',
+    tierLabel: 'Standard',
+    parameters: '~1.5B parameters',
     quantization: 'q4f16_1',
     prefersShaderF16: true,
     f32FallbackModelId: FALLBACK_F32_WEBLLM_MODEL_ID,
@@ -61,6 +65,8 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     label: 'Qwen 2.5 1.5B Instruct (FP32 Compat)',
     shortLabel: 'Qwen 2.5 1.5B (FP32)',
     tier: 'standard-f32',
+    tierLabel: 'Standard (FP32)',
+    parameters: '~1.5B parameters',
     quantization: 'q4f32_1',
     prefersShaderF16: false,
     f32FallbackModelId: null,
@@ -71,6 +77,46 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     maxDocChars: 10_000,
     maxHistoryMessages: 8,
     defaultMaxTokens: 1024,
+    isDefault: false
+  }),
+  [SMOLLM2_135M_WEBLLM_MODEL_ID]: Object.freeze({
+    id: SMOLLM2_135M_WEBLLM_MODEL_ID,
+    label: 'SmolLM2 135M Instruct (Ultra Lightweight)',
+    shortLabel: 'SmolLM2 135M',
+    tier: 'ultra-lightweight',
+    tierLabel: 'Ultra Lightweight',
+    parameters: '~135M parameters',
+    description: 'Ultra Lightweight (~135M parameters, Offline / Browser AI)',
+    quantization: 'q0f16',
+    prefersShaderF16: true,
+    f32FallbackModelId: SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
+    vramRequiredMB: 359.69,
+    estimatedDownloadMB: 270,
+    minStorageBytes: 350 * 1024 * 1024,
+    contextWindowSize: 4096,
+    maxDocChars: 6_000,
+    maxHistoryMessages: 6,
+    defaultMaxTokens: 768,
+    isDefault: false
+  }),
+  [SMOLLM2_135M_F32_WEBLLM_MODEL_ID]: Object.freeze({
+    id: SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
+    label: 'SmolLM2 135M Instruct (Ultra Lightweight FP32)',
+    shortLabel: 'SmolLM2 135M (FP32)',
+    tier: 'ultra-lightweight-f32',
+    tierLabel: 'Ultra Lightweight (FP32)',
+    parameters: '~135M parameters',
+    description: 'Ultra Lightweight (~135M parameters, Offline / Browser AI, FP32)',
+    quantization: 'q0f32',
+    prefersShaderF16: false,
+    f32FallbackModelId: null,
+    vramRequiredMB: 719.38,
+    estimatedDownloadMB: 270,
+    minStorageBytes: 400 * 1024 * 1024,
+    contextWindowSize: 4096,
+    maxDocChars: 6_000,
+    maxHistoryMessages: 6,
+    defaultMaxTokens: 768,
     isDefault: false
   }),
   [LIGHTWEIGHT_WEBLLM_MODEL_ID]: Object.freeze({
@@ -265,15 +311,32 @@ export function subscribeWebLLMState(listener) {
 
 /**
  * Returns the catalog of verified Browser AI models.
- * @param {{ includeF32Variants?: boolean }} [options]
+ * By default returns the primary user-selectable models:
+ * 1. Qwen 2.5 1.5B (Standard offline model)
+ * 2. SmolLM2 135M (Ultra-lightweight offline model)
+ *
+ * @param {{ includeF32Variants?: boolean, includeAllTiers?: boolean }} [options]
  */
 export function getSupportedWebLLMModels(options = {}) {
-  const { includeF32Variants = false } = options;
-  const all = Object.values(WEBLLM_MODEL_CATALOG);
-  if (includeF32Variants) {
-    return all;
+  const { includeF32Variants = false, includeAllTiers = false } = options;
+  if (includeAllTiers) {
+    const all = Object.values(WEBLLM_MODEL_CATALOG);
+    return includeF32Variants ? all : all.filter((entry) => !entry.tier.endsWith('-f32'));
   }
-  return all.filter((entry) => !entry.tier.endsWith('-f32'));
+
+  const primaryModels = [
+    WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID],
+    WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID]
+  ].filter(Boolean);
+
+  if (includeF32Variants) {
+    const f32s = primaryModels
+      .map((m) => m.f32FallbackModelId && WEBLLM_MODEL_CATALOG[m.f32FallbackModelId])
+      .filter(Boolean);
+    return [...primaryModels, ...f32s];
+  }
+
+  return primaryModels;
 }
 
 /**
@@ -780,7 +843,7 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
     lower.includes('not in the supported browser ai')
   ) {
     return new WebLLMError(
-      `Unsupported Browser AI model "${modelId}". Please select a supported Qwen model.`,
+      `Unsupported Browser AI model "${modelId}". Please select a supported Browser AI model.`,
       {
         code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
         httpCode: 400,
@@ -951,7 +1014,7 @@ export async function ensureWebLLMEngine(options = {}) {
     const compat = checkModelCompatibilityForProvider('webllm', trimmedCandidate);
     if (!compat.compatible) {
       const unsuppErr = new WebLLMError(
-        compat.reason || `Unsupported Browser AI model "${trimmedCandidate}". Please select a supported Qwen model.`,
+        compat.reason || `Unsupported Browser AI model "${trimmedCandidate}". Please select a supported Browser AI model.`,
         {
           code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
           httpCode: 400,
@@ -999,7 +1062,7 @@ export async function ensureWebLLMEngine(options = {}) {
   const catalogEntry = WEBLLM_MODEL_CATALOG[resolvedModelId];
   if (!catalogEntry) {
     const unsuppErr = new WebLLMError(
-      `Unsupported Browser AI model "${requestedModelId || resolvedModelId}". Please select a supported Qwen model.`,
+      `Unsupported Browser AI model "${requestedModelId || resolvedModelId}". Please select a supported Browser AI model.`,
       {
         code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
         httpCode: 400,

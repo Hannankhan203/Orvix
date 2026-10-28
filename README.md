@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.2.4**
+**Version: v0.2.5**
 
 <p align="center">
   <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring On-Device Browser AI (WebLLM & WebGPU), Offline PWA App-Shell Caching, Client-Side Document Extraction, Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
@@ -1123,7 +1123,14 @@ When troubleshooting streaming completions or intermittent upstream latency on s
 
 Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`). Below is the concise, scannable history of all releases and development milestones.
 
-### v0.2.4 — Complete Ollama Provider Removal & Legacy Fallback Hardening *(Current)*
+### v0.2.5 — SmolLM2 135M Browser AI Ultra-Lightweight Model *(Current)*
+- **SmolLM2 135M Integration**: Added the ultra-lightweight `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 compatibility fallback `SmolLM2-135M-Instruct-q0f32-MLC` as an on-device Browser AI model under the existing WebLLM provider.
+- **Qwen 2.5 1.5B Preservation**: Preserved `Qwen 2.5 1.5B Instruct` (`Qwen2.5-1.5B-Instruct-q4f16_1-MLC`) as the default Browser AI model without changing its identifier, quantization, loading, or caching behavior.
+- **5-Provider Invariant**: Maintained exactly five providers (Gemini, Groq, OpenRouter, Cloudflare Workers AI, Browser AI), ensuring SmolLM2 operates strictly as a model inside Browser AI rather than an independent provider.
+- **On-Device Inference & Zero Cloud Leakage**: Inference occurs 100% locally on user WebGPU hardware inside a dedicated Web Worker, requiring no API keys, no server round-trips, and zero routing through cloud providers.
+- **Dynamic Model Switching**: Enabled seamless switching between Qwen 2.5 1.5B and SmolLM2 135M in `BrowserAIStatusBar` with persistent model selection in `localStorage` (`orvix_webllm_model_id`).
+
+### v0.2.4 — Complete Ollama Provider Removal & Legacy Fallback Hardening
 - **Complete Ollama Removal**: Fully removed the Ollama AI provider from the active Orvix Web application and server infrastructure, eliminating local daemon dependencies unsuited for live cloud and Vercel deployments.
 - **Strict Browser AI (WebLLM) Preservation**: Protected the on-device Browser AI (WebLLM) provider with zero modifications to its WebGPU pipeline, Qwen 2.5 models (`0.5B` and `1.5B`), dedicated worker execution, and local caching.
 - **Graceful Legacy Selection Fallback**: Implemented robust normalization (`normalizeProviderId`) ensuring any legacy stored `localStorage` selection, active session, or API request targeting Ollama gracefully resolves to Google Gemini (`gemini-3.8-flash`) without errors or disruption.
