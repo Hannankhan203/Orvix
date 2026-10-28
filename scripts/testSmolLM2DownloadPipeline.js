@@ -32,6 +32,8 @@ import * as webllmPkg from '@mlc-ai/web-llm';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
   FALLBACK_F32_WEBLLM_MODEL_ID,
+  SMOLLM2_360M_WEBLLM_MODEL_ID,
+  SMOLLM2_360M_F32_WEBLLM_MODEL_ID,
   SMOLLM2_135M_WEBLLM_MODEL_ID,
   SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
@@ -39,6 +41,7 @@ import {
   probeWebLLMModelCDN,
   downloadModelArtifactsToCache,
   isWebLLMModelCached,
+  clearWebLLMModelCache,
   ensureWebLLMEngine,
   stopWebLLMGeneration,
   getWebLLMState,
@@ -221,14 +224,41 @@ function createHangingStreamResponse({
 console.log('\n=== SmolLM2 135M Download Pipeline & Stall Protection Suite ===\n');
 
 // 1. Verify exact model IDs & quantizations against installed @mlc-ai/web-llm@0.2.86
-await runCase('Exact SmolLM2 135M & Qwen 2.5 1.5B IDs match installed @mlc-ai/web-llm@0.2.86 catalog', async () => {
+await runCase('Exact SmolLM2 360M, SmolLM2 135M & Qwen 2.5 1.5B IDs match installed @mlc-ai/web-llm@0.2.86 catalog', async () => {
   const modelList = webllmPkg.prebuiltAppConfig?.model_list;
   assert.ok(Array.isArray(modelList) && modelList.length > 0, 'prebuiltAppConfig.model_list must exist');
 
+  const smol360F16 = modelList.find((m) => m.model_id === SMOLLM2_360M_WEBLLM_MODEL_ID);
+  const smol360F32 = modelList.find((m) => m.model_id === SMOLLM2_360M_F32_WEBLLM_MODEL_ID);
   const smolF16 = modelList.find((m) => m.model_id === SMOLLM2_135M_WEBLLM_MODEL_ID);
   const smolF32 = modelList.find((m) => m.model_id === SMOLLM2_135M_F32_WEBLLM_MODEL_ID);
   const qwenF16 = modelList.find((m) => m.model_id === DEFAULT_WEBLLM_MODEL_ID);
   const qwenF32 = modelList.find((m) => m.model_id === FALLBACK_F32_WEBLLM_MODEL_ID);
+
+  assert.ok(smol360F16, 'SmolLM2-360M-Instruct-q4f16_1-MLC must exist in @mlc-ai/web-llm@0.2.86');
+  assert.strictEqual(
+    smol360F16.model,
+    'https://huggingface.co/mlc-ai/SmolLM2-360M-Instruct-q4f16_1-MLC'
+  );
+  assert.ok(
+    smol360F16.model_lib.includes('/v0_2_86/') &&
+      smol360F16.model_lib.endsWith('SmolLM2-360M-Instruct-q4f16_1_cs1k-webgpu.wasm'),
+    'SmolLM2 360M q4f16_1 WASM library URL must match v0_2_86'
+  );
+  assert.deepStrictEqual(smol360F16.required_features, ['shader-f16']);
+  assert.strictEqual(smol360F16.vram_required_MB, 376.06);
+
+  assert.ok(smol360F32, 'SmolLM2-360M-Instruct-q4f32_1-MLC must exist in @mlc-ai/web-llm@0.2.86');
+  assert.strictEqual(
+    smol360F32.model,
+    'https://huggingface.co/mlc-ai/SmolLM2-360M-Instruct-q4f32_1-MLC'
+  );
+  assert.ok(
+    smol360F32.model_lib.includes('/v0_2_86/') &&
+      smol360F32.model_lib.endsWith('SmolLM2-360M-Instruct-q4f32_1_cs1k-webgpu.wasm'),
+    'SmolLM2 360M q4f32_1 WASM library URL must match v0_2_86'
+  );
+  assert.strictEqual(smol360F32.vram_required_MB, 579.61);
 
   assert.ok(smolF16, 'SmolLM2-135M-Instruct-q0f16-MLC must exist in @mlc-ai/web-llm@0.2.86');
   assert.strictEqual(
@@ -246,9 +276,9 @@ await runCase('Exact SmolLM2 135M & Qwen 2.5 1.5B IDs match installed @mlc-ai/we
   assert.ok(qwenF16, 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC must remain valid');
   assert.ok(qwenF32, 'Qwen2.5-1.5B-Instruct-q4f32_1-MLC must remain valid');
 
-  // Verify no SmolLM2 360M or Qwen3 models were added prematurely
+  // Verify no unrequested extra models (e.g., SmolLM2 1.7B or Qwen3) were added
   const catalogIds = Object.keys(WEBLLM_MODEL_CATALOG);
-  assert.ok(!catalogIds.some((id) => id.includes('360M')), 'SmolLM2 360M must not be added');
+  assert.ok(!catalogIds.some((id) => id.includes('1.7B')), 'SmolLM2 1.7B must not be added');
   assert.ok(!catalogIds.some((id) => id.toLowerCase().includes('qwen3')), 'Qwen3 must not be added');
 
   // Verify 4 cloud providers + local webllm & provider normalization remain intact
@@ -806,6 +836,173 @@ await runCase('Installed @mlc-ai/web-llm@0.2.86 hasModelInCache recognizes custo
       `Cached/post-download GPU loading must use indeterminate bar (null) instead of flashing 0% (saw: ${JSON.stringify(
         loadingStates.map((s) => s.progressPercent)
       )})`
+    );
+  } finally {
+    unsub();
+    resetWebLLMRuntimeForTesting();
+  }
+});
+
+// 13. Live bounded CDN probe against real Hugging Face CDN for SmolLM2 360M (q4f16_1)
+await runCase('Live bounded CDN probe verifies SmolLM2 360M shard redirect and >0 byte delivery', async () => {
+  const shard0Url =
+    'https://huggingface.co/mlc-ai/SmolLM2-360M-Instruct-q4f16_1-MLC/resolve/main/params_shard_0.bin';
+  const probe = await probeWebLLMModelCDN(shard0Url, {
+    modelLabel: 'SmolLM2 360M Instruct',
+    timeoutMs: 15_000
+  });
+
+  assert.strictEqual(probe.ok, true);
+  assert.ok(probe.status === 206 || probe.status === 200, `Expected HTTP 206/200, got ${probe.status}`);
+  assert.ok(probe.transferredBytes > 0 && probe.transferredBytes <= 65536, 'Probe must transfer bounded >0 bytes');
+  assert.ok(probe.redirectedHost && probe.redirectedHost.length > 0, 'Redirected CDN hostname must be captured');
+  console.log(
+    `    [Live 360M CDN Verified] ${probe.originHost} -> ${probe.redirectedHost} (HTTP ${probe.status}, ${probe.transferredBytes} bytes)`
+  );
+});
+
+// 14. SmolLM2 360M download progress, initialization & strict Cache Storage isolation vs 135M and Qwen 1.5B
+await runCase('SmolLM2 360M download progress, engine init, and strict Cache Storage isolation vs 135M & Qwen 1.5B', async () => {
+  resetWebLLMRuntimeForTesting();
+  const cacheStorage = createInMemoryCacheStorage();
+  installMockBrowserGlobals({ cacheStorage, isOnline: true, hasShaderF16: true });
+
+  const shard360Bytes = new Uint8Array(2048).fill(36);
+  const shard135Bytes = new Uint8Array(1536).fill(13);
+
+  setWebLLMFetchForTesting(async (url, init = {}) => {
+    const href = String(url);
+    const isRange = Boolean(init?.headers?.Range || init?.headers?.range);
+    const is360 = href.includes('SmolLM2-360M-Instruct-q4f16_1');
+    const is135 = href.includes('SmolLM2-135M-Instruct-q0f16');
+    assert.ok(is360 || is135, `Unexpected model URL requested: ${href}`);
+
+    if (href.endsWith('mlc-chat-config.json')) {
+      return new Response(
+        JSON.stringify({
+          // Match SmolLM2 360M's real mlc-chat-config.json tokenizer_files list
+          tokenizer_files: is360
+            ? ['tokenizer.json', 'vocab.json', 'merges.txt', 'tokenizer_config.json']
+            : ['tokenizer.json'],
+          context_window_size: 4096
+        }),
+        { status: 200 }
+      );
+    }
+    if (href.endsWith('tensor-cache.json')) {
+      const shardLen = is360 ? shard360Bytes.byteLength : shard135Bytes.byteLength;
+      return new Response(
+        JSON.stringify({
+          records: [
+            { name: 'w0', dataPath: 'params_shard_0.bin', nbytes: shardLen },
+            { name: 'w1', dataPath: 'params_shard_1.bin', nbytes: shardLen }
+          ]
+        }),
+        { status: 200 }
+      );
+    }
+    if (
+      href.endsWith('tokenizer.json') ||
+      href.endsWith('vocab.json') ||
+      href.endsWith('merges.txt') ||
+      href.endsWith('tokenizer_config.json')
+    ) {
+      return new Response(JSON.stringify({ model: is360 ? '360M' : '135M' }), { status: 200 });
+    }
+    if (href.endsWith('.wasm')) {
+      return new Response(new Uint8Array([0, 97, 115, 109, 1, 0, 0, is360 ? 36 : 13]), { status: 200 });
+    }
+    if (href.includes('params_shard_')) {
+      const payload = is360 ? shard360Bytes : shard135Bytes;
+      const chunks = isRange ? [payload.slice(0, 1024)] : [payload.slice(0, 1024), payload.slice(1024)];
+      return createChunkedResponse(chunks, {
+        status: isRange ? 206 : 200,
+        url: 'https://us.aws.cdn.hf.co/xet-bridge-us/shard.bin',
+        headers: { 'Content-Length': String(payload.byteLength) }
+      });
+    }
+    throw new Error(`Unexpected URL in 360M cache isolation test: ${href}`);
+  });
+
+  setWebLLMWorkerFactoryForTesting(() => ({
+    terminate: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    onerror: null,
+    onmessageerror: null
+  }));
+  setWebLLMEngineFactoryForTesting(async ({ handleInitProgress }) => {
+    handleInitProgress({ progress: 0.5, timeElapsed: 0.1, text: 'Loading model from cache[1/2]' });
+    handleInitProgress({ progress: 1, timeElapsed: 0.2, text: 'Finish loading on WebGPU' });
+    return { unload: async () => {}, interruptGenerate: () => {} };
+  });
+
+  const observed360Percents = [];
+  const unsub = subscribeWebLLMState((st) => {
+    if (st.modelId === SMOLLM2_360M_WEBLLM_MODEL_ID && st.status === 'downloading') {
+      observed360Percents.push(st.progressPercent);
+    }
+  });
+
+  try {
+    // 1. Download and initialize SmolLM2 360M
+    const res360 = await ensureWebLLMEngine({ modelId: SMOLLM2_360M_WEBLLM_MODEL_ID });
+    assert.strictEqual(res360.modelId, SMOLLM2_360M_WEBLLM_MODEL_ID);
+    assert.strictEqual(getWebLLMState().status, 'ready');
+    assert.strictEqual(getWebLLMState().progressPercent, 100);
+    assert.ok(
+      observed360Percents.some((p) => typeof p === 'number' && p > 0 && p <= 99),
+      `360M download must report progressive byte percentages (saw: ${JSON.stringify(observed360Percents)})`
+    );
+
+    // 2. Verify 360M is cached in both Orvix & WebLLM 0.2.86, while 135M and Qwen 1.5B remain FALSE
+    assert.strictEqual(await isWebLLMModelCached(SMOLLM2_360M_WEBLLM_MODEL_ID), true);
+    assert.strictEqual(
+      await webllmPkg.hasModelInCache(SMOLLM2_360M_WEBLLM_MODEL_ID, webllmPkg.prebuiltAppConfig),
+      true
+    );
+    assert.strictEqual(
+      await isWebLLMModelCached(SMOLLM2_135M_WEBLLM_MODEL_ID),
+      false,
+      'Caching SmolLM2 360M must NEVER mark SmolLM2 135M as cached'
+    );
+    assert.strictEqual(
+      await isWebLLMModelCached(DEFAULT_WEBLLM_MODEL_ID),
+      false,
+      'Caching SmolLM2 360M must NEVER mark Qwen 2.5 1.5B as cached'
+    );
+
+    // 3. Also download SmolLM2 135M into the same CacheStorage and verify distinct byte contents
+    await ensureWebLLMEngine({ modelId: SMOLLM2_135M_WEBLLM_MODEL_ID });
+    assert.strictEqual(await isWebLLMModelCached(SMOLLM2_360M_WEBLLM_MODEL_ID), true);
+    assert.strictEqual(await isWebLLMModelCached(SMOLLM2_135M_WEBLLM_MODEL_ID), true);
+
+    const modelCache = await globalThis.caches.open('webllm/model');
+    const cached360Shard0 = await modelCache.match(
+      'https://huggingface.co/mlc-ai/SmolLM2-360M-Instruct-q4f16_1-MLC/resolve/main/params_shard_0.bin'
+    );
+    const cached135Shard0 = await modelCache.match(
+      'https://huggingface.co/mlc-ai/SmolLM2-135M-Instruct-q0f16-MLC/resolve/main/params_shard_0.bin'
+    );
+    assert.ok(cached360Shard0 && cached135Shard0, 'Both models must have distinct shard_0 cache entries');
+    const buf360 = new Uint8Array(await cached360Shard0.arrayBuffer());
+    const buf135 = new Uint8Array(await cached135Shard0.arrayBuffer());
+    assert.strictEqual(buf360.byteLength, 2048);
+    assert.strictEqual(buf360[0], 36);
+    assert.strictEqual(buf135.byteLength, 1536);
+    assert.strictEqual(buf135[0], 13);
+
+    // 4. Clearing SmolLM2 360M cache must evict ONLY 360M while preserving SmolLM2 135M intact
+    await clearWebLLMModelCache(SMOLLM2_360M_WEBLLM_MODEL_ID);
+    assert.strictEqual(
+      await isWebLLMModelCached(SMOLLM2_360M_WEBLLM_MODEL_ID),
+      false,
+      'clearWebLLMModelCache(360M) must evict SmolLM2 360M'
+    );
+    assert.strictEqual(
+      await isWebLLMModelCached(SMOLLM2_135M_WEBLLM_MODEL_ID),
+      true,
+      'clearWebLLMModelCache(360M) must NOT evict SmolLM2 135M'
     );
   } finally {
     unsub();

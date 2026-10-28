@@ -65,6 +65,8 @@ export const CLOUDFLARE_DEFAULT_MODEL = '@cf/meta/llama-3.1-8b-instruct';
 export const WEBLLM_SUPPORTED_MODELS = Object.freeze([
   'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
   'Qwen2.5-1.5B-Instruct-q4f32_1-MLC',
+  'SmolLM2-360M-Instruct-q4f16_1-MLC',
+  'SmolLM2-360M-Instruct-q4f32_1-MLC',
   'SmolLM2-135M-Instruct-q0f16-MLC',
   'SmolLM2-135M-Instruct-q0f32-MLC',
   'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
@@ -178,6 +180,8 @@ const KNOWN_UI_DISPLAY_LABELS = new Set([
   'browser ai (webllm) - qwen 2.5 1.5b',
   'browser ai (webllm) — smollm2 135m',
   'browser ai (webllm) - smollm2 135m',
+  'browser ai (webllm) — smollm2 360m',
+  'browser ai (webllm) - smollm2 360m',
   'qwen 2.5 1.5b',
   'qwen 2.5 coder 1.5b',
   'smollm2 135m',

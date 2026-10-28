@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
+  SMOLLM2_360M_WEBLLM_MODEL_ID,
   SMOLLM2_135M_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   getSupportedWebLLMModels
@@ -20,7 +21,7 @@ import {
 /**
  * Clean, non-blocking status and progress bar for Browser AI (WebLLM).
  * Surfaces real compatibility checks, shard download progress, WebGPU compilation,
- * ready state, model tier selection (1.5B Standard vs SmolLM2 135M Ultra Lightweight), and errors.
+ * ready state, model tier selection (Qwen 2.5 1.5B Standard, SmolLM2 360M Compact, SmolLM2 135M Ultra Lightweight), and errors.
  */
 export default function BrowserAIStatusBar({
   visible = false,
@@ -51,6 +52,16 @@ export default function BrowserAIStatusBar({
 
   const selectedCatalog =
     WEBLLM_MODEL_CATALOG[selectedModelId] || WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID];
+  const effectiveSpecCatalog =
+    webllmState?.hasShaderF16 === false && selectedCatalog?.f32FallbackModelId
+      ? WEBLLM_MODEL_CATALOG[selectedCatalog.f32FallbackModelId] || selectedCatalog
+      : selectedCatalog;
+  const vramEstimateLabel =
+    typeof effectiveSpecCatalog?.vramRequiredMB === 'number' && effectiveSpecCatalog.vramRequiredMB > 0
+      ? effectiveSpecCatalog.vramRequiredMB >= 1024
+        ? `~${(effectiveSpecCatalog.vramRequiredMB / 1024).toFixed(1)} GB VRAM`
+        : `~${Math.ceil(effectiveSpecCatalog.vramRequiredMB / 10) * 10} MB VRAM`
+      : null;
   const loadedModelId = webllmState?.loadedModelId || null;
   const isLoadedInGpu = Boolean(loadedModelId && (status === 'ready' || status === 'generating'));
   const activeCatalog =
@@ -107,9 +118,10 @@ export default function BrowserAIStatusBar({
     headline = `${activeCatalog.shortLabel} failed to load`;
     detail =
       errorMessage ||
-      (selectedCatalog.id === SMOLLM2_135M_WEBLLM_MODEL_ID
+      (selectedCatalog.id === SMOLLM2_135M_WEBLLM_MODEL_ID ||
+      selectedCatalog.id === SMOLLM2_360M_WEBLLM_MODEL_ID
         ? 'Model download or WebGPU initialization failed. Check your internet connection and browser storage, then click Retry.'
-        : 'Model download or WebGPU initialization failed. Check storage/GPU memory or try the SmolLM2 135M ultra-lightweight model.');
+        : 'Model download or WebGPU initialization failed. Check storage/GPU memory or try a smaller SmolLM2 (360M or 135M) model.');
   } else if (loadedMatchesSelected) {
     tone = 'ready';
     statusBadge = {
@@ -133,7 +145,7 @@ export default function BrowserAIStatusBar({
     tone = 'warning';
     statusBadge = { label: 'Offline • Not Cached', variant: 'warning' };
     headline = `${selectedCatalog.shortLabel} — Browser AI`;
-    detail = `Offline — Initial download (~${selectedCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`;
+    detail = `Offline — Initial download (~${effectiveSpecCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`;
   } else {
     tone = isCached ? 'ready' : 'neutral';
     statusBadge = isCached
@@ -144,7 +156,7 @@ export default function BrowserAIStatusBar({
       ? 'Offline — Model is cached locally. Click Load Model or send a message to run on your device via WebGPU.'
       : isCached
       ? 'Model weights are cached in your browser. Click Load Model or send a message to initialize WebGPU.'
-      : `Runs locally via WebGPU (no API key). First use downloads and caches ~${selectedCatalog.estimatedDownloadMB} MB on your device.`;
+      : `Runs locally via WebGPU (no API key${vramEstimateLabel ? `, ${vramEstimateLabel}` : ''}). First use downloads and caches ~${effectiveSpecCatalog.estimatedDownloadMB} MB on your device.`;
   }
 
   const showProgressBar = isDownloading || isInitializingGpu;
