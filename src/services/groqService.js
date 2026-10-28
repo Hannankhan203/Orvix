@@ -9,12 +9,13 @@
 
 import { getChatMode } from '../config/chatModes.js';
 import { prepareDocumentContext, adaptDocumentContextForProvider } from './documentContextService.js';
+import { sanitizeModelForProvider, PROVIDER_DEFAULT_MODELS } from './providerModelSanitizer.js';
 
 export function getGroqApiKey() {
   return '';
 }
 
-const DEFAULT_MODEL = 'openai/gpt-oss-120b';
+const DEFAULT_MODEL = PROVIDER_DEFAULT_MODELS.groq;
 
 function normalizeAttachments(attachments = []) {
   if (!Array.isArray(attachments)) return [];
@@ -30,6 +31,34 @@ function normalizeAttachments(attachments = []) {
         isImage: Boolean(ext.isImage ?? a.isImage ?? false)
       };
     });
+}
+
+function buildStructuredGroqError(errPayload, fallbackStatus = 500, partialText = '') {
+  const message =
+    (typeof errPayload === 'string' && errPayload) ||
+    errPayload?.error ||
+    errPayload?.message ||
+    `Groq request failed (${fallbackStatus})`;
+  const err = new Error(message);
+  err.code = errPayload?.code || fallbackStatus;
+  err.status = errPayload?.status || 'PROVIDER_ERROR';
+  err.provider = errPayload?.provider || 'groq';
+  if (errPayload?.model) err.model = errPayload.model;
+  err.retryable = typeof errPayload?.retryable === 'boolean' ? errPayload.retryable : false;
+  err.canFallback = typeof errPayload?.canFallback === 'boolean' ? errPayload.canFallback : true;
+  if (Array.isArray(errPayload?.suggestedProviders)) {
+    err.suggestedProviders = errPayload.suggestedProviders;
+  }
+  if (typeof errPayload?.partial === 'boolean') {
+    err.partial = errPayload.partial;
+  }
+  if (typeof errPayload?.partialText === 'string') {
+    err.partialText = errPayload.partialText;
+  } else if (partialText) {
+    err.partial = true;
+    err.partialText = partialText;
+  }
+  return err;
 }
 
 /**
@@ -100,9 +129,20 @@ export function formatGroqMessages(history = [], prompt, maxContextMessages = 12
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
  * @param {Array} [params.attachments=[]]
+ * @param {string} [params.model]
+ * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendGroqMessage({ prompt, history = [], mode = 'general', attachments = [], conversationId = null }) {
+export async function sendGroqMessage({
+  prompt,
+  history = [],
+  mode = 'general',
+  model = null,
+  signal,
+  attachments = [],
+  conversationId = null
+}) {
+  const sanitizedModel = sanitizeModelForProvider('groq', model) || DEFAULT_MODEL;
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -110,23 +150,25 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general', 
     },
     body: JSON.stringify({
       provider: 'groq',
+      model: sanitizedModel,
       mode,
       prompt,
       history,
+      stream: false,
       conversationId: conversationId || null,
       attachments: Array.isArray(attachments) ? attachments : []
-    })
+    }),
+    signal
   });
 
   if (!response.ok) {
-    let errorDetail = '';
+    let errPayload = null;
     try {
-      const errJson = await response.json();
-      errorDetail = errJson?.error || '';
+      errPayload = await response.json();
     } catch (_) {
-      errorDetail = await response.text();
+      errPayload = { error: await response.text().catch(() => '') };
     }
-    throw new Error(errorDetail || `Groq request failed (${response.status})`);
+    throw buildStructuredGroqError(errPayload, response.status);
   }
 
   const data = await response.json();
@@ -136,7 +178,7 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general', 
 
   return {
     text: data.text,
-    modelUsed: data.modelUsed || DEFAULT_MODEL
+    modelUsed: data.modelUsed || sanitizedModel
   };
 }
 
@@ -147,9 +189,20 @@ export async function sendGroqMessage({ prompt, history = [], mode = 'general', 
  * @param {Array} [params.history=[]]
  * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
  * @param {AbortSignal} [params.signal]
+ * @param {string} [params.model]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamGroqMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [], conversationId = null }) {
+export async function streamGroqMessage({
+  prompt,
+  history = [],
+  mode = 'general',
+  model = null,
+  onChunk,
+  signal,
+  attachments = [],
+  conversationId = null
+}) {
+  const sanitizedModel = sanitizeModelForProvider('groq', model) || DEFAULT_MODEL;
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -158,6 +211,7 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
     },
     body: JSON.stringify({
       provider: 'groq',
+      model: sanitizedModel,
       mode,
       prompt,
       history,
@@ -169,14 +223,13 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
   });
 
   if (!response.ok) {
-    let errorDetail = '';
+    let errPayload = null;
     try {
-      const errJson = await response.json();
-      errorDetail = errJson?.error || '';
+      errPayload = await response.json();
     } catch (_) {
-      errorDetail = await response.text();
+      errPayload = { error: await response.text().catch(() => '') };
     }
-    throw new Error(errorDetail || `Groq request failed (${response.status})`);
+    throw buildStructuredGroqError(errPayload, response.status);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -185,7 +238,41 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
     const decoder = new TextDecoder();
     let buffer = '';
     let accumulated = '';
-    let modelUsed = DEFAULT_MODEL;
+    let modelUsed = sanitizedModel;
+    let receivedDone = false;
+
+    const processLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data:')) return null;
+      const dataStr = trimmed.slice(5).trim();
+      if (!dataStr || dataStr === '[DONE]') return null;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(dataStr);
+      } catch (_) {
+        if (/"error"\s*:/.test(dataStr)) {
+          throw buildStructuredGroqError({ error: dataStr, status: 'STREAM_ERROR' }, 500, accumulated);
+        }
+        return null;
+      }
+
+      if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+      if (parsed.type === 'chunk' && parsed.text) {
+        accumulated += parsed.text;
+        onChunk?.(parsed.text, accumulated);
+      } else if (parsed.type === 'done') {
+        receivedDone = true;
+        if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+        return {
+          text: parsed.text || accumulated,
+          modelUsed
+        };
+      } else if (parsed.type === 'error' || parsed.error) {
+        throw buildStructuredGroqError(parsed, parsed.code || 500, accumulated);
+      }
+      return null;
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -196,30 +283,25 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const dataStr = trimmed.slice(6);
-        try {
-          const parsed = JSON.parse(dataStr);
-          if (parsed.modelUsed) modelUsed = parsed.modelUsed;
-          if (parsed.type === 'chunk' && parsed.text) {
-            accumulated += parsed.text;
-            onChunk?.(parsed.text, accumulated);
-          } else if (parsed.type === 'done') {
-            if (parsed.modelUsed) modelUsed = parsed.modelUsed;
-            return {
-              text: parsed.text || accumulated,
-              modelUsed
-            };
-          } else if (parsed.type === 'error') {
-            throw new Error(parsed.error || 'Groq stream failed.');
-          }
-        } catch (jsonErr) {
-          if (jsonErr.message && !jsonErr.message.includes('JSON')) {
-            throw jsonErr;
-          }
-        }
+        const doneResult = processLine(line);
+        if (doneResult) return doneResult;
       }
+    }
+
+    const trailing = decoder.decode();
+    if (trailing) buffer += trailing;
+    if (buffer.trim()) {
+      for (const line of buffer.split('\n')) {
+        const doneResult = processLine(line);
+        if (doneResult) return doneResult;
+      }
+    }
+
+    if (!receivedDone && !accumulated) {
+      throw buildStructuredGroqError(
+        { error: 'Groq stream ended prematurely before completion.', status: 'STREAM_INCOMPLETE' },
+        502
+      );
     }
 
     return {
@@ -236,7 +318,7 @@ export async function streamGroqMessage({ prompt, history = [], mode = 'general'
   onChunk?.(data.text, data.text);
   return {
     text: data.text,
-    modelUsed: data.modelUsed || DEFAULT_MODEL
+    modelUsed: data.modelUsed || sanitizedModel
   };
 }
 

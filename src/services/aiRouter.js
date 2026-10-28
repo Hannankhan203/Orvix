@@ -1,14 +1,41 @@
 /**
  * Orvix AI Provider Router
- * Central dispatch service routing chat requests to the selected provider (Gemini, Groq, OpenRouter).
- * Normalizes parameters, formats, and outputs across all three providers.
+ * Central dispatch service routing chat requests to the selected provider
+ * (Gemini, Groq, OpenRouter, Cloudflare, Ollama, WebLLM).
+ * Normalizes parameters, model identifiers, retry semantics, stream continuation, and error formats.
  */
 
-import { sendGeminiMessage, streamGeminiMessage, getGeminiApiKey } from './geminiService.js';
-import { sendGroqMessage, streamGroqMessage, getGroqApiKey } from './groqService.js';
-import { sendOpenRouterMessage, streamOpenRouterMessage, getOpenRouterApiKey } from './openrouterService.js';
-import { streamWebLLMMessage, DEFAULT_WEBLLM_MODEL_ID } from './webllmService.js';
-import { prepareChatRequestBody, sanitizeAttachmentForNetwork } from './attachmentStorageService.js';
+import {
+  streamWebLLMMessage,
+  DEFAULT_WEBLLM_MODEL_ID,
+  WebLLMError,
+  WEBLLM_ERROR_CODES
+} from './webllmService.js';
+import {
+  prepareChatRequestBody,
+  sanitizeAttachmentForNetwork,
+  hydrateAttachmentsWithImageBytes
+} from './attachmentStorageService.js';
+import { isVisionCapableProvider, isImageAttachment } from './documentContextService.js';
+import {
+  normalizeProviderId,
+  sanitizeModelForProvider,
+  normalizeProviderConfigPayload,
+  getProviderConfigAvailability,
+  checkModelCompatibilityForProvider,
+  resolveModelForProviderSwitch,
+  getDeterministicFallbackChain,
+  isProviderCapableOfTask,
+  PROVIDER_DEFAULT_MODELS
+} from './providerModelSanitizer.js';
+import {
+  sanitizeErrorMessage,
+  normalizeAIError,
+  isCanonicalAIError,
+  CanonicalAIError,
+  isAbortLike,
+  STANDARD_ERROR_CODES
+} from './errorNormalizationService.js';
 
 export const AI_PROVIDERS = {
   GEMINI: 'gemini',
@@ -23,26 +50,30 @@ export const PROVIDER_OPTIONS = [
   {
     id: AI_PROVIDERS.GEMINI,
     name: 'Gemini',
-    modelTag: 'Gemini 3.8 Flash',
+    modelTag: 'Gemini 2.5 Flash',
+    defaultModel: 'gemini-2.5-flash',
     description: 'Google Gemini'
   },
   {
     id: AI_PROVIDERS.GROQ,
     name: 'Groq',
     modelTag: 'GPT OSS 120B',
+    defaultModel: 'openai/gpt-oss-120b',
     description: 'Ultra-fast inference'
   },
   {
     id: AI_PROVIDERS.OPENROUTER,
     name: 'OpenRouter',
-    modelTag: 'Llama 3.3 70B (Free)',
-    description: 'Multi-model gateway'
+    modelTag: 'Free Models Router',
+    defaultModel: 'openrouter/free',
+    description: 'Dynamic free-tier model router (openrouter/free)'
   },
   {
     id: AI_PROVIDERS.CLOUDFLARE,
     name: 'Cloudflare Workers AI',
     shortName: 'Cloudflare AI',
     modelTag: 'Llama 3.1 8B',
+    defaultModel: '@cf/meta/llama-3.1-8b-instruct',
     description: 'Serverless inference',
     label: 'Cloudflare Workers AI — Llama 3.1 8B'
   },
@@ -69,60 +100,150 @@ export const PROVIDER_OPTIONS = [
 export const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
 
 /**
- * Checks if a given provider currently has an API key configured.
- * @param {string} provider
- * @returns {boolean}
+ * Cached `/api/config` availability snapshot (boolean-only, never stores secrets).
  */
-export function isProviderConfigured(provider) {
-  switch (provider) {
-    case AI_PROVIDERS.OLLAMA:
-    case AI_PROVIDERS.WEBLLM: {
-      // Local Ollama and Browser AI (WebLLM) require no cloud API key
-      return true;
-    }
-    case AI_PROVIDERS.GROQ: {
-      const key = getGroqApiKey();
-      return Boolean(key && key !== 'YOUR_GROQ_API_KEY');
-    }
-    case AI_PROVIDERS.OPENROUTER: {
-      const key = getOpenRouterApiKey();
-      return Boolean(key && key !== 'YOUR_OPENROUTER_API_KEY');
-    }
-    case AI_PROVIDERS.CLOUDFLARE: {
-      // Cloudflare credentials are kept strictly server-side
-      return false;
-    }
-    case AI_PROVIDERS.GEMINI:
-    default: {
-      const key = getGeminiApiKey();
-      return Boolean(key && key !== 'YOUR_GEMINI_API_KEY');
-    }
-  }
+let cachedProviderConfigState = {
+  status: 'idle',
+  data: null,
+  fetchedAt: null
+};
+
+let inflightConfigPromise = null;
+
+/**
+ * Returns the latest cached `/api/config` availability state.
+ * @returns {{ status: 'idle'|'loading'|'ready'|'error', data: Object|null, fetchedAt: number|null }}
+ */
+export function getCachedProviderConfig() {
+  return cachedProviderConfigState;
 }
 
 /**
- * Streams chat responses from the selected AI provider progressively.
- *
- * @param {Object} params
- * @param {string} [params.provider='gemini'] - The selected provider ('gemini' | 'groq' | 'openrouter')
- * @param {string} params.prompt - Current user input prompt
- * @param {Array} [params.history=[]] - Previous conversation messages
- * @param {string|null} [params.username=null] - Preferred username for personalization
- * @param {Object|null} [params.preferences=null] - User response preferences (responseLength, beginnerFriendly)
- * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
- * @param {({ modelUsed: string, provider: string }) => void} [params.onStart]
- * @param {AbortSignal} [params.signal]
- * @returns {Promise<{ text: string, modelUsed: string, provider: string }>}
+ * Resets cached `/api/config` state (primarily for deterministic testing).
  */
+export function resetCachedProviderConfig() {
+  cachedProviderConfigState = {
+    status: 'idle',
+    data: null,
+    fetchedAt: null
+  };
+  inflightConfigPromise = null;
+}
+
 /**
- * Parses raw error representations into clean, friendly error objects
+ * Fetches `/api/config` safely to determine server-side provider availability.
+ * Never throws on network or HTTP failures — degrades gracefully to `'unknown'`/`'error'`
+ * so the UI never falsely claims cloud providers are unconfigured when `/api/config` is unreachable.
+ *
+ * @param {Object} [options={}]
+ * @param {AbortSignal} [options.signal]
+ * @param {boolean} [options.forceRefresh=false]
+ * @returns {Promise<{ status: 'ready'|'error', data: Object|null, fetchedAt: number|null }>}
  */
-function parseRouterError(rawError, statusCode = 500, providerHint = null) {
-  let cleanMsg = typeof rawError === 'string' ? rawError : rawError?.message || '';
+export async function fetchProviderConfig({ signal, forceRefresh = false } = {}) {
+  if (!forceRefresh && cachedProviderConfigState.status === 'ready' && cachedProviderConfigState.data) {
+    return cachedProviderConfigState;
+  }
+
+  if (!forceRefresh && inflightConfigPromise && !signal) {
+    return inflightConfigPromise;
+  }
+
+  const runFetch = async () => {
+    try {
+      const res = await fetch('/api/config', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal
+      });
+
+      if (!res.ok) {
+        cachedProviderConfigState = {
+          status: 'error',
+          data: cachedProviderConfigState.data,
+          fetchedAt: cachedProviderConfigState.fetchedAt
+        };
+        return cachedProviderConfigState;
+      }
+
+      const raw = await res.json().catch(() => null);
+      const normalized = normalizeProviderConfigPayload(raw);
+      if (!normalized) {
+        cachedProviderConfigState = {
+          status: 'unavailable',
+          data: cachedProviderConfigState.data,
+          fetchedAt: cachedProviderConfigState.fetchedAt
+        };
+        return cachedProviderConfigState;
+      }
+
+      cachedProviderConfigState = {
+        status: 'ready',
+        data: normalized,
+        fetchedAt: Date.now()
+      };
+      return cachedProviderConfigState;
+    } catch (_) {
+      cachedProviderConfigState = {
+        status: 'unavailable',
+        data: cachedProviderConfigState.data,
+        fetchedAt: cachedProviderConfigState.fetchedAt
+      };
+      return cachedProviderConfigState;
+    } finally {
+      if (!signal) {
+        inflightConfigPromise = null;
+      }
+    }
+  };
+
+  if (!signal) {
+    inflightConfigPromise = runFetch();
+    return inflightConfigPromise;
+  }
+  return runFetch();
+}
+
+/**
+ * Checks if a given provider is confirmed configured according to `/api/config` (or local execution).
+ * Returns `true` for local providers (`ollama`, `webllm`) and confirmed-configured cloud providers.
+ * Returns `false` when `/api/config` reports the cloud provider is unconfigured or when config has not loaded.
+ * Use `getProviderConfigAvailability()` when UI needs to distinguish `'unconfigured'` from `'unknown'`.
+ *
+ * @param {string} provider
+ * @param {Object|null} [configStateOverride=null]
+ * @returns {boolean}
+ */
+export function isProviderConfigured(provider, configStateOverride = null) {
+  const availability = getProviderConfigAvailability(
+    provider,
+    configStateOverride || cachedProviderConfigState
+  );
+  return (
+    availability.state === 'configured' ||
+    availability.state === 'local' ||
+    availability.state === 'demo'
+  );
+}
+
+/**
+ * Parses raw error representations into clean, structured error objects while honoring
+ * explicit server metadata (`status`, `retryable: false`, `canFallback`, `suggestedProviders`).
+ */
+export function parseRouterError(rawError, statusCode = 500, providerHint = null) {
+  const isObjectInput = rawError !== null && typeof rawError === 'object';
+  let cleanMsg =
+    typeof rawError === 'string'
+      ? rawError
+      : typeof rawError?.error === 'string'
+      ? rawError.error
+      : rawError?.message || '';
   let code = Number(rawError?.code || statusCode || 500);
-  let status = String(rawError?.status || '');
-  let retryable = rawError?.retryable;
-  const normalizedHint = providerHint ? String(providerHint).toLowerCase() : '';
+  let status = String(rawError?.status || rawError?.errorCode || '');
+  const explicitRetryable =
+    isObjectInput && typeof rawError.retryable === 'boolean' ? rawError.retryable : undefined;
+  let retryable = explicitRetryable;
+  const normalizedHint = providerHint ? normalizeProviderId(providerHint) : '';
 
   // Unpack nested JSON representations if present
   for (let i = 0; i < 3; i++) {
@@ -134,8 +255,16 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
       if (parsed.error) {
         if (parsed.error.code) code = Number(parsed.error.code);
         if (parsed.error.status) status = String(parsed.error.status);
-        if (parsed.error.message) cleanMsg = String(parsed.error.message);
-        else break;
+        if (typeof parsed.error === 'string') {
+          cleanMsg = parsed.error;
+          if (parsed.status) status = String(parsed.status);
+          if (parsed.code) code = Number(parsed.code);
+          break;
+        } else if (parsed.error.message) {
+          cleanMsg = String(parsed.error.message);
+        } else {
+          break;
+        }
       } else {
         break;
       }
@@ -147,7 +276,47 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   const lowerMsg = String(cleanMsg).toLowerCase();
   const upperStatus = String(status).toUpperCase();
 
-  // Distinct error classification
+  // 1. Explicit unconfigured provider error (never overwrite with generic 503 "high demand" copy)
+  if (upperStatus === 'PROVIDER_NOT_CONFIGURED') {
+    code = Number.isFinite(code) && code >= 400 ? code : 503;
+    status = 'PROVIDER_NOT_CONFIGURED';
+    retryable = false;
+    if (!cleanMsg) {
+      cleanMsg =
+        'This AI provider is not configured on the server. Please select a configured provider or configure the required server environment credentials.';
+    }
+    const err = new Error(cleanMsg);
+    err.code = code;
+    err.status = status;
+    err.errorCode = 'PROVIDER_NOT_CONFIGURED';
+    err.retryable = false;
+    err.canFallback = isObjectInput && typeof rawError.canFallback === 'boolean' ? rawError.canFallback : true;
+    err.provider = (isObjectInput && rawError.provider) || normalizedHint || DEFAULT_PROVIDER;
+    if (isObjectInput && Array.isArray(rawError.suggestedProviders)) {
+      err.suggestedProviders = rawError.suggestedProviders;
+    }
+    return err;
+  }
+
+  // 2. Explicit invalid / cross-provider model identifier error
+  if (upperStatus === 'INVALID_MODEL') {
+    code = 400;
+    status = 'INVALID_MODEL';
+    retryable = false;
+    if (!cleanMsg) {
+      cleanMsg = 'The requested model identifier is not valid for the selected AI provider.';
+    }
+    const err = new Error(cleanMsg);
+    err.code = code;
+    err.status = status;
+    err.errorCode = 'INVALID_MODEL';
+    err.retryable = false;
+    err.canFallback = false;
+    err.provider = (isObjectInput && rawError.provider) || normalizedHint || DEFAULT_PROVIDER;
+    return err;
+  }
+
+  // Distinct network failure classification
   const isNetwork =
     lowerMsg === 'fetch failed' ||
     lowerMsg === 'failed to fetch' ||
@@ -163,33 +332,65 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
     lowerMsg.includes('11434') ||
     lowerMsg.includes('ollama');
 
-  // Dedicated Ollama local connection & missing model handling (never blame internet or cloud demand)
+  const isWebLLMContext =
+    normalizedHint === AI_PROVIDERS.WEBLLM ||
+    (isObjectInput && normalizeProviderId(rawError.provider) === AI_PROVIDERS.WEBLLM) ||
+    lowerMsg.includes('webllm') ||
+    lowerMsg.includes('browser ai') ||
+    upperStatus.startsWith('WEBLLM_') ||
+    upperStatus.startsWith('WEBGPU_');
+
+  // 3. Dedicated Ollama local connection, timeout, & missing model handling
   if (isOllamaContext) {
-    code = code === 404 ? 404 : (code === 400 ? 400 : 503);
-    status = code === 404 ? 'NOT_FOUND' : (code === 400 ? 'INVALID_ARGUMENT' : 'NETWORK_ERROR');
-    retryable = false;
-    if (
-      !cleanMsg ||
-      isNetwork ||
-      cleanMsg === 'Service Unavailable' ||
-      cleanMsg === 'Bad Gateway' ||
-      cleanMsg === 'Not Found' ||
-      cleanMsg.includes('Server request failed') ||
-      cleanMsg.includes('Stream connection was closed')
-    ) {
-      if (code === 404 || lowerMsg.includes('not found') || lowerMsg.includes('model')) {
-        cleanMsg = 'The requested Ollama model was not found. Please ensure it is installed locally using "ollama pull qwen2.5:1.5b".';
-      } else if (lowerMsg === 'failed to fetch' || lowerMsg === 'fetch failed') {
-        cleanMsg = 'Local AI (Ollama) requires the local Orvix backend server and Ollama daemon. Please verify the local server is running and Ollama is active at http://127.0.0.1:11434.';
-      } else {
-        cleanMsg = 'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running ("ollama serve") and model "qwen2.5:1.5b" is installed.';
+    if (code === 504 || upperStatus === 'DEADLINE_EXCEEDED') {
+      code = 504;
+      status = 'DEADLINE_EXCEEDED';
+      retryable = false;
+      if (!cleanMsg || cleanMsg.includes('Server request failed')) {
+        cleanMsg =
+          'Local AI (Ollama) timed out while waiting for response headers. Verify Ollama is responsive at http://127.0.0.1:11434.';
+      }
+    } else {
+      code = code === 404 ? 404 : code === 400 ? 400 : 503;
+      status = (isObjectInput && rawError.status) ? String(rawError.status) : (code === 404 ? 'NOT_FOUND' : code === 400 ? 'INVALID_ARGUMENT' : 'NETWORK_ERROR');
+      retryable = false;
+      const isGeneric =
+        !cleanMsg ||
+        cleanMsg === 'Service Unavailable' ||
+        cleanMsg === 'Bad Gateway' ||
+        cleanMsg === 'Not Found' ||
+        cleanMsg.includes('Server request failed') ||
+        cleanMsg.includes('Stream connection was closed');
+      if (isGeneric || (!cleanMsg.includes('Unable to connect') && (lowerMsg === 'failed to fetch' || lowerMsg === 'fetch failed'))) {
+        if (code === 404 || (code !== 503 && (lowerMsg.includes('not found') || lowerMsg.includes('model not found')))) {
+          cleanMsg =
+            'The requested Ollama model was not found. Please ensure it is installed locally using "ollama pull qwen2.5:1.5b".';
+        } else if (lowerMsg === 'failed to fetch' || lowerMsg === 'fetch failed') {
+          cleanMsg =
+            'Local AI (Ollama) requires the local Orvix backend server and Ollama daemon. Please verify the local server is running and Ollama is active at http://127.0.0.1:11434.';
+        } else {
+          cleanMsg =
+            'Unable to connect to Local AI (Ollama) at http://127.0.0.1:11434. Please ensure Ollama is running ("ollama serve") and model "qwen2.5:1.5b" is installed.';
+        }
       }
     }
   } else if (isNetwork) {
     code = code === 500 ? 503 : code;
     status = 'NETWORK_ERROR';
-    retryable = true;
-    cleanMsg = 'Unable to establish network connection with the AI service. Please check your internet connection or try again in a few moments.';
+    retryable = explicitRetryable ?? true;
+    cleanMsg =
+      'Unable to establish network connection with the AI service. Please check your internet connection or try again in a few moments.';
+  } else if (
+    code === 502 ||
+    upperStatus === 'BAD_GATEWAY'
+  ) {
+    code = 502;
+    status = 'BAD_GATEWAY';
+    retryable = explicitRetryable ?? true;
+    if (!cleanMsg || cleanMsg === 'Bad Gateway' || cleanMsg.includes('Server request failed (502)')) {
+      cleanMsg =
+        'The AI gateway returned a temporary upstream error (502). Please try again in a few moments.';
+    }
   } else if (
     code === 503 ||
     upperStatus === 'UNAVAILABLE' ||
@@ -198,9 +399,12 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
     lowerMsg.includes('overloaded')
   ) {
     code = 503;
-    status = 'UNAVAILABLE';
-    retryable = true;
-    cleanMsg = 'The AI service is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
+    status = status && upperStatus !== 'UNAVAILABLE' && explicitRetryable === false ? status : 'UNAVAILABLE';
+    retryable = explicitRetryable ?? true;
+    if (explicitRetryable !== false) {
+      cleanMsg =
+        'The AI service is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments.';
+    }
   } else if (
     code === 429 ||
     upperStatus === 'RESOURCE_EXHAUSTED' ||
@@ -209,7 +413,7 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   ) {
     code = 429;
     status = 'RESOURCE_EXHAUSTED';
-    retryable = true;
+    retryable = explicitRetryable ?? true;
     cleanMsg = 'AI rate limit or quota exceeded. Please wait a moment before trying again.';
   } else if (
     code === 401 ||
@@ -224,13 +428,16 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
     code = code === 401 ? 401 : 403;
     status = code === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
     retryable = false;
-    cleanMsg = 'Invalid or unauthorized API key. Please check your configuration.';
+    if (!cleanMsg || !lowerMsg.includes('cloudflare')) {
+      cleanMsg = 'Invalid or unauthorized API key. Please check your configuration.';
+    }
   } else if (code === 404 || upperStatus === 'NOT_FOUND') {
     code = 404;
     status = 'NOT_FOUND';
     retryable = false;
     if (!cleanMsg || cleanMsg === 'Not Found' || cleanMsg.includes('Server request failed (404)')) {
-      cleanMsg = 'The requested AI model was not found or is no longer available. Please select another provider or model.';
+      cleanMsg =
+        'The requested AI model was not found or is no longer available. Please select another provider or model.';
     }
   } else if (
     code === 413 ||
@@ -252,6 +459,17 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
       cleanMsg =
         'The attached image payload exceeds the supported request budget (3.0 MB max per image, 4.2 MB max total request). Please resize or compress the image and try again.';
     }
+  } else if (upperStatus === 'SAFETY_BLOCKED' || lowerMsg.includes('safety')) {
+    code = 400;
+    status = 'SAFETY_BLOCKED';
+    retryable = false;
+    if (!cleanMsg || cleanMsg.includes('Server request failed')) {
+      cleanMsg = "The response was blocked by Google Gemini's safety filters. Please rephrase your request.";
+    }
+  } else if (upperStatus === 'CONTEXT_LENGTH_EXCEEDED') {
+    code = 400;
+    status = 'CONTEXT_LENGTH_EXCEEDED';
+    retryable = false;
   } else if (code === 400 || upperStatus === 'INVALID_ARGUMENT') {
     code = 400;
     status = 'INVALID_ARGUMENT';
@@ -259,29 +477,82 @@ function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   } else if (code === 504 || upperStatus === 'DEADLINE_EXCEEDED') {
     code = 504;
     status = 'DEADLINE_EXCEEDED';
-    retryable = true;
-    cleanMsg = 'The AI service timed out while waiting for a response. Please try again.';
+    retryable = explicitRetryable ?? true;
+    if (explicitRetryable !== false) {
+      cleanMsg = 'The AI service timed out while waiting for a response. Please try again.';
+    }
   } else if (code === 500 || upperStatus === 'INTERNAL') {
     code = 500;
     status = 'INTERNAL';
-    retryable = false;
+    retryable = explicitRetryable ?? false;
     if (!cleanMsg || cleanMsg === 'Internal Server Error' || cleanMsg.includes('Server request failed (500)')) {
       cleanMsg = 'The AI service encountered an internal error. Please try again or switch providers.';
     }
   }
 
-  const err = new Error(cleanMsg || 'An unexpected error occurred while communicating with the AI service.');
+  const sanitizedMsg = sanitizeErrorMessage(
+    cleanMsg || 'An unexpected error occurred while communicating with the AI service.'
+  );
+  const err = new Error(sanitizedMsg);
   err.code = code;
+  err.httpStatus = Number.isFinite(code) && code >= 400 && code <= 599 ? code : 500;
   err.status = status;
-  err.retryable = isOllamaContext ? false : (retryable ?? (code === 503 || code === 429));
+  err.errorCode = isObjectInput && rawError.errorCode ? String(rawError.errorCode) : status;
+  err.timeout = code === 504 || status === 'DEADLINE_EXCEEDED';
+  err.cancelled = false;
+  err.partial = Boolean(rawError?.partial);
+  err.partialText = typeof rawError?.partialText === 'string' ? rawError.partialText : '';
+  if (err.partial || (typeof err.partialText === 'string' && err.partialText.trim().length > 0)) {
+    err.retryable = false;
+  } else if (explicitRetryable === false || isOllamaContext) {
+    err.retryable = false;
+  } else if (typeof explicitRetryable === 'boolean') {
+    err.retryable = explicitRetryable;
+  } else {
+    err.retryable = Boolean(retryable ?? (code === 502 || code === 503 || code === 504 || code === 429));
+  }
+
   if (isOllamaContext) {
     err.provider = AI_PROVIDERS.OLLAMA;
+    err.canFallback = false;
+  } else if (isWebLLMContext) {
+    err.provider = AI_PROVIDERS.WEBLLM;
     err.canFallback = false;
   } else if (code === 413 || status === 'PAYLOAD_TOO_LARGE') {
     if (normalizedHint) err.provider = normalizedHint;
     err.canFallback = false;
-  } else if (normalizedHint) {
-    err.provider = normalizedHint;
+  } else {
+    if (normalizedHint) err.provider = normalizedHint;
+    const defaultCanFallback = !isOllamaContext && !isWebLLMContext && code !== 400 && code !== 413;
+    err.canFallback =
+      isObjectInput && typeof rawError.canFallback === 'boolean'
+        ? rawError.canFallback
+        : defaultCanFallback;
+  }
+  if (isObjectInput && typeof rawError.canFallback === 'boolean') {
+    // Local privacy invariant: Ollama and WebLLM must NEVER have canFallback: true
+    if (!isOllamaContext && !isWebLLMContext) {
+      err.canFallback = rawError.canFallback;
+    } else {
+      err.canFallback = false;
+    }
+  }
+  // Enforce strict invariants: partial output, cancellation, and local providers can never fallback
+  if (err.partial || err.cancelled || isOllamaContext || isWebLLMContext) {
+    err.canFallback = false;
+    if (err.partial || err.cancelled) {
+      err.retryable = false;
+    }
+  }
+  if (isObjectInput && Array.isArray(rawError.suggestedProviders)) {
+    err.suggestedProviders = rawError.suggestedProviders;
+  }
+  if (isObjectInput && rawError.finishReason) {
+    err.finishReason = rawError.finishReason;
+  }
+  if (isObjectInput && rawError.serverRetriesExhausted === true) {
+    err.serverRetriesExhausted = true;
+    err.retryable = false;
   }
   return err;
 }
@@ -295,27 +566,81 @@ function createRouterAbortError(cause = null) {
   return abortErr;
 }
 
-export async function streamAIMessage({
-  provider = DEFAULT_PROVIDER,
-  model = null,
-  mode = 'general',
-  prompt,
-  history = [],
-  username = null,
-  preferences = null,
-  onChunk,
-  onStart,
-  signal,
-  isRequestActive = null,
-  conversationId = null,
-  attachments = [],
-  isContinuation = false,
-  partNumber = 1,
-  originalPrompt = null,
-  previousContentSummary = null
-}) {
-  const normalizedProvider = provider.toLowerCase();
+/**
+ * Prepares attachment payloads for automatic stream continuation so document/OCR extraction
+ * metadata and Gemini vision bytes are preserved across Part 1 -> Part 2 boundaries without
+ * duplicating payloads inside `history` or exceeding size limits.
+ */
+async function prepareAttachmentsForContinuation(attachments, targetProvider, targetModel) {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return [];
+  }
+  if (isVisionCapableProvider(targetProvider, targetModel)) {
+    return hydrateAttachmentsWithImageBytes(attachments, {
+      provider: targetProvider,
+      model: targetModel
+    });
+  }
+  return attachments.map((att) =>
+    sanitizeAttachmentForNetwork(att, { includeImageBytes: false })
+  );
+}
+
+/**
+ * Streams chat responses from the selected AI provider progressively.
+ *
+ * @param {Object} params
+ * @param {string} [params.provider='gemini']
+ * @param {string|null} [params.model=null]
+ * @param {string} [params.mode='general']
+ * @param {string} params.prompt
+ * @param {Array} [params.history=[]]
+ * @param {string|null} [params.username=null]
+ * @param {Object|null} [params.preferences=null]
+ * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
+ * @param {({ modelUsed: string, provider: string, isDemo?: boolean }) => void} [params.onStart]
+ * @param {AbortSignal} [params.signal]
+ * @param {() => boolean} [params.isRequestActive]
+ * @param {string|null} [params.conversationId=null]
+ * @param {Array} [params.attachments=[]]
+ * @param {boolean} [params.isContinuation=false]
+ * @param {number} [params.partNumber=1]
+ * @param {string|null} [params.originalPrompt=null]
+ * @param {string|null} [params.previousContentSummary=null]
+ * @param {string} [params.chatEndpoint='/api/chat']
+ * @param {number} [params.retryBaseDelayMs=600]
+ * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean }>}
+ */
+export async function streamAIMessage(params = {}) {
+  if (params?.autoFallback === true) {
+    return streamAIMessageWithFallback(params);
+  }
+
+  const {
+    provider = DEFAULT_PROVIDER,
+    model = null,
+    mode = 'general',
+    prompt,
+    history = [],
+    username = null,
+    preferences = null,
+    onChunk,
+    onStart,
+    signal,
+    isRequestActive = null,
+    conversationId = null,
+    attachments = [],
+    isContinuation = false,
+    partNumber = 1,
+    originalPrompt = null,
+    previousContentSummary = null,
+    chatEndpoint = '/api/chat',
+    retryBaseDelayMs = 600
+  } = params || {};
+
+  const normalizedProvider = normalizeProviderId(provider);
   const normalizedMode = (mode || 'general').toLowerCase();
+  const sanitizedModel = sanitizeModelForProvider(normalizedProvider, model);
   const isActive = () =>
     !signal?.aborted && (typeof isRequestActive !== 'function' || Boolean(isRequestActive()));
 
@@ -326,6 +651,20 @@ export async function streamAIMessage({
   // Strictly local browser inference: route Browser AI (WebLLM) directly to webllmService.js.
   // Never send Browser AI requests to /api/chat, Ollama, Firebase, or any cloud provider.
   if (normalizedProvider === AI_PROVIDERS.WEBLLM) {
+    if (model && typeof model === 'string' && model.trim()) {
+      const compat = checkModelCompatibilityForProvider('webllm', model.trim());
+      if (!compat.compatible) {
+        throw new WebLLMError(
+          compat.reason || `Model "${model.trim()}" is not valid for Browser AI (WebLLM).`,
+          {
+            code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
+            httpCode: 400,
+            retryable: false
+          }
+        );
+      }
+    }
+
     let effectivePrompt = prompt;
     if (isContinuation) {
       const contHeader = originalPrompt
@@ -343,7 +682,7 @@ export async function streamAIMessage({
       username: username ? String(username).trim() : null,
       preferences: preferences || null,
       mode: normalizedMode,
-      model: model ? String(model).trim() : null,
+      model: sanitizedModel,
       attachments: Array.isArray(attachments)
         ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
         : [],
@@ -359,9 +698,10 @@ export async function streamAIMessage({
     });
   }
 
-  // Primary path: Use secure server-side proxy route /api/chat with SSE
-  // Server executes bounded retries with jitter; avoid multiplying client-side delays
-  const maxClientAttempts = 1;
+  // Primary path: Use server-side proxy route /api/chat with SSE.
+  // Allow at most 1 bounded retry (2 total attempts) ONLY for genuine transient errors
+  // where `retryable !== false` and server-side multi-attempt retries were not already exhausted.
+  const maxClientAttempts = 2;
   let clientAttempt = 0;
 
   while (clientAttempt < maxClientAttempts) {
@@ -373,7 +713,7 @@ export async function streamAIMessage({
 
       const requestBody = prepareChatRequestBody({
         provider: normalizedProvider,
-        model: model ? String(model).trim() : null,
+        model: sanitizedModel,
         mode: normalizedMode,
         prompt,
         history,
@@ -388,7 +728,7 @@ export async function streamAIMessage({
         previousContentSummary: previousContentSummary || null
       });
 
-      const res = await fetch('/api/chat', {
+      const res = await fetch(chatEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -406,25 +746,37 @@ export async function streamAIMessage({
       }
 
       if (!res.ok) {
+        // Parse structured JSON error payload BEFORE making any retry decision
         const errJson = await res.json().catch(() => null);
         if (!isActive()) {
           throw createRouterAbortError();
         }
+
         const parsedErr = parseRouterError(
-          errJson?.error || `Server request failed (${res.status})`,
+          errJson || `Server request failed (${res.status})`,
           res.status,
           normalizedProvider
         );
+
         if (errJson?.code) parsedErr.code = errJson.code;
         if (errJson?.status) parsedErr.status = errJson.status;
-        if (typeof errJson?.retryable === 'boolean') parsedErr.retryable = errJson.retryable;
+        if (errJson?.errorCode) parsedErr.errorCode = errJson.errorCode;
+        if (typeof errJson?.retryable === 'boolean') {
+          parsedErr.retryable = errJson.retryable;
+        }
+        if (errJson?.serverRetriesExhausted) {
+          parsedErr.serverRetriesExhausted = true;
+          parsedErr.retryable = false;
+        }
         parsedErr.provider = errJson?.provider || errJson?.error?.provider || normalizedProvider;
         if (typeof errJson?.canFallback === 'boolean') {
           parsedErr.canFallback = errJson.canFallback;
         } else if (normalizedProvider === AI_PROVIDERS.OLLAMA) {
           parsedErr.canFallback = false;
         }
-        if (Array.isArray(errJson?.suggestedProviders)) parsedErr.suggestedProviders = errJson.suggestedProviders;
+        if (Array.isArray(errJson?.suggestedProviders)) {
+          parsedErr.suggestedProviders = errJson.suggestedProviders;
+        }
 
         throw parsedErr;
       }
@@ -437,6 +789,7 @@ export async function streamAIMessage({
         let accumulatedText = '';
         let modelUsed = null;
         let finalProvider = normalizedProvider;
+        let isDemoResponse = false;
         let receivedDone = false;
 
         const onSignalAbort = () => {
@@ -477,7 +830,8 @@ export async function streamAIMessage({
               }
               modelUsed = data.modelUsed;
               finalProvider = data.provider || normalizedProvider;
-              onStart?.({ modelUsed, provider: finalProvider });
+              if (data.isDemo) isDemoResponse = true;
+              onStart?.({ modelUsed, provider: finalProvider, isDemo: isDemoResponse });
             } else if (data.type === 'chunk' && data.text) {
               if (!isActive()) {
                 throw createRouterAbortError();
@@ -491,13 +845,15 @@ export async function streamAIMessage({
               receivedDone = true;
               if (data.modelUsed) modelUsed = data.modelUsed;
               if (data.provider) finalProvider = data.provider;
+              if (data.isDemo) isDemoResponse = true;
               const finalText = data.text || accumulatedText;
               return {
                 done: true,
                 result: {
                   text: finalText,
                   modelUsed: modelUsed || 'AI Model',
-                  provider: finalProvider
+                  provider: finalProvider,
+                  ...(isDemoResponse ? { isDemo: true } : {})
                 }
               };
             } else if (data.type === 'error') {
@@ -505,14 +861,37 @@ export async function streamAIMessage({
                 throw createRouterAbortError();
               }
               const streamErr = parseRouterError(
-                data.error || 'Stream error occurred.',
+                data,
                 data.code || 500,
                 data.provider || normalizedProvider
               );
               if (data.code) streamErr.code = data.code;
               if (data.status) streamErr.status = data.status;
+              if (data.errorCode) {
+                streamErr.errorCode = data.errorCode;
+              } else if (streamErr.status && !streamErr.errorCode) {
+                streamErr.errorCode = streamErr.status;
+              }
+              if (data.model) streamErr.model = data.model;
               if (typeof data.retryable === 'boolean') streamErr.retryable = data.retryable;
               if (typeof data.canFallback === 'boolean') streamErr.canFallback = data.canFallback;
+              if (Array.isArray(data.suggestedProviders)) {
+                streamErr.suggestedProviders = data.suggestedProviders;
+              }
+              if (typeof data.partial === 'boolean') {
+                streamErr.partial = data.partial;
+              }
+              if (typeof data.partialText === 'string') {
+                streamErr.partialText = data.partialText;
+              }
+              // Never auto-retry at the router layer if partial stream tokens were already emitted
+              if (accumulatedText.length > 0) {
+                streamErr.retryable = false;
+                streamErr.partial = true;
+                if (!streamErr.partialText) {
+                  streamErr.partialText = accumulatedText;
+                }
+              }
               streamErr.provider = data.provider || normalizedProvider;
               throw streamErr;
             }
@@ -579,19 +958,36 @@ export async function streamAIMessage({
             return {
               text: accumulatedText,
               modelUsed: modelUsed || 'AI Model',
-              provider: finalProvider
+              provider: finalProvider,
+              ...(isDemoResponse ? { isDemo: true } : {})
             };
           }
 
-          // If the connection was abruptly dropped mid-stream (e.g. Vercel Hobby 60s serverless execution limit
-          // or intermediate network drop), seamlessly continue generation ONLY if the request is still active:
+          // If the connection was abruptly dropped mid-stream (e.g. serverless execution limit
+          // or intermediate network drop), seamlessly continue generation ONLY if the request is still active
+          // while preserving original document/OCR/vision attachments safely:
           if (isActive() && accumulatedText.length > 0 && (partNumber || 1) < 10) {
-            console.log(`[Stream Continuation] Connection closed before 'done' event at ${accumulatedText.length} chars. Auto-continuing stream...`);
+            const contProvider = normalizeProviderId(finalProvider || normalizedProvider);
+            const contModel =
+              sanitizeModelForProvider(contProvider, modelUsed) ||
+              sanitizeModelForProvider(contProvider, model);
+
+            const continuationAttachments = await prepareAttachmentsForContinuation(
+              attachments,
+              contProvider,
+              contModel
+            );
+
+            if (!isActive()) {
+              throw createRouterAbortError();
+            }
+
             const basePrefix = accumulatedText;
-            const continuationPrompt = 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.';
+            const continuationPrompt =
+              'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.';
             const contResult = await streamAIMessage({
-              provider: finalProvider || normalizedProvider,
-              model: modelUsed || model,
+              provider: contProvider,
+              model: contModel,
               mode: normalizedMode,
               prompt: continuationPrompt,
               history: [
@@ -613,11 +1009,13 @@ export async function streamAIMessage({
               signal,
               isRequestActive,
               conversationId,
-              attachments: [],
+              attachments: continuationAttachments,
               isContinuation: true,
               partNumber: (partNumber || 1) + 1,
               originalPrompt: originalPrompt || prompt,
-              previousContentSummary: basePrefix.slice(-300)
+              previousContentSummary: basePrefix.slice(-300),
+              chatEndpoint,
+              retryBaseDelayMs
             });
 
             if (!isActive()) {
@@ -649,7 +1047,8 @@ export async function streamAIMessage({
           return {
             text: accumulatedText,
             modelUsed: modelUsed || 'AI Model',
-            provider: finalProvider
+            provider: finalProvider,
+            ...(isDemoResponse ? { isDemo: true } : {})
           };
         } finally {
           if (signal) {
@@ -660,7 +1059,7 @@ export async function streamAIMessage({
           } catch (_) {}
         }
       } else {
-        // Non-streaming response fallback
+        // Non-streaming JSON response
         const data = await res.json();
         if (!isActive()) {
           throw createRouterAbortError();
@@ -669,7 +1068,8 @@ export async function streamAIMessage({
         return {
           text: data.text,
           modelUsed: data.modelUsed,
-          provider: data.provider || normalizedProvider
+          provider: data.provider || normalizedProvider,
+          ...(data.isDemo ? { isDemo: true } : {})
         };
       }
     } catch (apiErr) {
@@ -677,155 +1077,60 @@ export async function streamAIMessage({
         throw createRouterAbortError(apiErr);
       }
 
-      if (apiErr?.retryable && clientAttempt < maxClientAttempts) {
-        const delay = 1000 + Math.random() * 500;
-        await new Promise((resolve) => {
-          const timer = setTimeout(resolve, delay);
-          if (signal) {
-            signal.addEventListener(
-              'abort',
-              () => {
-                clearTimeout(timer);
-                resolve(undefined);
-              },
-              { once: true }
-            );
-          }
-        });
+      // Normalize raw fetch TypeError before evaluating retry eligibility
+      let normalizedErr = apiErr;
+      if (apiErr?.name === 'TypeError' && !apiErr.status) {
+        normalizedErr = parseRouterError(
+          apiErr.message || 'fetch failed',
+          503,
+          normalizedProvider
+        );
+        normalizedErr.provider = normalizedProvider;
+        normalizedErr.isNetworkError = true;
+      }
+
+      const canRetryTransient =
+        normalizedErr?.retryable === true &&
+        !normalizedErr?.serverRetriesExhausted &&
+        clientAttempt < maxClientAttempts;
+
+      if (canRetryTransient) {
+        const baseMs = Math.max(0, Number(retryBaseDelayMs) || 0);
+        const delay = baseMs > 0 ? baseMs + Math.random() * Math.min(250, baseMs) : 0;
+        if (delay > 0) {
+          await new Promise((resolve) => {
+            const timer = setTimeout(resolve, delay);
+            if (signal) {
+              signal.addEventListener(
+                'abort',
+                () => {
+                  clearTimeout(timer);
+                  resolve(undefined);
+                },
+                { once: true }
+              );
+            }
+          });
+        }
         if (!isActive()) {
           throw createRouterAbortError();
         }
         continue;
       }
 
-      if (apiErr.name === 'TypeError' && isProviderConfigured(normalizedProvider)) {
-        if (!isActive()) {
-          throw createRouterAbortError();
-        }
-        console.warn('Backend proxy unreachable, attempting client-side streaming fallback:', apiErr.message);
-        break;
+      if (
+        normalizedErr?.retryable === true &&
+        !normalizedErr?.serverRetriesExhausted &&
+        clientAttempt >= maxClientAttempts
+      ) {
+        normalizedErr.retriesExhausted = true;
       }
 
-      if (apiErr.name === 'TypeError' && !apiErr.status) {
-        const netErr = parseRouterError(apiErr.message || 'fetch failed', 503, normalizedProvider);
-        netErr.provider = normalizedProvider;
-        throw netErr;
-      }
-
-      throw apiErr;
+      throw normalizedErr;
     }
   }
 
-  if (!isActive()) {
-    throw createRouterAbortError();
-  }
-
-  // Client-side direct service fallback
-  switch (normalizedProvider) {
-    case AI_PROVIDERS.GROQ: {
-      const result = await streamGroqMessage({
-        prompt,
-        history,
-        mode: normalizedMode,
-        onChunk: (c, acc) => {
-          if (!isActive()) return;
-          onChunk?.(c, acc);
-        },
-        signal,
-        attachments,
-        conversationId
-      });
-      if (!isActive()) throw createRouterAbortError();
-      return {
-        ...result,
-        provider: AI_PROVIDERS.GROQ
-      };
-    }
-
-    case AI_PROVIDERS.OPENROUTER: {
-      const result = await streamOpenRouterMessage({
-        prompt,
-        history,
-        mode: normalizedMode,
-        onChunk: (c, acc) => {
-          if (!isActive()) return;
-          onChunk?.(c, acc);
-        },
-        signal,
-        attachments,
-        conversationId
-      });
-      if (!isActive()) throw createRouterAbortError();
-      return {
-        ...result,
-        provider: AI_PROVIDERS.OPENROUTER
-      };
-    }
-
-    case AI_PROVIDERS.CLOUDFLARE: {
-      const err = new Error(
-        'Cloudflare Workers AI requires the backend server. Please verify the server is running and configured with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.'
-      );
-      err.provider = AI_PROVIDERS.CLOUDFLARE;
-      err.code = 503;
-      throw err;
-    }
-
-    case AI_PROVIDERS.OLLAMA: {
-      const err = new Error(
-        'Local AI (Ollama) requires the local Orvix backend server. Please verify the local server is running and Ollama is active on http://127.0.0.1:11434.'
-      );
-      err.provider = AI_PROVIDERS.OLLAMA;
-      err.code = 503;
-      err.canFallback = false;
-      throw err;
-    }
-
-    case AI_PROVIDERS.WEBLLM: {
-      return streamWebLLMMessage({
-        prompt,
-        history,
-        username: username ? String(username).trim() : null,
-        preferences: preferences || null,
-        mode: normalizedMode,
-        model: model ? String(model).trim() : null,
-        attachments: Array.isArray(attachments)
-          ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
-          : [],
-        onStart: (info) => {
-          if (!isActive()) return;
-          onStart?.(info);
-        },
-        onChunk: (c, acc) => {
-          if (!isActive()) return;
-          onChunk?.(c, acc);
-        },
-        signal
-      });
-    }
-
-    case AI_PROVIDERS.GEMINI:
-    default: {
-      const result = await streamGeminiMessage({
-        prompt,
-        history,
-        username,
-        mode: normalizedMode,
-        onChunk: (c, acc) => {
-          if (!isActive()) return;
-          onChunk?.(c, acc);
-        },
-        signal,
-        attachments,
-        conversationId
-      });
-      if (!isActive()) throw createRouterAbortError();
-      return {
-        ...result,
-        provider: AI_PROVIDERS.GEMINI
-      };
-    }
-  }
+  throw createRouterAbortError();
 }
 
 /**
@@ -833,8 +1138,352 @@ export async function streamAIMessage({
  * Maintained for interface compatibility; internally streams or resolves the full response.
  *
  * @param {Object} params
- * @returns {Promise<{ text: string, modelUsed: string, provider: string }>}
+ * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean }>}
  */
 export async function sendAIMessage(params) {
+  if (params?.autoFallback === true) {
+    return streamAIMessageWithFallback(params);
+  }
   return streamAIMessage(params);
 }
+
+/**
+ * Re-exports model switching and fallback chain helpers for consumers.
+ */
+export { resolveModelForProviderSwitch, getDeterministicFallbackChain };
+
+/**
+ * Evaluates whether an error is eligible to trigger automated provider fallback.
+ *
+ * Strict policy:
+ * - CANNOT fallback if cancelled, aborted, or superseded.
+ * - CANNOT fallback if partial output has already been emitted (prevents duplicate text).
+ * - CANNOT fallback if provider is local (Ollama or WebLLM) — strict local privacy boundary.
+ * - CANNOT fallback if error is non-fallback (400, 401, 403, 413, invalid model, safety, quota, context length).
+ * - CANNOT fallback if canFallback !== true.
+ * - MAY fallback on transient 500, 502, 503, 504, timeout, network failure, or retry-exhausted provider outages.
+ *
+ * @param {any} error
+ * @param {Object} [options={}]
+ * @param {AbortSignal} [options.signal=null]
+ * @param {() => boolean} [options.isRequestActive=null]
+ * @param {boolean} [options.hasPartialOutput=false]
+ * @returns {boolean}
+ */
+export function isFallbackEligible(error, { signal = null, isRequestActive = null, hasPartialOutput = false } = {}) {
+  if (!error) return false;
+
+  // 1. User cancellation / abort
+  if (error.cancelled === true || isAbortLike(error, signal)) {
+    return false;
+  }
+  if (signal?.aborted) {
+    return false;
+  }
+  if (typeof isRequestActive === 'function' && !isRequestActive()) {
+    return false;
+  }
+
+  // 2. Partial streamed output (must never replay after partial tokens shown)
+  if (error.partial === true || hasPartialOutput) {
+    return false;
+  }
+  if (typeof error.partialText === 'string' && error.partialText.trim().length > 0) {
+    return false;
+  }
+
+  // 3. Local provider privacy boundary
+  const normProvider = normalizeProviderId(error.provider);
+  if (normProvider === 'ollama' || normProvider === 'webllm') {
+    return false;
+  }
+
+  // 4. canFallback MUST strictly be true
+  if (error.canFallback !== true) {
+    return false;
+  }
+
+  // 5. Incompatible or non-recoverable error codes
+  const code = String(error.code || error.status || error.errorCode || '').toUpperCase();
+  const nonFallbackCodes = new Set([
+    'REQUEST_CANCELLED',
+    'REQUEST_ABORTED',
+    'REQUEST_SUPERSEDED',
+    'INVALID_MODEL',
+    'UNSUPPORTED_MODEL',
+    'AUTH_FAILED',
+    'UNAUTHENTICATED',
+    'PERMISSION_DENIED',
+    'MISSING_CREDENTIALS',
+    'INVALID_REQUEST_PARAMETERS',
+    'INVALID_ARGUMENT',
+    'SAFETY_BLOCKED',
+    'CONTEXT_LENGTH_EXCEEDED',
+    'PAYLOAD_TOO_LARGE',
+    'LOCAL_PROVIDER_ONLY',
+    'WEBGPU_UNSUPPORTED',
+    'WEBGPU_ADAPTER_UNAVAILABLE',
+    'SHADER_F16_UNSUPPORTED',
+    'INSUFFICIENT_STORAGE'
+  ]);
+  if (nonFallbackCodes.has(code)) {
+    return false;
+  }
+
+  // 6. Explicit HTTP status: 400, 401, 403, 413, 499 never fallback
+  const httpStatus = Number(error.httpStatus || error.statusCode || error.code);
+  if (httpStatus === 400 || httpStatus === 401 || httpStatus === 403 || httpStatus === 413 || httpStatus === 499) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Creates a sanitized, structured fallback diagnostic record without exposing
+ * API keys, authorization tokens, raw prompts, or sensitive attachment contents.
+ *
+ * @param {Object} data
+ * @returns {Object}
+ */
+export function createFallbackDiagnostic({
+  requestId,
+  originalProvider,
+  failedProvider,
+  failureCode,
+  fallbackEligibility,
+  selectedFallbackProvider,
+  attemptNumber
+}) {
+  return {
+    requestId: String(requestId || `req-${Date.now()}`),
+    originalProvider: normalizeProviderId(originalProvider),
+    failedProvider: normalizeProviderId(failedProvider),
+    failureCode: String(failureCode || 'UNKNOWN_ERROR'),
+    fallbackEligibility: Boolean(fallbackEligibility),
+    selectedFallbackProvider: selectedFallbackProvider ? normalizeProviderId(selectedFallbackProvider) : null,
+    attemptNumber: Number(attemptNumber) || 1,
+    timestamp: Date.now()
+  };
+}
+
+/**
+ * Logs a concise internal diagnostic for provider fallback operations.
+ * Never logs secrets, tokens, or raw prompts.
+ *
+ * @param {Object} diag
+ */
+export function logFallbackDiagnostic(diag) {
+  if (!diag) return;
+  console.warn(
+    `[AI Fallback] Request: ${diag.requestId} | Initial: ${diag.originalProvider} | Failed: ${diag.failedProvider} (${diag.failureCode}) | Eligible: ${diag.fallbackEligibility} | Target: ${diag.selectedFallbackProvider || 'None'} | Step: ${diag.attemptNumber}`
+  );
+}
+
+/**
+ * Streams chat responses with deterministic bounded retry and automatic fallback coordination
+ * across configured, available AI providers.
+ *
+ * Flow:
+ * 1. Attempt primary provider (up to maxClientAttempts per provider on transient failures).
+ * 2. If primary succeeds -> returns { text, modelUsed, provider, attemptedProviders, fallbackHistory, ... }.
+ * 3. If primary fails:
+ *    - Cancellation? Stop immediately (no retry, no fallback).
+ *    - Partial output emitted? Stop immediately (no fallback to prevent duplicate/corrupted output).
+ *    - Non-fallback error (auth, 400, invalid model, local privacy boundary, canFallback: false)? Stop immediately.
+ *    - Fallback eligible (500, 502, 503, 504, timeout, network failure, canFallback: true)?
+ *      - Select next provider from deterministic fallback chain that has not yet been visited.
+ *      - If none available -> formulate and throw single canonical final error.
+ *      - Otherwise -> record diagnostic, switch model cleanly via resolveModelForProviderSwitch,
+ *        and attempt fallback provider.
+ *
+ * @param {Object} params
+ * @param {string} [params.provider='gemini']
+ * @param {string|null} [params.model=null]
+ * @param {string} [params.mode='general']
+ * @param {string} params.prompt
+ * @param {Array} [params.history=[]]
+ * @param {Array} [params.attachments=[]]
+ * @param {AbortSignal} [params.signal]
+ * @param {() => boolean} [params.isRequestActive]
+ * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
+ * @param {({ modelUsed: string, provider: string, isDemo?: boolean }) => void} [params.onStart]
+ * @param {(diagnostic: Object) => void} [params.onFallback]
+ * @param {Array<string>} [params.fallbackChain]
+ * @param {number} [params.maxFallbackProviders=3]
+ * @param {string} [params.requestId]
+ * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean, attemptedProviders: string[], fallbackHistory: Array<Object> }>}
+ */
+export async function streamAIMessageWithFallback(params = {}) {
+  const requestId = params.requestId || `req-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const initialProvider = normalizeProviderId(params.provider || DEFAULT_PROVIDER);
+  let currentProvider = initialProvider;
+  let currentModel = params.model || null;
+
+  // Track visited providers to prevent loops (e.g. A -> B -> A)
+  const visitedProviders = new Set([initialProvider]);
+  const attemptedProviders = [initialProvider];
+  const fallbackHistory = [];
+
+  // Determine if vision is required (e.g. raw image attachments)
+  const hasImageAttachments = Array.isArray(params.attachments) && params.attachments.some(isImageAttachment);
+  const requiresVision = hasImageAttachments;
+
+  // Maximum fallback depth across providers (default 3 providers max)
+  const maxFallbackDepth = Number.isInteger(params.maxFallbackProviders) && params.maxFallbackProviders > 0
+    ? params.maxFallbackProviders
+    : 3;
+
+  let lastError = null;
+
+  while (attemptedProviders.length <= maxFallbackDepth) {
+    if (params.signal?.aborted || (typeof params.isRequestActive === 'function' && !params.isRequestActive())) {
+      throw createRouterAbortError();
+    }
+
+    // Resolve model safely for current provider
+    const effectiveModel = resolveModelForProviderSwitch(currentProvider, currentModel, initialProvider);
+
+    // Track stream state for current provider
+    let providerEmittedChunks = false;
+    let accumulatedText = '';
+
+    try {
+      // Execute stream attempt on current provider (autoFallback: false so retries stay on this provider)
+      const result = await streamAIMessage({
+        ...params,
+        provider: currentProvider,
+        model: effectiveModel,
+        autoFallback: false,
+        onStart: (info) => {
+          params.onStart?.({
+            ...info,
+            provider: currentProvider,
+            modelUsed: info?.modelUsed || effectiveModel || PROVIDER_DEFAULT_MODELS[currentProvider]
+          });
+        },
+        onChunk: (chunkText, currentAcc) => {
+          providerEmittedChunks = true;
+          accumulatedText = currentAcc;
+          params.onChunk?.(chunkText, currentAcc);
+        }
+      });
+
+      // Successful completion!
+      return {
+        ...result,
+        attemptedProviders: [...attemptedProviders],
+        fallbackHistory: [...fallbackHistory]
+      };
+    } catch (rawErr) {
+      if (
+        params.signal?.aborted ||
+        (typeof params.isRequestActive === 'function' && !params.isRequestActive()) ||
+        rawErr?.name === 'AbortError' ||
+        rawErr?.cancelled ||
+        isAbortLike(rawErr)
+      ) {
+        const abortErr = createRouterAbortError(rawErr);
+        abortErr.cancelled = true;
+        abortErr.retryable = false;
+        abortErr.canFallback = false;
+        abortErr.attemptedProviders = [...attemptedProviders];
+        abortErr.fallbackHistory = [...fallbackHistory];
+        throw abortErr;
+      }
+
+      const canonicalErr = normalizeAIError(rawErr, {
+        provider: currentProvider,
+        model: effectiveModel,
+        requestId,
+        partialText: accumulatedText,
+        partial: providerEmittedChunks || Boolean(rawErr?.partial),
+        promptText: params.prompt,
+        attemptedProviders: [...attemptedProviders],
+        fallbackHistory: [...fallbackHistory]
+      });
+
+      lastError = canonicalErr;
+
+      // CRITICAL STREAMING INVARIANT:
+      // If partial text was already emitted to the user, NEVER attempt fallback to another provider.
+      if (providerEmittedChunks || canonicalErr.partial || (canonicalErr.partialText && canonicalErr.partialText.trim().length > 0)) {
+        canonicalErr.partial = true;
+        canonicalErr.canFallback = false;
+        canonicalErr.retryable = false;
+        throw canonicalErr;
+      }
+
+      // Check fallback eligibility
+      const eligible = isFallbackEligible(canonicalErr, {
+        signal: params.signal,
+        isRequestActive: params.isRequestActive,
+        hasPartialOutput: providerEmittedChunks
+      });
+
+      if (!eligible) {
+        throw canonicalErr;
+      }
+
+      // Determine candidate fallback providers
+      let candidates;
+      if (Array.isArray(params.fallbackChain) && params.fallbackChain.length > 0) {
+        candidates = params.fallbackChain
+          .map(normalizeProviderId)
+          .filter((p) => p && !visitedProviders.has(p) && isProviderCapableOfTask(p, { requiresVision, hasImageAttachments }));
+      } else {
+        candidates = getDeterministicFallbackChain(currentProvider, {
+          providerConfig: params.providerConfig || getCachedProviderConfig(),
+          requiresVision,
+          visited: Array.from(visitedProviders)
+        });
+      }
+
+      const nextProvider = candidates.find((p) => !visitedProviders.has(p));
+
+      // No eligible fallback provider remaining or depth reached
+      if (!nextProvider || attemptedProviders.length >= maxFallbackDepth) {
+        const finalExhaustedErr = normalizeAIError(canonicalErr, {
+          provider: currentProvider,
+          model: effectiveModel,
+          requestId,
+          canFallback: false,
+          attemptedProviders: [...attemptedProviders],
+          fallbackHistory: [...fallbackHistory]
+        });
+        finalExhaustedErr.canFallback = false;
+        throw finalExhaustedErr;
+      }
+
+      // Record diagnostic & advance to next provider
+      const diag = createFallbackDiagnostic({
+        requestId,
+        originalProvider: initialProvider,
+        failedProvider: currentProvider,
+        failureCode: canonicalErr.code,
+        fallbackEligibility: true,
+        selectedFallbackProvider: nextProvider,
+        attemptNumber: fallbackHistory.length + 1
+      });
+      fallbackHistory.push(diag);
+      logFallbackDiagnostic(diag);
+      params.onFallback?.(diag);
+
+      visitedProviders.add(nextProvider);
+      attemptedProviders.push(nextProvider);
+      currentProvider = nextProvider;
+      currentModel = null;
+    }
+  }
+
+  throw (
+    lastError ||
+    normalizeAIError('All AI provider fallback attempts failed.', {
+      provider: currentProvider,
+      requestId,
+      attemptedProviders: [...attemptedProviders],
+      fallbackHistory: [...fallbackHistory]
+    })
+  );
+}
+

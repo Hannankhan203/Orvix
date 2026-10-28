@@ -9,13 +9,14 @@
 
 import { getChatMode } from '../config/chatModes.js';
 import { prepareDocumentContext, adaptDocumentContextForProvider } from './documentContextService.js';
+import { sanitizeModelForProvider, PROVIDER_DEFAULT_MODELS } from './providerModelSanitizer.js';
 
 export function getOpenRouterApiKey() {
   return '';
 }
 
-// OpenRouter free model
-const DEFAULT_MODEL = 'openrouter/free';
+// OpenRouter Free Models Router default
+const DEFAULT_MODEL = PROVIDER_DEFAULT_MODELS.openrouter;
 
 function normalizeAttachments(attachments = []) {
   if (!Array.isArray(attachments)) return [];
@@ -31,6 +32,40 @@ function normalizeAttachments(attachments = []) {
         isImage: Boolean(ext.isImage ?? a.isImage ?? false)
       };
     });
+}
+
+function buildStructuredOpenRouterError(errPayload, fallbackStatus = 500, partialText = '') {
+  const message =
+    (typeof errPayload === 'string' && errPayload) ||
+    errPayload?.error ||
+    errPayload?.message ||
+    `OpenRouter request failed (${fallbackStatus})`;
+  const err = new Error(message);
+  err.code = errPayload?.code || fallbackStatus;
+  err.status = errPayload?.status || errPayload?.errorCode || 'PROVIDER_ERROR';
+  err.errorCode = errPayload?.errorCode || err.status;
+  err.provider = errPayload?.provider || 'openrouter';
+  if (errPayload?.model) err.model = errPayload.model;
+  err.retryable = typeof errPayload?.retryable === 'boolean' ? errPayload.retryable : false;
+  err.canFallback = typeof errPayload?.canFallback === 'boolean' ? errPayload.canFallback : true;
+  if (errPayload?.serverRetriesExhausted === true) {
+    err.serverRetriesExhausted = true;
+    err.retryable = false;
+  }
+  if (Array.isArray(errPayload?.suggestedProviders)) {
+    err.suggestedProviders = errPayload.suggestedProviders;
+  }
+  if (typeof errPayload?.partial === 'boolean') {
+    err.partial = errPayload.partial;
+  }
+  if (typeof errPayload?.partialText === 'string') {
+    err.partialText = errPayload.partialText;
+  } else if (partialText) {
+    err.partial = true;
+    err.partialText = partialText;
+    err.retryable = false;
+  }
+  return err;
 }
 
 /**
@@ -101,9 +136,20 @@ export function formatOpenRouterMessages(history = [], prompt, maxContextMessage
  * @param {string} params.prompt - Current user input prompt
  * @param {Array} [params.history=[]] - Previous conversation messages
  * @param {Array} [params.attachments=[]]
+ * @param {string|null} [params.model=null]
+ * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function sendOpenRouterMessage({ prompt, history = [], mode = 'general', attachments = [], conversationId = null }) {
+export async function sendOpenRouterMessage({
+  prompt,
+  history = [],
+  mode = 'general',
+  model = null,
+  signal,
+  attachments = [],
+  conversationId = null
+}) {
+  const sanitizedModel = sanitizeModelForProvider('openrouter', model) || DEFAULT_MODEL;
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -111,23 +157,25 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
     },
     body: JSON.stringify({
       provider: 'openrouter',
+      model: sanitizedModel,
       mode,
       prompt,
       history,
+      stream: false,
       conversationId: conversationId || null,
       attachments: Array.isArray(attachments) ? attachments : []
-    })
+    }),
+    signal
   });
 
   if (!response.ok) {
-    let errorDetail = '';
+    let errPayload = null;
     try {
-      const errJson = await response.json();
-      errorDetail = errJson?.error || '';
+      errPayload = await response.json();
     } catch (_) {
-      errorDetail = await response.text();
+      errPayload = { error: await response.text().catch(() => '') };
     }
-    throw new Error(errorDetail || `OpenRouter request failed (${response.status})`);
+    throw buildStructuredOpenRouterError(errPayload, response.status);
   }
 
   const data = await response.json();
@@ -137,7 +185,7 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
 
   return {
     text: data.text,
-    modelUsed: data.modelUsed || DEFAULT_MODEL
+    modelUsed: data.modelUsed || sanitizedModel
   };
 }
 
@@ -146,11 +194,22 @@ export async function sendOpenRouterMessage({ prompt, history = [], mode = 'gene
  * @param {Object} params
  * @param {string} params.prompt
  * @param {Array} [params.history=[]]
+ * @param {string|null} [params.model=null]
  * @param {(chunk: string, accumulated: string) => void} [params.onChunk]
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ text: string, modelUsed: string }>}
  */
-export async function streamOpenRouterMessage({ prompt, history = [], mode = 'general', onChunk, signal, attachments = [], conversationId = null }) {
+export async function streamOpenRouterMessage({
+  prompt,
+  history = [],
+  mode = 'general',
+  model = null,
+  onChunk,
+  signal,
+  attachments = [],
+  conversationId = null
+}) {
+  const sanitizedModel = sanitizeModelForProvider('openrouter', model) || DEFAULT_MODEL;
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: {
@@ -159,6 +218,7 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
     },
     body: JSON.stringify({
       provider: 'openrouter',
+      model: sanitizedModel,
       mode,
       prompt,
       history,
@@ -170,14 +230,13 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
   });
 
   if (!response.ok) {
-    let errorDetail = '';
+    let errPayload = null;
     try {
-      const errJson = await response.json();
-      errorDetail = errJson?.error || '';
+      errPayload = await response.json();
     } catch (_) {
-      errorDetail = await response.text();
+      errPayload = { error: await response.text().catch(() => '') };
     }
-    throw new Error(errorDetail || `OpenRouter request failed (${response.status})`);
+    throw buildStructuredOpenRouterError(errPayload, response.status);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -186,7 +245,48 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
     const decoder = new TextDecoder();
     let buffer = '';
     let accumulated = '';
-    let modelUsed = DEFAULT_MODEL;
+    let modelUsed = sanitizedModel;
+    let receivedDone = false;
+
+    const processLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(':') || !trimmed.startsWith('data:')) return null;
+      const dataStr = trimmed.slice(5).trim();
+      if (!dataStr || dataStr === '[DONE]') return null;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(dataStr);
+      } catch (_) {
+        throw buildStructuredOpenRouterError(
+          {
+            error: /"error"\s*:/.test(dataStr)
+              ? dataStr
+              : 'Malformed SSE frame received during OpenRouter stream.',
+            status: 'STREAM_ERROR',
+            errorCode: 'STREAM_ERROR'
+          },
+          502,
+          accumulated
+        );
+      }
+
+      if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+      if (parsed.type === 'chunk' && parsed.text) {
+        accumulated += parsed.text;
+        onChunk?.(parsed.text, accumulated);
+      } else if (parsed.type === 'done') {
+        receivedDone = true;
+        if (parsed.modelUsed) modelUsed = parsed.modelUsed;
+        return {
+          text: parsed.text || accumulated,
+          modelUsed
+        };
+      } else if (parsed.type === 'error' || parsed.error) {
+        throw buildStructuredOpenRouterError(parsed, parsed.code || 500, accumulated);
+      }
+      return null;
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -197,30 +297,29 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const dataStr = trimmed.slice(6);
-        try {
-          const parsed = JSON.parse(dataStr);
-          if (parsed.modelUsed) modelUsed = parsed.modelUsed;
-          if (parsed.type === 'chunk' && parsed.text) {
-            accumulated += parsed.text;
-            onChunk?.(parsed.text, accumulated);
-          } else if (parsed.type === 'done') {
-            if (parsed.modelUsed) modelUsed = parsed.modelUsed;
-            return {
-              text: parsed.text || accumulated,
-              modelUsed
-            };
-          } else if (parsed.type === 'error') {
-            throw new Error(parsed.error || 'OpenRouter stream failed.');
-          }
-        } catch (jsonErr) {
-          if (jsonErr.message && !jsonErr.message.includes('JSON')) {
-            throw jsonErr;
-          }
-        }
+        const doneResult = processLine(line);
+        if (doneResult) return doneResult;
       }
+    }
+
+    const trailing = decoder.decode();
+    if (trailing) buffer += trailing;
+    if (buffer.trim()) {
+      for (const line of buffer.split('\n')) {
+        const doneResult = processLine(line);
+        if (doneResult) return doneResult;
+      }
+    }
+
+    if (!receivedDone && !accumulated) {
+      throw buildStructuredOpenRouterError(
+        {
+          error: 'OpenRouter stream ended prematurely before completion.',
+          status: 'STREAM_INCOMPLETE',
+          errorCode: 'STREAM_INCOMPLETE'
+        },
+        502
+      );
     }
 
     return {
@@ -237,7 +336,7 @@ export async function streamOpenRouterMessage({ prompt, history = [], mode = 'ge
   onChunk?.(data.text, data.text);
   return {
     text: data.text,
-    modelUsed: data.modelUsed || DEFAULT_MODEL
+    modelUsed: data.modelUsed || sanitizedModel
   };
 }
 

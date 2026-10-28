@@ -930,13 +930,34 @@ export async function runIsolatedPromptStream({
       return { status: 'cancelled', requestId };
     }
 
-    const { friendlyMsg, effectiveProvider, canSwitchProvider } = classifyError(error, {
+    const classified = classifyError(error, {
       finalProvider,
       providerToUse,
       activeModel,
       targetText,
       promptText
     });
+    const { friendlyMsg, effectiveProvider, canSwitchProvider } = classified;
+    const resolvedErrorCode =
+      classified?.errorCode ||
+      classified?.canonicalError?.code ||
+      error?.errorCode ||
+      (typeof error?.status === 'string' ? error.status : undefined);
+    const resolvedHttpStatus =
+      classified?.httpStatus ||
+      classified?.canonicalError?.httpStatus ||
+      error?.httpStatus ||
+      error?.code;
+    const resolvedSuggestedProviders = Array.isArray(classified?.suggestedProviders)
+      ? classified.suggestedProviders
+      : Array.isArray(error?.suggestedProviders)
+      ? error.suggestedProviders
+      : undefined;
+    const extraErrorFields = {
+      ...(resolvedErrorCode ? { errorCode: resolvedErrorCode, status: resolvedErrorCode } : {}),
+      ...(resolvedHttpStatus ? { httpStatus: resolvedHttpStatus } : {}),
+      ...(resolvedSuggestedProviders ? { suggestedProviders: resolvedSuggestedProviders } : {})
+    };
 
     const isInterrupted = targetText.trim().length > 0;
     const errorContent = isInterrupted
@@ -967,7 +988,8 @@ export async function runIsolatedPromptStream({
         failedPrompt: promptText,
         failedProvider: effectiveProvider || finalProvider || providerToUse,
         canSwitchProvider,
-        referencedAttachments: undefined
+        referencedAttachments: undefined,
+        ...extraErrorFields
       }
     );
 
@@ -986,7 +1008,8 @@ export async function runIsolatedPromptStream({
             failedPrompt: promptText,
             failedProvider: effectiveProvider || finalProvider || providerToUse,
             canSwitchProvider,
-            referencedAttachments: undefined
+            referencedAttachments: undefined,
+            ...extraErrorFields
           });
           finalizedErrorMessage = updated;
           return updated;
@@ -1006,6 +1029,6 @@ export async function runIsolatedPromptStream({
       await onPersistMessage(targetChatId, finalizedErrorMessage, true);
     }
 
-    return { status: 'error', requestId, error };
+    return { status: 'error', requestId, error, classifiedErr: classified, canonicalError: classified?.canonicalError };
   }
 }

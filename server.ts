@@ -45,6 +45,43 @@ import {
   MAX_VISION_IMAGE_BYTES,
   MAX_CHAT_REQUEST_BYTES
 } from './src/services/attachmentStorageService.js';
+// @ts-ignore - Shared provider configuration and model identifier validator
+import {
+  validateServerModelForProvider,
+  validateGroqTranscriptionModel,
+  GROQ_FALLBACK_CHAT_MODELS,
+  getProviderDisplayName,
+  PROVIDER_DEFAULT_MODELS
+} from './src/services/providerModelSanitizer.js';
+
+function getGroqApiBaseUrl(): string {
+  const customBase = (process.env.ORVIX_GROQ_BASE_URL || '').trim().replace(/\/+$/, '');
+  return customBase || 'https://api.groq.com/openai/v1';
+}
+
+function getOpenRouterApiBaseUrl(): string {
+  const customBase = (process.env.ORVIX_OPENROUTER_BASE_URL || '').trim().replace(/\/+$/, '');
+  return customBase || 'https://openrouter.ai/api/v1';
+}
+
+function getCloudflareApiBaseUrl(): string {
+  const customBase = (process.env.ORVIX_CLOUDFLARE_BASE_URL || '').trim().replace(/\/+$/, '');
+  return customBase || 'https://api.cloudflare.com/client/v4';
+}
+
+export function getOllamaApiBaseUrl(): string {
+  let customBase = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').trim();
+  customBase = customBase.replace(/^["']+|["']+$/g, '').trim();
+  customBase = customBase.replace(/[\r\n]/g, '').trim();
+  if (!/^https?:\/\//i.test(customBase)) {
+    customBase = `http://${customBase}`;
+  }
+  customBase = customBase.replace(/\/v1\/chat\/completions\/?$/i, '');
+  customBase = customBase.replace(/\/(?:v1|api)(?:\/chat)?\/?$/i, '');
+  customBase = customBase.replace(/\/+$/, '');
+  customBase = customBase.replace(/^(https?:\/\/)localhost(:\d+)?/i, '$1127.0.0.1$2');
+  return customBase || 'http://127.0.0.1:11434';
+}
 
 export interface DocumentData {
   fileId?: string;
@@ -206,12 +243,18 @@ function getBackoffWithJitter(attempt: number, retryAfterSec?: number): number {
 }
 
 // Sanitizes error messages to ensure no API keys, tokens, or headers are ever logged
-function sanitizeErrorLog(msg: string): string {
+// Sanitizes error messages to ensure no API keys, tokens, or headers are ever logged or sent to users
+export function sanitizeErrorLog(msg: string): string {
   if (!msg) return '';
   return String(msg)
-    .replace(/AIza[0-9A-Za-z-_]{35}/g, '[REDACTED_API_KEY]')
-    .replace(/Bearer\s+[A-Za-z0-9-_.]+/gi, 'Bearer [REDACTED]')
-    .replace(/key=[^&\s]+/gi, 'key=[REDACTED]');
+    .replace(/Bearer\s+[A-Za-z0-9_\-\.]+/gi, 'Bearer [REDACTED]')
+    .replace(/AIza[0-9A-Za-z_\-]{35}/g, '[REDACTED_API_KEY]')
+    .replace(/gsk_[A-Za-z0-9_\-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/sk-or-[A-Za-z0-9_\-\.]{15,}/g, '[REDACTED_API_KEY]')
+    .replace(/\bsk-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/([?&]key=)[A-Za-z0-9_\-]+/gi, '$1[REDACTED]')
+    .replace(/\b(GEMINI_API_KEY|GROQ_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN|CLOUDFLARE_ACCOUNT_ID)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/(authorization:\s*)([^\r\n,;]+)/gi, '$1[REDACTED]');
 }
 
 export type AIDiagnosticCategory =
@@ -252,6 +295,321 @@ function logAIDiagnostic(data: DiagnosticLogData) {
   console.warn(
     `[AI Diagnostic][${data.category}] Provider: ${data.provider} | Model: ${data.model || 'N/A'} | Phase: ${data.phase || 'dispatch'} | Status: ${statusStr} ${codeStr} | Action: ${actionDesc} | Sanitized: ${sanitizeErrorLog(data.sanitizedMessage)}`
   );
+}
+
+const DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS = 30_000;
+
+export function getUpstreamHeadersTimeoutMs(): number {
+  const raw = Number(process.env.ORVIX_UPSTREAM_HEADERS_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
+}
+
+export function isDemoModeEnabled(): boolean {
+  return String(process.env.ORVIX_ENABLE_DEMO_MODE || '').trim().toLowerCase() === 'true';
+}
+
+const PROVIDER_ENV_REQUIREMENTS: Record<string, string> = {
+  gemini: 'GEMINI_API_KEY',
+  groq: 'GROQ_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  cloudflare: 'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN'
+};
+
+function isConfiguredCredential(value: string): boolean {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return false;
+  if (/^(?:your|my|replace|insert|placeholder|enter)_[a-z0-9_]+$/i.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
+export function getServerProviderConfigStatus(serverlessRuntime = false) {
+  const geminiKey = (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
+  const groqKey = (process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '').trim();
+  const openrouterKey = (process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '').trim();
+  const cfAccountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
+  const cfToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
+
+  const geminiConfigured = isConfiguredCredential(geminiKey);
+  const groqConfigured = isConfiguredCredential(groqKey);
+  const openrouterConfigured = isConfiguredCredential(openrouterKey);
+  const cloudflareConfigured =
+    isConfiguredCredential(cfAccountId) && isConfiguredCredential(cfToken);
+  const ollamaSupported = !serverlessRuntime;
+
+  return {
+    geminiConfigured,
+    groqConfigured,
+    openrouterConfigured,
+    cloudflareConfigured,
+    ollamaConfigured: ollamaSupported,
+    ollamaSupported,
+    webllmSupported: true,
+    demoModeEnabled: isDemoModeEnabled(),
+    whisperConfigured: groqConfigured || geminiConfigured,
+    whisperProvider: groqConfigured ? 'groq' : geminiConfigured ? 'gemini' : null
+  };
+}
+
+export function getConfiguredFallbackProviders(excludeProvider: string, serverlessRuntime = false): string[] {
+  const status = getServerProviderConfigStatus(serverlessRuntime);
+  const candidates: string[] = [];
+  if (status.geminiConfigured) candidates.push('gemini');
+  if (status.groqConfigured) candidates.push('groq');
+  if (status.openrouterConfigured) candidates.push('openrouter');
+  if (status.cloudflareConfigured) candidates.push('cloudflare');
+  if (status.ollamaSupported) candidates.push('ollama');
+  if (status.webllmSupported) candidates.push('webllm');
+
+  return candidates.filter((p) => p !== excludeProvider);
+}
+
+function sendProviderNotConfiguredError(
+  res: express.Response,
+  provider: string,
+  serverlessRuntime = false
+) {
+  const displayProvider = getProviderDisplayName(provider);
+  const envVarLabel = PROVIDER_ENV_REQUIREMENTS[provider] || 'provider API credentials';
+  const errorMessage = `${displayProvider} is not configured on this server (missing ${envVarLabel}). Select an available provider from the model selector or configure ${envVarLabel} on the server.`;
+
+  logAIDiagnostic({
+    category: 'provider configuration error',
+    provider,
+    phase: 'configuration',
+    upstreamStatus: 503,
+    upstreamErrorCode: 'PROVIDER_NOT_CONFIGURED',
+    sanitizedMessage: errorMessage,
+    willRetry: false
+  });
+
+  return res.status(503).json({
+    error: errorMessage,
+    code: 503,
+    status: 'PROVIDER_NOT_CONFIGURED',
+    errorCode: 'PROVIDER_NOT_CONFIGURED',
+    provider,
+    retryable: false,
+    canFallback: true,
+    suggestedProviders: getConfiguredFallbackProviders(provider, serverlessRuntime)
+  });
+}
+
+function createClientDisconnectedError(): Error {
+  const err: any = new Error('Client disconnected before upstream response completed.');
+  err.name = 'AbortError';
+  err.code = 'CLIENT_DISCONNECTED';
+  err.isClientDisconnected = true;
+  return err;
+}
+
+function createUpstreamHeadersTimeoutError(provider: string, timeoutMs: number): Error {
+  const displayProvider = getProviderDisplayName(provider);
+  const seconds = Math.max(1, Math.round((timeoutMs / 1000) * 10) / 10);
+  const err: any = new Error(
+    `The request to ${displayProvider} timed out after ${seconds}s while waiting for initial response headers. Please try again.`
+  );
+  err.name = 'TimeoutError';
+  err.status = 504;
+  err.code = 'DEADLINE_EXCEEDED';
+  err.isUpstreamHeadersTimeout = true;
+  return err;
+}
+
+/**
+ * Request-scoped upstream cancellation & initial header timeout guard.
+ * Cancels outbound upstream requests immediately when the client disconnects
+ * and bounds initial header wait time without cutting off active SSE streams after headers arrive.
+ */
+function createRequestUpstreamGuard(req: express.Request, res: express.Response) {
+  let clientDisconnected = false;
+  let cleanedUp = false;
+  const activeControllers = new Set<AbortController>();
+  const activeTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  const markDisconnected = () => {
+    if (res.writableEnded) return;
+    if (clientDisconnected) return;
+    clientDisconnected = true;
+    for (const ctrl of activeControllers) {
+      try {
+        ctrl.abort(createClientDisconnectedError());
+      } catch (_) {}
+    }
+    activeControllers.clear();
+  };
+
+  const onResClose = () => {
+    if (!res.writableEnded) {
+      markDisconnected();
+    }
+  };
+
+  const onReqAborted = () => {
+    markDisconnected();
+  };
+
+  res.on('close', onResClose);
+  req.on('aborted', onReqAborted);
+
+  const isClientDisconnected = (err?: any): boolean => {
+    if (clientDisconnected) return true;
+    return Boolean(err?.isClientDisconnected || err?.code === 'CLIENT_DISCONNECTED');
+  };
+
+  const isUpstreamTimeout = (err?: any): boolean => {
+    if (clientDisconnected) return false;
+    return Boolean(
+      err?.isUpstreamHeadersTimeout ||
+        err?.name === 'TimeoutError' ||
+        err?.code === 'DEADLINE_EXCEEDED'
+    );
+  };
+
+  const fetchUpstream = async (
+    url: string,
+    init: RequestInit = {},
+    options: { provider: string; headersTimeoutMs?: number } = { provider: 'AI Provider' }
+  ): Promise<Response> => {
+    if (clientDisconnected) {
+      throw createClientDisconnectedError();
+    }
+
+    const timeoutMs = options.headersTimeoutMs ?? getUpstreamHeadersTimeoutMs();
+    const controller = new AbortController();
+    activeControllers.add(controller);
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      activeTimers.delete(timer);
+      if (!clientDisconnected) {
+        timedOut = true;
+        try {
+          controller.abort(createUpstreamHeadersTimeoutError(options.provider, timeoutMs));
+        } catch (_) {}
+      }
+    }, timeoutMs);
+    activeTimers.add(timer);
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      activeTimers.delete(timer);
+      if (clientDisconnected) {
+        try {
+          await response.body?.cancel();
+        } catch (_) {}
+        activeControllers.delete(controller);
+        throw createClientDisconnectedError();
+      }
+      return response;
+    } catch (err: any) {
+      clearTimeout(timer);
+      activeTimers.delete(timer);
+      activeControllers.delete(controller);
+      if (clientDisconnected || err?.isClientDisconnected) {
+        throw createClientDisconnectedError();
+      }
+      if (timedOut || err?.isUpstreamHeadersTimeout) {
+        throw createUpstreamHeadersTimeoutError(options.provider, timeoutMs);
+      }
+      throw err;
+    }
+  };
+
+  const callGeminiWithGuard = async <T>(
+    invoke: (signal: AbortSignal) => Promise<T>,
+    options: { provider?: string; headersTimeoutMs?: number } = {}
+  ): Promise<T> => {
+    if (clientDisconnected) {
+      throw createClientDisconnectedError();
+    }
+
+    const providerName = options.provider || 'gemini';
+    const timeoutMs = options.headersTimeoutMs ?? getUpstreamHeadersTimeoutMs();
+    const controller = new AbortController();
+    activeControllers.add(controller);
+    let timedOut = false;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        if (timer) activeTimers.delete(timer);
+        if (!clientDisconnected) {
+          timedOut = true;
+          const timeoutErr = createUpstreamHeadersTimeoutError(providerName, timeoutMs);
+          try {
+            controller.abort(timeoutErr);
+          } catch (_) {}
+          reject(timeoutErr);
+        } else {
+          reject(createClientDisconnectedError());
+        }
+      }, timeoutMs);
+      activeTimers.add(timer);
+    });
+
+    try {
+      const result = await Promise.race([invoke(controller.signal), timeoutPromise]);
+      if (timer) {
+        clearTimeout(timer);
+        activeTimers.delete(timer);
+      }
+      if (clientDisconnected) {
+        activeControllers.delete(controller);
+        throw createClientDisconnectedError();
+      }
+      return result;
+    } catch (err: any) {
+      if (timer) {
+        clearTimeout(timer);
+        activeTimers.delete(timer);
+      }
+      activeControllers.delete(controller);
+      if (clientDisconnected || err?.isClientDisconnected) {
+        throw createClientDisconnectedError();
+      }
+      if (timedOut || err?.isUpstreamHeadersTimeout) {
+        throw createUpstreamHeadersTimeoutError(providerName, timeoutMs);
+      }
+      throw err;
+    }
+  };
+
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    res.off('close', onResClose);
+    req.off('aborted', onReqAborted);
+    for (const timer of activeTimers) {
+      clearTimeout(timer);
+    }
+    activeTimers.clear();
+    if (clientDisconnected) {
+      for (const ctrl of activeControllers) {
+        try {
+          ctrl.abort();
+        } catch (_) {}
+      }
+    }
+    activeControllers.clear();
+  };
+
+  return {
+    isClientClosed: () => clientDisconnected,
+    isClientDisconnected,
+    isUpstreamTimeout,
+    fetchUpstream,
+    callGeminiWithGuard,
+    cleanup
+  };
 }
 
 // Parses and normalizes API errors into clean user-facing representations across all providers
@@ -447,7 +805,26 @@ export function parseGeminiError(err: any, provider = 'gemini'): {
     };
   }
 
-  // 6. Model Not Found / Decommissioned Model
+  // 6. Safety Filter Block
+  if (
+    lowerMsg.includes('safety') ||
+    lowerMsg.includes('blocked due to safety') ||
+    lowerMsg.includes('candidate was blocked') ||
+    upperStatus === 'SAFETY' ||
+    upperStatus === 'SAFETY_BLOCKED'
+  ) {
+    return {
+      statusCode: 400,
+      status: 'SAFETY_BLOCKED',
+      category: 'request validation error',
+      isUnavailable: false,
+      isRetryable: false,
+      message: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
+      retryAfterSeconds
+    };
+  }
+
+  // 7. Model Not Found / Decommissioned Model
   if (
     statusCode === 404 ||
     upperStatus === 'NOT_FOUND' ||
@@ -1017,29 +1394,9 @@ app.get(['/api/health', '/health'], (_req, res) => {
   });
 });
 
-// API Config Check (indicates configured providers without leaking keys)
+// API Config Check (indicates configured providers without leaking keys or secrets)
 app.get(['/api/config', '/config'], (_req, res) => {
-  const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
-  const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
-  const openrouterKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '';
-  const cfAccountId = process.env.CLOUDFLARE_ACCOUNT_ID || '';
-  const cfToken = process.env.CLOUDFLARE_API_TOKEN || '';
-
-  res.json({
-    geminiConfigured: Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
-    groqConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY'),
-    openrouterConfigured: Boolean(openrouterKey && openrouterKey !== 'YOUR_OPENROUTER_API_KEY'),
-    cloudflareConfigured: Boolean(
-      cfAccountId &&
-      cfAccountId !== 'YOUR_CLOUDFLARE_ACCOUNT_ID' &&
-      cfToken &&
-      cfToken !== 'YOUR_CLOUDFLARE_API_TOKEN'
-    ),
-    ollamaConfigured: true,
-    ollamaSupported: true,
-    whisperConfigured: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') || Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY'),
-    whisperProvider: Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY') ? 'groq' : (Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') ? 'gemini' : null)
-  });
+  res.json(getServerProviderConfigStatus(isServerless));
 });
 
 /* ==========================================================================
@@ -2134,8 +2491,27 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
       });
     }
 
+    // Transcription model validation (separate audio transcription models from chat-completion models)
+    const modelValidation = validateGroqTranscriptionModel(req.body?.model);
+    if (!modelValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: modelValidation.error,
+        code: modelValidation.code || 'INVALID_TRANSCRIPTION_MODEL',
+        status: 'INVALID_ARGUMENT',
+        provider: 'groq',
+        retryable: false,
+        fallbackAvailable: false
+      });
+    }
+    const selectedTranscriptionModel = modelValidation.model;
+
     // Minimum audio payload size check if no transcript is provided
-    if (!incomingTranscript && (!audioFile || !audioFile.buffer || audioFile.buffer.length < 100)) {
+    const isTranscriptOnlyRequest = String(req.body?.transcriptOnly || '').toLowerCase() === 'true';
+    const hasAudioPayload = Boolean(
+      !isTranscriptOnlyRequest && audioFile && audioFile.buffer && audioFile.buffer.length >= 100
+    );
+    if (!incomingTranscript && !hasAudioPayload) {
       return res.status(400).json({
         success: false,
         error: 'The recorded audio is empty or too short to transcribe.',
@@ -2156,107 +2532,8 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
     const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
     const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
 
-    // High-accuracy transcript refinement path for mobile native-live dictation:
-    // When incomingTranscript is provided from live dictation session
-    if (incomingTranscript) {
-      if (hasGemini || hasGroq) {
-        try {
-          const refinePrompt = `You are a high-accuracy speech-to-text transcript polisher for AI conversation and programming.
-TASK:
-Refine the provided spoken transcript verbatim.
-Preserve exact words, speaker intent, and technical vocabulary (e.g. Orvix, JavaScript, TypeScript, React, Node.js, Python, palindrome, algorithms, async/await, promises, functions, arrow functions, var, const, let, objects, arrays, callbacks, ECMAScript, code).
-Fix verbal punctuation ("period" -> ".", "comma" -> ",", "question mark" -> "?"), sentence capitalization, and obvious phonetic slips.
-${isoLang ? `Spoken language: ${isoLang}.` : ''}
-Output ONLY the refined transcript. No quotes, no markdown fences, no explanatory commentary.
-
-Spoken transcript:
-"${incomingTranscript}"`;
-
-          let refinedText = '';
-
-          if (hasGemini) {
-            try {
-              const ai = new GoogleGenAI({
-                apiKey: geminiKey,
-                httpOptions: {
-                  headers: {
-                    'User-Agent': 'aistudio-build'
-                  }
-                }
-              });
-              // 6s timeout so mobile dictation never hangs
-              const timeoutPromise = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error('Refine timeout')), 6000)
-              );
-              const genPromise = ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: [{ role: 'user', parts: [{ text: refinePrompt }] }]
-              });
-              const geminiRes = await Promise.race([genPromise, timeoutPromise]);
-              refinedText = (geminiRes?.text || '').trim();
-            } catch (gErr) {
-              console.warn('[Transcribe] Gemini refine error, falling back to local polisher:', gErr);
-            }
-          } else if (hasGroq) {
-            try {
-              const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${groqKey}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  model: 'llama-3.3-70b-versatile',
-                  messages: [{ role: 'user', content: refinePrompt }],
-                  temperature: 0.1,
-                  max_tokens: 1024
-                })
-              });
-              if (groqRes.ok) {
-                const data: any = await groqRes.json();
-                refinedText = (data?.choices?.[0]?.message?.content || '').trim();
-              }
-            } catch (grErr) {
-              console.warn('[Transcribe] Groq refine error:', grErr);
-            }
-          }
-
-          if (refinedText) {
-            if (refinedText.startsWith('```')) {
-              refinedText = refinedText.replace(/^```[a-zA-Z0-9_-]*\n?/i, '').replace(/\n?```$/i, '').trim();
-            }
-            refinedText = refinedText.replace(/^["'«»“](.*)["'«»”]$/s, '$1').trim();
-
-            return res.status(200).json({
-              success: true,
-              text: refinedText,
-              language: isoLang || 'en',
-              duration: 0,
-              model: 'whisper-large-v3-turbo',
-              provider: 'groq',
-              highAccuracy: true
-            });
-          }
-        } catch (refineErr) {
-          console.warn('[Transcribe] AI transcript refinement failed, using local polisher:', refineErr);
-        }
-      }
-
-      // Fast, deterministic local speech polisher fallback
-      const cleanRefined = polishSpokenTranscript(incomingTranscript);
-      return res.status(200).json({
-        success: true,
-        text: cleanRefined || incomingTranscript,
-        language: isoLang || 'en',
-        duration: 0,
-        model: 'whisper-large-v3-turbo',
-        provider: 'groq',
-        highAccuracy: true
-      });
-    }
-
-    // Primary Audio Transcription Path: Groq Whisper Large v3 Turbo
-    if (hasGroq) {
+    // Primary Audio Transcription Path: When audio payload is present, execute genuine Groq Whisper transcription
+    if (hasAudioPayload && hasGroq) {
       try {
         const mime = (audioFile.mimetype || 'audio/webm').toLowerCase();
         let fileExt = '.webm';
@@ -2264,6 +2541,8 @@ Spoken transcript:
         else if (mime.includes('ogg')) fileExt = '.ogg';
         else if (mime.includes('wav')) fileExt = '.wav';
         else if (mime.includes('mpeg') || mime.includes('mp3')) fileExt = '.mp3';
+        else if (mime.includes('aac')) fileExt = '.aac';
+        else if (mime.includes('flac')) fileExt = '.flac';
 
         const safeFilename = audioFile.originalname && audioFile.originalname.includes('.')
           ? audioFile.originalname
@@ -2272,7 +2551,7 @@ Spoken transcript:
         const formData = new FormData();
         const audioBlob = new Blob([new Uint8Array(audioFile.buffer)], { type: mime });
         formData.append('file', audioBlob, safeFilename);
-        formData.append('model', 'whisper-large-v3-turbo');
+        formData.append('model', selectedTranscriptionModel);
         formData.append('temperature', '0');
         formData.append('response_format', 'verbose_json');
         if (isoLang) {
@@ -2283,7 +2562,7 @@ Spoken transcript:
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s max timeout
 
-        const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        const groqRes = await fetch(`${getGroqApiBaseUrl()}/audio/transcriptions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${groqKey}`
@@ -2301,7 +2580,7 @@ Spoken transcript:
             text: transcriptText,
             language: result.language || isoLang || 'en',
             duration: result.duration || 0,
-            model: 'whisper-large-v3-turbo',
+            model: selectedTranscriptionModel,
             provider: 'groq',
             highAccuracy: true
           });
@@ -2309,35 +2588,89 @@ Spoken transcript:
 
         const errStatus = groqRes.status;
         const errText = await groqRes.text().catch(() => '');
+        let upstreamErrMsg = '';
+        try {
+          const parsedErr = JSON.parse(errText);
+          if (typeof parsedErr?.error === 'string') {
+            upstreamErrMsg = parsedErr.error;
+          } else if (typeof parsedErr?.error?.message === 'string') {
+            upstreamErrMsg = parsedErr.error.message;
+          }
+        } catch (_) {
+          upstreamErrMsg = errText.slice(0, 200).trim();
+        }
+
         logAIDiagnostic({
           category: 'provider API error',
           provider: 'groq',
-          model: 'whisper-large-v3-turbo',
+          model: selectedTranscriptionModel,
           phase: 'dispatch',
           upstreamStatus: errStatus,
-          sanitizedMessage: `Groq Whisper failed: ${errText.slice(0, 200)}`
+          sanitizedMessage: `Groq Whisper failed: ${(upstreamErrMsg || errText).slice(0, 200)}`
         });
 
-        // If Groq rate-limited (429) or unavailable (503), attempt Gemini audio fallback if available
+        // Non-retryable authentication / permission / invalid-request / invalid-model failures
+        if (errStatus === 401 || errStatus === 403) {
+          return res.status(errStatus).json({
+            success: false,
+            error:
+              upstreamErrMsg ||
+              (errStatus === 401
+                ? 'Groq API key is invalid or unauthorized for audio transcription.'
+                : 'Groq API key does not have permission for audio transcription.'),
+            code: errStatus === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED',
+            status: errStatus === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED',
+            provider: 'groq',
+            model: selectedTranscriptionModel,
+            statusCode: errStatus,
+            retryable: false,
+            fallbackAvailable: false
+          });
+        }
+
+        if (errStatus === 400 || errStatus === 404 || errStatus === 413 || errStatus === 415 || errStatus === 422) {
+          const isModelErr = errStatus === 404 || /model/i.test(upstreamErrMsg);
+          return res.status(errStatus === 404 ? 404 : 400).json({
+            success: false,
+            error:
+              upstreamErrMsg ||
+              (isModelErr
+                ? `Groq transcription model '${selectedTranscriptionModel}' was not found or is unsupported.`
+                : 'Groq Whisper rejected the audio transcription request.'),
+            code: isModelErr ? 'INVALID_TRANSCRIPTION_MODEL' : 'INVALID_AUDIO_REQUEST',
+            status: errStatus === 404 ? 'NOT_FOUND' : 'INVALID_ARGUMENT',
+            provider: 'groq',
+            model: selectedTranscriptionModel,
+            statusCode: errStatus,
+            retryable: false,
+            fallbackAvailable: false
+          });
+        }
+
+        // If Groq rate-limited (429) or unavailable (5xx), attempt Gemini audio fallback only if available
         if (!hasGemini) {
           const isRateLimit = errStatus === 429;
-          return res.status(errStatus >= 500 || errStatus === 429 ? 503 : 400).json({
+          return res.status(isRateLimit ? 429 : 503).json({
             success: false,
             error: isRateLimit
               ? 'Groq Whisper rate limit exceeded. Native speech transcript retained.'
-              : 'Groq Whisper service encountered an error. Native speech transcript retained.',
+              : upstreamErrMsg || 'Groq Whisper service encountered an error. Native speech transcript retained.',
             code: isRateLimit ? 'RATE_LIMIT_EXCEEDED' : 'PROVIDER_ERROR',
+            status: isRateLimit ? 'RESOURCE_EXHAUSTED' : 'UNAVAILABLE',
+            provider: 'groq',
+            model: selectedTranscriptionModel,
             statusCode: errStatus,
+            retryable: true,
             fallbackAvailable: true
           });
         }
       } catch (groqErr: any) {
         logAIDiagnostic({
-          category: groqErr?.name === 'AbortError' ? 'provider timeout' : 'provider network failure',
+          category: 'provider API error',
           provider: 'groq',
-          model: 'whisper-large-v3-turbo',
+          model: selectedTranscriptionModel,
           phase: 'dispatch',
-          sanitizedMessage: groqErr?.message || 'Groq request failed'
+          sanitizedMessage: groqErr?.message || 'Groq Whisper network error'
         });
 
         if (!hasGemini) {
@@ -2347,15 +2680,19 @@ Spoken transcript:
               ? 'Whisper transcription timed out. Native speech transcript retained.'
               : 'Network error connecting to Whisper service. Native speech transcript retained.',
             code: groqErr?.name === 'AbortError' ? 'TRANSCRIPTION_TIMEOUT' : 'NETWORK_ERROR',
+            status: groqErr?.name === 'AbortError' ? 'DEADLINE_EXCEEDED' : 'UNAVAILABLE',
+            provider: 'groq',
+            model: selectedTranscriptionModel,
             statusCode: 504,
+            retryable: true,
             fallbackAvailable: true
           });
         }
       }
     }
 
-    // Secondary Transcription Path: Gemini Audio Recognition Fallback
-    if (hasGemini) {
+    // Secondary Audio Path: Gemini Audio Recognition Fallback when audio payload exists
+    if (hasAudioPayload && hasGemini) {
       try {
         const ai = new GoogleGenAI({
           apiKey: geminiKey,
@@ -2422,6 +2759,21 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           fallbackAvailable: true
         });
       }
+    }
+
+    // Deterministic local transcript polisher when only a live browser speech transcript was supplied.
+    // Never substitute a Groq chat-completion call for an audio transcription result.
+    if (incomingTranscript) {
+      const cleanRefined = polishSpokenTranscript(incomingTranscript);
+      return res.status(200).json({
+        success: true,
+        text: cleanRefined || incomingTranscript,
+        language: isoLang || 'en',
+        duration: 0,
+        model: 'local-polisher',
+        provider: 'local',
+        highAccuracy: false
+      });
     }
 
     // If neither provider key is configured
@@ -2545,13 +2897,62 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
     const previousContentSummary =
       clientPreviousContentSummary || multiPartCtx.previousContentSummary || '';
 
-    // Accurately track client response disconnection (res.on('close')), NOT request stream upload end
-    let isClientClosed = false;
-    res.on('close', () => {
-      if (!res.writableEnded) {
-        isClientClosed = true;
-      }
-    });
+    // Request-scoped upstream cancellation & header timeout guard
+    const upstreamGuard = createRequestUpstreamGuard(req, res);
+    res.once('finish', () => upstreamGuard.cleanup());
+    res.once('close', () => upstreamGuard.cleanup());
+
+    // Validate target server provider & incoming model identifier before context preparation or dispatch
+    const normalizedProvider = String(provider || 'gemini').trim().toLowerCase();
+    const SERVER_SUPPORTED_PROVIDERS = new Set(['gemini', 'groq', 'openrouter', 'cloudflare', 'ollama']);
+    if (!SERVER_SUPPORTED_PROVIDERS.has(normalizedProvider)) {
+      upstreamGuard.cleanup();
+      const errMessage =
+        normalizedProvider === 'webllm'
+          ? 'Browser AI (WebLLM) runs directly in the browser via WebGPU and cannot be dispatched to /api/chat.'
+          : `Unknown provider: ${provider}`;
+      logAIDiagnostic({
+        category: 'request validation error',
+        provider: normalizedProvider,
+        model: String(clientModel || 'N/A'),
+        phase: 'validation',
+        upstreamStatus: 400,
+        upstreamErrorCode: 'INVALID_ARGUMENT',
+        sanitizedMessage: errMessage
+      });
+      return res.status(400).json({
+        error: errMessage,
+        code: 400,
+        status: normalizedProvider === 'webllm' ? 'LOCAL_PROVIDER_ONLY' : 'INVALID_ARGUMENT',
+        provider: normalizedProvider,
+        retryable: false,
+        canFallback: false
+      });
+    }
+
+    const modelValidation = validateServerModelForProvider(normalizedProvider, clientModel);
+    if (!modelValidation.valid) {
+      upstreamGuard.cleanup();
+      logAIDiagnostic({
+        category: 'request validation error',
+        provider: normalizedProvider,
+        model: String(clientModel || 'invalid'),
+        phase: 'validation',
+        upstreamStatus: 400,
+        upstreamErrorCode: 'INVALID_MODEL',
+        sanitizedMessage: modelValidation.error || 'Invalid model identifier for provider.'
+      });
+      return res.status(400).json({
+        error: modelValidation.error || 'Invalid model identifier for selected provider.',
+        code: 400,
+        status: 'INVALID_MODEL',
+        errorCode: 'INVALID_MODEL',
+        provider: normalizedProvider,
+        retryable: false,
+        canFallback: false
+      });
+    }
+    const validatedClientModel: string | null = modelValidation.model;
 
     // Associate attachments sent in this turn with the conversation
     if (conversationId && Array.isArray(attachments)) {
@@ -2744,11 +3145,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // Prepare document context for the prompt (using originalPrompt when continuing)
     const effectiveDocPrompt = isContinuation && originalPrompt ? originalPrompt : prompt;
-    const normalizedProvider = String(provider).toLowerCase();
-    const isVision = isVisionCapableProvider(normalizedProvider, clientModel);
+    const isVision = isVisionCapableProvider(
+      normalizedProvider,
+      validatedClientModel ?? undefined
+    );
     const prepDoc: PreparedDocumentContext = prepareDocumentContext(effectiveDocPrompt, availableDocs, {
       provider: normalizedProvider,
-      model: clientModel,
+      model: validatedClientModel ?? undefined,
       isVisionCapable: isVision,
       activeAttachmentId: currentTurnAttachmentId
     }) as PreparedDocumentContext;
@@ -2859,10 +3262,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 1. Google Gemini Provider
     if (normalizedProvider === 'gemini') {
-      const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+      const apiKey = (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
 
-      // If no API key is configured, return simulated response (with progressive reveal if streaming)
-      if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+      if (!isConfiguredCredential(apiKey)) {
+        if (!isDemoModeEnabled()) {
+          return sendProviderNotConfiguredError(res, 'gemini', isServerless);
+        }
         const text = (isLikelyLarge || isContinuation)
           ? generateSimulatedMultiPartResponse({
               prompt,
@@ -2877,19 +3282,19 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.1-flash-lite (demo)';
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-2.5-flash (demo)';
         if (!shouldStream) {
           return res.json({
             text,
             modelUsed: demoModel,
-            provider: 'gemini'
+            provider: 'gemini',
+            isDemo: true
           });
         }
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
-        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'gemini' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'gemini', isDemo: true });
 
-        // Support testable 60s+ stream durations for automated verification
         const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
         const testDurationSec = testDurationMatch
           ? parseInt(testDurationMatch[1], 10)
@@ -2900,22 +3305,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           const tokens = text.split(/(\s+)/);
           const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+            await sleepWithAbort(intervalMs, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         } else {
           const tokens = text.split(/(\s+)/);
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await new Promise((r) => setTimeout(r, 15));
+            await sleepWithAbort(15, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         }
 
         stopHeartbeat();
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'gemini' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'gemini', isDemo: true });
           res.end();
         }
         return;
@@ -2932,18 +3337,20 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       const imageParts: Array<{ mimeType: string; data: string }> = validatedGeminiImageParts;
       const contents = formatGeminiHistory(history, effectivePrompt, 12, imageParts);
-      // Attempt sequence: max 3 attempts total (initial attempt + up to 2 retries)
-      // Uses the requested Gemini model if valid, falling back to gemini-3.8-flash and gemini-flash-latest
-      const requestedGeminiModel =
-        typeof clientModel === 'string' && clientModel.trim()
-          ? clientModel.trim()
-          : 'gemini-3.1-flash-lite';
-
-      const attemptPlan = [
-        { model: requestedGeminiModel, attemptNum: 1 },
-        { model: requestedGeminiModel === 'gemini-3.8-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.8-flash', attemptNum: 2 },
-        { model: 'gemini-flash-latest', attemptNum: 3 }
-      ];
+      // Attempt sequence: max 3 attempts total (initial attempt + valid fallbacks)
+      // Uses the validated Gemini model if specified, falling back to gemini-flash-latest
+      const requestedGeminiModel = validatedClientModel || 'gemini-2.5-flash';
+      const fallbackCandidates = ['gemini-2.5-flash', 'gemini-flash-latest'];
+      const uniquePlanModels = [requestedGeminiModel];
+      for (const cand of fallbackCandidates) {
+        if (!uniquePlanModels.includes(cand)) {
+          uniquePlanModels.push(cand);
+        }
+      }
+      const attemptPlan = uniquePlanModels.map((m, idx) => ({
+        model: m,
+        attemptNum: idx + 1
+      }));
       const maxAttempts = attemptPlan.length;
 
       let targetGeminiTokens = 4096;
@@ -2957,36 +3364,86 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         let lastParsedErr = null;
 
         for (let i = 0; i < attemptPlan.length; i++) {
-          if (isClientClosed) break;
+          if (upstreamGuard.isClientClosed()) return;
           const { model, attemptNum } = attemptPlan[i];
 
           try {
-            const response = await ai.models.generateContent({
-              model,
-              contents,
-              config: {
-                systemInstruction: effectiveSystemInstruction,
-                maxOutputTokens: targetGeminiTokens,
-                temperature: 0.7
-              }
-            });
+            const response = await upstreamGuard.callGeminiWithGuard(
+              (signal) =>
+                ai.models.generateContent({
+                  model,
+                  contents,
+                  config: {
+                    abortSignal: signal,
+                    systemInstruction: effectiveSystemInstruction,
+                    maxOutputTokens: targetGeminiTokens,
+                    temperature: 0.7
+                  }
+                }),
+              { provider: 'gemini' }
+            );
 
-            if (response && response.text) {
-              let finalText = response.text;
-              if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+            if (upstreamGuard.isClientClosed()) return;
+
+            const candidate = response?.candidates?.[0];
+            const finishReason = candidate?.finishReason || (response as any)?.promptFeedback?.blockReason;
+
+            // Handle safety filter block
+            if (finishReason === 'SAFETY' || (response as any)?.promptFeedback?.blockReason === 'SAFETY') {
+              return res.status(400).json({
+                error: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
+                code: 400,
+                status: 'SAFETY_BLOCKED',
+                provider: 'gemini',
+                model,
+                retryable: false,
+                canFallback: true,
+                finishReason: 'SAFETY'
+              });
+            }
+
+            let finalText = '';
+            try {
+              finalText = response?.text || '';
+            } catch (textErr: any) {
+              if (String(textErr?.message || '').toLowerCase().includes('safety')) {
+                return res.status(400).json({
+                  error: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
+                  code: 400,
+                  status: 'SAFETY_BLOCKED',
+                  provider: 'gemini',
+                  model,
+                  retryable: false,
+                  canFallback: true,
+                  finishReason: 'SAFETY'
+                });
+              }
+            }
+
+            if (finalText) {
+              const isTruncated = finishReason === 'MAX_TOKENS';
+              if ((isTruncated || isLikelyLarge) && !isContinuation && !responseHasContinuationNotice(finalText)) {
                 finalText += CONTINUATION_NOTICES.PART_1;
               }
               return res.json({
                 text: finalText,
                 modelUsed: model,
-                provider: 'gemini'
+                provider: 'gemini',
+                ...(finishReason ? { finishReason } : {}),
+                ...(isTruncated ? { truncated: true } : {})
               });
             }
           } catch (err: any) {
+            if (upstreamGuard.isClientDisconnected(err)) {
+              return;
+            }
             const parsed = parseGeminiError(err, 'gemini');
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
-            const willRetry = parsed.isRetryable && hasMoreAttempts && !isClientClosed;
+
+            const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
+            const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
+            const willRetry = (parsed.isRetryable || willAdvanceFallback) && hasMoreAttempts && !upstreamGuard.isClientClosed();
 
             logAIDiagnostic({
               category: parsed.category,
@@ -3002,7 +3459,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               willRetry
             });
 
-            if (!parsed.isRetryable) {
+            if (!parsed.isRetryable && !willAdvanceFallback) {
               return res.status(parsed.statusCode).json({
                 error: parsed.message,
                 code: parsed.statusCode,
@@ -3011,19 +3468,25 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 model,
                 retryable: false,
                 canFallback: true,
-                suggestedProviders: ['groq', 'openrouter']
+                suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
               });
             }
 
             if (willRetry) {
+              if (willAdvanceFallback) {
+                // Immediately try fallback model without delay
+                continue;
+              }
               const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);
-              const continueExecution = await sleepWithAbort(delay, () => isClientClosed);
-              if (!continueExecution) break;
+              const continueExecution = await sleepWithAbort(delay, () => upstreamGuard.isClientClosed());
+              if (!continueExecution) return;
               continue;
             }
             break;
           }
         }
+
+        if (upstreamGuard.isClientClosed()) return;
 
         const fallbackErr = lastParsedErr || {
           statusCode: 503,
@@ -3036,43 +3499,59 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           code: fallbackErr.statusCode,
           status: fallbackErr.status,
           provider: 'gemini',
-          model: 'gemini-3.8-flash',
+          model: requestedGeminiModel,
           retryable: fallbackErr.isRetryable,
+          serverRetriesExhausted: true,
           canFallback: true,
-          suggestedProviders: ['groq', 'openrouter']
+          suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
         });
       } else {
         // Genuine streaming via ai.models.generateContentStream with delayed header initiation
         let lastParsedErr = null;
 
         for (let i = 0; i < attemptPlan.length; i++) {
-          if (isClientClosed) break;
+          if (upstreamGuard.isClientClosed()) return;
           const { model, attemptNum } = attemptPlan[i];
 
           try {
-            const responseStream = await ai.models.generateContentStream({
-              model,
-              contents,
-              config: {
-                systemInstruction: effectiveSystemInstruction,
-                maxOutputTokens: targetGeminiTokens,
-                temperature: 0.7
-              }
-            });
+            const responseStream = await upstreamGuard.callGeminiWithGuard(
+              (signal) =>
+                ai.models.generateContentStream({
+                  model,
+                  contents,
+                  config: {
+                    abortSignal: signal,
+                    systemInstruction: effectiveSystemInstruction,
+                    maxOutputTokens: targetGeminiTokens,
+                    temperature: 0.7
+                  }
+                }),
+              { provider: 'gemini' }
+            );
 
-            // Immediately open SSE stream and start keepalive heartbeats so gateways and proxies do not drop connection
+            if (upstreamGuard.isClientClosed()) return;
+
             initSSE(res);
             const stopHeartbeat = startSSEHeartbeat(res);
             sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
 
             const iterator = responseStream[Symbol.asyncIterator]();
             let fullText = '';
+            let lastFinishReason: string | null = null;
 
             try {
               while (true) {
-                if (isClientClosed || res.writableEnded) break;
+                if (upstreamGuard.isClientClosed() || res.writableEnded) break;
                 const { done, value } = await iterator.next();
+                if (upstreamGuard.isClientClosed() || res.writableEnded) break;
                 if (done) break;
+
+                const candidate = value?.candidates?.[0];
+                const finishReason = candidate?.finishReason;
+                if (finishReason) {
+                  lastFinishReason = finishReason;
+                }
+
                 const chunkText = value?.text;
                 if (chunkText) {
                   fullText += chunkText;
@@ -3082,16 +3561,44 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
               stopHeartbeat();
 
-              if (!res.writableEnded) {
-                if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+              if (!upstreamGuard.isClientClosed() && !res.writableEnded) {
+                // If blocked by SAFETY with no text, send error
+                if (lastFinishReason === 'SAFETY' && fullText.trim().length === 0) {
+                  sendSSE(res, {
+                    type: 'error',
+                    error: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
+                    code: 400,
+                    status: 'SAFETY_BLOCKED',
+                    provider: 'gemini',
+                    model,
+                    retryable: false,
+                    finishReason: 'SAFETY'
+                  });
+                  res.end();
+                  return;
+                }
+
+                const isTruncated = lastFinishReason === 'MAX_TOKENS';
+                if ((isTruncated || isLikelyLarge) && !isContinuation && !responseHasContinuationNotice(fullText)) {
                   sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
                   fullText += CONTINUATION_NOTICES.PART_1;
                 }
-                sendSSE(res, { type: 'done', text: fullText, modelUsed: model, provider: 'gemini' });
+                sendSSE(res, {
+                  type: 'done',
+                  text: fullText,
+                  modelUsed: model,
+                  provider: 'gemini',
+                  ...(lastFinishReason ? { finishReason: lastFinishReason } : {}),
+                  ...(isTruncated ? { truncated: true } : {})
+                });
                 res.end();
               }
               return;
             } catch (midStreamErr: any) {
+              stopHeartbeat();
+              if (upstreamGuard.isClientDisconnected(midStreamErr)) {
+                return;
+              }
               const parsedMid = parseGeminiError(midStreamErr, 'gemini');
               logAIDiagnostic({
                 category: 'streaming failure',
@@ -3114,19 +3621,26 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   status: parsedMid.status,
                   provider: 'gemini',
                   model,
-                  retryable: false, // Cannot retry mid-stream safely without duplicating output
-                  partial: fullText.length > 0
+                  retryable: false,
+                  partial: fullText.length > 0,
+                  ...(parsedMid.status === 'SAFETY_BLOCKED' ? { finishReason: 'SAFETY' } : {})
                 });
                 res.end();
               }
               return;
             }
           } catch (initialErr: any) {
+            if (upstreamGuard.isClientDisconnected(initialErr)) {
+              return;
+            }
             // Initial connection failed BEFORE headers were sent!
             const parsed = parseGeminiError(initialErr, 'gemini');
             lastParsedErr = parsed;
             const hasMoreAttempts = i < attemptPlan.length - 1;
-            const willRetry = parsed.isRetryable && hasMoreAttempts && !isClientClosed;
+
+            const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
+            const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
+            const willRetry = (parsed.isRetryable || willAdvanceFallback) && hasMoreAttempts && !upstreamGuard.isClientClosed();
 
             logAIDiagnostic({
               category: parsed.category,
@@ -3142,7 +3656,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               willRetry
             });
 
-            if (!parsed.isRetryable) {
+            if (!parsed.isRetryable && !willAdvanceFallback) {
               return res.status(parsed.statusCode).json({
                 error: parsed.message,
                 code: parsed.statusCode,
@@ -3151,19 +3665,25 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 model,
                 retryable: false,
                 canFallback: true,
-                suggestedProviders: ['groq', 'openrouter']
+                suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
               });
             }
 
             if (willRetry) {
+              if (willAdvanceFallback) {
+                // Immediately try fallback model without delay
+                continue;
+              }
               const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);
-              const continueExecution = await sleepWithAbort(delay, () => isClientClosed);
-              if (!continueExecution) break;
+              const continueExecution = await sleepWithAbort(delay, () => upstreamGuard.isClientClosed());
+              if (!continueExecution) return;
               continue;
             }
             break;
           }
         }
+
+        if (upstreamGuard.isClientClosed()) return;
 
         const finalErr = lastParsedErr || {
           statusCode: 503,
@@ -3176,18 +3696,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           code: finalErr.statusCode,
           status: finalErr.status,
           provider: 'gemini',
-          model: 'gemini-3.8-flash',
+          model: requestedGeminiModel,
           retryable: finalErr.isRetryable,
+          serverRetriesExhausted: true,
           canFallback: true,
-          suggestedProviders: ['groq', 'openrouter']
+          suggestedProviders: getConfiguredFallbackProviders('gemini', isServerless)
         });
       }
     }
 
     // 2. Groq Provider
     if (normalizedProvider === 'groq') {
-      const apiKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY;
-      if (!apiKey || apiKey === 'YOUR_GROQ_API_KEY') {
+      const apiKey = (process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '').trim();
+      if (!isConfiguredCredential(apiKey)) {
+        if (!isDemoModeEnabled()) {
+          return sendProviderNotConfiguredError(res, 'groq', isServerless);
+        }
         const text = (isLikelyLarge || isContinuation)
           ? generateSimulatedMultiPartResponse({
               prompt,
@@ -3207,12 +3731,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           return res.json({
             text,
             modelUsed: demoModel,
-            provider: 'groq'
+            provider: 'groq',
+            isDemo: true
           });
         }
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
-        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'groq' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'groq', isDemo: true });
 
         const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
         const testDurationSec = testDurationMatch
@@ -3224,22 +3749,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           const tokens = text.split(/(\s+)/);
           const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+            await sleepWithAbort(intervalMs, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         } else {
           const tokens = text.split(/(\s+)/);
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await new Promise((r) => setTimeout(r, 15));
+            await sleepWithAbort(15, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         }
 
         stopHeartbeat();
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'groq' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'groq', isDemo: true });
           res.end();
         }
         return;
@@ -3251,24 +3776,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
-      // Active production Groq model: openai/gpt-oss-120b (131k context tokens, high performance LPU)
-      // Automatically migrate decommissioned Groq models (e.g. llama-3.3-70b-versatile, llama-3.1-8b-instant)
       const GROQ_ACTIVE_MODEL = 'openai/gpt-oss-120b';
-      let selectedModel = GROQ_ACTIVE_MODEL;
-
-      if (typeof clientModel === 'string' && clientModel.trim()) {
-        const trimmed = clientModel.trim();
-        if (
-          trimmed === 'llama-3.3-70b-versatile' ||
-          trimmed === 'llama-3.1-8b-instant' ||
-          trimmed.includes('llama-3.3') ||
-          trimmed.includes('llama-3.1-70b')
-        ) {
-          selectedModel = GROQ_ACTIVE_MODEL;
-        } else {
-          selectedModel = trimmed;
+      const requestedGroqModel = validatedClientModel || GROQ_ACTIVE_MODEL;
+      const groqFallbackCandidates: string[] = Array.isArray(GROQ_FALLBACK_CHAT_MODELS)
+        ? [...GROQ_FALLBACK_CHAT_MODELS]
+        : ['openai/gpt-oss-120b', 'llama-3.1-8b-instant'];
+      const uniqueGroqPlanModels = [requestedGroqModel];
+      for (const cand of groqFallbackCandidates) {
+        if (!uniqueGroqPlanModels.includes(cand)) {
+          uniqueGroqPlanModels.push(cand);
         }
       }
+      const groqAttemptPlan = uniqueGroqPlanModels.map((m, idx) => ({
+        model: m,
+        attemptNum: idx + 1
+      }));
+      const groqChatEndpoint = `${getGroqApiBaseUrl()}/chat/completions`;
 
       let groqMaxTokens = 2560;
       if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
@@ -3278,273 +3801,539 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
 
       if (!shouldStream) {
-        try {
-          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages,
-              max_tokens: groqMaxTokens,
-              temperature: 0.7
-            })
-          });
+        let lastParsedErr: any = null;
+        let lastFailedModel = requestedGroqModel;
 
-          if (!groqRes.ok) {
-            const errText = await groqRes.text();
-            const parsed = parseGeminiError({ status: groqRes.status, message: errText }, 'groq');
-            let friendlyError = parsed.message;
-            if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
-              friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
-            }
-            logAIDiagnostic({
-              category: parsed.category,
-              provider: 'groq',
-              model: selectedModel,
-              phase: 'non-streaming',
-              upstreamStatus: groqRes.status,
-              sanitizedMessage: friendlyError
-            });
-            return res.status(groqRes.status).json({
-              error: friendlyError,
-              code: groqRes.status,
-              status: parsed.status,
-              category: parsed.category,
-              provider: 'groq',
-              model: selectedModel,
-              retryable: parsed.isRetryable,
-              canFallback: true,
-              suggestedProviders: ['gemini', 'openrouter']
-            });
-          }
+        for (let i = 0; i < groqAttemptPlan.length; i++) {
+          if (upstreamGuard.isClientClosed()) return;
+          const { model: currentModel, attemptNum } = groqAttemptPlan[i];
+          lastFailedModel = currentModel;
 
-          const data = await groqRes.json();
-          let finalText = data?.choices?.[0]?.message?.content || '';
-          const finishReason = data?.choices?.[0]?.finish_reason;
-
-          // Transparent continuation if output limit reached
-          if (finishReason === 'length' && finalText.length > 60) {
-            try {
-              const contMessages = [
-                ...messages,
-                { role: 'assistant', content: finalText },
-                { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
-              ];
-              const contRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          try {
+            const groqRes = await upstreamGuard.fetchUpstream(
+              groqChatEndpoint,
+              {
                 method: 'POST',
                 headers: {
                   Authorization: `Bearer ${apiKey}`,
                   'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                  model: selectedModel,
-                  messages: contMessages,
-                  max_tokens: Math.min(2048, groqMaxTokens),
+                  model: currentModel,
+                  messages,
+                  max_tokens: groqMaxTokens,
                   temperature: 0.7
                 })
-              });
-              if (contRes.ok) {
-                const contData = await contRes.json();
-                const contText = contData?.choices?.[0]?.message?.content;
-                if (contText) {
-                  finalText += (finalText.endsWith(' ') || contText.startsWith(' ') ? '' : ' ') + contText;
-                }
-              }
-            } catch (_) {}
-          }
+              },
+              { provider: 'groq' }
+            );
 
-          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
-            finalText += CONTINUATION_NOTICES.PART_1;
+            if (!groqRes.ok) {
+              const errText = await groqRes.text();
+              const parsed = parseGeminiError({ status: groqRes.status, message: errText }, 'groq');
+              let friendlyError = parsed.message;
+              if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
+                friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+              }
+              lastParsedErr = { ...parsed, message: friendlyError };
+
+              const hasMoreAttempts = i < groqAttemptPlan.length - 1;
+              const isModelNotFound = groqRes.status === 404 || parsed.status === 'NOT_FOUND';
+              const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
+
+              logAIDiagnostic({
+                category: parsed.category,
+                provider: 'groq',
+                model: currentModel,
+                phase: 'non-streaming',
+                attempt: attemptNum,
+                upstreamStatus: groqRes.status,
+                sanitizedMessage: friendlyError
+              });
+
+              if (willAdvanceFallback) {
+                continue;
+              }
+
+              return res.status(groqRes.status).json({
+                error: friendlyError,
+                code: groqRes.status,
+                status: parsed.status,
+                category: parsed.category,
+                provider: 'groq',
+                model: currentModel,
+                retryable: parsed.isRetryable,
+                canFallback: true,
+                suggestedProviders: getConfiguredFallbackProviders('groq', isServerless)
+              });
+            }
+
+            const data = await groqRes.json();
+            if (upstreamGuard.isClientClosed()) return;
+            let finalText = data?.choices?.[0]?.message?.content || '';
+            const finishReason = data?.choices?.[0]?.finish_reason;
+
+            // Transparent continuation if output limit reached
+            if (finishReason === 'length' && finalText.length > 60 && !upstreamGuard.isClientClosed()) {
+              try {
+                const contMessages = [
+                  ...messages,
+                  { role: 'assistant', content: finalText },
+                  { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
+                ];
+                const contRes = await upstreamGuard.fetchUpstream(
+                  groqChatEndpoint,
+                  {
+                    method: 'POST',
+                    headers: {
+                      Authorization: `Bearer ${apiKey}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                      model: currentModel,
+                      messages: contMessages,
+                      max_tokens: Math.min(2048, groqMaxTokens),
+                      temperature: 0.7
+                    })
+                  },
+                  { provider: 'groq' }
+                );
+                if (contRes.ok) {
+                  const contData = await contRes.json();
+                  const contText = contData?.choices?.[0]?.message?.content;
+                  if (contText) {
+                    finalText += (finalText.endsWith(' ') || contText.startsWith(' ') ? '' : ' ') + contText;
+                  }
+                }
+              } catch (_) {}
+            }
+
+            if (upstreamGuard.isClientClosed()) return;
+            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
+              finalText += CONTINUATION_NOTICES.PART_1;
+            }
+            return res.json({
+              text: finalText,
+              modelUsed: data.model || currentModel,
+              provider: 'groq'
+            });
+          } catch (fetchErr: any) {
+            if (upstreamGuard.isClientDisconnected(fetchErr)) {
+              return;
+            }
+            const parsed = parseGeminiError(fetchErr, 'groq');
+            lastParsedErr = parsed;
+            const hasMoreAttempts = i < groqAttemptPlan.length - 1;
+            const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
+            const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
+
+            logAIDiagnostic({
+              category: parsed.category,
+              provider: 'groq',
+              model: currentModel,
+              phase: 'non-streaming',
+              attempt: attemptNum,
+              upstreamStatus: parsed.statusCode,
+              sanitizedMessage: parsed.message
+            });
+
+            if (willAdvanceFallback) {
+              continue;
+            }
+
+            return res.status(parsed.statusCode).json({
+              error: parsed.message,
+              code: parsed.statusCode,
+              status: parsed.status,
+              category: parsed.category,
+              provider: 'groq',
+              model: currentModel,
+              retryable: parsed.isRetryable,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('groq', isServerless)
+            });
           }
-          return res.json({
-            text: finalText,
-            modelUsed: data.model || selectedModel,
-            provider: 'groq'
-          });
-        } catch (fetchErr: any) {
-          const parsed = parseGeminiError(fetchErr, 'groq');
-          logAIDiagnostic({
-            category: parsed.category,
-            provider: 'groq',
-            model: selectedModel,
-            phase: 'non-streaming',
-            upstreamStatus: parsed.statusCode,
-            sanitizedMessage: parsed.message
-          });
-          return res.status(parsed.statusCode).json({
-            error: parsed.message,
-            code: parsed.statusCode,
-            status: parsed.status,
-            category: parsed.category,
-            provider: 'groq',
-            model: selectedModel,
-            retryable: parsed.isRetryable,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'openrouter']
-          });
         }
+
+        if (upstreamGuard.isClientClosed()) return;
+
+        const fallbackErr = lastParsedErr || {
+          statusCode: 404,
+          status: 'NOT_FOUND',
+          message: 'The requested Groq model was not found and all fallback options were exhausted.',
+          isRetryable: false
+        };
+        return res.status(fallbackErr.statusCode).json({
+          error: fallbackErr.message,
+          code: fallbackErr.statusCode,
+          status: fallbackErr.status,
+          provider: 'groq',
+          model: lastFailedModel,
+          retryable: false,
+          serverRetriesExhausted: true,
+          canFallback: true,
+          suggestedProviders: getConfiguredFallbackProviders('groq', isServerless)
+        });
       } else {
         // Genuine streaming via Groq OpenAI-compatible SSE
-        let groqRes: Response;
-        try {
-          groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages,
-              max_tokens: groqMaxTokens,
-              temperature: 0.7,
-              stream: true
-            })
-          });
-        } catch (fetchErr: any) {
-          const parsed = parseGeminiError(fetchErr, 'groq');
-          logAIDiagnostic({
-            category: parsed.category,
-            provider: 'groq',
-            model: selectedModel,
-            phase: 'pre-stream',
-            upstreamStatus: parsed.statusCode,
-            sanitizedMessage: parsed.message
-          });
-          return res.status(parsed.statusCode).json({
-            error: parsed.message,
-            code: parsed.statusCode,
-            status: parsed.status,
-            category: parsed.category,
-            provider: 'groq',
-            model: selectedModel,
-            retryable: parsed.isRetryable,
-            canFallback: true,
-            suggestedProviders: ['gemini', 'openrouter']
-          });
-        }
+        let groqRes: Response | null = null;
+        let selectedModel = requestedGroqModel;
+        let lastParsedErr: any = null;
 
-        if (!groqRes.ok) {
-          const errText = await groqRes.text();
-          const parsed = parseGeminiError({ status: groqRes.status, message: errText }, 'groq');
-          let friendlyError = parsed.message;
-          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
-            friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+        for (let i = 0; i < groqAttemptPlan.length; i++) {
+          if (upstreamGuard.isClientClosed()) return;
+          const { model: currentModel, attemptNum } = groqAttemptPlan[i];
+          selectedModel = currentModel;
+
+          try {
+            const attemptRes = await upstreamGuard.fetchUpstream(
+              groqChatEndpoint,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: currentModel,
+                  messages,
+                  max_tokens: groqMaxTokens,
+                  temperature: 0.7,
+                  stream: true
+                })
+              },
+              { provider: 'groq' }
+            );
+
+            if (!attemptRes.ok) {
+              const errText = await attemptRes.text();
+              const parsed = parseGeminiError({ status: attemptRes.status, message: errText }, 'groq');
+              let friendlyError = parsed.message;
+              if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('tokens')) {
+                friendlyError = 'The attached document exceeds Groq\'s context length limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
+              }
+              lastParsedErr = { ...parsed, message: friendlyError };
+
+              const hasMoreAttempts = i < groqAttemptPlan.length - 1;
+              const isModelNotFound = attemptRes.status === 404 || parsed.status === 'NOT_FOUND';
+              const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
+
+              logAIDiagnostic({
+                category: parsed.category,
+                provider: 'groq',
+                model: currentModel,
+                phase: 'pre-stream',
+                attempt: attemptNum,
+                upstreamStatus: attemptRes.status,
+                sanitizedMessage: friendlyError
+              });
+
+              if (willAdvanceFallback) {
+                continue;
+              }
+
+              return res.status(attemptRes.status).json({
+                error: friendlyError,
+                code: attemptRes.status,
+                status: parsed.status,
+                category: parsed.category,
+                provider: 'groq',
+                model: currentModel,
+                retryable: parsed.isRetryable,
+                canFallback: true,
+                suggestedProviders: getConfiguredFallbackProviders('groq', isServerless)
+              });
+            }
+
+            groqRes = attemptRes;
+            break;
+          } catch (fetchErr: any) {
+            if (upstreamGuard.isClientDisconnected(fetchErr)) {
+              return;
+            }
+            const parsed = parseGeminiError(fetchErr, 'groq');
+            lastParsedErr = parsed;
+            const hasMoreAttempts = i < groqAttemptPlan.length - 1;
+            const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
+            const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
+
+            logAIDiagnostic({
+              category: parsed.category,
+              provider: 'groq',
+              model: currentModel,
+              phase: 'pre-stream',
+              attempt: attemptNum,
+              upstreamStatus: parsed.statusCode,
+              sanitizedMessage: parsed.message
+            });
+
+            if (willAdvanceFallback) {
+              continue;
+            }
+
+            return res.status(parsed.statusCode).json({
+              error: parsed.message,
+              code: parsed.statusCode,
+              status: parsed.status,
+              category: parsed.category,
+              provider: 'groq',
+              model: currentModel,
+              retryable: parsed.isRetryable,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('groq', isServerless)
+            });
           }
-          logAIDiagnostic({
-            category: parsed.category,
+        }
+
+        if (!groqRes) {
+          if (upstreamGuard.isClientClosed()) return;
+          const fallbackErr = lastParsedErr || {
+            statusCode: 404,
+            status: 'NOT_FOUND',
+            message: 'The requested Groq model was not found and all fallback options were exhausted.',
+            isRetryable: false
+          };
+          return res.status(fallbackErr.statusCode).json({
+            error: fallbackErr.message,
+            code: fallbackErr.statusCode,
+            status: fallbackErr.status,
             provider: 'groq',
             model: selectedModel,
-            phase: 'pre-stream',
-            upstreamStatus: groqRes.status,
-            sanitizedMessage: friendlyError
-          });
-          return res.status(groqRes.status).json({
-            error: friendlyError,
-            code: groqRes.status,
-            status: parsed.status,
-            category: parsed.category,
-            provider: 'groq',
-            model: selectedModel,
-            retryable: parsed.isRetryable,
+            retryable: false,
+            serverRetriesExhausted: true,
             canFallback: true,
-            suggestedProviders: ['gemini', 'openrouter']
+            suggestedProviders: getConfiguredFallbackProviders('groq', isServerless)
           });
         }
 
+        if (upstreamGuard.isClientClosed()) return;
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'groq' });
 
+        let fullText = '';
         try {
           const reader = groqRes.body!.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
-          let fullText = '';
           let modelUsed = selectedModel;
           let lastFinishReason: string | null = null;
+          let currentEventType: string | null = null;
+          let streamFailed = false;
+
+          const emitGroqStreamError = async (rawDataStr: string, explicitErrObj?: any) => {
+            if (streamFailed) return;
+            streamFailed = true;
+
+            let parsedErrMessage = 'Groq streaming connection encountered an upstream error.';
+            let rawErrCode = 0;
+            let rawErrType = '';
+
+            const extractFromErrorField = (errVal: any) => {
+              if (typeof errVal === 'string' && errVal.trim()) {
+                parsedErrMessage = errVal.trim();
+              } else if (errVal && typeof errVal === 'object') {
+                if (typeof errVal.message === 'string' && errVal.message.trim()) {
+                  parsedErrMessage = errVal.message.trim();
+                } else if (typeof errVal.error === 'string' && errVal.error.trim()) {
+                  parsedErrMessage = errVal.error.trim();
+                }
+                const numCode = Number(errVal.code ?? errVal.status ?? errVal.statusCode);
+                if (Number.isFinite(numCode) && numCode >= 400 && numCode < 600) {
+                  rawErrCode = numCode;
+                }
+                if (typeof errVal.type === 'string' && errVal.type.trim()) {
+                  rawErrType = errVal.type.trim();
+                } else if (typeof errVal.status === 'string' && errVal.status.trim()) {
+                  rawErrType = errVal.status.trim();
+                } else if (typeof errVal.code === 'string' && errVal.code.trim()) {
+                  rawErrType = errVal.code.trim();
+                }
+              }
+            };
+
+            if (explicitErrObj !== undefined) {
+              extractFromErrorField(explicitErrObj);
+            } else if (rawDataStr) {
+              try {
+                const errJson = JSON.parse(rawDataStr);
+                extractFromErrorField(errJson?.error ?? errJson);
+              } catch (_) {
+                const cleaned = rawDataStr
+                  .replace(/<[^>]*>/g, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 280);
+                if (cleaned) {
+                  parsedErrMessage = cleaned;
+                }
+              }
+            }
+
+            if (!rawErrCode) {
+              if (/rate_limit|429|quota|too many requests/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 429;
+              } else if (/auth|401|invalid_api_key/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 401;
+              } else if (/permission|403/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 403;
+              } else if (/not_found|404|model_not_found/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 404;
+              } else {
+                rawErrCode = 500;
+              }
+            }
+
+            const effectiveStatus = rawErrType || (rawErrCode === 429 ? 'RESOURCE_EXHAUSTED' : 'STREAM_ERROR');
+
+            stopHeartbeat();
+            try { await reader.cancel(); } catch (_) {}
+            logAIDiagnostic({
+              category: 'streaming failure',
+              provider: 'groq',
+              model: modelUsed || selectedModel,
+              phase: 'mid-stream',
+              upstreamStatus: rawErrCode,
+              sanitizedMessage: parsedErrMessage
+            });
+
+            if (!upstreamGuard.isClientClosed() && !res.writableEnded) {
+              sendSSE(res, {
+                type: 'error',
+                error: parsedErrMessage,
+                code: rawErrCode,
+                status: effectiveStatus,
+                provider: 'groq',
+                model: modelUsed || selectedModel,
+                retryable: false,
+                canFallback: true,
+                suggestedProviders: getConfiguredFallbackProviders('groq', isServerless),
+                partial: fullText.length > 0,
+                partialText: fullText.length > 0 ? fullText : undefined
+              });
+              res.end();
+            }
+          };
+
+          const processGroqSSELine = async (line: string): Promise<boolean> => {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              currentEventType = null;
+              return false;
+            }
+            if (trimmed.startsWith(':')) return false;
+
+            if (trimmed.startsWith('event:')) {
+              currentEventType = trimmed.slice(6).trim().toLowerCase();
+              return false;
+            }
+
+            if (!trimmed.startsWith('data:')) return false;
+            const eventTypeForLine = currentEventType;
+            currentEventType = null;
+
+            const dataStr = trimmed.slice(5).trim();
+            if (dataStr === '[DONE]') return false;
+
+            if (eventTypeForLine === 'error') {
+              await emitGroqStreamError(dataStr);
+              return true;
+            }
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed && typeof parsed === 'object' && parsed.error) {
+                await emitGroqStreamError(dataStr, parsed.error);
+                return true;
+              }
+
+              if (parsed.model) modelUsed = parsed.model;
+              const finishReason = parsed?.choices?.[0]?.finish_reason;
+              if (finishReason) lastFinishReason = finishReason;
+              const delta = parsed?.choices?.[0]?.delta?.content;
+              if (delta) {
+                fullText += delta;
+                sendSSE(res, { type: 'chunk', text: delta });
+              }
+            } catch (_) {
+              // Detect malformed or truncated error JSON frames (e.g., data: {"error": ...)
+              if (/"error"\s*:/.test(dataStr)) {
+                await emitGroqStreamError(dataStr);
+                return true;
+              }
+            }
+            return false;
+          };
 
           while (true) {
-            if (isClientClosed || res.writableEnded) {
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
               try { await reader.cancel(); } catch (_) {}
               break;
             }
             const { done, value } = await reader.read();
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+              try { await reader.cancel(); } catch (_) {}
+              break;
+            }
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.model) modelUsed = parsed.model;
-                const finishReason = parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) lastFinishReason = finishReason;
-                const delta = parsed.choices?.[0]?.delta?.content;
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+              const haltedOnError = await processGroqSSELine(line);
+              if (haltedOnError) return;
             }
           }
 
           // Process trailing bytes and buffer
           const finalBytes = decoder.decode();
           if (finalBytes) buffer += finalBytes;
-          if (buffer && buffer.trim().startsWith('data:')) {
-            const dataStr = buffer.trim().slice(5).trim();
-            if (dataStr !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.model) modelUsed = parsed.model;
-                const finishReason = parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) lastFinishReason = finishReason;
-                const delta = parsed?.choices?.[0]?.delta?.content;
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+          if (!streamFailed && !upstreamGuard.isClientClosed() && buffer && buffer.trim()) {
+            const remainingLines = buffer.split('\n');
+            for (const line of remainingLines) {
+              const haltedOnError = await processGroqSSELine(line);
+              if (haltedOnError) return;
+            }
+            if (!streamFailed && currentEventType === 'error') {
+              await emitGroqStreamError(buffer.trim());
+              return;
             }
           }
 
           // Continuation if finish_reason indicates token truncation
-          if ((lastFinishReason === 'length' || lastFinishReason === 'max_tokens') && !isClientClosed && !res.writableEnded && fullText.length > 60) {
+          if (!streamFailed && (lastFinishReason === 'length' || lastFinishReason === 'max_tokens') && !upstreamGuard.isClientClosed() && !res.writableEnded && fullText.length > 60) {
             try {
               const contMessages = [
                 ...messages,
                 { role: 'assistant', content: fullText },
                 { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
               ];
-              const contRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  'Content-Type': 'application/json'
+              const contRes = await upstreamGuard.fetchUpstream(
+                groqChatEndpoint,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    model: selectedModel,
+                    messages: contMessages,
+                    max_tokens: Math.min(2048, groqMaxTokens),
+                    temperature: 0.7,
+                    stream: true
+                  })
                 },
-                body: JSON.stringify({
-                  model: selectedModel,
-                  messages: contMessages,
-                  max_tokens: Math.min(2048, groqMaxTokens),
-                  temperature: 0.7,
-                  stream: true
-                })
-              });
+                { provider: 'groq' }
+              );
 
               if (contRes.ok && contRes.body) {
                 const contReader = contRes.body.getReader();
                 let contBuffer = '';
+                let contEventType: string | null = null;
                 while (true) {
-                  if (isClientClosed || res.writableEnded) {
+                  if (upstreamGuard.isClientClosed() || res.writableEnded) {
                     try { await contReader.cancel(); } catch (_) {}
                     break;
                   }
@@ -3555,11 +4344,32 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   contBuffer = cLines.pop() || '';
                   for (const cLine of cLines) {
                     const cTrimmed = cLine.trim();
+                    if (!cTrimmed) {
+                      contEventType = null;
+                      continue;
+                    }
+                    if (cTrimmed.startsWith(':')) continue;
+                    if (cTrimmed.startsWith('event:')) {
+                      contEventType = cTrimmed.slice(6).trim().toLowerCase();
+                      continue;
+                    }
                     if (!cTrimmed.startsWith('data:')) continue;
+                    const lineEvt = contEventType;
+                    contEventType = null;
                     const cData = cTrimmed.slice(5).trim();
                     if (cData === '[DONE]') continue;
+
+                    if (lineEvt === 'error') {
+                      try { await contReader.cancel(); } catch (_) {}
+                      break;
+                    }
+
                     try {
                       const cParsed = JSON.parse(cData);
+                      if (cParsed.error) {
+                        try { await contReader.cancel(); } catch (_) {}
+                        break;
+                      }
                       const cDelta = cParsed?.choices?.[0]?.delta?.content;
                       if (cDelta) {
                         fullText += cDelta;
@@ -3573,7 +4383,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           }
 
           stopHeartbeat();
-          if (!res.writableEnded) {
+          if (!streamFailed && !upstreamGuard.isClientClosed() && !res.writableEnded) {
             if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
               sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
               fullText += CONTINUATION_NOTICES.PART_1;
@@ -3584,6 +4394,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           return;
         } catch (streamErr: any) {
           stopHeartbeat();
+          if (upstreamGuard.isClientDisconnected(streamErr)) {
+            return;
+          }
           logAIDiagnostic({
             category: 'streaming failure',
             provider: 'groq',
@@ -3598,7 +4411,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               code: 503,
               status: 'STREAM_FAILED',
               provider: 'groq',
-              retryable: false
+              model: selectedModel,
+              retryable: false,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('groq', isServerless),
+              partial: fullText.length > 0,
+              partialText: fullText.length > 0 ? fullText : undefined
             });
             res.end();
           }
@@ -3609,8 +4427,11 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 3. OpenRouter Provider
     if (normalizedProvider === 'openrouter') {
-      const apiKey = process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
-      if (!apiKey || apiKey === 'YOUR_OPENROUTER_API_KEY') {
+      const apiKey = (process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '').trim();
+      if (!isConfiguredCredential(apiKey)) {
+        if (!isDemoModeEnabled()) {
+          return sendProviderNotConfiguredError(res, 'openrouter', isServerless);
+        }
         const text = (isLikelyLarge || isContinuation)
           ? generateSimulatedMultiPartResponse({
               prompt,
@@ -3630,12 +4451,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           return res.json({
             text,
             modelUsed: demoModel,
-            provider: 'openrouter'
+            provider: 'openrouter',
+            isDemo: true
           });
         }
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
-        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'openrouter' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'openrouter', isDemo: true });
 
         const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
         const testDurationSec = testDurationMatch
@@ -3647,22 +4469,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           const tokens = text.split(/(\s+)/);
           const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+            await sleepWithAbort(intervalMs, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         } else {
           const tokens = text.split(/(\s+)/);
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await new Promise((r) => setTimeout(r, 15));
+            await sleepWithAbort(15, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         }
 
         stopHeartbeat();
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'openrouter' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'openrouter', isDemo: true });
           res.end();
         }
         return;
@@ -3674,10 +4496,56 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
-      const selectedModel =
-        typeof clientModel === 'string' && clientModel.trim()
-          ? clientModel.trim()
-          : 'openrouter/free';
+      const selectedModel = validatedClientModel || 'openrouter/free';
+      const openRouterChatEndpoint = `${getOpenRouterApiBaseUrl()}/chat/completions`;
+      const openRouterHeaders = {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://orvix.ai',
+        'X-Title': 'Orvix'
+      };
+
+      const normalizeOpenRouterHttpError = (statusCode: number, errText: string) => {
+        const parsed = parseGeminiError({ status: statusCode, message: errText }, 'openrouter');
+        let friendlyError = parsed.message;
+        let status = parsed.status;
+        let isRetryable = parsed.isRetryable;
+        let category = parsed.category;
+
+        if (statusCode === 502) {
+          status = 'BAD_GATEWAY';
+          isRetryable = true;
+          category = 'provider API error';
+        } else if (statusCode === 500) {
+          status = 'INTERNAL';
+          isRetryable = true;
+          category = 'provider API error';
+        } else if (statusCode === 402) {
+          status = 'PAYMENT_REQUIRED';
+          isRetryable = false;
+          category = 'provider configuration error';
+        }
+
+        const lowerErr = String(errText || '').toLowerCase();
+        if (
+          lowerErr.includes('context_length_exceeded') ||
+          lowerErr.includes('maximum context length') ||
+          (statusCode === 400 && (lowerErr.includes('too large') || lowerErr.includes('context length')))
+        ) {
+          friendlyError =
+            "The attached document exceeds OpenRouter's context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.";
+          isRetryable = false;
+        }
+
+        return {
+          statusCode,
+          status,
+          errorCode: status,
+          category,
+          isRetryable,
+          message: friendlyError
+        };
+      };
 
       let openRouterMaxTokens = 2560;
       if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
@@ -3688,75 +4556,94 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
       if (!shouldStream) {
         try {
-          const orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-              'X-Title': 'Orvix'
+          const orRes = await upstreamGuard.fetchUpstream(
+            openRouterChatEndpoint,
+            {
+              method: 'POST',
+              headers: openRouterHeaders,
+              body: JSON.stringify({
+                model: selectedModel,
+                messages,
+                max_tokens: openRouterMaxTokens,
+                temperature: 0.7,
+                stream: false
+              })
             },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages,
-              max_tokens: openRouterMaxTokens,
-              temperature: 0.7
-            })
-          });
+            { provider: 'openrouter' }
+          );
 
           if (!orRes.ok) {
             const errText = await orRes.text();
-            const parsed = parseGeminiError({ status: orRes.status, message: errText }, 'openrouter');
-            let friendlyError = parsed.message;
-            if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
-              friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
-            }
+            const normErr = normalizeOpenRouterHttpError(orRes.status, errText);
             logAIDiagnostic({
-              category: parsed.category,
+              category: normErr.category,
               provider: 'openrouter',
               model: selectedModel,
               phase: 'non-streaming',
               upstreamStatus: orRes.status,
-              sanitizedMessage: friendlyError
+              upstreamErrorCode: normErr.errorCode,
+              sanitizedMessage: normErr.message
             });
             return res.status(orRes.status).json({
-              error: friendlyError,
+              error: normErr.message,
               code: orRes.status,
-              status: parsed.status,
-              category: parsed.category,
+              status: normErr.status,
+              errorCode: normErr.errorCode,
+              category: normErr.category,
               provider: 'openrouter',
               model: selectedModel,
-              retryable: parsed.isRetryable,
+              retryable: normErr.isRetryable,
               canFallback: true,
-              suggestedProviders: ['gemini', 'groq']
+              suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless)
             });
           }
 
           const data = await orRes.json();
+          if (upstreamGuard.isClientClosed()) return;
+          if (data?.error) {
+            const embeddedCode = Number(data.error.code) || 502;
+            const normErr = normalizeOpenRouterHttpError(
+              embeddedCode >= 400 && embeddedCode < 600 ? embeddedCode : 502,
+              JSON.stringify(data)
+            );
+            return res.status(normErr.statusCode).json({
+              error: normErr.message,
+              code: normErr.statusCode,
+              status: normErr.status,
+              errorCode: normErr.errorCode,
+              category: normErr.category,
+              provider: 'openrouter',
+              model: selectedModel,
+              retryable: normErr.isRetryable,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless)
+            });
+          }
           let finalText = data?.choices?.[0]?.message?.content || '';
           const finishReason = data?.choices?.[0]?.finish_reason;
 
           // Transparent continuation if OpenRouter reached output limit
-          if (finishReason === 'length' && finalText.length > 60) {
+          if (finishReason === 'length' && finalText.length > 60 && !upstreamGuard.isClientClosed()) {
             try {
               const contMessages = [
                 ...messages,
                 { role: 'assistant', content: finalText },
                 { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
               ];
-              const contRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  'Content-Type': 'application/json',
-                  'X-Title': 'Orvix'
+              const contRes = await upstreamGuard.fetchUpstream(
+                openRouterChatEndpoint,
+                {
+                  method: 'POST',
+                  headers: openRouterHeaders,
+                  body: JSON.stringify({
+                    model: selectedModel,
+                    messages: contMessages,
+                    max_tokens: Math.min(2048, openRouterMaxTokens),
+                    temperature: 0.7
+                  })
                 },
-                body: JSON.stringify({
-                  model: selectedModel,
-                  messages: contMessages,
-                  max_tokens: Math.min(2048, openRouterMaxTokens),
-                  temperature: 0.7
-                })
-              });
+                { provider: 'openrouter' }
+              );
               if (contRes.ok) {
                 const contData = await contRes.json();
                 const contText = contData?.choices?.[0]?.message?.content;
@@ -3767,6 +4654,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             } catch (_) {}
           }
 
+          if (upstreamGuard.isClientClosed()) return;
           if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
             finalText += CONTINUATION_NOTICES.PART_1;
           }
@@ -3776,6 +4664,9 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             provider: 'openrouter'
           });
         } catch (fetchErr: any) {
+          if (upstreamGuard.isClientDisconnected(fetchErr)) {
+            return;
+          }
           const parsed = parseGeminiError(fetchErr, 'openrouter');
           logAIDiagnostic({
             category: parsed.category,
@@ -3783,40 +4674,45 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             model: selectedModel,
             phase: 'non-streaming',
             upstreamStatus: parsed.statusCode,
+            upstreamErrorCode: parsed.status,
             sanitizedMessage: parsed.message
           });
           return res.status(parsed.statusCode).json({
             error: parsed.message,
             code: parsed.statusCode,
             status: parsed.status,
+            errorCode: parsed.status,
             category: parsed.category,
             provider: 'openrouter',
             model: selectedModel,
             retryable: parsed.isRetryable,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq']
+            suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless)
           });
         }
       } else {
         // Genuine streaming via OpenRouter SSE
         let orRes: Response;
         try {
-          orRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-              'X-Title': 'Orvix'
+          orRes = await upstreamGuard.fetchUpstream(
+            openRouterChatEndpoint,
+            {
+              method: 'POST',
+              headers: openRouterHeaders,
+              body: JSON.stringify({
+                model: selectedModel,
+                messages,
+                max_tokens: openRouterMaxTokens,
+                temperature: 0.7,
+                stream: true
+              })
             },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages,
-              max_tokens: openRouterMaxTokens,
-              temperature: 0.7,
-              stream: true
-            })
-          });
+            { provider: 'openrouter' }
+          );
         } catch (fetchErr: any) {
+          if (upstreamGuard.isClientDisconnected(fetchErr)) {
+            return;
+          }
           const parsed = parseGeminiError(fetchErr, 'openrouter');
           logAIDiagnostic({
             category: parsed.category,
@@ -3824,141 +4720,366 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             model: selectedModel,
             phase: 'pre-stream',
             upstreamStatus: parsed.statusCode,
+            upstreamErrorCode: parsed.status,
             sanitizedMessage: parsed.message
           });
           return res.status(parsed.statusCode).json({
             error: parsed.message,
             code: parsed.statusCode,
             status: parsed.status,
+            errorCode: parsed.status,
             category: parsed.category,
             provider: 'openrouter',
             model: selectedModel,
             retryable: parsed.isRetryable,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq']
+            suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless)
           });
         }
 
         if (!orRes.ok) {
           const errText = await orRes.text();
-          const parsed = parseGeminiError({ status: orRes.status, message: errText }, 'openrouter');
-          let friendlyError = parsed.message;
-          if (errText.includes('context_length_exceeded') || errText.includes('maximum context length') || errText.includes('too large') || errText.includes('tokens')) {
-            friendlyError = 'The attached document exceeds OpenRouter\'s context limit. Please switch to Google Gemini (which supports 1M tokens) or ask about specific pages or slides.';
-          }
+          const normErr = normalizeOpenRouterHttpError(orRes.status, errText);
           logAIDiagnostic({
-            category: parsed.category,
+            category: normErr.category,
             provider: 'openrouter',
             model: selectedModel,
             phase: 'pre-stream',
             upstreamStatus: orRes.status,
-            sanitizedMessage: friendlyError
+            upstreamErrorCode: normErr.errorCode,
+            sanitizedMessage: normErr.message
           });
           return res.status(orRes.status).json({
-            error: friendlyError,
+            error: normErr.message,
             code: orRes.status,
-            status: parsed.status,
-            category: parsed.category,
+            status: normErr.status,
+            errorCode: normErr.errorCode,
+            category: normErr.category,
             provider: 'openrouter',
             model: selectedModel,
-            retryable: parsed.isRetryable,
+            retryable: normErr.isRetryable,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq']
+            suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless)
           });
         }
 
+        if (upstreamGuard.isClientClosed()) return;
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'openrouter' });
+
+        let fullText = '';
+        let modelUsed = selectedModel;
+        let streamFailed = false;
 
         try {
           const reader = orRes.body!.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
-          let fullText = '';
-          let modelUsed = selectedModel;
           let lastFinishReason: string | null = null;
+          let currentEventType: string | null = null;
+          let sawDoneMarker = false;
+
+          const emitOpenRouterStreamError = async (rawDataStr: string, explicitErrObj?: any) => {
+            if (streamFailed) return;
+            streamFailed = true;
+
+            let parsedErrMessage = 'OpenRouter streaming connection encountered an upstream error.';
+            let rawErrCode = 0;
+            let rawErrType = '';
+
+            const extractFromErrorField = (errVal: any) => {
+              if (typeof errVal === 'string' && errVal.trim()) {
+                parsedErrMessage = errVal.trim();
+              } else if (errVal && typeof errVal === 'object') {
+                if (typeof errVal.message === 'string' && errVal.message.trim()) {
+                  parsedErrMessage = errVal.message.trim();
+                } else if (typeof errVal.error === 'string' && errVal.error.trim()) {
+                  parsedErrMessage = errVal.error.trim();
+                }
+                if (
+                  typeof errVal.metadata?.raw === 'string' &&
+                  errVal.metadata.raw.trim() &&
+                  (!parsedErrMessage || parsedErrMessage.toLowerCase() === 'provider returned error')
+                ) {
+                  parsedErrMessage = `${parsedErrMessage}: ${errVal.metadata.raw.trim().slice(0, 200)}`;
+                }
+                const numCode = Number(errVal.code ?? errVal.status ?? errVal.statusCode);
+                if (Number.isFinite(numCode) && numCode >= 400 && numCode < 600) {
+                  rawErrCode = numCode;
+                }
+                if (typeof errVal.type === 'string' && errVal.type.trim()) {
+                  rawErrType = errVal.type.trim();
+                } else if (typeof errVal.status === 'string' && errVal.status.trim()) {
+                  rawErrType = errVal.status.trim();
+                } else if (typeof errVal.code === 'string' && errVal.code.trim()) {
+                  rawErrType = errVal.code.trim();
+                }
+              }
+            };
+
+            if (explicitErrObj !== undefined) {
+              extractFromErrorField(explicitErrObj);
+            } else if (rawDataStr) {
+              try {
+                const errJson = JSON.parse(rawDataStr);
+                extractFromErrorField(errJson?.error ?? errJson);
+              } catch (_) {
+                const cleaned = rawDataStr
+                  .replace(/<[^>]*>/g, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 280);
+                if (cleaned) {
+                  parsedErrMessage = cleaned;
+                }
+              }
+            }
+
+            if (!rawErrCode) {
+              if (/rate_limit|429|quota|too many requests/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 429;
+              } else if (/auth|401|invalid_api_key/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 401;
+              } else if (/payment|402|credits/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 402;
+              } else if (/permission|403/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 403;
+              } else if (/not_found|404|model_not_found/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 404;
+              } else if (/502|bad gateway|malformed/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 502;
+              } else if (/503|unavailable|overloaded|interrupted/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 503;
+              } else if (/504|timeout|timed out/i.test(`${rawErrType} ${parsedErrMessage}`)) {
+                rawErrCode = 504;
+              } else {
+                rawErrCode = 500;
+              }
+            }
+
+            const effectiveStatus =
+              rawErrType ||
+              (rawErrCode === 429
+                ? 'RESOURCE_EXHAUSTED'
+                : rawErrCode === 401
+                ? 'UNAUTHENTICATED'
+                : rawErrCode === 402
+                ? 'PAYMENT_REQUIRED'
+                : rawErrCode === 403
+                ? 'PERMISSION_DENIED'
+                : rawErrCode === 404
+                ? 'NOT_FOUND'
+                : rawErrCode === 502
+                ? 'BAD_GATEWAY'
+                : rawErrCode === 503
+                ? 'UNAVAILABLE'
+                : rawErrCode === 504
+                ? 'DEADLINE_EXCEEDED'
+                : 'STREAM_ERROR');
+
+            stopHeartbeat();
+            try {
+              await reader.cancel();
+            } catch (_) {}
+            logAIDiagnostic({
+              category: 'streaming failure',
+              provider: 'openrouter',
+              model: modelUsed || selectedModel,
+              phase: 'mid-stream',
+              upstreamStatus: rawErrCode,
+              upstreamErrorCode: effectiveStatus,
+              sanitizedMessage: parsedErrMessage
+            });
+
+            if (!upstreamGuard.isClientClosed() && !res.writableEnded) {
+              sendSSE(res, {
+                type: 'error',
+                error: parsedErrMessage,
+                code: rawErrCode,
+                status: effectiveStatus,
+                errorCode: effectiveStatus,
+                provider: 'openrouter',
+                model: modelUsed || selectedModel,
+                retryable: false,
+                canFallback: true,
+                suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless),
+                partial: fullText.length > 0,
+                partialText: fullText.length > 0 ? fullText : undefined
+              });
+              res.end();
+            }
+          };
+
+          const processOpenRouterSSELine = async (line: string): Promise<boolean> => {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              currentEventType = null;
+              return false;
+            }
+            if (trimmed.startsWith(':')) return false;
+
+            if (trimmed.startsWith('event:')) {
+              currentEventType = trimmed.slice(6).trim().toLowerCase();
+              return false;
+            }
+
+            if (!trimmed.startsWith('data:')) {
+              // Unexpected non-SSE line (e.g. raw HTML/JSON error body sent despite event-stream header)
+              if (currentEventType === 'error' || /"error"\s*:|<html|bad gateway|service unavailable/i.test(trimmed)) {
+                await emitOpenRouterStreamError(trimmed);
+                return true;
+              }
+              return false;
+            }
+
+            const eventTypeForLine = currentEventType;
+            currentEventType = null;
+
+            const dataStr = trimmed.slice(5).trim();
+            if (!dataStr) return false;
+            if (dataStr === '[DONE]') {
+              sawDoneMarker = true;
+              return false;
+            }
+
+            if (eventTypeForLine === 'error') {
+              await emitOpenRouterStreamError(dataStr);
+              return true;
+            }
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed && typeof parsed === 'object' && parsed.error) {
+                await emitOpenRouterStreamError(dataStr, parsed.error);
+                return true;
+              }
+
+              if (parsed.model) modelUsed = parsed.model;
+              const finishReason = parsed?.choices?.[0]?.finish_reason;
+              if (finishReason === 'error') {
+                await emitOpenRouterStreamError(dataStr, {
+                  message: 'OpenRouter upstream provider terminated stream with finish_reason: error.',
+                  code: 502,
+                  type: 'UPSTREAM_STREAM_ERROR'
+                });
+                return true;
+              }
+              if (finishReason) lastFinishReason = finishReason;
+
+              const delta = parsed?.choices?.[0]?.delta?.content;
+              if (delta) {
+                fullText += delta;
+                sendSSE(res, { type: 'chunk', text: delta });
+              }
+            } catch (_) {
+              await emitOpenRouterStreamError(
+                dataStr,
+                /"error"\s*:/.test(dataStr)
+                  ? undefined
+                  : {
+                      message: `Malformed SSE data frame received from OpenRouter: ${dataStr.slice(0, 180)}`,
+                      code: 502,
+                      type: 'MALFORMED_STREAM_FRAME'
+                    }
+              );
+              return true;
+            }
+            return false;
+          };
 
           while (true) {
-            if (isClientClosed || res.writableEnded) {
-              try { await reader.cancel(); } catch (_) {}
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+              try {
+                await reader.cancel();
+              } catch (_) {}
               break;
             }
             const { done, value } = await reader.read();
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+              try {
+                await reader.cancel();
+              } catch (_) {}
+              break;
+            }
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.model) modelUsed = parsed.model;
-                const finishReason = parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) lastFinishReason = finishReason;
-                const delta = parsed.choices?.[0]?.delta?.content;
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+              const haltedOnError = await processOpenRouterSSELine(line);
+              if (haltedOnError) return;
             }
           }
 
           // Process trailing bytes and buffer
           const finalBytes = decoder.decode();
           if (finalBytes) buffer += finalBytes;
-          if (buffer && buffer.trim().startsWith('data:')) {
-            const dataStr = buffer.trim().slice(5).trim();
-            if (dataStr !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.model) modelUsed = parsed.model;
-                const finishReason = parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) lastFinishReason = finishReason;
-                const delta = parsed?.choices?.[0]?.delta?.content;
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+          if (!streamFailed && !upstreamGuard.isClientClosed() && buffer && buffer.trim()) {
+            const remainingLines = buffer.split('\n');
+            for (const line of remainingLines) {
+              const haltedOnError = await processOpenRouterSSELine(line);
+              if (haltedOnError) return;
+            }
+            if (!streamFailed && currentEventType === 'error') {
+              await emitOpenRouterStreamError(buffer.trim());
+              return;
+            }
+          }
+
+          if (!streamFailed && !upstreamGuard.isClientClosed()) {
+            if (!sawDoneMarker && !lastFinishReason) {
+              await emitOpenRouterStreamError('', {
+                message: 'OpenRouter streaming connection closed unexpectedly before completion.',
+                code: 503,
+                type: 'STREAM_INTERRUPTED'
+              });
+              return;
+            }
+            if (fullText.length === 0) {
+              await emitOpenRouterStreamError('', {
+                message: 'OpenRouter stream completed without returning any response text.',
+                code: 502,
+                type: 'EMPTY_STREAM_RESPONSE'
+              });
+              return;
             }
           }
 
           // Continuation if finish_reason indicates token truncation
-          if ((lastFinishReason === 'length' || lastFinishReason === 'max_tokens') && !isClientClosed && !res.writableEnded && fullText.length > 60) {
+          if (!streamFailed && (lastFinishReason === 'length' || lastFinishReason === 'max_tokens') && !upstreamGuard.isClientClosed() && !res.writableEnded && fullText.length > 60) {
             try {
               const contMessages = [
                 ...messages,
                 { role: 'assistant', content: fullText },
                 { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
               ];
-              const contRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  'Content-Type': 'application/json',
-                  'X-Title': 'Orvix'
+              const contRes = await upstreamGuard.fetchUpstream(
+                openRouterChatEndpoint,
+                {
+                  method: 'POST',
+                  headers: openRouterHeaders,
+                  body: JSON.stringify({
+                    model: selectedModel,
+                    messages: contMessages,
+                    max_tokens: Math.min(2048, openRouterMaxTokens),
+                    temperature: 0.7,
+                    stream: true
+                  })
                 },
-                body: JSON.stringify({
-                  model: selectedModel,
-                  messages: contMessages,
-                  max_tokens: Math.min(2048, openRouterMaxTokens),
-                  temperature: 0.7,
-                  stream: true
-                })
-              });
+                { provider: 'openrouter' }
+              );
 
               if (contRes.ok && contRes.body) {
                 const contReader = contRes.body.getReader();
                 let contBuffer = '';
+                let contEventType: string | null = null;
                 while (true) {
-                  if (isClientClosed || res.writableEnded) {
-                    try { await contReader.cancel(); } catch (_) {}
+                  if (upstreamGuard.isClientClosed() || res.writableEnded) {
+                    try {
+                      await contReader.cancel();
+                    } catch (_) {}
                     break;
                   }
                   const { done: cDone, value: cVal } = await contReader.read();
@@ -3968,11 +5089,34 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   contBuffer = cLines.pop() || '';
                   for (const cLine of cLines) {
                     const cTrimmed = cLine.trim();
+                    if (!cTrimmed) {
+                      contEventType = null;
+                      continue;
+                    }
+                    if (cTrimmed.startsWith(':')) continue;
+                    if (cTrimmed.startsWith('event:')) {
+                      contEventType = cTrimmed.slice(6).trim().toLowerCase();
+                      continue;
+                    }
                     if (!cTrimmed.startsWith('data:')) continue;
+                    const lineEvt = contEventType;
+                    contEventType = null;
                     const cData = cTrimmed.slice(5).trim();
                     if (cData === '[DONE]') continue;
+                    if (lineEvt === 'error') {
+                      try {
+                        await contReader.cancel();
+                      } catch (_) {}
+                      break;
+                    }
                     try {
                       const cParsed = JSON.parse(cData);
+                      if (cParsed.error) {
+                        try {
+                          await contReader.cancel();
+                        } catch (_) {}
+                        break;
+                      }
                       const cDelta = cParsed?.choices?.[0]?.delta?.content;
                       if (cDelta) {
                         fullText += cDelta;
@@ -3986,7 +5130,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           }
 
           stopHeartbeat();
-          if (!res.writableEnded) {
+          if (!streamFailed && !upstreamGuard.isClientClosed() && !res.writableEnded) {
             if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
               sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
               fullText += CONTINUATION_NOTICES.PART_1;
@@ -3997,11 +5141,17 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           return;
         } catch (streamErr: any) {
           stopHeartbeat();
+          if (streamFailed || upstreamGuard.isClientDisconnected(streamErr)) {
+            return;
+          }
+          streamFailed = true;
           logAIDiagnostic({
             category: 'streaming failure',
             provider: 'openrouter',
-            model: selectedModel,
+            model: modelUsed || selectedModel,
             phase: 'mid-stream',
+            upstreamStatus: 503,
+            upstreamErrorCode: 'STREAM_FAILED',
             sanitizedMessage: streamErr?.message || 'OpenRouter streaming interrupted'
           });
           if (!res.writableEnded) {
@@ -4010,8 +5160,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               error: 'OpenRouter streaming connection interrupted.',
               code: 503,
               status: 'STREAM_FAILED',
+              errorCode: 'STREAM_FAILED',
               provider: 'openrouter',
-              retryable: false
+              model: modelUsed || selectedModel,
+              retryable: false,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('openrouter', isServerless),
+              partial: fullText.length > 0,
+              partialText: fullText.length > 0 ? fullText : undefined
             });
             res.end();
           }
@@ -4022,21 +5178,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 4. Cloudflare Workers AI Provider (@cf/meta/llama-3.1-8b-instruct)
     if (normalizedProvider === 'cloudflare') {
-      const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-      const apiToken = process.env.CLOUDFLARE_API_TOKEN;
-      const modelId =
-        typeof clientModel === 'string' && clientModel.trim().startsWith('@cf/')
-          ? clientModel.trim()
-          : '@cf/meta/llama-3.1-8b-instruct';
-      const displayModel = 'Cloudflare Workers AI — Llama 3.1 8B';
+      const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
+      const apiToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
+      const modelId = validatedClientModel || '@cf/meta/llama-3.1-8b-instruct';
 
-      // If credentials are not configured, return simulated response
-      if (
-        !accountId ||
-        !apiToken ||
-        accountId === 'YOUR_CLOUDFLARE_ACCOUNT_ID' ||
-        apiToken === 'YOUR_CLOUDFLARE_API_TOKEN'
-      ) {
+      if (!isConfiguredCredential(accountId) || !isConfiguredCredential(apiToken)) {
+        if (!isDemoModeEnabled()) {
+          return sendProviderNotConfiguredError(res, 'cloudflare', isServerless);
+        }
         const text = (isLikelyLarge || isContinuation)
           ? generateSimulatedMultiPartResponse({
               prompt,
@@ -4056,12 +5205,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           return res.json({
             text,
             modelUsed: demoModel,
-            provider: 'cloudflare'
+            provider: 'cloudflare',
+            isDemo: true
           });
         }
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
-        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'cloudflare' });
+        sendSSE(res, { type: 'start', modelUsed: demoModel, provider: 'cloudflare', isDemo: true });
 
         const testDurationMatch = typeof prompt === 'string' ? prompt.match(/__test_stream_duration:(\d+)__/) : null;
         const testDurationSec = testDurationMatch
@@ -4073,22 +5223,22 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           const tokens = text.split(/(\s+)/);
           const intervalMs = Math.max(80, Math.floor(totalMs / Math.max(tokens.length, 1)));
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await sleepWithAbort(intervalMs, () => isClientClosed || res.writableEnded);
+            await sleepWithAbort(intervalMs, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         } else {
           const tokens = text.split(/(\s+)/);
           for (const token of tokens) {
-            if (isClientClosed || res.writableEnded) break;
+            if (upstreamGuard.isClientClosed() || res.writableEnded) break;
             sendSSE(res, { type: 'chunk', text: token });
-            await new Promise((r) => setTimeout(r, 15));
+            await sleepWithAbort(15, () => upstreamGuard.isClientClosed() || res.writableEnded);
           }
         }
 
         stopHeartbeat();
         if (!res.writableEnded) {
-          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'cloudflare' });
+          sendSSE(res, { type: 'done', text, modelUsed: demoModel, provider: 'cloudflare', isDemo: true });
           res.end();
         }
         return;
@@ -4100,13 +5250,33 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
-      // Calculate optimal max_tokens for Cloudflare Workers AI (@cf/meta/llama-3.1-8b-instruct)
-      // Root cause fix: Cloudflare defaults to only 256 tokens if max_tokens is omitted!
-      // Total context window for Llama 3.1 8B on Workers AI is 8192 tokens.
-      // We budget output tokens generously based on user response preferences while leaving headroom for prompt tokens.
       const estimatedPromptTokens = Math.ceil(JSON.stringify(messages).length / 3.8);
       const maxContextTokens = 8192;
-      const availableTokenHeadroom = Math.max(1024, maxContextTokens - estimatedPromptTokens - 256);
+      if (estimatedPromptTokens >= maxContextTokens - 128) {
+        const contextErrMsg = `Prompt is too large for the Cloudflare model context window (estimated ${estimatedPromptTokens} tokens, limit ${maxContextTokens}). Please shorten your message or start a new conversation.`;
+        logAIDiagnostic({
+          category: 'request validation error',
+          provider: 'cloudflare',
+          model: modelId,
+          phase: shouldStream ? 'pre-stream' : 'non-streaming',
+          upstreamStatus: 400,
+          sanitizedMessage: contextErrMsg
+        });
+        return res.status(400).json({
+          error: contextErrMsg,
+          code: 400,
+          status: 'CONTEXT_LENGTH_EXCEEDED',
+          errorCode: 'CONTEXT_LENGTH_EXCEEDED',
+          category: 'invalid request / model',
+          provider: 'cloudflare',
+          model: modelId,
+          retryable: false,
+          canFallback: true,
+          suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+        });
+      }
+
+      const availableTokenHeadroom = Math.max(256, maxContextTokens - estimatedPromptTokens - 256);
 
       let targetOutputTokens = 3072;
       if (preferences?.responseLength === 'detailed' || isLikelyLarge || isContinuation) {
@@ -4118,23 +5288,85 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
 
       const cfMaxTokens = Math.min(targetOutputTokens, availableTokenHeadroom);
-      const cfEndpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId.trim())}/ai/run/${modelId}`;
+      const cfEndpoint = `${getCloudflareApiBaseUrl()}/accounts/${encodeURIComponent(accountId)}/ai/run/${modelId}`;
+
+      const normalizeCloudflareHttpError = (statusCode: number, errDetail: string) => {
+        const lowerDetail = (errDetail || '').toLowerCase();
+        const isContextLimit =
+          (statusCode === 400 || statusCode === 413) &&
+          (lowerDetail.includes('context length') ||
+            lowerDetail.includes('context window') ||
+            lowerDetail.includes('too many tokens') ||
+            lowerDetail.includes('maximum context') ||
+            lowerDetail.includes('prompt is too long') ||
+            lowerDetail.includes('exceeds maximum') ||
+            lowerDetail.includes('max_tokens'));
+
+        if (isContextLimit) {
+          return {
+            status: 'CONTEXT_LENGTH_EXCEEDED',
+            errorCode: 'CONTEXT_LENGTH_EXCEEDED',
+            category: 'request validation error' as AIDiagnosticCategory,
+            isRetryable: false,
+            friendlyError: 'Prompt exceeds the Cloudflare model context window. Please shorten your message or clear older conversation turns.'
+          };
+        }
+
+        const parsed = parseGeminiError({ status: statusCode, message: errDetail || `HTTP ${statusCode}` }, 'cloudflare');
+        let friendlyError = parsed.message;
+        let status = parsed.status;
+        let isRetryable = parsed.isRetryable;
+
+        if (statusCode === 401 || statusCode === 403) {
+          friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
+          status = statusCode === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
+          isRetryable = false;
+        } else if (statusCode === 404) {
+          friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
+          status = 'NOT_FOUND';
+          isRetryable = false;
+        } else if (statusCode === 400) {
+          status = 'INVALID_ARGUMENT';
+          isRetryable = false;
+        } else if (statusCode === 429) {
+          status = 'RESOURCE_EXHAUSTED';
+          isRetryable = true;
+        } else if (statusCode === 500 || statusCode === 502 || statusCode === 503 || statusCode === 504) {
+          isRetryable = true;
+          if (statusCode === 500) status = 'INTERNAL';
+          else if (statusCode === 502) status = 'BAD_GATEWAY';
+          else if (statusCode === 503) status = 'UNAVAILABLE';
+          else if (statusCode === 504) status = 'DEADLINE_EXCEEDED';
+        }
+
+        return {
+          status,
+          errorCode: status,
+          category: parsed.category,
+          isRetryable,
+          friendlyError
+        };
+      };
 
       if (!shouldStream) {
         try {
-          const cfRes = await fetch(cfEndpoint, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiToken.trim()}`,
-              'Content-Type': 'application/json'
+          const cfRes = await upstreamGuard.fetchUpstream(
+            cfEndpoint,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${apiToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                messages,
+                stream: false,
+                max_tokens: cfMaxTokens,
+                temperature: 0.6
+              })
             },
-            body: JSON.stringify({
-              messages,
-              stream: false,
-              max_tokens: cfMaxTokens,
-              temperature: 0.6
-            })
-          });
+            { provider: 'cloudflare' }
+          );
 
           if (!cfRes.ok) {
             let errDetail = '';
@@ -4149,61 +5381,121 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               errDetail = await cfRes.text();
             }
 
-            const parsed = parseGeminiError({ status: cfRes.status, message: errDetail || cfRes.statusText }, 'cloudflare');
-            let friendlyError = parsed.message;
-            if (cfRes.status === 401 || cfRes.status === 403) {
-              friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
-            } else if (cfRes.status === 404) {
-              friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
-            }
+            const normalizedErr = normalizeCloudflareHttpError(cfRes.status, errDetail || cfRes.statusText);
 
             logAIDiagnostic({
-              category: parsed.category,
+              category: normalizedErr.category,
               provider: 'cloudflare',
               model: modelId,
               phase: 'non-streaming',
               upstreamStatus: cfRes.status,
-              sanitizedMessage: friendlyError
+              sanitizedMessage: normalizedErr.friendlyError
             });
 
             return res.status(cfRes.status).json({
-              error: friendlyError,
+              error: normalizedErr.friendlyError,
               code: cfRes.status,
-              status: parsed.status,
-              category: parsed.category,
+              status: normalizedErr.status,
+              errorCode: normalizedErr.errorCode,
+              category: normalizedErr.category,
               provider: 'cloudflare',
               model: modelId,
-              retryable: parsed.isRetryable,
+              retryable: normalizedErr.isRetryable,
               canFallback: true,
-              suggestedProviders: ['gemini', 'groq', 'openrouter']
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
             });
           }
 
-          const data = await cfRes.json();
-          let text = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
-          const finishReason = data?.result?.finish_reason || (data?.result?.usage?.completion_tokens >= cfMaxTokens ? 'length' : null);
+          let data: any;
+          try {
+            data = await cfRes.json();
+          } catch (_) {
+            return res.status(502).json({
+              error: 'Cloudflare returned an invalid JSON response.',
+              code: 502,
+              status: 'MALFORMED_UPSTREAM_RESPONSE',
+              errorCode: 'MALFORMED_UPSTREAM_RESPONSE',
+              category: 'upstream unavailable',
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: true,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+            });
+          }
+
+          if (upstreamGuard.isClientClosed()) return;
+
+          if (data?.success === false || (Array.isArray(data?.errors) && data.errors.length > 0)) {
+            const errMsg = Array.isArray(data?.errors) && data.errors.length > 0
+              ? data.errors.map((e: any) => e?.message || JSON.stringify(e)).join('; ')
+              : (typeof data?.error === 'string' ? data.error : 'Cloudflare Workers AI reported an upstream failure.');
+            const normalizedErr = normalizeCloudflareHttpError(502, errMsg);
+            return res.status(502).json({
+              error: normalizedErr.friendlyError,
+              code: 502,
+              status: normalizedErr.status,
+              errorCode: normalizedErr.errorCode,
+              category: normalizedErr.category,
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: normalizedErr.isRetryable,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+            });
+          }
+
+          let text =
+            data?.result?.response ??
+            data?.choices?.[0]?.message?.content ??
+            (typeof data?.result === 'string' ? data.result : '') ??
+            '';
+          if (typeof text !== 'string') {
+            text = String(text || '');
+          }
+
+          if (!text.trim()) {
+            return res.status(502).json({
+              error: 'Cloudflare Workers AI returned an empty response.',
+              code: 502,
+              status: 'EMPTY_UPSTREAM_RESPONSE',
+              errorCode: 'EMPTY_UPSTREAM_RESPONSE',
+              category: 'upstream unavailable',
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: true,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+            });
+          }
+
+          const finishReason = data?.result?.finish_reason || data?.choices?.[0]?.finish_reason || (data?.result?.usage?.completion_tokens >= cfMaxTokens ? 'length' : null);
 
           // Transparent continuation if Cloudflare reached output token limit
-          if (finishReason === 'length' && text.length > 60) {
+          if (finishReason === 'length' && text.length > 60 && !upstreamGuard.isClientClosed()) {
             try {
               const contMessages = [
                 ...messages,
                 { role: 'assistant', content: text },
                 { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
               ];
-              const contRes = await fetch(cfEndpoint, {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${apiToken.trim()}`,
-                  'Content-Type': 'application/json'
+              const contRes = await upstreamGuard.fetchUpstream(
+                cfEndpoint,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${apiToken}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    messages: contMessages,
+                    stream: false,
+                    max_tokens: Math.min(2048, cfMaxTokens),
+                    temperature: 0.6
+                  })
                 },
-                body: JSON.stringify({
-                  messages: contMessages,
-                  stream: false,
-                  max_tokens: Math.min(2048, cfMaxTokens),
-                  temperature: 0.6
-                })
-              });
+                { provider: 'cloudflare' }
+              );
               if (contRes.ok) {
                 const contData = await contRes.json();
                 const contText = contData?.result?.response || (typeof contData?.result === 'string' ? contData.result : '');
@@ -4214,15 +5506,19 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             } catch (_) {}
           }
 
+          if (upstreamGuard.isClientClosed()) return;
           if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(text)) {
             text += CONTINUATION_NOTICES.PART_1;
           }
           return res.json({
             text,
-            modelUsed: displayModel,
+            modelUsed: modelId,
             provider: 'cloudflare'
           });
         } catch (fetchErr: any) {
+          if (upstreamGuard.isClientDisconnected(fetchErr)) {
+            return;
+          }
           const parsed = parseGeminiError(fetchErr, 'cloudflare');
           logAIDiagnostic({
             category: parsed.category,
@@ -4236,32 +5532,40 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             error: parsed.message,
             code: parsed.statusCode,
             status: parsed.status,
+            errorCode: parsed.status,
             category: parsed.category,
             provider: 'cloudflare',
             model: modelId,
             retryable: parsed.isRetryable,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
+            suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
           });
         }
       } else {
         // Genuine streaming via Cloudflare Workers AI SSE
         let cfRes: Response;
         try {
-          cfRes = await fetch(cfEndpoint, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${apiToken.trim()}`,
-              'Content-Type': 'application/json'
+          cfRes = await upstreamGuard.fetchUpstream(
+            cfEndpoint,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${apiToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                messages,
+                stream: true,
+                max_tokens: cfMaxTokens,
+                temperature: 0.6
+              })
             },
-            body: JSON.stringify({
-              messages,
-              stream: true,
-              max_tokens: cfMaxTokens,
-              temperature: 0.6
-            })
-          });
+            { provider: 'cloudflare' }
+          );
         } catch (fetchErr: any) {
+          if (upstreamGuard.isClientDisconnected(fetchErr)) {
+            return;
+          }
           const parsed = parseGeminiError(fetchErr, 'cloudflare');
           logAIDiagnostic({
             category: parsed.category,
@@ -4275,12 +5579,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             error: parsed.message,
             code: parsed.statusCode,
             status: parsed.status,
+            errorCode: parsed.status,
             category: parsed.category,
             provider: 'cloudflare',
             model: modelId,
             retryable: parsed.isRetryable,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
+            suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
           });
         }
 
@@ -4297,68 +5602,245 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             errDetail = await cfRes.text();
           }
 
-          const parsed = parseGeminiError({ status: cfRes.status, message: errDetail || cfRes.statusText }, 'cloudflare');
-          let friendlyError = parsed.message;
-          if (cfRes.status === 401 || cfRes.status === 403) {
-            friendlyError = 'Invalid or unauthorized Cloudflare API token. Please verify CLOUDFLARE_API_TOKEN.';
-          } else if (cfRes.status === 404) {
-            friendlyError = 'Cloudflare account or model not found. Please verify CLOUDFLARE_ACCOUNT_ID and model availability.';
-          }
+          const normalizedErr = normalizeCloudflareHttpError(cfRes.status, errDetail || cfRes.statusText);
 
           logAIDiagnostic({
-            category: parsed.category,
+            category: normalizedErr.category,
             provider: 'cloudflare',
             model: modelId,
             phase: 'pre-stream',
             upstreamStatus: cfRes.status,
-            sanitizedMessage: friendlyError
+            sanitizedMessage: normalizedErr.friendlyError
           });
 
           return res.status(cfRes.status).json({
-            error: friendlyError,
+            error: normalizedErr.friendlyError,
             code: cfRes.status,
-            status: parsed.status,
-            category: parsed.category,
+            status: normalizedErr.status,
+            errorCode: normalizedErr.errorCode,
+            category: normalizedErr.category,
             provider: 'cloudflare',
             model: modelId,
-            retryable: parsed.isRetryable,
+            retryable: normalizedErr.isRetryable,
             canFallback: true,
-            suggestedProviders: ['gemini', 'groq', 'openrouter']
+            suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
           });
         }
 
+        if (upstreamGuard.isClientClosed()) return;
         const contentType = cfRes.headers.get('content-type') || '';
 
-        // If Cloudflare returns non-streaming JSON (or body is missing) despite stream: true, adapt it gracefully to SSE
         if (contentType.includes('application/json') || !cfRes.body) {
-          const data = await cfRes.json();
-          let fullText = data?.result?.response || (typeof data?.result === 'string' ? data.result : '') || '';
+          let data: any;
+          try {
+            data = await cfRes.json();
+          } catch (_) {
+            return res.status(502).json({
+              error: 'Cloudflare returned an invalid JSON response.',
+              code: 502,
+              status: 'MALFORMED_UPSTREAM_RESPONSE',
+              errorCode: 'MALFORMED_UPSTREAM_RESPONSE',
+              category: 'upstream unavailable',
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: true,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+            });
+          }
+
+          if (upstreamGuard.isClientClosed()) return;
+
+          if (data?.success === false || (Array.isArray(data?.errors) && data.errors.length > 0)) {
+            const errMsg = Array.isArray(data?.errors) && data.errors.length > 0
+              ? data.errors.map((e: any) => e?.message || JSON.stringify(e)).join('; ')
+              : (typeof data?.error === 'string' ? data.error : 'Cloudflare Workers AI reported an upstream failure.');
+            const normalizedErr = normalizeCloudflareHttpError(502, errMsg);
+            return res.status(502).json({
+              error: normalizedErr.friendlyError,
+              code: 502,
+              status: normalizedErr.status,
+              errorCode: normalizedErr.errorCode,
+              category: normalizedErr.category,
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: normalizedErr.isRetryable,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+            });
+          }
+
+          let fullText =
+            data?.result?.response ??
+            data?.choices?.[0]?.message?.content ??
+            (typeof data?.result === 'string' ? data.result : '') ??
+            '';
+          if (typeof fullText !== 'string') {
+            fullText = String(fullText || '');
+          }
+
+          if (!fullText.trim()) {
+            return res.status(502).json({
+              error: 'Cloudflare Workers AI returned an empty response.',
+              code: 502,
+              status: 'EMPTY_UPSTREAM_RESPONSE',
+              errorCode: 'EMPTY_UPSTREAM_RESPONSE',
+              category: 'upstream unavailable',
+              provider: 'cloudflare',
+              model: modelId,
+              retryable: true,
+              canFallback: true,
+              suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless)
+            });
+          }
+
           if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
             fullText += CONTINUATION_NOTICES.PART_1;
           }
           initSSE(res);
-          sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
-          if (fullText) {
-            sendSSE(res, { type: 'chunk', text: fullText });
-          }
-          sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
+          sendSSE(res, { type: 'start', modelUsed: modelId, provider: 'cloudflare' });
+          sendSSE(res, { type: 'chunk', text: fullText });
+          sendSSE(res, { type: 'done', text: fullText, modelUsed: modelId, provider: 'cloudflare' });
           res.end();
           return;
         }
 
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
-        sendSSE(res, { type: 'start', modelUsed: displayModel, provider: 'cloudflare' });
+        sendSSE(res, { type: 'start', modelUsed: modelId, provider: 'cloudflare' });
+
+        let fullText = '';
+        let lastFinishReason: string | null = null;
+        let sawDoneSentinel = false;
+        let sawErrorEvent = false;
+        let streamFailed = false;
+
+        const emitCloudflareStreamError = (
+          errMessage: string,
+          status = 'STREAM_FAILED',
+          code = 502,
+          retryable = false
+        ) => {
+          if (streamFailed || upstreamGuard.isClientClosed() || res.writableEnded) return;
+          streamFailed = true;
+          stopHeartbeat();
+          logAIDiagnostic({
+            category: 'streaming failure',
+            provider: 'cloudflare',
+            model: modelId,
+            phase: 'mid-stream',
+            upstreamStatus: code,
+            sanitizedMessage: errMessage
+          });
+          sendSSE(res, {
+            type: 'error',
+            error: errMessage,
+            code,
+            status,
+            errorCode: status,
+            provider: 'cloudflare',
+            model: modelId,
+            retryable,
+            canFallback: true,
+            suggestedProviders: getConfiguredFallbackProviders('cloudflare', isServerless),
+            partial: fullText.length > 0,
+            ...(fullText.length > 0 ? { partialText: fullText } : {})
+          });
+          res.end();
+        };
+
+        const processCloudflareSSELine = (rawLine: string): boolean => {
+          const trimmed = rawLine.trim();
+          if (!trimmed) {
+            sawErrorEvent = false;
+            return true;
+          }
+          if (trimmed.startsWith(':')) {
+            return true;
+          }
+          if (trimmed.startsWith('event:')) {
+            const eventType = trimmed.slice(6).trim().toLowerCase();
+            sawErrorEvent = eventType === 'error';
+            return true;
+          }
+          if (!trimmed.startsWith('data:')) {
+            return true;
+          }
+
+          const dataStr = trimmed.slice(5).trim();
+          if (!dataStr) return true;
+          if (dataStr === '[DONE]') {
+            sawDoneSentinel = true;
+            return true;
+          }
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(dataStr);
+          } catch (_) {
+            emitCloudflareStreamError(
+              'Malformed SSE data frame received from Cloudflare stream.',
+              'MALFORMED_STREAM_FRAME',
+              502,
+              false
+            );
+            return false;
+          }
+
+          if (
+            sawErrorEvent ||
+            parsed?.error ||
+            (Array.isArray(parsed?.errors) && parsed.errors.length > 0) ||
+            parsed?.success === false
+          ) {
+            const upstreamErrMsg =
+              typeof parsed?.error === 'string'
+                ? parsed.error
+                : parsed?.error?.message ||
+                  (Array.isArray(parsed?.errors) && parsed.errors[0]?.message) ||
+                  'Cloudflare Workers AI reported an error during streaming.';
+            emitCloudflareStreamError(upstreamErrMsg, 'UPSTREAM_STREAM_ERROR', 502, false);
+            return false;
+          }
+
+          const finishReason =
+            parsed?.finish_reason ??
+            parsed?.result?.finish_reason ??
+            parsed?.choices?.[0]?.finish_reason ??
+            null;
+          if (finishReason) {
+            lastFinishReason = finishReason;
+            if (String(finishReason).toLowerCase() === 'error') {
+              emitCloudflareStreamError(
+                'Cloudflare stream terminated with finish_reason=error.',
+                'STREAM_FINISH_ERROR',
+                502,
+                false
+              );
+              return false;
+            }
+          }
+
+          const delta =
+            parsed?.response ??
+            parsed?.result?.response ??
+            parsed?.choices?.[0]?.delta?.content ??
+            '';
+          if (typeof delta === 'string' && delta.length > 0) {
+            fullText += delta;
+            sendSSE(res, { type: 'chunk', text: delta });
+          }
+
+          return true;
+        };
 
         try {
           const reader = cfRes.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
-          let fullText = '';
-          let lastFinishReason: string | null = null;
 
           while (true) {
-            if (isClientClosed || res.writableEnded) {
+            if (upstreamGuard.isClientClosed() || res.writableEnded || streamFailed) {
               try {
                 await reader.cancel();
               } catch (_) {}
@@ -4366,6 +5848,12 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
 
             const { done, value } = await reader.read();
+            if (upstreamGuard.isClientClosed() || res.writableEnded || streamFailed) {
+              try {
+                await reader.cancel();
+              } catch (_) {}
+              break;
+            }
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
@@ -4373,77 +5861,90 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-
-              try {
-                const parsed = JSON.parse(dataStr);
-                const finishReason = parsed?.finish_reason || parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) {
-                  lastFinishReason = finishReason;
-                }
-                const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+              if (!processCloudflareSSELine(line)) {
+                try {
+                  await reader.cancel();
+                } catch (_) {}
+                break;
+              }
             }
           }
 
-          // Process any trailing bytes and line in buffer
+          // Process any trailing bytes and lines in buffer
           const finalBytes = decoder.decode();
           if (finalBytes) {
             buffer += finalBytes;
           }
-          if (buffer && buffer.trim().startsWith('data:')) {
-            const dataStr = buffer.trim().slice(5).trim();
-            if (dataStr !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(dataStr);
-                const finishReason = parsed?.finish_reason || parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) {
-                  lastFinishReason = finishReason;
-                }
-                const delta = parsed?.response ?? parsed?.choices?.[0]?.delta?.content ?? '';
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+          if (!upstreamGuard.isClientClosed() && !res.writableEnded && !streamFailed && buffer.trim()) {
+            const remainingLines = buffer.split('\n');
+            for (const remLine of remainingLines) {
+              if (!processCloudflareSSELine(remLine)) {
+                break;
+              }
             }
           }
 
+          if (streamFailed || upstreamGuard.isClientClosed() || res.writableEnded) {
+            stopHeartbeat();
+            return;
+          }
+
+          const completedCleanly =
+            sawDoneSentinel ||
+            (lastFinishReason !== null && lastFinishReason !== '');
+
+          if (!completedCleanly) {
+            emitCloudflareStreamError(
+              'Cloudflare stream closed prematurely before completion signal.',
+              'STREAM_INTERRUPTED',
+              502,
+              false
+            );
+            return;
+          }
+
+          if (!fullText.trim()) {
+            emitCloudflareStreamError(
+              'Cloudflare stream completed without returning any response content.',
+              'EMPTY_STREAM_RESPONSE',
+              502,
+              true
+            );
+            return;
+          }
+
           // Transparent continuation if Cloudflare reached output token ceiling mid-generation
-          if (lastFinishReason === 'length' && !isClientClosed && !res.writableEnded && fullText.length > 60) {
+          if (lastFinishReason === 'length' && !upstreamGuard.isClientClosed() && !res.writableEnded && fullText.length > 60) {
             try {
               const contMessages = [
                 ...messages,
                 { role: 'assistant', content: fullText },
                 { role: 'user', content: 'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.' }
               ];
-              const contRes = await fetch(cfEndpoint, {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${apiToken.trim()}`,
-                  'Content-Type': 'application/json'
+              const contRes = await upstreamGuard.fetchUpstream(
+                cfEndpoint,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${apiToken}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    messages: contMessages,
+                    stream: true,
+                    max_tokens: Math.min(2048, cfMaxTokens),
+                    temperature: 0.6
+                  })
                 },
-                body: JSON.stringify({
-                  messages: contMessages,
-                  stream: true,
-                  max_tokens: Math.min(2048, cfMaxTokens),
-                  temperature: 0.6
-                })
-              });
+                { provider: 'cloudflare' }
+              );
 
               if (contRes.ok && contRes.body) {
                 const contReader = contRes.body.getReader();
                 let contBuffer = '';
                 let contFinishReason: string | null = null;
                 while (true) {
-                  if (isClientClosed || res.writableEnded) {
+                  if (upstreamGuard.isClientClosed() || res.writableEnded) {
                     try { await contReader.cancel(); } catch (_) {}
                     break;
                   }
@@ -4470,14 +5971,15 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                 }
                 lastFinishReason = contFinishReason || 'stop';
               }
-            } catch (contErr) {
-              console.warn('[Cloudflare] Streaming continuation notice:', contErr);
+            } catch (contErr: any) {
+              if (!upstreamGuard.isClientDisconnected(contErr)) {
+                console.warn('[Cloudflare] Streaming continuation notice:', sanitizeErrorLog(contErr?.message || String(contErr)));
+              }
             }
           }
 
           stopHeartbeat();
-          if (!res.writableEnded) {
-            // If the response is still incomplete after continuation, append continuation notice
+          if (!upstreamGuard.isClientClosed() && !res.writableEnded && !streamFailed) {
             if (lastFinishReason === 'length' && !responseHasContinuationNotice(fullText)) {
               sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_N });
               fullText += CONTINUATION_NOTICES.PART_N;
@@ -4485,30 +5987,21 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
               fullText += CONTINUATION_NOTICES.PART_1;
             }
-            sendSSE(res, { type: 'done', text: fullText, modelUsed: displayModel, provider: 'cloudflare' });
+            sendSSE(res, { type: 'done', text: fullText, modelUsed: modelId, provider: 'cloudflare' });
             res.end();
           }
           return;
         } catch (streamErr: any) {
-          stopHeartbeat();
-          logAIDiagnostic({
-            category: 'streaming failure',
-            provider: 'cloudflare',
-            model: modelId,
-            phase: 'mid-stream',
-            sanitizedMessage: streamErr?.message || 'Cloudflare streaming interrupted'
-          });
-          if (!res.writableEnded) {
-            sendSSE(res, {
-              type: 'error',
-              error: 'Cloudflare streaming connection interrupted.',
-              code: 503,
-              status: 'STREAM_FAILED',
-              provider: 'cloudflare',
-              retryable: false
-            });
-            res.end();
+          if (upstreamGuard.isClientDisconnected(streamErr)) {
+            stopHeartbeat();
+            return;
           }
+          emitCloudflareStreamError(
+            'Cloudflare streaming connection interrupted.',
+            'STREAM_FAILED',
+            503,
+            false
+          );
           return;
         }
       }
@@ -4516,27 +6009,17 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 5. Local AI (Ollama) Provider
     if (normalizedProvider === 'ollama') {
-      let ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').trim();
-      // Sanitize URL: strip wrapping quotes, CRLF, trailing slashes, and paths
-      ollamaBaseUrl = ollamaBaseUrl.replace(/^["']+|["']+$/g, '').trim();
-      ollamaBaseUrl = ollamaBaseUrl.replace(/[\r\n]/g, '').trim();
-      if (!/^https?:\/\//i.test(ollamaBaseUrl)) {
-        ollamaBaseUrl = `http://${ollamaBaseUrl}`;
-      }
-      ollamaBaseUrl = ollamaBaseUrl.replace(/\/v1\/chat\/completions\/?$/i, '');
-      ollamaBaseUrl = ollamaBaseUrl.replace(/\/(v1|api)\/?$/i, '');
-      ollamaBaseUrl = ollamaBaseUrl.replace(/\/+$/, '');
-      // Normalize localhost to 127.0.0.1 to avoid Windows IPv6 (::1) ECONNREFUSED mismatch
-      ollamaBaseUrl = ollamaBaseUrl.replace(/^(https?:\/\/)localhost(:\d+)?/i, '$1127.0.0.1$2');
+      const ollamaBaseUrl = getOllamaApiBaseUrl();
+      const rawConfiguredUrl = (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST || '').trim();
+      const isNativeEndpoint =
+        /\/api\/chat\/?$/i.test(rawConfiguredUrl) || process.env.OLLAMA_API_TYPE === 'native';
+      const ollamaEndpoint = isNativeEndpoint
+        ? `${ollamaBaseUrl}/api/chat`
+        : `${ollamaBaseUrl}/v1/chat/completions`;
 
-      let selectedModel = 'qwen2.5:1.5b';
-      if (typeof clientModel === 'string' && clientModel.trim()) {
-        const trimmed = clientModel.trim();
-        if (/qwen/i.test(trimmed)) {
-          selectedModel = 'qwen2.5:1.5b';
-        } else if (!/demo|analyzer/i.test(trimmed)) {
-          selectedModel = trimmed;
-        }
+      let selectedModel = validatedClientModel || PROVIDER_DEFAULT_MODELS.ollama;
+      if (validatedClientModel && validatedClientModel.toLowerCase() === 'qwen') {
+        selectedModel = PROVIDER_DEFAULT_MODELS.ollama;
       }
 
       // Verify Vercel serverless / cloud execution environment isolation
@@ -4584,22 +6067,33 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         prompt: effectivePrompt
       });
 
-      const ollamaEndpoint = `${ollamaBaseUrl}/v1/chat/completions`;
-
       if (!shouldStream) {
         try {
-          const ollamaRes = await fetch(ollamaEndpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
+          const reqBody = isNativeEndpoint
+            ? JSON.stringify({
+                model: selectedModel,
+                messages,
+                stream: false,
+                options: { temperature: 0.7 }
+              })
+            : JSON.stringify({
+                model: selectedModel,
+                messages,
+                temperature: 0.7,
+                stream: false
+              });
+
+          const ollamaRes = await upstreamGuard.fetchUpstream(
+            ollamaEndpoint,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: reqBody
             },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages,
-              temperature: 0.7,
-              stream: false
-            })
-          });
+            { provider: 'ollama' }
+          );
 
           if (!ollamaRes.ok) {
             const errText = await ollamaRes.text().catch(() => '');
@@ -4608,35 +6102,80 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               ollamaRes.status === 404 ||
               errText.toLowerCase().includes('not found') ||
               errText.toLowerCase().includes('model');
+            const isContextLength =
+              errText.toLowerCase().includes('context_length_exceeded') ||
+              errText.toLowerCase().includes('context window') ||
+              errText.toLowerCase().includes('exceeds context length');
 
             if (isMissingModel) {
               friendlyError = `The requested Ollama model '${selectedModel}' was not found. Please install it in your terminal using: ollama pull ${selectedModel}`;
+            } else if (isContextLength) {
+              friendlyError = `The attached document or conversation exceeds the context window for model '${selectedModel}'. Please ask about specific sections or reduce input size.`;
             } else {
               friendlyError = `Ollama returned HTTP ${ollamaRes.status}: ${errText.slice(0, 200) || ollamaRes.statusText}`;
             }
+
+            const statusCode = ollamaRes.status;
+            const statusLabel = isMissingModel
+              ? 'NOT_FOUND'
+              : isContextLength
+              ? 'CONTEXT_LENGTH_EXCEEDED'
+              : statusCode === 400
+              ? 'INVALID_REQUEST'
+              : 'INTERNAL';
+
+            const isRetryable = statusCode >= 500 && statusCode !== 503;
 
             logAIDiagnostic({
               category: 'provider API error',
               provider: 'ollama',
               model: selectedModel,
               phase: 'non-streaming',
-              upstreamStatus: ollamaRes.status,
+              upstreamStatus: statusCode,
               sanitizedMessage: friendlyError
             });
 
-            return res.status(ollamaRes.status).json({
+            return res.status(statusCode).json({
               error: friendlyError,
-              code: ollamaRes.status,
-              status: isMissingModel ? 'NOT_FOUND' : 'INTERNAL',
+              code: statusCode,
+              status: statusLabel,
+              errorCode: statusLabel,
+              provider: 'ollama',
+              model: selectedModel,
+              retryable: isRetryable,
+              canFallback: false
+            });
+          }
+
+          const data: any = await ollamaRes.json();
+          if (upstreamGuard.isClientClosed()) return;
+          let finalText =
+            data?.choices?.[0]?.message?.content ??
+            data?.message?.content ??
+            data?.response ??
+            '';
+
+          if (!finalText.trim()) {
+            logAIDiagnostic({
+              category: 'provider API error',
+              provider: 'ollama',
+              model: selectedModel,
+              phase: 'non-streaming',
+              upstreamStatus: 502,
+              upstreamErrorCode: 'EMPTY_UPSTREAM_RESPONSE',
+              sanitizedMessage: 'Local AI (Ollama) returned an empty response.'
+            });
+            return res.status(502).json({
+              error: 'Local AI (Ollama) returned an empty response.',
+              code: 502,
+              status: 'EMPTY_UPSTREAM_RESPONSE',
+              errorCode: 'EMPTY_UPSTREAM_RESPONSE',
               provider: 'ollama',
               model: selectedModel,
               retryable: false,
               canFallback: false
             });
           }
-
-          const data: any = await ollamaRes.json();
-          let finalText = data?.choices?.[0]?.message?.content || '';
 
           if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
             finalText += CONTINUATION_NOTICES.PART_1;
@@ -4648,19 +6187,46 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             provider: 'ollama'
           });
         } catch (fetchErr: any) {
-          if (isClientClosed) return;
+          if (upstreamGuard.isClientDisconnected(fetchErr)) return;
+
+          if (upstreamGuard.isUpstreamTimeout(fetchErr)) {
+            logAIDiagnostic({
+              category: 'provider timeout',
+              provider: 'ollama',
+              model: selectedModel,
+              phase: 'non-streaming',
+              upstreamStatus: 504,
+              upstreamErrorCode: 'DEADLINE_EXCEEDED',
+              sanitizedMessage: fetchErr.message
+            });
+            return res.status(504).json({
+              error: fetchErr.message,
+              code: 504,
+              status: 'DEADLINE_EXCEEDED',
+              provider: 'ollama',
+              model: selectedModel,
+              retryable: false,
+              canFallback: false
+            });
+          }
+
           const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
           const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
           const isConnRefused =
             causeCode === 'ECONNREFUSED' ||
             causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
-            rawMsg.includes('econnrefused');
+            causeCode === 'ENOTFOUND' ||
+            causeCode === 'ECONNRESET' ||
+            rawMsg.includes('econnrefused') ||
+            rawMsg.includes('fetch failed') ||
+            rawMsg.includes('failed to fetch') ||
+            rawMsg.includes('connect');
 
           let friendlyError: string;
           if (isConnRefused) {
             friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}. Please ensure Ollama is running ('ollama serve') on your computer and that model '${selectedModel}' is available ('ollama list').`;
           } else {
-            friendlyError = `Failed to communicate with Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}.`;
+            friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}. Please ensure Ollama is running ('ollama serve').`;
           }
 
           logAIDiagnostic({
@@ -4683,58 +6249,116 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           });
         }
       } else {
-        // Genuine streaming via Ollama OpenAI-compatible SSE
+        // Streaming via Ollama OpenAI-compatible SSE or native NDJSON
         let ollamaRes: Response | null = null;
         let isStreamMode = true;
 
-        try {
-          ollamaRes = await fetch(ollamaEndpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
+        const streamBody = isNativeEndpoint
+          ? JSON.stringify({
+              model: selectedModel,
+              messages,
+              stream: true,
+              options: { temperature: 0.7 }
+            })
+          : JSON.stringify({
               model: selectedModel,
               messages,
               temperature: 0.7,
               stream: true
-            })
-          });
-        } catch (fetchErr: any) {
-          // If stream: true failed, attempt immediate local non-streaming request before reporting failure
-          try {
-            const fallbackRes = await fetch(ollamaEndpoint, {
+            });
+
+        try {
+          ollamaRes = await upstreamGuard.fetchUpstream(
+            ollamaEndpoint,
+            {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json'
               },
-              body: JSON.stringify({
-                model: selectedModel,
-                messages,
-                temperature: 0.7,
-                stream: false
-              })
+              body: streamBody
+            },
+            { provider: 'ollama' }
+          );
+        } catch (fetchErr: any) {
+          if (upstreamGuard.isClientDisconnected(fetchErr)) {
+            return;
+          }
+          if (upstreamGuard.isUpstreamTimeout(fetchErr)) {
+            logAIDiagnostic({
+              category: 'provider timeout',
+              provider: 'ollama',
+              model: selectedModel,
+              phase: 'pre-stream',
+              upstreamStatus: 504,
+              upstreamErrorCode: 'DEADLINE_EXCEEDED',
+              sanitizedMessage: fetchErr.message
             });
-            if (fallbackRes.ok) {
-              ollamaRes = fallbackRes;
-              isStreamMode = false;
-            }
-          } catch (_) {}
+            return res.status(504).json({
+              error: fetchErr.message,
+              code: 504,
+              status: 'DEADLINE_EXCEEDED',
+              provider: 'ollama',
+              model: selectedModel,
+              retryable: false,
+              canFallback: false
+            });
+          }
+
+          // Only attempt non-streaming fallback if initial stream connection did NOT time out, disconnect, or fail connection
+          const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
+          const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
+          const isConnRefused =
+            causeCode === 'ECONNREFUSED' ||
+            causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
+            causeCode === 'ENOTFOUND' ||
+            causeCode === 'ECONNRESET' ||
+            rawMsg.includes('econnrefused') ||
+            rawMsg.includes('fetch failed') ||
+            rawMsg.includes('failed to fetch') ||
+            rawMsg.includes('connect');
+
+          if (!isConnRefused) {
+            try {
+              const nonStreamFallbackBody = isNativeEndpoint
+                ? JSON.stringify({
+                    model: selectedModel,
+                    messages,
+                    stream: false,
+                    options: { temperature: 0.7 }
+                  })
+                : JSON.stringify({
+                    model: selectedModel,
+                    messages,
+                    temperature: 0.7,
+                    stream: false
+                  });
+
+              const fallbackRes = await upstreamGuard.fetchUpstream(
+                ollamaEndpoint,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: nonStreamFallbackBody
+                },
+                { provider: 'ollama' }
+              );
+              if (fallbackRes.ok) {
+                ollamaRes = fallbackRes;
+                isStreamMode = false;
+              }
+            } catch (_) {}
+          }
 
           if (!ollamaRes) {
-            if (isClientClosed) return;
-            const rawMsg = String(fetchErr?.message || fetchErr || '').toLowerCase();
-            const causeCode = String(fetchErr?.cause?.code || fetchErr?.code || '');
-            const isConnRefused =
-              causeCode === 'ECONNREFUSED' ||
-              causeCode === 'UND_ERR_CONNECT_TIMEOUT' ||
-              rawMsg.includes('econnrefused');
+            if (upstreamGuard.isClientClosed()) return;
 
             let friendlyError: string;
             if (isConnRefused) {
               friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}. Please ensure Ollama is running ('ollama serve') on your computer and that model '${selectedModel}' is available ('ollama list').`;
             } else {
-              friendlyError = `Failed to connect to Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}.`;
+              friendlyError = `Unable to connect to Local AI (Ollama) at ${ollamaBaseUrl}: ${fetchErr?.message || 'Connection error'}. Please ensure Ollama is running ('ollama serve').`;
             }
 
             logAIDiagnostic({
@@ -4765,42 +6389,86 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             ollamaRes.status === 404 ||
             errText.toLowerCase().includes('not found') ||
             errText.toLowerCase().includes('model');
+          const isContextLength =
+            errText.toLowerCase().includes('context_length_exceeded') ||
+            errText.toLowerCase().includes('context window') ||
+            errText.toLowerCase().includes('exceeds context length');
 
           if (isMissingModel) {
             friendlyError = `The requested Ollama model '${selectedModel}' was not found. Please install it in your terminal using: ollama pull ${selectedModel}`;
+          } else if (isContextLength) {
+            friendlyError = `The attached document or conversation exceeds the context window for model '${selectedModel}'. Please ask about specific sections or reduce input size.`;
           } else {
             friendlyError = `Ollama returned HTTP ${ollamaRes.status}: ${errText.slice(0, 200) || ollamaRes.statusText}`;
           }
+
+          const statusCode = ollamaRes.status;
+          const statusLabel = isMissingModel
+            ? 'NOT_FOUND'
+            : isContextLength
+            ? 'CONTEXT_LENGTH_EXCEEDED'
+            : statusCode === 400
+            ? 'INVALID_REQUEST'
+            : 'INTERNAL';
+
+          const isRetryable = statusCode >= 500 && statusCode !== 503;
 
           logAIDiagnostic({
             category: 'provider API error',
             provider: 'ollama',
             model: selectedModel,
             phase: 'pre-stream',
-            upstreamStatus: ollamaRes.status,
+            upstreamStatus: statusCode,
             sanitizedMessage: friendlyError
           });
 
-          return res.status(ollamaRes.status).json({
+          return res.status(statusCode).json({
             error: friendlyError,
-            code: ollamaRes.status,
-            status: isMissingModel ? 'NOT_FOUND' : 'INTERNAL',
+            code: statusCode,
+            status: statusLabel,
+            errorCode: statusLabel,
             provider: 'ollama',
             model: selectedModel,
-            retryable: false,
+            retryable: isRetryable,
             canFallback: false
           });
         }
 
+        if (upstreamGuard.isClientClosed()) return;
         initSSE(res);
         const stopHeartbeat = startSSEHeartbeat(res);
         sendSSE(res, { type: 'start', modelUsed: selectedModel, provider: 'ollama' });
 
-        // If non-streaming response was obtained from local fallback
         if (!isStreamMode || !ollamaRes.body) {
           try {
             const data: any = await ollamaRes.json();
-            let finalText = data?.choices?.[0]?.message?.content || '';
+            if (upstreamGuard.isClientClosed()) {
+              stopHeartbeat();
+              return;
+            }
+            let finalText =
+              data?.choices?.[0]?.message?.content ??
+              data?.message?.content ??
+              data?.response ??
+              '';
+
+            if (!finalText.trim()) {
+              stopHeartbeat();
+              sendSSE(res, {
+                type: 'error',
+                error: 'Local AI (Ollama) returned an empty response.',
+                code: 502,
+                status: 'EMPTY_UPSTREAM_RESPONSE',
+                errorCode: 'EMPTY_UPSTREAM_RESPONSE',
+                provider: 'ollama',
+                model: selectedModel,
+                retryable: false,
+                canFallback: false
+              });
+              res.end();
+              return;
+            }
+
             if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(finalText)) {
               finalText += CONTINUATION_NOTICES.PART_1;
             }
@@ -4818,12 +6486,14 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             return;
           } catch (jsonErr: any) {
             stopHeartbeat();
+            if (upstreamGuard.isClientDisconnected(jsonErr)) return;
             if (!res.writableEnded) {
               sendSSE(res, {
                 type: 'error',
                 error: 'Failed to parse response from Local AI (Ollama).',
                 code: 500,
                 status: 'PARSE_ERROR',
+                errorCode: 'PARSE_ERROR',
                 provider: 'ollama',
                 retryable: false,
                 canFallback: false
@@ -4834,78 +6504,177 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
           }
         }
 
+        let fullText = '';
+
         try {
           const reader = ollamaRes.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
-          let fullText = '';
           let modelUsed = selectedModel;
           let lastFinishReason: string | null = null;
+          let currentEventType: string | null = null;
+          let terminalEmitted = false;
+          let receivedDone = false;
+
+          const emitStreamError = (errMsg: string, errCode = 500, statusLabel = 'STREAM_FAILED') => {
+            if (terminalEmitted) return;
+            terminalEmitted = true;
+            stopHeartbeat();
+            logAIDiagnostic({
+              category: 'streaming failure',
+              provider: 'ollama',
+              model: selectedModel,
+              phase: 'mid-stream',
+              sanitizedMessage: errMsg
+            });
+            if (!res.writableEnded) {
+              sendSSE(res, {
+                type: 'error',
+                error: errMsg,
+                code: errCode,
+                status: statusLabel,
+                errorCode: statusLabel,
+                provider: 'ollama',
+                model: selectedModel,
+                retryable: false,
+                canFallback: false,
+                partial: fullText.length > 0,
+                partialText: fullText
+              });
+              res.end();
+            }
+          };
+
+          const processOllamaLine = (rawLine: string): boolean => {
+            const trimmed = rawLine.trim();
+            if (!trimmed) {
+              currentEventType = null;
+              return false;
+            }
+            if (trimmed.startsWith(':')) return false; // SSE heartbeat comment
+
+            if (trimmed.startsWith('event:')) {
+              currentEventType = trimmed.slice(6).trim().toLowerCase();
+              return false;
+            }
+
+            let dataStr = trimmed;
+            let isSseData = false;
+            if (trimmed.startsWith('data:')) {
+              dataStr = trimmed.slice(5).trim();
+              isSseData = true;
+            }
+
+            if (dataStr === '[DONE]') {
+              receivedDone = true;
+              return false;
+            }
+
+            const lineEvt = currentEventType;
+            currentEventType = null;
+
+            if (lineEvt === 'error') {
+              emitStreamError(dataStr || 'Ollama reported a streaming error.', 500, 'STREAM_FAILED');
+              return true;
+            }
+
+            // Must be a valid JSON record (either native NDJSON or SSE payload)
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed && typeof parsed === 'object' && parsed.error) {
+                const errDetail = typeof parsed.error === 'string'
+                  ? parsed.error
+                  : parsed.error?.message || 'Error reported by Local AI (Ollama)';
+                emitStreamError(errDetail, 500, 'STREAM_FAILED');
+                return true;
+              }
+
+              if (parsed.model) modelUsed = parsed.model;
+              if (parsed.done === true) receivedDone = true;
+
+              const finishReason = parsed?.choices?.[0]?.finish_reason ?? parsed?.done_reason;
+              if (finishReason) {
+                lastFinishReason = finishReason;
+                if (finishReason === 'stop' || finishReason === 'length') {
+                  receivedDone = true;
+                }
+              }
+
+              const delta = parsed?.choices?.[0]?.delta?.content ?? (parsed?.message?.content || parsed?.response);
+              if (typeof delta === 'string' && delta.length > 0) {
+                fullText += delta;
+                sendSSE(res, { type: 'chunk', text: delta });
+              }
+              return false;
+            } catch (err: any) {
+              // If it started with data: or { and is not valid JSON, treat as a malformed record
+              if (isSseData || trimmed.startsWith('{')) {
+                emitStreamError('Malformed response record received from Local AI (Ollama).', 500, 'PARSE_ERROR');
+                return true;
+              }
+              return false;
+            }
+          };
 
           while (true) {
-            if (isClientClosed || res.writableEnded) {
-              try {
-                await reader.cancel();
-              } catch (_) {}
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+              try { await reader.cancel(); } catch (_) {}
               break;
             }
             const { done, value } = await reader.read();
+            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+              try { await reader.cancel(); } catch (_) {}
+              break;
+            }
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const dataStr = trimmed.slice(5).trim();
-              if (dataStr === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.model) modelUsed = parsed.model;
-                const finishReason = parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) lastFinishReason = finishReason;
-                const delta = parsed.choices?.[0]?.delta?.content;
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+              const halted = processOllamaLine(line);
+              if (halted) return;
             }
           }
 
-          // Process trailing bytes and buffer
           const finalBytes = decoder.decode();
           if (finalBytes) buffer += finalBytes;
-          if (buffer && buffer.trim().startsWith('data:')) {
-            const dataStr = buffer.trim().slice(5).trim();
-            if (dataStr !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(dataStr);
-                if (parsed.model) modelUsed = parsed.model;
-                const finishReason = parsed?.choices?.[0]?.finish_reason;
-                if (finishReason) lastFinishReason = finishReason;
-                const delta = parsed?.choices?.[0]?.delta?.content;
-                if (delta) {
-                  fullText += delta;
-                  sendSSE(res, { type: 'chunk', text: delta });
-                }
-              } catch (_) {}
+          if (!terminalEmitted && !upstreamGuard.isClientClosed() && buffer && buffer.trim()) {
+            const remainingLines = buffer.split('\n');
+            for (const rLine of remainingLines) {
+              const halted = processOllamaLine(rLine);
+              if (halted) return;
             }
           }
 
           stopHeartbeat();
-          if (!res.writableEnded) {
-            if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
-              sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
-              fullText += CONTINUATION_NOTICES.PART_1;
-            }
-            sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'ollama' });
-            res.end();
+          if (terminalEmitted || upstreamGuard.isClientClosed() || res.writableEnded) return;
+
+          // Enforce empty stream detection
+          if (!fullText.trim()) {
+            emitStreamError('Local AI (Ollama) stream completed without returning any response text.', 502, 'EMPTY_STREAM_RESPONSE');
+            return;
           }
+
+          // If stream closed prematurely without completion marker and without output
+          if (!receivedDone && fullText.length === 0) {
+            emitStreamError('Local AI (Ollama) stream closed prematurely without returning a response.', 503, 'PREMATURE_TERMINATION');
+            return;
+          }
+
+          terminalEmitted = true;
+          if (isLikelyLarge && !isContinuation && !responseHasContinuationNotice(fullText)) {
+            sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+            fullText += CONTINUATION_NOTICES.PART_1;
+          }
+          sendSSE(res, { type: 'done', text: fullText, modelUsed, provider: 'ollama' });
+          res.end();
           return;
         } catch (streamErr: any) {
           stopHeartbeat();
+          if (upstreamGuard.isClientDisconnected(streamErr)) {
+            return;
+          }
           logAIDiagnostic({
             category: 'streaming failure',
             provider: 'ollama',
@@ -4919,9 +6688,13 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
               error: 'Ollama streaming connection interrupted. Please ensure the local Ollama daemon remains running.',
               code: 503,
               status: 'STREAM_FAILED',
+              errorCode: 'STREAM_FAILED',
               provider: 'ollama',
+              model: selectedModel,
               retryable: false,
-              canFallback: false
+              canFallback: false,
+              partial: fullText.length > 0,
+              partialText: fullText
             });
             res.end();
           }
@@ -4930,9 +6703,33 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       }
     }
 
+    if (provider.toLowerCase() === 'webllm') {
+      logAIDiagnostic({
+        category: 'request validation error',
+        provider: 'webllm',
+        phase: 'validation',
+        upstreamStatus: 400,
+        upstreamErrorCode: 'LOCAL_PROVIDER_ONLY',
+        sanitizedMessage: 'Browser AI (WebLLM) runs on-device in the browser via WebGPU and cannot be dispatched to the server-side /api/chat endpoint.',
+        willRetry: false
+      });
+      return res.status(400).json({
+        error: 'Browser AI (WebLLM) runs on-device in the browser via WebGPU and cannot be dispatched to the server-side /api/chat endpoint.',
+        code: 400,
+        status: 'LOCAL_PROVIDER_ONLY',
+        errorCode: 'LOCAL_PROVIDER_ONLY',
+        provider: 'webllm',
+        retryable: false,
+        canFallback: false
+      });
+    }
+
     return res.status(400).json({ error: `Unknown provider: ${provider}` });
   } catch (error: any) {
-    console.error('API Error in /api/chat:', error);
+    if (error?.isClientDisconnected || error?.code === 'CLIENT_DISCONNECTED') {
+      return;
+    }
+    console.error('API Error in /api/chat:', sanitizeErrorLog(error?.message || String(error)));
     const providerName = String(req.body?.provider || 'unknown');
     const isOllamaReq = providerName.toLowerCase() === 'ollama';
     const parsed = parseGeminiError(error, providerName);
@@ -4946,17 +6743,19 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
       sanitizedMessage: parsed.message
     });
     if (res.headersSent) {
-      sendSSE(res, {
-        type: 'error',
-        error: parsed.message,
-        code: parsed.statusCode,
-        status: parsed.status,
-        provider: providerName,
-        retryable: isOllamaReq ? false : parsed.isRetryable,
-        canFallback: !isOllamaReq,
-        suggestedProviders: isOllamaReq ? [] : ['gemini', 'groq', 'openrouter', 'cloudflare']
-      });
-      if (!res.writableEnded) res.end();
+      if (!res.writableEnded) {
+        sendSSE(res, {
+          type: 'error',
+          error: parsed.message,
+          code: parsed.statusCode,
+          status: parsed.status,
+          provider: providerName,
+          retryable: isOllamaReq ? false : parsed.isRetryable,
+          canFallback: !isOllamaReq,
+          suggestedProviders: isOllamaReq ? [] : getConfiguredFallbackProviders(providerName, isServerless)
+        });
+        res.end();
+      }
     } else {
       res.status(parsed.statusCode).json({
         error: parsed.message,
@@ -4965,7 +6764,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         provider: providerName,
         retryable: isOllamaReq ? false : parsed.isRetryable,
         canFallback: !isOllamaReq,
-        suggestedProviders: isOllamaReq ? [] : ['gemini', 'groq', 'openrouter', 'cloudflare']
+        suggestedProviders: isOllamaReq ? [] : getConfiguredFallbackProviders(providerName, isServerless)
       });
     }
   }

@@ -31,7 +31,8 @@ function MessageList({
   onCancelEdit,
   showTimestamps = true,
   selectedProvider = 'gemini',
-  activeMode = 'general'
+  activeMode = 'general',
+  providerConfig = null
 }) {
   const bottomAnchorRef = useRef(null);
 
@@ -58,6 +59,7 @@ function MessageList({
           showTimestamps={showTimestamps}
           selectedProvider={selectedProvider}
           activeMode={activeMode}
+          providerConfig={providerConfig}
         />
       ))}
 

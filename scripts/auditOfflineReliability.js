@@ -409,7 +409,7 @@ test('isVisionCapableProvider correctly identifies vision-capable models vs text
   // Gemini is vision-capable
   assert.strictEqual(isVisionCapableProvider('gemini'), true);
   assert.strictEqual(isVisionCapableProvider('GEMINI'), true);
-  assert.strictEqual(isVisionCapableProvider('gemini', 'gemini-3.8-flash'), true);
+  assert.strictEqual(isVisionCapableProvider('gemini', 'gemini-2.5-flash'), true);
   assert.strictEqual(isVisionCapableProvider('gemini', 'gemini-flash-latest'), true);
 
   // All other providers are text-only

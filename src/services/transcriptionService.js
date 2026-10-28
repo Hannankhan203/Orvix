@@ -69,6 +69,7 @@ export async function transcribeAudioBlob({
   transcript = '',
   language = 'en-US',
   prompt = '',
+  model = '',
   signal
 }) {
   const hasAudioBlob = Boolean(audioBlob && audioBlob instanceof Blob && audioBlob.size > 0);
@@ -92,13 +93,15 @@ export async function transcribeAudioBlob({
 
     formData.append('file', audioBlob, `dictation-${Date.now()}.${ext}`);
   } else {
-    // Generate valid PCM WAV container so server multipart audio inspection succeeds
-    const dummyWav = createMinimalWavBlob();
-    formData.append('file', dummyWav, `dictation-${Date.now()}.wav`);
+    formData.append('transcriptOnly', 'true');
   }
 
   if (cleanTranscript) {
     formData.append('transcript', cleanTranscript);
+  }
+
+  if (model && typeof model === 'string' && model.trim()) {
+    formData.append('model', model.trim());
   }
 
   formData.append('language', language);
@@ -126,7 +129,10 @@ export async function transcribeAudioBlob({
 
     const error = new Error(errorMsg);
     error.code = errJson?.code || `HTTP_${response.status}`;
+    error.status = errJson?.status || error.code;
     error.statusCode = response.status;
+    error.provider = errJson?.provider || 'groq';
+    error.retryable = Boolean(errJson?.retryable ?? (response.status === 429 || response.status >= 500));
     error.fallbackAvailable = Boolean(errJson?.fallbackAvailable ?? true);
     error.isTimeout = response.status === 504 || errJson?.code === 'TRANSCRIPTION_TIMEOUT';
     throw error;

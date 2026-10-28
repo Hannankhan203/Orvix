@@ -747,7 +747,7 @@ await test('Assertion 8: Live POST /api/chat rejects oversized or omitted-oversi
   assert.strictEqual(omittedOverData.status, 'PAYLOAD_TOO_LARGE');
   assert.ok(omittedOverData.error.includes('omitted_8mb.png'));
 
-  // 8C: Valid hydrated cold-start PNG (single canonical base64 field, unregistered ID) succeeds end-to-end
+  // 8C: Valid hydrated cold-start PNG (single canonical base64 field, unregistered ID) passes image validation and honors Phase 4B provider config contract
   await saveAttachmentBlob('att-live-coldstart', new Blob([VALID_1X1_PNG_BYTES], { type: 'image/png' }), {
     name: 'coldstart_photo.png',
     type: 'image/png',
@@ -773,23 +773,45 @@ await test('Assertion 8: Live POST /api/chat rejects oversized or omitted-oversi
     attachments: [unregisteredAtt]
   });
 
+  const cfgRes = await fetch('http://127.0.0.1:3000/api/config');
+  const cfgData = cfgRes.ok ? await cfgRes.json() : {};
+  const expectLiveOrDemoSuccess = Boolean(cfgData.geminiConfigured || cfgData.demoModeEnabled);
+
   let okRes;
+  let okData;
   for (let attempt = 1; attempt <= 3; attempt++) {
     okRes = await fetch('http://127.0.0.1:3000/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: okBody
     });
+    okData = await okRes.json();
+    if (okRes.status === 503 && okData?.errorCode === 'PROVIDER_NOT_CONFIGURED') break;
     if (okRes.status !== 503 && okRes.status !== 429) break;
     if (attempt < 3) {
       await new Promise((r) => setTimeout(r, 1500 * attempt));
     }
   }
 
-  assert.strictEqual(okRes.status, 200, 'Valid hydrated cold-start image request must return HTTP 200');
-  const okData = await okRes.json();
-  assert.ok(okData.text, 'Must return generated response text');
-  assert.strictEqual(okData.provider, 'gemini');
+  assert.notStrictEqual(okRes.status, 400, 'Valid cold-start PNG must not be rejected with HTTP 400');
+  assert.notStrictEqual(okRes.status, 413, 'Valid cold-start PNG must not be rejected with HTTP 413');
+
+  if (expectLiveOrDemoSuccess) {
+    assert.strictEqual(okRes.status, 200, 'Valid hydrated cold-start image request must return HTTP 200 when Gemini is configured');
+    assert.ok(okData.text, 'Must return generated response text');
+    assert.strictEqual(okData.provider, 'gemini');
+  } else {
+    assert.strictEqual(
+      okRes.status,
+      503,
+      'Unconfigured Gemini provider without demo mode must return HTTP 503 PROVIDER_NOT_CONFIGURED per Phase 4B contract'
+    );
+    assert.strictEqual(okData.status, 'PROVIDER_NOT_CONFIGURED');
+    assert.strictEqual(okData.errorCode, 'PROVIDER_NOT_CONFIGURED');
+    assert.strictEqual(okData.provider, 'gemini');
+    assert.strictEqual(okData.retryable, false);
+    assert.strictEqual(okData.canFallback, true);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1178,21 +1200,38 @@ await test('Phase 2B.3 — Text-only providers receive OCR text on live /api/cha
   });
   assert.ok(!cfBody.includes('"base64"'));
 
+  const liveConfigRes = await fetch('http://127.0.0.1:3000/api/config');
+  const liveConfig = liveConfigRes.ok ? await liveConfigRes.json() : {};
+  const cfExpectedAvailable = Boolean(
+    liveConfig.cloudflareConfigured || liveConfig.demoModeEnabled
+  );
+
   const cfRes = await fetch('http://127.0.0.1:3000/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: cfBody
   });
-  assert.strictEqual(cfRes.status, 200, 'Live /api/chat for text-only provider must return HTTP 200');
   const cfData = await cfRes.json();
-  assert.strictEqual(cfData.provider, 'cloudflare');
-  assert.ok(
-    cfData.text.includes('Espresso Tonic') || cfData.text.includes('menu_board.jpg'),
-    `Expected text-only response grounded in OCR text, got: ${cfData.text}`
-  );
 
-  // Verify WebLLM & Ollama context adaptation also retain full OCR text without raw image bytes
-  for (const localProv of ['ollama', 'webllm']) {
+  if (cfExpectedAvailable) {
+    assert.strictEqual(cfRes.status, 200, 'Configured/demo Cloudflare /api/chat must return HTTP 200');
+    assert.strictEqual(cfData.provider, 'cloudflare');
+    assert.ok(
+      cfData.text.includes('Espresso Tonic') || cfData.text.includes('menu_board.jpg'),
+      `Expected text-only response grounded in OCR text, got: ${cfData.text}`
+    );
+  } else {
+    assert.strictEqual(
+      cfRes.status,
+      503,
+      'Unconfigured Cloudflare /api/chat must return HTTP 503 PROVIDER_NOT_CONFIGURED rather than silent simulated demo output'
+    );
+    assert.strictEqual(cfData.status, 'PROVIDER_NOT_CONFIGURED');
+    assert.strictEqual(cfData.provider, 'cloudflare');
+  }
+
+  // Verify Cloudflare, WebLLM & Ollama context adaptation retain full OCR text without raw image bytes
+  for (const textOnlyProv of ['cloudflare', 'ollama', 'webllm']) {
     const docEntry = {
       ...cfAttachments[0].extraction,
       id: switchId,
@@ -1200,13 +1239,14 @@ await test('Phase 2B.3 — Text-only providers receive OCR text on live /api/cha
       originalName: 'menu_board.jpg',
       filename: 'menu_board.jpg'
     };
-    const prep = prepareDocumentContext('What is the daily special?', [docEntry], { provider: localProv });
+    const prep = prepareDocumentContext('What is the daily special?', [docEntry], { provider: textOnlyProv });
     const adapted = adaptDocumentContextForProvider({
-      provider: localProv,
+      provider: textOnlyProv,
       prompt: 'What is the daily special?',
       preparedContext: prep
     });
-    assert.ok(adapted.effectivePrompt.includes('DAILY SPECIAL: Espresso Tonic $5.50'));
+    const combinedTextOnlyContext = `${adapted.effectiveSystemInstruction || ''}\n${adapted.effectivePrompt || ''}`;
+    assert.ok(combinedTextOnlyContext.includes('DAILY SPECIAL: Espresso Tonic $5.50'));
   }
 
   // Turn 2: User switches to Gemini in the same conversation -> IndexedDB hydrates exact JPEG bytes

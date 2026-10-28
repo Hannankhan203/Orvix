@@ -48,14 +48,14 @@ function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID
     return 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.';
   }
   if (providerId === 'gemini') {
-    return 'Orvix is powered by Google Gemini (Gemini 3.8 Flash). Client integration — verify important facts independently.';
+    return 'Orvix is powered by Google Gemini (Gemini 2.5 Flash). Client integration — verify important facts independently.';
   }
   const config = Array.isArray(PROVIDER_OPTIONS) ? PROVIDER_OPTIONS.find((p) => p.id === providerId) : null;
   if (config) {
     const model = config.defaultModel || config.modelTag || 'AI Model';
     return `Orvix is powered by ${config.name} (${model}). ${config.description || 'Inference'} — verify important facts independently.`;
   }
-  return 'Orvix is powered by Google Gemini (Gemini 3.8 Flash). Client integration — verify important facts independently.';
+  return 'Orvix is powered by Google Gemini (Gemini 2.5 Flash). Client integration — verify important facts independently.';
 }
 
 // Whitelist of supported image extensions
@@ -225,7 +225,8 @@ export default function ChatArea({
   onSelectWebLLMModel,
   onLoadWebLLMModel,
   onCancelWebLLMLoad,
-  onUnloadWebLLMModel
+  onUnloadWebLLMModel,
+  providerConfig = null
 }) {
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
@@ -1473,6 +1474,7 @@ Transcript:
               showTimestamps={showTimestamps}
               selectedProvider={selectedProvider}
               activeMode={activeMode}
+              providerConfig={providerConfig}
             />
           )}
         </div>

@@ -39,6 +39,10 @@ import { formatResponseTime, formatLiveElapsed } from '../../utils/formatRespons
 export { formatLiveElapsed };
 import { getAlternativeMetrics, getActiveAlternative } from '../../services/alternativeResponseService.js';
 import { copyFormattedMessage } from '../../utils/clipboardFormatter.js';
+import {
+  filterAvailableFallbackProviders,
+  getProviderConfigAvailability
+} from '../../services/providerModelSanitizer.js';
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -55,11 +59,32 @@ function extractNodeText(node) {
 /**
  * Generates a clean, user-friendly title for the error banner based on error text
  */
-function getErrorTitle(content = '', providerId = '') {
+function getErrorTitle(content = '', providerId = '', errorCode = '') {
   const text = String(content || '').toLowerCase();
+  const normalizedCode = String(errorCode || '').toUpperCase();
   const normalizedProvider = String(providerId || '').toLowerCase();
   const isOllama = normalizedProvider === 'ollama';
   const isWebLLM = normalizedProvider === 'webllm';
+
+  if (
+    normalizedCode === 'PROVIDER_NOT_CONFIGURED' ||
+    text.includes('not configured on this server')
+  ) {
+    return 'Provider Not Configured';
+  }
+  if (
+    normalizedCode === 'INVALID_MODEL' ||
+    (text.includes('model identifier') && text.includes('not valid'))
+  ) {
+    return 'Invalid Model Identifier';
+  }
+  if (
+    normalizedCode === 'DEADLINE_EXCEEDED' ||
+    text.includes('timed out waiting for') ||
+    text.includes('timed out')
+  ) {
+    return 'Provider Request Timed Out';
+  }
   if ((isOllama || text.includes('ollama')) && (text.includes('not found') || text.includes('pull'))) {
     return 'Local Model Not Found';
   }
@@ -514,7 +539,8 @@ function ChatMessage({
   onEditResend,
   showTimestamps = true,
   selectedProvider = 'gemini',
-  activeMode = 'general'
+  activeMode = 'general',
+  providerConfig = null
 }) {
   const effectiveMode = message?.mode || activeMode || 'general';
   const isUser = message?.sender === 'user';
@@ -663,7 +689,21 @@ function ChatMessage({
       id: currentProviderId,
       name: currentProviderId.charAt(0).toUpperCase() + currentProviderId.slice(1)
     };
-  const fallbackProviders = PROVIDER_OPTIONS.filter((p) => p.id !== currentProviderId);
+  const fallbackProviders = useMemo(() => {
+    const filtered = filterAvailableFallbackProviders(
+      PROVIDER_OPTIONS,
+      currentProviderId,
+      providerConfig
+    );
+    if (Array.isArray(message?.suggestedProviders) && message.suggestedProviders.length > 0) {
+      const suggestedSet = new Set(message.suggestedProviders.map((id) => String(id).toLowerCase()));
+      const matchingSuggested = filtered.filter((p) => suggestedSet.has(p.id));
+      if (matchingSuggested.length > 0) {
+        return matchingSuggested;
+      }
+    }
+    return filtered;
+  }, [currentProviderId, providerConfig, message?.suggestedProviders]);
 
   // Available models for "Regenerate with another AI Model" (reuses existing Orvix provider/model configuration)
   const availableAlternativeModels = PROVIDER_OPTIONS;
@@ -882,7 +922,7 @@ function ChatMessage({
                     <AlertCircle size={14} />
                   </span>
                   <span className="error-header-title">
-                    {getErrorTitle(message.content, currentProviderId)}
+                    {getErrorTitle(message.content, currentProviderId, message.errorCode)}
                   </span>
                 </div>
                 {currentProviderObj?.name && (
@@ -911,7 +951,7 @@ function ChatMessage({
               </div>
 
               <div className="error-actions" role="group" aria-label="Error recovery options">
-                {onRetry && (
+                {onRetry && message.errorCode !== 'PROVIDER_NOT_CONFIGURED' && (
                   <Button
                     variant="outline"
                     size="sm"
@@ -1407,6 +1447,8 @@ function ChatMessage({
                             selectableModels.map((provider) => {
                               const isCurrent = provider.id === currentProviderId;
                               const hasExistingAlt = (message.alternatives || []).some((a) => a.provider === provider.id);
+                              const altAvailability = getProviderConfigAvailability(provider.id, providerConfig);
+                              const isConfirmedUnconfigured = altAvailability.state === 'unconfigured';
                               return (
                                 <button
                                   key={provider.id}
@@ -1430,6 +1472,10 @@ function ChatMessage({
                                   ) : hasExistingAlt ? (
                                     <span className="alt-provider-existing-tag" title="An alternative with this model was generated">
                                       Generated
+                                    </span>
+                                  ) : isConfirmedUnconfigured ? (
+                                    <span className="alt-provider-existing-tag" title="Server API key not configured">
+                                      Setup required
                                     </span>
                                   ) : (
                                     <span className="alt-provider-ready-tag">Generate</span>

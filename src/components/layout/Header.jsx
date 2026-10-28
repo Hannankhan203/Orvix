@@ -45,7 +45,8 @@ export default function Header({
   onSelectMode,
   onExportMarkdown,
   onExportText,
-  hasExportableMessages = false
+  hasExportableMessages = false,
+  providerConfig = null
 }) {
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
@@ -187,6 +188,7 @@ export default function Header({
             <ModelSelector
               selectedProvider={selectedProvider}
               onSelectProvider={onSelectProvider}
+              providerConfig={providerConfig}
               className="header-model-selector"
               id="ai-model-select-desktop"
             />
@@ -346,6 +348,7 @@ export default function Header({
               <ModelSelector
                 selectedProvider={selectedProvider}
                 onSelectProvider={onSelectProvider}
+                providerConfig={providerConfig}
                 compact
                 className="mobile-model-selector"
                 id="ai-model-select-mobile"

@@ -3,7 +3,16 @@ import React, { useState, useRef, useEffect } from 'react';
 import Layout from '../components/layout/Layout.jsx';
 import ChatArea from '../components/chat/ChatArea.jsx';
 import { SAMPLE_CHATS } from '../config/sampleData.js';
-import { streamAIMessage, DEFAULT_PROVIDER, PROVIDER_OPTIONS } from '../services/aiRouter.js';
+import {
+  streamAIMessage,
+  fetchProviderConfig,
+  DEFAULT_PROVIDER,
+  PROVIDER_OPTIONS
+} from '../services/aiRouter.js';
+import {
+  sanitizeModelForProvider,
+  evaluateOfflineProviderGuard
+} from '../services/providerModelSanitizer.js';
 import {
   createChatDocument,
   saveChatMessage,
@@ -75,6 +84,7 @@ import {
   cancelActiveChatRequest,
   runIsolatedPromptStream
 } from '../services/requestIsolationService.js';
+import { normalizeAIError } from '../services/errorNormalizationService.js';
 import { AlertCircle, X, Check, WifiOff } from 'lucide-react';
 
 export default function ChatPage() {
@@ -144,6 +154,10 @@ export default function ChatPage() {
     checking: false,
     supported: null,
     message: null
+  });
+  const [providerConfig, setProviderConfig] = useState({
+    status: 'idle',
+    data: null
   });
 
   const isSubmittingRef = useRef(false);
@@ -241,6 +255,37 @@ export default function ChatPage() {
     return subscribeAppShellState((state) => {
       setAppShellState(state);
     });
+  }, []);
+
+  // Load server provider configuration safely without exposing secrets or failing noisy when offline
+  useEffect(() => {
+    let cancelled = false;
+    if (!isBrowserOnline()) {
+      setProviderConfig((prev) =>
+        prev.status === 'ready' ? prev : { status: 'unavailable', data: null }
+      );
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    fetchProviderConfig()
+      .then((snapshot) => {
+        if (!cancelled && snapshot) {
+          setProviderConfig(snapshot);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProviderConfig((prev) =>
+            prev.status === 'ready' ? prev : { status: 'unavailable', data: null }
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Inspect WebGPU compatibility & local model cache status when Browser AI is active
@@ -417,10 +462,21 @@ export default function ChatPage() {
       if (!online) {
         setOfflineBannerDismissed(false);
       } else {
-        // Clear stale offline Firestore errors upon reconnecting
+        // Clear stale offline Firestore or offline cloud-provider errors upon reconnecting
         setPersistenceError((prev) =>
-          prev && prev.toLowerCase().includes('firestore') ? null : prev
+          prev &&
+          (prev.toLowerCase().includes('firestore') ||
+            prev.toLowerCase().includes('requires an internet connection'))
+            ? null
+            : prev
         );
+        fetchProviderConfig({ forceRefresh: true })
+          .then((snapshot) => {
+            if (snapshot) {
+              setProviderConfig(snapshot);
+            }
+          })
+          .catch(() => {});
         if (isCloudEnabled && currentUser?.uid) {
           syncOfflineUserChatsToFirestore(currentUser.uid)
             .then(() => {
@@ -436,6 +492,23 @@ export default function ChatPage() {
       }
     });
   }, [isCloudEnabled, currentUser?.uid]);
+
+  /**
+   * Shared offline guard enforced before every user-initiated cloud AI action.
+   * Permits local providers ('webllm', 'ollama') offline while blocking cloud
+   * providers ('gemini', 'groq', 'openrouter', 'cloudflare') before mutating state.
+   */
+  const guardOfflineProviderAction = (targetProvider) => {
+    const guard = evaluateOfflineProviderGuard({
+      provider: targetProvider,
+      isOnline: isBrowserOnline()
+    });
+    if (!guard.allowed) {
+      setPersistenceError(guard.message);
+      return false;
+    }
+    return true;
+  };
 
   // 1. Subscribe to the conversation list (re-subscribes cleanly when transitioning back online).
   useEffect(() => {
@@ -930,115 +1003,28 @@ export default function ChatPage() {
   /**
    * Formats raw provider/router errors into actionable user-facing messages.
    */
-  const classifyPromptError = (error, { finalProvider, providerToUse }) => {
+  const classifyPromptError = (error, { finalProvider, providerToUse, activeModel, targetText, promptText } = {}) => {
     console.error('Streaming prompt execution error:', error);
 
-    let rawMsg = String(error?.message || '');
-    if (rawMsg.includes('{') && rawMsg.includes('}')) {
-      try {
-        const match = rawMsg.match(/\{[\s\S]*\}/);
-        if (match) {
-          const parsed = JSON.parse(match[0]);
-          if (parsed.error?.message) {
-            rawMsg = parsed.error.message;
-          }
-        }
-      } catch (_) {}
-    }
+    const normalized = normalizeAIError(error, {
+      provider: error?.provider || finalProvider || providerToUse,
+      model: error?.model || activeModel,
+      partialText: targetText,
+      promptText
+    });
 
-    const effectiveProvider = error?.provider || finalProvider || providerToUse;
-    const currentProviderConfig = Array.isArray(PROVIDER_OPTIONS)
-      ? PROVIDER_OPTIONS.find((p) => p.id === effectiveProvider)
-      : null;
-    const providerDisplayName =
-      currentProviderConfig?.name ||
-      (effectiveProvider
-        ? effectiveProvider.charAt(0).toUpperCase() + effectiveProvider.slice(1)
-        : 'AI Provider');
-
-    const isOllama = effectiveProvider === 'ollama';
-    const isWebLLM = effectiveProvider === 'webllm';
-    const isLocalProvider = isOllama || isWebLLM;
-    const isGemini = effectiveProvider === 'gemini';
-
-    const is503 =
-      (error?.code === 503 ||
-        error?.status === 'UNAVAILABLE' ||
-        rawMsg.toLowerCase().includes('high demand') ||
-        rawMsg.toLowerCase().includes('spikes in demand') ||
-        rawMsg.toLowerCase().includes('overloaded')) &&
-      error?.code !== 500;
-
-    const is500 = error?.code === 500 || error?.status === 'INTERNAL';
-    const isAuthError =
-      error?.code === 401 ||
-      error?.code === 403 ||
-      error?.status === 'UNAUTHENTICATED' ||
-      error?.status === 'PERMISSION_DENIED';
-    const isRateLimit =
-      error?.code === 429 || error?.status === 'RESOURCE_EXHAUSTED';
-    const isPayloadError = Boolean(
-      error?.isPayloadError ||
-      error?.code === 413 ||
-      error?.status === 'PAYLOAD_TOO_LARGE'
-    );
-    const isNotFound =
-      !isPayloadError &&
-      (error?.code === 404 ||
-        error?.status === 'NOT_FOUND' ||
-        rawMsg.toLowerCase().includes('not found') ||
-        rawMsg.toLowerCase().includes('does not exist') ||
-        rawMsg.toLowerCase().includes('access to it') ||
-        rawMsg.toLowerCase().includes('decommissioned') ||
-        rawMsg.toLowerCase().includes('retired'));
-
-    let friendlyMsg = rawMsg;
-    if (isPayloadError) {
-      friendlyMsg =
-        rawMsg ||
-        'The attached image payload exceeds the supported request budget (3.0 MB max per image, 4.2 MB max total request). Please resize or compress the image and try again.';
-    } else if (isOllama) {
-      if (rawMsg) {
-        friendlyMsg = rawMsg;
-      } else if (isNotFound) {
-        friendlyMsg = `Local AI (Ollama) model 'qwen2.5:1.5b' was not found. Please pull the model locally using 'ollama pull qwen2.5:1.5b'.`;
-      } else if (is503) {
-        friendlyMsg = `Local AI (Ollama) is unavailable: could not connect to Ollama at http://127.0.0.1:11434. Make sure Ollama is running locally ('ollama serve').`;
-      } else {
-        friendlyMsg = `An error occurred with Local AI (Ollama). Please make sure Ollama is running locally and model 'qwen2.5:1.5b' is installed.`;
-      }
-    } else if (isWebLLM) {
-      friendlyMsg =
-        rawMsg ||
-        'Browser AI (WebLLM) encountered a local initialization or generation error on this device.';
-    } else if (is503) {
-      if (isGemini) {
-        friendlyMsg =
-          'Google Gemini is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to Groq, OpenRouter, or Local AI below.';
-      } else {
-        friendlyMsg = `${providerDisplayName} is currently experiencing high demand. Spikes in demand are usually temporary. Please try again in a few moments, or switch to another provider below.`;
-      }
-    } else if (isNotFound) {
-      friendlyMsg =
-        rawMsg ||
-        `The requested model for ${providerDisplayName} is unavailable or retired. Please choose another model or provider below.`;
-    } else if (is500) {
-      friendlyMsg =
-        rawMsg && !rawMsg.includes('Server request failed') && !rawMsg.includes('Internal Server Error')
-          ? `${providerDisplayName} encountered an internal error: ${rawMsg}. You can retry or switch to another provider below.`
-          : `${providerDisplayName} encountered an internal error (HTTP 500). Please try again in a moment, or switch to another provider below.`;
-    } else if (isAuthError) {
-      friendlyMsg = `Authentication or permission error with ${providerDisplayName}. Please check your API key configuration or switch providers below.`;
-    } else if (isRateLimit) {
-      friendlyMsg = `${providerDisplayName} rate limit or quota exceeded. Please wait a moment before trying again, or switch providers below.`;
-    } else if (!friendlyMsg) {
-      friendlyMsg = `An unexpected error occurred while communicating with ${providerDisplayName}.`;
-    }
+    const isLocalProvider = normalized.provider === 'ollama' || normalized.provider === 'webllm';
+    const canSwitchProvider = normalized.canFallback && !isLocalProvider;
 
     return {
-      friendlyMsg,
-      effectiveProvider,
-      canSwitchProvider: error?.canFallback === false ? false : !isLocalProvider
+      friendlyMsg: normalized.message,
+      effectiveProvider: normalized.provider,
+      canSwitchProvider,
+      errorCode: normalized.code,
+      status: normalized.status,
+      httpStatus: normalized.httpStatus,
+      canonicalError: normalized,
+      suggestedProviders: normalized.suggestedProviders
     };
   };
 
@@ -1058,8 +1044,12 @@ export default function ChatPage() {
     existingRequestId = null
   ) => {
     const providerToUse = overrideProvider || selectedProvider;
-    const effectiveModelOverride =
+    const rawModelCandidate =
       overrideModel || (providerToUse === 'webllm' ? webllmModelId : null);
+    const effectiveModelOverride = sanitizeModelForProvider(
+      providerToUse,
+      rawModelCandidate
+    );
 
     const prefersReducedMotion = Boolean(
       typeof window !== 'undefined' &&
@@ -1158,15 +1148,8 @@ export default function ChatPage() {
 
     if ((!trimmed && !hasAttachments) || isLoading || isSubmittingRef.current) return false;
 
-    // Reject offline requests for cloud providers immediately with actionable feedback
-    if (!isBrowserOnline() && selectedProvider !== 'webllm' && selectedProvider !== 'ollama') {
-      const providerConfig = Array.isArray(PROVIDER_OPTIONS)
-        ? PROVIDER_OPTIONS.find((p) => p.id === selectedProvider)
-        : null;
-      const provName = providerConfig?.name || 'Cloud AI';
-      setPersistenceError(
-        `${provName} requires an internet connection. Switch to Browser AI (WebLLM) to chat offline on this device.`
-      );
+    // Reject offline requests for cloud providers immediately before mutating state
+    if (!guardOfflineProviderAction(selectedProvider)) {
       return false;
     }
 
@@ -1826,10 +1809,14 @@ export default function ChatPage() {
       return;
     }
 
+    const providerToUse = failedMessage.failedProvider || selectedProvider;
+    if (!guardOfflineProviderAction(providerToUse)) {
+      return;
+    }
+
     setLoadingAndSubmitting(true);
 
     const currentChatId = activeChatIdRef.current;
-    const providerToUse = failedMessage.failedProvider || selectedProvider;
     const currentMessagesSnapshot = messagesRef.current;
 
     const updatedMessages = currentMessagesSnapshot.filter(
@@ -1911,6 +1898,10 @@ export default function ChatPage() {
       isSubmittingRef.current ||
       !failedMessage?.failedPrompt
     ) {
+      return;
+    }
+
+    if (!guardOfflineProviderAction(newProviderId)) {
       return;
     }
 
@@ -2036,7 +2027,12 @@ export default function ChatPage() {
     const normalizedTarget = normalizeAssistantMessage(latestAssistant, precedingUserMessage);
     const activeAlt = getActiveAlternative(normalizedTarget);
     const providerToUse = activeAlt?.provider || latestAssistant.provider || selectedProvider;
-    const modelToUse = activeAlt?.modelUsed || latestAssistant.modelUsed || null;
+    const rawModelCandidate = activeAlt?.modelUsed || latestAssistant.modelUsed || null;
+    const modelToUse = sanitizeModelForProvider(providerToUse, rawModelCandidate);
+
+    if (!guardOfflineProviderAction(providerToUse)) {
+      return;
+    }
 
     const requestStartTime = performance.now();
 
@@ -2136,7 +2132,12 @@ export default function ChatPage() {
     const chosenProvider = typeof targetProvider === 'object' && targetProvider?.provider
       ? targetProvider.provider
       : targetProvider;
-    const chosenModel = typeof targetProvider === 'object' && targetProvider?.model
+
+    if (!guardOfflineProviderAction(chosenProvider)) {
+      return;
+    }
+
+    const rawChosenModel = typeof targetProvider === 'object' && targetProvider?.model
       ? targetProvider.model
       : (chosenProvider === 'ollama'
           ? 'qwen2.5:1.5b'
@@ -2148,7 +2149,8 @@ export default function ChatPage() {
           ? 'openrouter/free'
           : chosenProvider === 'cloudflare'
           ? '@cf/meta/llama-3.1-8b-instruct'
-          : 'gemini-3.1-flash-lite');
+          : 'gemini-2.5-flash');
+    const chosenModel = sanitizeModelForProvider(chosenProvider, rawChosenModel);
 
     const targetAssistantId = assistantMessage.id;
     const requestStartTime = performance.now();
@@ -2273,8 +2275,12 @@ export default function ChatPage() {
     const userMsgIndex = currentMessagesSnapshot.findIndex((m) => m.id === userMessageId);
     if (userMsgIndex === -1) return;
 
-    const initialChatId = activeChatIdRef.current;
     const editProvider = selectedProvider;
+    if (!guardOfflineProviderAction(editProvider)) {
+      return;
+    }
+
+    const initialChatId = activeChatIdRef.current;
     const editPreflight = requestControllerRef.current.beginRequest({
       chatId: initialChatId,
       provider: editProvider,
@@ -2546,6 +2552,7 @@ export default function ChatPage() {
       onExportMarkdown={handleExportMarkdown}
       onExportText={handleExportText}
       hasExportableMessages={hasExportableMessages}
+      providerConfig={providerConfig}
     >
       {isOffline && !offlineBannerDismissed && (
         <div
@@ -2699,6 +2706,7 @@ export default function ChatPage() {
         onLoadWebLLMModel={handleLoadWebLLMModel}
         onCancelWebLLMLoad={handleCancelWebLLMLoad}
         onUnloadWebLLMModel={handleUnloadWebLLMModel}
+        providerConfig={providerConfig}
       />
     </Layout>
   );

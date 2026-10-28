@@ -18,6 +18,7 @@ import {
   adaptDocumentContextForProvider,
   formatOpenAIMessages
 } from './documentContextService.js';
+import { checkModelCompatibilityForProvider } from './providerModelSanitizer.js';
 
 function isClientOnline() {
   if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') {
@@ -142,9 +143,14 @@ export class WebLLMError extends Error {
     this.status = options.code || WEBLLM_ERROR_CODES.GENERATION_FAILED;
     this.errorCode = this.status;
     this.code = options.httpCode || 503;
+    this.httpStatus = this.code;
     this.provider = WEBLLM_PROVIDER_ID;
     this.retryable = Boolean(options.retryable);
     this.canFallback = false;
+    this.timeout = Boolean(options.timeout || options.code === 'WEBLLM_TIMEOUT');
+    this.cancelled = false;
+    this.partial = Boolean(options.partial);
+    this.partialText = typeof options.partialText === 'string' ? options.partialText : '';
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -165,6 +171,40 @@ let activeInitAbortReject = null;
 let generationQueuePromise = Promise.resolve();
 let isGeneratingNow = false;
 let manualStopRequested = false;
+let customWorkerFactory = null;
+let customEngineFactory = null;
+
+export function setWebLLMWorkerFactoryForTesting(factory) {
+  customWorkerFactory = factory;
+}
+
+export function setWebLLMEngineFactoryForTesting(factory) {
+  customEngineFactory = factory;
+}
+
+export function resetWebLLMRuntimeForTesting() {
+  customWorkerFactory = null;
+  customEngineFactory = null;
+  webllmModulePromise = null;
+  terminateWorkerImmediate();
+  generationQueuePromise = Promise.resolve();
+  isGeneratingNow = false;
+  manualStopRequested = false;
+  activeInitPromise = null;
+  activeInitModelId = null;
+  activeInitAbortReject = null;
+  updateEngineState({
+    status: 'idle',
+    modelId: DEFAULT_WEBLLM_MODEL_ID,
+    progress: 0,
+    progressPercent: null,
+    progressText: '',
+    timeElapsed: 0,
+    isCached: false,
+    hasShaderF16: null,
+    error: null
+  });
+}
 
 const stateListeners = new Set();
 
@@ -428,10 +468,16 @@ export async function checkWebGPUSupport() {
  * @returns {string}
  */
 export function resolveWebLLMModelId(requestedModelId, options = {}) {
-  const baseId =
+  const rawId =
     requestedModelId && typeof requestedModelId === 'string' && requestedModelId.trim()
       ? requestedModelId.trim()
       : DEFAULT_WEBLLM_MODEL_ID;
+
+  // Case-insensitive lookup against verified catalog keys
+  const catalogKey = Object.keys(WEBLLM_MODEL_CATALOG).find(
+    (k) => k.toLowerCase() === rawId.toLowerCase()
+  );
+  const baseId = catalogKey || rawId;
 
   const { hasShaderF16 = true, allowF32Fallback = true } = options;
   const catalogEntry = WEBLLM_MODEL_CATALOG[baseId];
@@ -640,7 +686,7 @@ function isFatalEngineError(rawErr) {
   );
 }
 
-function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase = 'generate', wasCached = false } = {}) {
+export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase = 'generate', wasCached = false } = {}) {
   if (rawErr instanceof WebLLMError) {
     return rawErr;
   }
@@ -678,6 +724,24 @@ function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase
   }
 
   if (
+    lower.includes('adapter') ||
+    lower.includes('requestdevice') ||
+    lower.includes('failed to request device') ||
+    lower.includes('device acquisition') ||
+    lower.includes('no compatible webgpu graphics adapter')
+  ) {
+    return new WebLLMError(
+      'No compatible WebGPU graphics adapter was found or device acquisition failed. Please ensure hardware acceleration is enabled in your browser settings and GPU drivers are up to date.',
+      {
+        code: WEBLLM_ERROR_CODES.WEBGPU_ADAPTER_UNAVAILABLE,
+        httpCode: 400,
+        retryable: false,
+        cause: rawErr
+      }
+    );
+  }
+
+  if (
     lower.includes('devicelosterror') ||
     lower.includes('device was lost') ||
     lower.includes('out of memory') ||
@@ -701,6 +765,25 @@ function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase
       {
         code: WEBLLM_ERROR_CODES.INSUFFICIENT_STORAGE,
         httpCode: 507,
+        retryable: false,
+        cause: rawErr
+      }
+    );
+  }
+
+  if (
+    lower.includes('modelnotfounderror') ||
+    lower.includes('cannot find model record') ||
+    lower.includes('unsupported model') ||
+    lower.includes('not supported') ||
+    lower.includes('unsupported browser ai model') ||
+    lower.includes('not in the supported browser ai')
+  ) {
+    return new WebLLMError(
+      `Unsupported Browser AI model "${modelId}". Please select a supported Qwen model.`,
+      {
+        code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
+        httpCode: 400,
         retryable: false,
         cause: rawErr
       }
@@ -740,13 +823,18 @@ function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase
     );
   }
 
-  if (lower.includes('modelnotfounderror') || lower.includes('cannot find model record')) {
+  if (
+    lower.includes('worker crashed') ||
+    lower.includes('worker error') ||
+    lower.includes('webllm_worker_crashed') ||
+    lower.includes('communication with the browser ai worker failed')
+  ) {
     return new WebLLMError(
-      `Unsupported Browser AI model "${modelId}". Please select a supported Qwen model.`,
+      'The dedicated Browser AI worker encountered an unexpected error. Please retry to restart the engine.',
       {
-        code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
-        httpCode: 400,
-        retryable: false,
+        code: WEBLLM_ERROR_CODES.WORKER_CRASHED,
+        httpCode: 500,
+        retryable: true,
         cause: rawErr
       }
     );
@@ -857,6 +945,28 @@ export async function ensureWebLLMEngine(options = {}) {
     throw createAbortError();
   }
 
+  // Validate model identifier compatibility against supported registry
+  if (requestedModelId && typeof requestedModelId === 'string' && requestedModelId.trim()) {
+    const trimmedCandidate = requestedModelId.trim();
+    const compat = checkModelCompatibilityForProvider('webllm', trimmedCandidate);
+    if (!compat.compatible) {
+      const unsuppErr = new WebLLMError(
+        compat.reason || `Unsupported Browser AI model "${trimmedCandidate}". Please select a supported Qwen model.`,
+        {
+          code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
+          httpCode: 400,
+          retryable: false
+        }
+      );
+      updateEngineState({
+        status: 'error',
+        modelId: trimmedCandidate,
+        error: unsuppErr.message
+      });
+      throw unsuppErr;
+    }
+  }
+
   // 1. Check WebGPU compatibility before loading the heavy @mlc-ai/web-llm chunk
   updateEngineState({
     status: engineInstance ? engineState.status : 'checking',
@@ -887,6 +997,23 @@ export async function ensureWebLLMEngine(options = {}) {
   });
 
   const catalogEntry = WEBLLM_MODEL_CATALOG[resolvedModelId];
+  if (!catalogEntry) {
+    const unsuppErr = new WebLLMError(
+      `Unsupported Browser AI model "${requestedModelId || resolvedModelId}". Please select a supported Qwen model.`,
+      {
+        code: WEBLLM_ERROR_CODES.UNSUPPORTED_MODEL,
+        httpCode: 400,
+        retryable: false
+      }
+    );
+    updateEngineState({
+      status: 'error',
+      modelId: resolvedModelId,
+      error: unsuppErr.message
+    });
+    throw unsuppErr;
+  }
+
   if (catalogEntry?.prefersShaderF16 && !gpuSupport.hasShaderF16) {
     const f16Err = new WebLLMError(
       `Your GPU adapter does not support WebGPU shader-f16 required by ${catalogEntry.label}.`,
@@ -950,18 +1077,36 @@ export async function ensureWebLLMEngine(options = {}) {
       });
     }
     try {
-      return await activeInitPromise;
+      if (!signal) {
+        return await activeInitPromise;
+      }
+      return await Promise.race([
+        activeInitPromise,
+        new Promise((_, reject) => {
+          if (signal.aborted) {
+            reject(createAbortError());
+            return;
+          }
+          signal.addEventListener('abort', () => reject(createAbortError()), { once: true });
+        })
+      ]);
     } finally {
       if (unsub) unsub();
     }
   }
 
-  // If another model was previously loaded or initializing, clean it up before loading the new model
-  if (activeInitPromise) {
+  // If another model was previously initializing, abort it immediately before loading the new model
+  if (activeInitPromise && activeInitModelId !== resolvedModelId) {
+    if (activeInitAbortReject) {
+      const rejectPrior = activeInitAbortReject;
+      activeInitAbortReject = null;
+      terminateWorkerImmediate();
+      rejectPrior(createAbortError('Model initialization cancelled (switched model).'));
+    }
     try {
       await activeInitPromise;
     } catch (_) {
-      // Ignore prior init error before re-initializing
+      // Ignore prior init error
     }
   }
   if (engineInstance && loadedModelId && loadedModelId !== resolvedModelId) {
@@ -1044,10 +1189,12 @@ export async function ensureWebLLMEngine(options = {}) {
 
       // 4. Spawn dedicated ES module Web Worker
       terminateWorkerImmediate();
-      const worker = new Worker(new URL('../workers/webllmWorker.js', import.meta.url), {
-        type: 'module',
-        name: 'orvix-webllm-worker'
-      });
+      const worker = typeof customWorkerFactory === 'function'
+        ? customWorkerFactory()
+        : new Worker(new URL('../workers/webllmWorker.js', import.meta.url), {
+            type: 'module',
+            name: 'orvix-webllm-worker'
+          });
       workerInstance = worker;
 
       const workerCrashPromise = new Promise((_, reject) => {
@@ -1152,18 +1299,26 @@ export async function ensureWebLLMEngine(options = {}) {
         context_window_size: catalogEntry?.contextWindowSize || 4096
       };
 
-      const createdEngine = await Promise.race([
-        webllm.CreateWebWorkerMLCEngine(
-          worker,
-          resolvedModelId,
-          {
-            initProgressCallback: handleInitProgress,
-            logLevel: 'WARN'
-          },
-          chatOpts
-        ),
-        workerCrashPromise
-      ]);
+      const createdEngine = typeof customEngineFactory === 'function'
+        ? await customEngineFactory({
+            worker,
+            modelId: resolvedModelId,
+            handleInitProgress,
+            chatOpts,
+            signal
+          })
+        : await Promise.race([
+            webllm.CreateWebWorkerMLCEngine(
+              worker,
+              resolvedModelId,
+              {
+                initProgressCallback: handleInitProgress,
+                logLevel: 'WARN'
+              },
+              chatOpts
+            ),
+            workerCrashPromise
+          ]);
 
       activeInitAbortReject = null;
 
@@ -1398,7 +1553,12 @@ export async function streamWebLLMMessage({
   onStart,
   onChunk,
   onProgress,
-  signal
+  signal,
+  temperature = undefined,
+  top_p = undefined,
+  topP = undefined,
+  max_tokens = undefined,
+  maxTokens = undefined
 } = {}) {
   const cleanPrompt = typeof prompt === 'string' ? prompt.trim() : '';
   if (!cleanPrompt) {
@@ -1407,6 +1567,57 @@ export async function streamWebLLMMessage({
       httpCode: 400,
       retryable: false
     });
+  }
+
+  // Validate generation parameters
+  let effectiveTemperature = mode === 'coding' ? 0.3 : 0.7;
+  if (temperature !== undefined) {
+    const numTemp = Number(temperature);
+    if (!Number.isFinite(numTemp) || numTemp < 0 || numTemp > 2) {
+      throw new WebLLMError(
+        `Invalid temperature parameter: expected a finite number between 0 and 2, got ${temperature}.`,
+        {
+          code: 'INVALID_ARGUMENT',
+          httpCode: 400,
+          retryable: false
+        }
+      );
+    }
+    effectiveTemperature = numTemp;
+  }
+
+  let effectiveTopP = 0.9;
+  const rawTopP = top_p !== undefined ? top_p : topP;
+  if (rawTopP !== undefined) {
+    const numTopP = Number(rawTopP);
+    if (!Number.isFinite(numTopP) || numTopP <= 0 || numTopP > 1) {
+      throw new WebLLMError(
+        `Invalid top_p parameter: expected a finite number between 0 and 1, got ${rawTopP}.`,
+        {
+          code: 'INVALID_ARGUMENT',
+          httpCode: 400,
+          retryable: false
+        }
+      );
+    }
+    effectiveTopP = numTopP;
+  }
+
+  const rawMaxTokens = max_tokens !== undefined ? max_tokens : maxTokens;
+  let customMaxTokens = undefined;
+  if (rawMaxTokens !== undefined) {
+    const numMax = Number(rawMaxTokens);
+    if (!Number.isFinite(numMax) || numMax <= 0) {
+      throw new WebLLMError(
+        `Invalid max_tokens parameter: expected a positive integer, got ${rawMaxTokens}.`,
+        {
+          code: 'INVALID_ARGUMENT',
+          httpCode: 400,
+          retryable: false
+        }
+      );
+    }
+    customMaxTokens = Math.floor(numMax);
   }
 
   if (signal?.aborted) {
@@ -1538,11 +1749,12 @@ export async function streamWebLLMMessage({
     const boundedMessages = trimMessagesToContextBudget(rawMessages, 12_500);
 
     const maxTokens =
-      preferences?.responseLength === 'concise'
+      customMaxTokens ||
+      (preferences?.responseLength === 'concise'
         ? 512
         : preferences?.responseLength === 'detailed'
           ? 1536
-          : catalogEntry?.defaultMaxTokens || 1024;
+          : catalogEntry?.defaultMaxTokens || 1024);
 
     if (signal?.aborted) {
       throw createAbortError();
@@ -1583,8 +1795,8 @@ export async function streamWebLLMMessage({
     try {
       const asyncChunkGenerator = await engine.chat.completions.create({
         messages: boundedMessages,
-        temperature: mode === 'coding' ? 0.3 : 0.7,
-        top_p: 0.9,
+        temperature: effectiveTemperature,
+        top_p: effectiveTopP,
         max_tokens: maxTokens,
         stream: true,
         stream_options: { include_usage: true }
@@ -1666,6 +1878,12 @@ export async function streamWebLLMMessage({
         phase: 'generate',
         wasCached: true
       });
+
+      if (accumulatedText && accumulatedText.length > 0) {
+        normalized.retryable = false;
+        normalized.partial = true;
+        normalized.partialText = accumulatedText;
+      }
 
       updateEngineState({
         status: engineInstance ? 'ready' : 'error',

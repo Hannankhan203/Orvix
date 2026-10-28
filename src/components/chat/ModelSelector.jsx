@@ -1,19 +1,21 @@
 import React from 'react';
 import { Cpu, ChevronDown } from 'lucide-react';
 import { PROVIDER_OPTIONS, DEFAULT_PROVIDER } from '../../services/aiRouter.js';
+import { getProviderConfigAvailability } from '../../services/providerModelSanitizer.js';
 
 /**
  * ModelSelector Component
- * Allows user to select/change the active AI model / provider (Gemini, Groq, OpenRouter).
- * Restored to its original intended behavior and location in the top navigation bar.
+ * Allows user to select/change the active AI model / provider while surfacing
+ * accurate server configuration availability without disabling selection.
  *
  * @param {Object} props
- * @param {string} [props.selectedProvider='gemini'] - Currently selected provider ID ('gemini' | 'groq' | 'openrouter')
+ * @param {string} [props.selectedProvider='gemini'] - Currently selected provider ID
  * @param {(providerId: string) => void} props.onSelectProvider - Callback when provider changes
  * @param {boolean} [props.compact=false] - Compact mode for mobile header bar
  * @param {string} [props.className=''] - Additional CSS classes
  * @param {string} [props.id='ai-model-select'] - Input ID for label association
  * @param {boolean} [props.disabled=false] - Whether selection is disabled (e.g. during streaming)
+ * @param {Object|null} [props.providerConfig=null] - Normalized /api/config status snapshot
  */
 export default function ModelSelector({
   selectedProvider = DEFAULT_PROVIDER,
@@ -21,10 +23,19 @@ export default function ModelSelector({
   compact = false,
   className = '',
   id = 'ai-model-select',
-  disabled = false
+  disabled = false,
+  providerConfig = null
 }) {
   const currentProvider =
     PROVIDER_OPTIONS.find((p) => p.id === selectedProvider) || PROVIDER_OPTIONS[0];
+
+  const currentAvailability = getProviderConfigAvailability(currentProvider.id, providerConfig);
+  const currentBaseLabel =
+    currentProvider.label || `${currentProvider.name} (${currentProvider.modelTag})`;
+  const selectorTitle =
+    currentAvailability.state === 'unconfigured'
+      ? `AI Model: ${currentBaseLabel} — Server API key not configured`
+      : `AI Model: ${currentBaseLabel}`;
 
   const handleChange = (e) => {
     if (disabled) return;
@@ -37,7 +48,7 @@ export default function ModelSelector({
   return (
     <div
       className={`model-selector-container ${compact ? 'model-selector-compact' : ''} ${className}`}
-      title={`AI Model: ${currentProvider.label || `${currentProvider.name} (${currentProvider.modelTag})`}`}
+      title={selectorTitle}
     >
       <label htmlFor={id} className="model-selector-label" title="Active AI Model">
         <Cpu size={14} className="model-selector-icon" aria-hidden="true" />
@@ -53,13 +64,21 @@ export default function ModelSelector({
           disabled={disabled}
           aria-label="Select AI Model"
         >
-          {PROVIDER_OPTIONS.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {compact
-                ? (provider.shortName || provider.name)
-                : (provider.label || `${provider.name} (${provider.modelTag})`)}
-            </option>
-          ))}
+          {PROVIDER_OPTIONS.map((provider) => {
+            const availability = getProviderConfigAvailability(provider.id, providerConfig);
+            const isConfirmedUnconfigured = availability.state === 'unconfigured';
+            const baseText = compact
+              ? (provider.shortName || provider.name)
+              : (provider.label || `${provider.name} (${provider.modelTag})`);
+            const suffix = isConfirmedUnconfigured
+              ? (compact ? ' (Setup)' : ' — Setup required')
+              : '';
+            return (
+              <option key={provider.id} value={provider.id}>
+                {`${baseText}${suffix}`}
+              </option>
+            );
+          })}
         </select>
         <ChevronDown size={12} className="model-selector-chevron" aria-hidden="true" />
       </div>
