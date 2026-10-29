@@ -16,7 +16,7 @@ import {
   downloadAttachmentFile,
   checkAttachmentStatus
 } from '../../services/attachmentStorageService.js';
-import DocumentPreviewModal from './DocumentPreviewModal.jsx';
+const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
 
 /**
  * Returns an appropriate icon component for a given file extension
@@ -315,11 +315,13 @@ export default function AttachmentCard({
       )}
 
       {previewOpen && (
-        <DocumentPreviewModal
-          isOpen={previewOpen}
-          onClose={() => setPreviewOpen(false)}
-          attachment={attachment}
-        />
+        <React.Suspense fallback={null}>
+          <DocumentPreviewModal
+            isOpen={previewOpen}
+            onClose={() => setPreviewOpen(false)}
+            attachment={attachment}
+          />
+        </React.Suspense>
       )}
     </div>
   );

@@ -52,6 +52,39 @@ export default defineConfig(() => {
         }
       })
     ],
+    define: {
+      'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV === 'production' || process.env.npm_lifecycle_event === 'build' ? 'production' : 'development'),
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('firebase') || id.includes('@firebase')) {
+                return 'vendor-firebase';
+              }
+              if (/\/node_modules\/(react|react-dom|scheduler)\//.test(id)) {
+                return 'vendor-react';
+              }
+              if (
+                id.includes('react-markdown') ||
+                id.includes('remark-gfm') ||
+                id.includes('micromark') ||
+                id.includes('mdast') ||
+                id.includes('unist') ||
+                id.includes('vfile') ||
+                id.includes('unified')
+              ) {
+                return 'vendor-markdown';
+              }
+              if (/\/node_modules\/lucide-react\//.test(id)) {
+                return 'vendor-icons';
+              }
+            }
+          }
+        }
+      }
+    },
     resolve: {
       alias: {
         '@': path.resolve('.'),

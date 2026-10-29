@@ -11,7 +11,7 @@ import {
   getAttachmentRecord,
   downloadAttachmentFile
 } from '../../services/attachmentStorageService.js';
-import DocumentPreviewModal from './DocumentPreviewModal.jsx';
+const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
 
 /**
  * Formats byte size safely for display
@@ -275,11 +275,13 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
 
       {/* Larger View & OCR Modal */}
       {previewOpen && (
-        <DocumentPreviewModal
-          isOpen={previewOpen}
-          onClose={() => setPreviewOpen(false)}
-          attachment={attachment}
-        />
+        <React.Suspense fallback={null}>
+          <DocumentPreviewModal
+            isOpen={previewOpen}
+            onClose={() => setPreviewOpen(false)}
+            attachment={attachment}
+          />
+        </React.Suspense>
       )}
     </>
   );

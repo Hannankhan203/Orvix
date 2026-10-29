@@ -21,7 +21,7 @@ import {
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import BrowserAIStatusBar from './BrowserAIStatusBar.jsx';
-import DocumentPreviewModal from './DocumentPreviewModal.jsx';
+const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
@@ -2240,11 +2240,13 @@ Transcript:
 
       {/* Pre-Send Composer Attachment Preview Modal */}
       {previewingComposerAttachment && (
-        <DocumentPreviewModal
-          isOpen={Boolean(previewingComposerAttachment)}
-          onClose={() => setPreviewingComposerAttachment(null)}
-          attachment={previewingComposerAttachment}
-        />
+        <React.Suspense fallback={null}>
+          <DocumentPreviewModal
+            isOpen={Boolean(previewingComposerAttachment)}
+            onClose={() => setPreviewingComposerAttachment(null)}
+            attachment={previewingComposerAttachment}
+          />
+        </React.Suspense>
       )}
     </main>
   );

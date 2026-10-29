@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { SettingsProvider } from './context/SettingsContext.jsx';
-import SettingsModal from './components/settings/SettingsModal.jsx';
-import AuthScreen from './components/auth/AuthScreen.jsx';
-import ChatPage from './pages/ChatPage.jsx';
+import { SettingsProvider, useSettings } from './context/SettingsContext.jsx';
 import { Bot } from 'lucide-react';
 import { APP_CONFIG } from './config/appConfig.js';
 import { SpeechProvider } from './context/SpeechContext.jsx';
+
+const SettingsModal = lazy(() => import('./components/settings/SettingsModal.jsx'));
+const AuthScreen = lazy(() => import('./components/auth/AuthScreen.jsx'));
+const ChatPage = lazy(() => import('./pages/ChatPage.jsx'));
 
 /**
  * Splash screen displayed during initial Firebase authentication state check
@@ -39,11 +40,33 @@ function AppContent() {
 
   // Protected experience: Unauthenticated users are directed to the login/signup screen
   if (!currentUser) {
-    return <AuthScreen />;
+    return (
+      <Suspense fallback={<AuthLoadingSplash />}>
+        <AuthScreen />
+      </Suspense>
+    );
   }
 
   // Authenticated users access the full Orvix chatbot interface
-  return <ChatPage />;
+  return (
+    <Suspense fallback={<AuthLoadingSplash />}>
+      <ChatPage />
+    </Suspense>
+  );
+}
+
+/**
+ * Lazy settings modal wrapper: only mounts Suspense when modal is open
+ */
+function LazySettingsModal() {
+  const { isSettingsModalOpen } = useSettings();
+  if (!isSettingsModalOpen) return null;
+
+  return (
+    <Suspense fallback={null}>
+      <SettingsModal />
+    </Suspense>
+  );
 }
 
 /**
@@ -55,7 +78,7 @@ export default function App() {
       <SettingsProvider>
         <SpeechProvider>
           <AppContent />
-          <SettingsModal />
+          <LazySettingsModal />
         </SpeechProvider>
       </SettingsProvider>
     </AuthProvider>
