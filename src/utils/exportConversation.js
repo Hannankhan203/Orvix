@@ -12,6 +12,7 @@
  */
 
 import { formatResponseTime } from './formatResponseTime.js';
+import { orderConversationMessages } from '../services/alternativeResponseService.js';
 
 /**
  * Sanitizes a conversation title into a safe, cross-platform filename.
@@ -154,7 +155,8 @@ export function formatConversationMarkdown(title, messages = [], options = {}) {
     '---'
   ];
 
-  const validMessages = messages.filter(
+  const orderedMessages = orderConversationMessages(messages);
+  const validMessages = orderedMessages.filter(
     (m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
   );
 
@@ -223,7 +225,8 @@ export function formatConversationPlainText(title, messages = [], options = {}) 
     ''
   ];
 
-  const validMessages = messages.filter(
+  const orderedMessages = orderConversationMessages(messages);
+  const validMessages = orderedMessages.filter(
     (m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
   );
 

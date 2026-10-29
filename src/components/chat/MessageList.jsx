@@ -1,6 +1,7 @@
-import React, { useRef } from 'react';
+import React, { useRef, useMemo } from 'react';
 import ChatMessage from './ChatMessage.jsx';
 import TypingIndicator from './TypingIndicator.jsx';
+import { orderConversationMessages } from '../../services/alternativeResponseService.js';
 
 /**
  * MessageList Component
@@ -36,11 +37,15 @@ function MessageList({
 }) {
   const bottomAnchorRef = useRef(null);
 
-  const hasStreamingMessage = messages.some((m) => m.isStreaming);
+  const orderedMessages = useMemo(() => {
+    return orderConversationMessages(messages);
+  }, [messages]);
+
+  const hasStreamingMessage = orderedMessages.some((m) => m.isStreaming);
 
   return (
     <div className="messages-stream" role="log" aria-live="polite">
-      {messages.map((msg) => (
+      {orderedMessages.map((msg) => (
         <ChatMessage
           key={msg.id}
           message={msg}

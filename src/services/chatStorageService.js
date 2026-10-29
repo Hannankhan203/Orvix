@@ -43,7 +43,8 @@ import {
 } from '../config/firebaseConfig.js';
 import {
   normalizeAssistantMessage,
-  ensureConversationAlternatives
+  ensureConversationAlternatives,
+  orderConversationMessages
 } from './alternativeResponseService.js';
 
 const FIRESTORE_OP_TIMEOUT_MS = 4500;
@@ -216,8 +217,9 @@ function upsertCachedChatMessage(userId, chatId, messageObj) {
   } else {
     next = [...existing, messageObj];
   }
-  saveCachedChatMessages(userId, chatId, next);
-  return next;
+  const orderedNext = orderConversationMessages(next);
+  saveCachedChatMessages(userId, chatId, orderedNext);
+  return orderedNext;
 }
 
 function sanitizeExtractionForStorage(extraction) {
@@ -278,6 +280,8 @@ function buildFirestoreMessagePayload(targetMessage) {
     provider: targetMessage.provider || null,
     responseTimeMs: typeof targetMessage.responseTimeMs === 'number' ? targetMessage.responseTimeMs : null,
     parentMessageId: targetMessage.parentMessageId || null,
+    interactionId: targetMessage.interactionId || null,
+    createdAtMs: typeof targetMessage.createdAtMs === 'number' ? targetMessage.createdAtMs : Date.now(),
     activeAlternativeId: targetMessage.activeAlternativeId || null,
     alternatives: Array.isArray(targetMessage.alternatives)
       ? targetMessage.alternatives.map((alt) => ({
@@ -1110,7 +1114,7 @@ export async function loadConversationMessages(userId, chatId) {
   const localMessages = getCachedChatMessages(userId, chatId);
 
   if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
-    return ensureConversationAlternatives(localMessages);
+    return orderConversationMessages(ensureConversationAlternatives(localMessages));
   }
 
   const messagesRef = collection(db, 'users', userId, 'chats', chatId, 'messages');
@@ -1130,11 +1134,12 @@ export async function loadConversationMessages(userId, chatId) {
         provider: data.provider || null,
         responseTimeMs: typeof data.responseTimeMs === 'number' ? data.responseTimeMs : null,
         parentMessageId: data.parentMessageId || null,
+        interactionId: data.interactionId || null,
         activeAlternativeId: data.activeAlternativeId || null,
         alternatives: Array.isArray(data.alternatives) ? data.alternatives : [],
         attachments: Array.isArray(data.attachments) ? data.attachments : [],
         referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments : [],
-        createdAtMs: data.createdAt?.toMillis ? data.createdAt.toMillis() : undefined,
+        createdAtMs: typeof data.createdAtMs === 'number' ? data.createdAtMs : (data.createdAt?.toMillis ? data.createdAt.toMillis() : undefined),
         timestamp:
           data.clientTimestamp ||
           (data.createdAt?.toDate
@@ -1162,13 +1167,13 @@ export async function loadConversationMessages(userId, chatId) {
     }
 
     const merged = Array.from(byId.values());
-    const normalized = ensureConversationAlternatives(merged);
+    const normalized = orderConversationMessages(ensureConversationAlternatives(merged));
     saveCachedChatMessages(userId, chatId, normalized);
     return normalized;
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
       console.warn('Offline fallback: loaded conversation messages from local cache:', chatId);
-      return ensureConversationAlternatives(localMessages);
+      return orderConversationMessages(ensureConversationAlternatives(localMessages));
     }
     throw err;
   }

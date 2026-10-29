@@ -49,28 +49,33 @@ import { sanitizeStoredDisplayModel } from './providerModelSanitizer.js';
 export function createAlternativeRecord({
   id = null,
   parentMessageId = null,
+  interactionId = null,
   content = '',
   provider = 'gemini',
   modelUsed = null,
   responseTimeMs = null,
   timestamp = '',
   createdAt = null,
+  createdAtMs = null,
   referencedAttachments = [],
   isError = false,
   isStopped = false
 } = {}) {
   const chosenProvider = provider || 'gemini';
   const cleanModel = sanitizeStoredDisplayModel(chosenProvider, modelUsed);
+  const resolvedCreated = typeof createdAt === 'number' && !isNaN(createdAt) ? createdAt : Date.now();
   return {
     id: id || generateAlternativeId(chosenProvider),
     parentMessageId: parentMessageId || null,
+    interactionId: interactionId || null,
     sender: 'assistant',
     content: typeof content === 'string' ? content : '',
     provider: chosenProvider,
     modelUsed: cleanModel || null,
     responseTimeMs: typeof responseTimeMs === 'number' && !isNaN(responseTimeMs) ? responseTimeMs : null,
     timestamp: timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    createdAt: typeof createdAt === 'number' && !isNaN(createdAt) ? createdAt : Date.now(),
+    createdAt: resolvedCreated,
+    createdAtMs: typeof createdAtMs === 'number' && !isNaN(createdAtMs) ? createdAtMs : resolvedCreated,
     referencedAttachments: Array.isArray(referencedAttachments) ? [...referencedAttachments] : [],
     isError: Boolean(isError),
     isStopped: Boolean(isStopped)
@@ -97,6 +102,34 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
     baseMessage.parentMessageId ||
     (precedingUserMessage?.id ? precedingUserMessage.id : null);
 
+  const interactionId =
+    baseMessage.interactionId ||
+    (precedingUserMessage?.interactionId ? precedingUserMessage.interactionId : null);
+
+  // Fast check: if already fully normalized with alternatives, valid activeAlternativeId,
+  // and matching parentMessageId and interactionId, avoid recreating objects
+  if (
+    message.sender === 'assistant' &&
+    Array.isArray(message.alternatives) &&
+    message.alternatives.length > 0 &&
+    message.activeAlternativeId &&
+    (!parentMessageId || message.parentMessageId === parentMessageId) &&
+    (!interactionId || message.interactionId === interactionId) &&
+    message.alternatives.some((a) => a.id === message.activeAlternativeId)
+  ) {
+    return message;
+  }
+
+  const createdAt =
+    typeof baseMessage.createdAt === 'number' && !isNaN(baseMessage.createdAt)
+      ? baseMessage.createdAt
+      : Date.now();
+
+  const createdAtMs =
+    typeof baseMessage.createdAtMs === 'number' && !isNaN(baseMessage.createdAtMs)
+      ? baseMessage.createdAtMs
+      : createdAt;
+
   let alternatives = [];
 
   if (Array.isArray(baseMessage.alternatives) && baseMessage.alternatives.length > 0) {
@@ -105,12 +138,14 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
       createAlternativeRecord({
         id: alt.id,
         parentMessageId: alt.parentMessageId || parentMessageId,
+        interactionId: alt.interactionId || interactionId,
         content: alt.content,
         provider: alt.provider || message.provider || 'gemini',
         modelUsed: alt.modelUsed || message.modelUsed || null,
         responseTimeMs: alt.responseTimeMs,
         timestamp: alt.timestamp || message.timestamp,
-        createdAt: alt.createdAt,
+        createdAt: alt.createdAt || createdAt,
+        createdAtMs: alt.createdAtMs || createdAtMs,
         referencedAttachments: alt.referencedAttachments || message.referencedAttachments || [],
         isError: alt.isError,
         isStopped: alt.isStopped
@@ -123,12 +158,14 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
       createAlternativeRecord({
         id: initialAltId,
         parentMessageId,
+        interactionId,
         content: message.content || '',
         provider: message.provider || 'gemini',
         modelUsed: message.modelUsed || null,
         responseTimeMs: message.responseTimeMs,
         timestamp: message.timestamp || '',
-        createdAt: message.createdAt || Date.now(),
+        createdAt,
+        createdAtMs,
         referencedAttachments: message.referencedAttachments || [],
         isError: message.isError,
         isStopped: message.isStopped
@@ -149,6 +186,9 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
   return {
     ...message,
     parentMessageId,
+    interactionId,
+    createdAt,
+    createdAtMs,
     activeAlternativeId,
     alternatives,
     content: activeAlt.content,
@@ -343,22 +383,204 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
 export function ensureConversationAlternatives(messages = []) {
   if (!Array.isArray(messages)) return [];
 
-  let lastUserMessage = null;
+  const userById = new Map();
+  for (const m of messages) {
+    if (m?.sender === 'user' && m.id) {
+      userById.set(m.id, m);
+    }
+  }
 
-  return messages.map((msg) => {
+  let lastUserMessage = null;
+  let hasChanges = false;
+
+  const next = messages.map((msg) => {
+    if (!msg) return msg;
     if (msg.sender === 'user') {
       lastUserMessage = msg;
       return msg;
     }
 
     if (msg.sender === 'assistant') {
-      const normalized = normalizeAssistantMessage(msg, lastUserMessage);
+      const linkedUser =
+        (msg.parentMessageId && userById.get(msg.parentMessageId)) ||
+        (msg.interactionId && Array.from(userById.values()).find((u) => u.interactionId === msg.interactionId)) ||
+        lastUserMessage;
+      const normalized = normalizeAssistantMessage(msg, linkedUser);
+      if (normalized !== msg) {
+        hasChanges = true;
+      }
       return normalized;
     }
 
     return msg;
   });
+
+  return hasChanges ? next : messages;
 }
+
+/**
+ * Canonical Conversation Message Ordering & Association Engine
+ *
+ * Guarantees that:
+ * 1. Every user message appears in its correct chronological order.
+ * 2. Every AI response appears directly beneath its originating user message.
+ * 3. Asynchronous completion order, retries, or model switching cannot corrupt or displace message order.
+ * 4. Responses never become detached from their parent user request.
+ * 5. Conversations restored from history/storage preserve exact parent-child pairing.
+ *
+ * @param {Array} messages - Unordered or partially ordered message array
+ * @returns {Array} Canonically ordered and aligned message array
+ */
+export function orderConversationMessages(messages = []) {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return Array.isArray(messages) ? [...messages] : [];
+  }
+
+  const normalized = ensureConversationAlternatives(messages);
+
+  // Fast path: verify if the list is already in strict canonical sequence
+  let isAlreadyOrdered = true;
+  let activeParentUser = null;
+  let lastUserTime = -Infinity;
+
+  for (let i = 0; i < normalized.length; i++) {
+    const m = normalized[i];
+    if (!m) continue;
+    if (m.sender === 'user') {
+      const uTime = typeof m.createdAtMs === 'number' ? m.createdAtMs : (m.createdAt || null);
+      if (uTime !== null && uTime < lastUserTime) {
+        isAlreadyOrdered = false;
+        break;
+      }
+      if (uTime !== null) {
+        lastUserTime = uTime;
+      }
+      activeParentUser = m;
+    } else if (m.sender === 'assistant') {
+      if (!activeParentUser) {
+        isAlreadyOrdered = false;
+        break;
+      }
+      const pId = m.parentMessageId;
+      if (pId && pId !== activeParentUser.id) {
+        isAlreadyOrdered = false;
+        break;
+      }
+    }
+  }
+
+  if (isAlreadyOrdered) {
+    return normalized;
+  }
+
+  // Canonical ordering pass:
+  // Step 1: Catalog all user messages
+  const userOrder = [];
+  const userMap = new Map();
+  const assistantBuckets = new Map();
+  const leadingOrphans = [];
+  const trailingOrphans = [];
+
+  for (let i = 0; i < normalized.length; i++) {
+    const m = normalized[i];
+    if (!m) continue;
+    if (m.sender === 'user') {
+      if (!userMap.has(m.id)) {
+        userOrder.push(m);
+        userMap.set(m.id, m);
+        assistantBuckets.set(m.id, []);
+      } else {
+        const idx = userOrder.findIndex((u) => u.id === m.id);
+        if (idx >= 0) userOrder[idx] = m;
+        userMap.set(m.id, m);
+      }
+    }
+  }
+
+  if (userOrder.length === 0) {
+    return normalized;
+  }
+
+  // Step 2: Map each assistant message to its parent user message
+  let runningUser = null;
+
+  for (let i = 0; i < normalized.length; i++) {
+    const m = normalized[i];
+    if (!m) continue;
+
+    if (m.sender === 'user') {
+      runningUser = m;
+      continue;
+    }
+
+    if (m.sender === 'assistant') {
+      let parentId = m.parentMessageId;
+      if (!parentId && m.interactionId) {
+        const found = userOrder.find(
+          (u) => u.interactionId === m.interactionId || u.id === m.interactionId
+        );
+        if (found) parentId = found.id;
+      }
+      if (!parentId && runningUser) {
+        parentId = runningUser.id;
+      }
+
+      if (parentId && assistantBuckets.has(parentId)) {
+        const bucket = assistantBuckets.get(parentId);
+        const existingIdx = bucket.findIndex((a) => a.id === m.id);
+        if (existingIdx >= 0) {
+          bucket[existingIdx] = m;
+        } else {
+          bucket.push(m);
+        }
+      } else {
+        if (!runningUser) {
+          leadingOrphans.push(m);
+        } else {
+          trailingOrphans.push(m);
+        }
+      }
+    } else {
+      if (!runningUser) {
+        leadingOrphans.push(m);
+      } else {
+        trailingOrphans.push(m);
+      }
+    }
+  }
+
+  // Sort user prompts chronologically (stable fallback on original position)
+  userOrder.sort((a, b) => {
+    const timeA = typeof a.createdAtMs === 'number' ? a.createdAtMs : (a.createdAt || null);
+    const timeB = typeof b.createdAtMs === 'number' ? b.createdAtMs : (b.createdAt || null);
+    if (timeA !== null && timeB !== null && timeA !== timeB) {
+      return timeA - timeB;
+    }
+    return 0;
+  });
+
+  const result = [...leadingOrphans];
+
+  for (const userMsg of userOrder) {
+    result.push(userMsg);
+    const assistants = assistantBuckets.get(userMsg.id) || [];
+    assistants.sort((a, b) => {
+      const timeA = typeof a.createdAtMs === 'number' ? a.createdAtMs : (a.createdAt || 0);
+      const timeB = typeof b.createdAtMs === 'number' ? b.createdAtMs : (b.createdAt || 0);
+      return timeA - timeB;
+    });
+    for (const asst of assistants) {
+      result.push(asst);
+    }
+  }
+
+  for (const orphan of trailingOrphans) {
+    result.push(orphan);
+  }
+
+  return result;
+}
+
 
 /**
  * Returns alternative navigation metrics for an assistant message.

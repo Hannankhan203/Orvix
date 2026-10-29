@@ -58,7 +58,8 @@ import {
   updateActiveAlternativeInMessage,
   ensureConversationAlternatives,
   createAlternativeRecord,
-  getActiveAlternative
+  getActiveAlternative,
+  orderConversationMessages
 } from '../services/alternativeResponseService.js';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
@@ -191,8 +192,9 @@ export default function ChatPage() {
   const updateMessagesState = (updater) => {
     setMessages((previous) => {
       const next = typeof updater === 'function' ? updater(previous) : updater;
-      messagesRef.current = next;
-      return next;
+      const canonicallyOrdered = orderConversationMessages(next);
+      messagesRef.current = canonicallyOrdered;
+      return canonicallyOrdered;
     });
   };
 
@@ -629,7 +631,7 @@ export default function ChatPage() {
     );
 
     if (sample) {
-      setMessages(ensureConversationAlternatives(sample.messages));
+      setMessages(orderConversationMessages(sample.messages));
       setActiveMode(sample.mode || 'general');
       setMessagesLoading(false);
       return undefined;
@@ -645,7 +647,7 @@ export default function ChatPage() {
       guestChat &&
       Array.isArray(guestChat.messages)
     ) {
-      setMessages(ensureConversationAlternatives(guestChat.messages));
+      setMessages(orderConversationMessages(guestChat.messages));
       setMessagesLoading(false);
       return undefined;
     }
@@ -667,7 +669,7 @@ export default function ChatPage() {
           }
 
           const safeMessages = Array.isArray(loadedMessages)
-            ? ensureConversationAlternatives(loadedMessages)
+            ? orderConversationMessages(loadedMessages)
             : [];
 
           setMessages(safeMessages);
@@ -1008,7 +1010,7 @@ export default function ChatPage() {
         return {
           ...chat,
           rawUpdatedAt: Date.now(),
-          messages: updatedMessages
+          messages: orderConversationMessages(updatedMessages)
         };
       });
 
@@ -1692,14 +1694,18 @@ export default function ChatPage() {
 
       const currentMessagesSnapshot = messagesRef.current;
       const now = Date.now();
+      const interactionId = `interaction-${now}`;
 
       const userMessage = {
         id: `user-${now}`,
+        interactionId,
         sender: 'user',
         timestamp: new Date().toLocaleTimeString([], {
           hour: '2-digit',
           minute: '2-digit'
         }),
+        createdAt: now,
+        createdAtMs: now,
         content: trimmed,
         attachments: processedAttachments
       };
@@ -1746,8 +1752,9 @@ export default function ChatPage() {
       const initialAssistantMessage = normalizeAssistantMessage(
         {
           id: assistantMessageId,
-          sender: 'assistant',
+          interactionId,
           parentMessageId: userMessage.id,
+          sender: 'assistant',
           provider: submitProvider,
           modelUsed: null,
           mode: activeMode || 'general',
@@ -1755,6 +1762,8 @@ export default function ChatPage() {
             hour: '2-digit',
             minute: '2-digit'
           }),
+          createdAt: now,
+          createdAtMs: now,
           content: '',
           isStreaming: true,
           requestStartTime,
@@ -1834,15 +1843,16 @@ export default function ChatPage() {
     const currentChatId = activeChatIdRef.current;
     const currentMessagesSnapshot = messagesRef.current;
 
-    const updatedMessages = currentMessagesSnapshot.filter(
-      (message) => message.id !== failedMessage.id
-    );
-
     const failedIdx = currentMessagesSnapshot.findIndex((m) => m.id === failedMessage.id);
-    const precedingUser = failedIdx > 0 ? currentMessagesSnapshot[failedIdx - 1] : null;
+    const parentUser = failedMessage.parentMessageId
+      ? currentMessagesSnapshot.find((m) => m.id === failedMessage.parentMessageId)
+      : (failedIdx > 0 ? currentMessagesSnapshot[failedIdx - 1] : null);
+    const parentMessageId = parentUser?.id || failedMessage.parentMessageId || null;
+    const interactionId = parentUser?.interactionId || failedMessage.interactionId || null;
+
     let retryAttachments =
       failedMessage.referencedAttachments ||
-      precedingUser?.attachments ||
+      parentUser?.attachments ||
       [];
     if ((!retryAttachments || retryAttachments.length === 0) && currentMessagesSnapshot.length > 0) {
       for (let i = currentMessagesSnapshot.length - 1; i >= 0; i--) {
@@ -1863,27 +1873,53 @@ export default function ChatPage() {
     const assistantMessageId =
       `${providerToUse}-${Date.now()}-retry`;
 
-    const initialAssistantMessage = {
-      id: assistantMessageId,
-      sender: 'assistant',
-      provider: providerToUse,
-      modelUsed: null,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      }),
-      content: '',
-      isStreaming: true,
-      requestStartTime,
-      referencedAttachments: undefined
-    };
+    const initialAssistantMessage = normalizeAssistantMessage(
+      {
+        id: assistantMessageId,
+        sender: 'assistant',
+        parentMessageId,
+        interactionId,
+        provider: providerToUse,
+        modelUsed: null,
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
+        createdAt: Date.now(),
+        createdAtMs: Date.now(),
+        content: '',
+        isStreaming: true,
+        requestStartTime,
+        referencedAttachments: undefined
+      },
+      parentUser
+    );
 
-    updateMessagesState([
-      ...updatedMessages,
-      initialAssistantMessage
-    ]);
+    let updatedMessages;
+    if (failedIdx >= 0) {
+      updatedMessages = currentMessagesSnapshot.map((m, idx) =>
+        idx === failedIdx ? initialAssistantMessage : m
+      );
+    } else {
+      const parentIdx = currentMessagesSnapshot.findIndex((m) => m.id === parentMessageId);
+      if (parentIdx >= 0) {
+        updatedMessages = [
+          ...currentMessagesSnapshot.slice(0, parentIdx + 1),
+          initialAssistantMessage,
+          ...currentMessagesSnapshot.slice(parentIdx + 1)
+        ];
+      } else {
+        updatedMessages = [...currentMessagesSnapshot, initialAssistantMessage];
+      }
+    }
 
-    const validHistory = updatedMessages.filter(
+    updateMessagesState(updatedMessages);
+
+    const parentIdx = parentUser ? currentMessagesSnapshot.findIndex((m) => m.id === parentUser.id) : -1;
+    const historySlice = parentIdx >= 0
+      ? currentMessagesSnapshot.slice(0, parentIdx)
+      : updatedMessages.filter((m) => m.id !== initialAssistantMessage.id);
+    const validHistory = historySlice.filter(
       (message) => !message.isError && !message.isInterrupted
     );
 
@@ -1929,15 +1965,16 @@ export default function ChatPage() {
     const currentChatId = activeChatIdRef.current;
     const currentMessagesSnapshot = messagesRef.current;
 
-    const updatedMessages = currentMessagesSnapshot.filter(
-      (message) => message.id !== failedMessage.id
-    );
-
     const failedSwitchIdx = currentMessagesSnapshot.findIndex((m) => m.id === failedMessage.id);
-    const precedingSwitchUser = failedSwitchIdx > 0 ? currentMessagesSnapshot[failedSwitchIdx - 1] : null;
+    const parentSwitchUser = failedMessage.parentMessageId
+      ? currentMessagesSnapshot.find((m) => m.id === failedMessage.parentMessageId)
+      : (failedSwitchIdx > 0 ? currentMessagesSnapshot[failedSwitchIdx - 1] : null);
+    const parentMessageId = parentSwitchUser?.id || failedMessage.parentMessageId || null;
+    const interactionId = parentSwitchUser?.interactionId || failedMessage.interactionId || null;
+
     let switchAttachments =
       failedMessage.referencedAttachments ||
-      precedingSwitchUser?.attachments ||
+      parentSwitchUser?.attachments ||
       [];
     if ((!switchAttachments || switchAttachments.length === 0) && currentMessagesSnapshot.length > 0) {
       for (let i = currentMessagesSnapshot.length - 1; i >= 0; i--) {
@@ -1956,27 +1993,53 @@ export default function ChatPage() {
     const assistantMessageId =
       `${newProviderId}-${Date.now()}-fallback`;
 
-    const initialAssistantMessage = {
-      id: assistantMessageId,
-      sender: 'assistant',
-      provider: newProviderId,
-      modelUsed: null,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      }),
-      content: '',
-      isStreaming: true,
-      requestStartTime,
-      referencedAttachments: undefined
-    };
+    const initialAssistantMessage = normalizeAssistantMessage(
+      {
+        id: assistantMessageId,
+        sender: 'assistant',
+        parentMessageId,
+        interactionId,
+        provider: newProviderId,
+        modelUsed: null,
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
+        createdAt: Date.now(),
+        createdAtMs: Date.now(),
+        content: '',
+        isStreaming: true,
+        requestStartTime,
+        referencedAttachments: undefined
+      },
+      parentSwitchUser
+    );
 
-    updateMessagesState([
-      ...updatedMessages,
-      initialAssistantMessage
-    ]);
+    let updatedMessages;
+    if (failedSwitchIdx >= 0) {
+      updatedMessages = currentMessagesSnapshot.map((m, idx) =>
+        idx === failedSwitchIdx ? initialAssistantMessage : m
+      );
+    } else {
+      const parentIdx = currentMessagesSnapshot.findIndex((m) => m.id === parentMessageId);
+      if (parentIdx >= 0) {
+        updatedMessages = [
+          ...currentMessagesSnapshot.slice(0, parentIdx + 1),
+          initialAssistantMessage,
+          ...currentMessagesSnapshot.slice(parentIdx + 1)
+        ];
+      } else {
+        updatedMessages = [...currentMessagesSnapshot, initialAssistantMessage];
+      }
+    }
 
-    const validHistory = updatedMessages.filter(
+    updateMessagesState(updatedMessages);
+
+    const parentIdx = parentSwitchUser ? currentMessagesSnapshot.findIndex((m) => m.id === parentSwitchUser.id) : -1;
+    const historySlice = parentIdx >= 0
+      ? currentMessagesSnapshot.slice(0, parentIdx)
+      : updatedMessages.filter((m) => m.id !== initialAssistantMessage.id);
+    const validHistory = historySlice.filter(
       (message) => !message.isError && !message.isInterrupted
     );
 
