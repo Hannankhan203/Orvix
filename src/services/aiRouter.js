@@ -583,7 +583,10 @@ export async function streamAIMessage(params = {}) {
     originalPrompt = null,
     previousContentSummary = null,
     chatEndpoint = '/api/chat',
-    retryBaseDelayMs = 600
+    retryBaseDelayMs = 600,
+    headersTimeoutMs = 0,
+    firstByteTimeoutMs = 0,
+    streamInactivityTimeoutMs = 90000
   } = params || {};
 
   const normalizedProvider = normalizeProviderId(provider);
@@ -676,15 +679,64 @@ export async function streamAIMessage(params = {}) {
         previousContentSummary: previousContentSummary || null
       });
 
-      const res = await fetch(chatEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream'
-        },
-        body: requestBody,
-        signal
-      });
+      let fetchTimer = null;
+      const fetchController = new AbortController();
+      const onCallerAbortForFetch = () => {
+        try {
+          fetchController.abort(signal?.reason);
+        } catch (_) {}
+      };
+      if (signal) {
+        if (signal.aborted) {
+          throw createRouterAbortError();
+        }
+        signal.addEventListener('abort', onCallerAbortForFetch, { once: true });
+      }
+
+      let fetchTimedOut = false;
+      if (Number(headersTimeoutMs) > 0) {
+        fetchTimer = setTimeout(() => {
+          fetchTimedOut = true;
+          try {
+            fetchController.abort();
+          } catch (_) {}
+        }, Number(headersTimeoutMs));
+      }
+
+      let res;
+      try {
+        res = await fetch(chatEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream'
+          },
+          body: requestBody,
+          signal: fetchController.signal
+        });
+      } catch (fetchErr) {
+        if (fetchTimer) clearTimeout(fetchTimer);
+        if (signal) signal.removeEventListener('abort', onCallerAbortForFetch);
+        if (fetchTimedOut && isActive()) {
+          const hErr = parseRouterError(
+            {
+              code: 504,
+              status: 'DEADLINE_EXCEEDED',
+              error: `The request to ${normalizedProvider} timed out while waiting for initial response headers.`,
+              canFallback: true,
+              retryable: false
+            },
+            504,
+            normalizedProvider
+          );
+          hErr.timeoutStage = 'header_timeout';
+          throw hErr;
+        }
+        throw fetchErr;
+      } finally {
+        if (fetchTimer) clearTimeout(fetchTimer);
+        if (signal) signal.removeEventListener('abort', onCallerAbortForFetch);
+      }
 
       if (!isActive()) {
         try {
@@ -737,6 +789,7 @@ export async function streamAIMessage(params = {}) {
         let finalProvider = normalizedProvider;
         let isDemoResponse = false;
         let receivedDone = false;
+        let receivedFirstContentChunk = false;
 
         const onSignalAbort = () => {
           try {
@@ -782,6 +835,7 @@ export async function streamAIMessage(params = {}) {
               if (!isActive()) {
                 throw createRouterAbortError();
               }
+              receivedFirstContentChunk = true;
               accumulatedText += data.text;
               onChunk?.(data.text, accumulatedText);
             } else if (data.type === 'done') {
@@ -834,6 +888,7 @@ export async function streamAIMessage(params = {}) {
               if (accumulatedText.length > 0) {
                 streamErr.retryable = false;
                 streamErr.partial = true;
+                streamErr.canFallback = false;
                 if (!streamErr.partialText) {
                   streamErr.partialText = accumulatedText;
                 }
@@ -852,12 +907,74 @@ export async function streamAIMessage(params = {}) {
           return null;
         };
 
+        const readChunkWithWatchdog = async () => {
+          const activeTimeoutMs =
+            !receivedFirstContentChunk && Number(firstByteTimeoutMs) > 0
+              ? Number(firstByteTimeoutMs)
+              : Number(streamInactivityTimeoutMs) > 0
+              ? Number(streamInactivityTimeoutMs)
+              : 0;
+
+          if (activeTimeoutMs <= 0) {
+            return reader.read();
+          }
+
+          let readTimer = null;
+          const timeoutStage = !receivedFirstContentChunk && Number(firstByteTimeoutMs) > 0
+            ? 'first_byte_timeout'
+            : 'stream_inactivity_timeout';
+
+          const timeoutPromise = new Promise((_, reject) => {
+            readTimer = setTimeout(() => {
+              readTimer = null;
+              if (!isActive()) {
+                reject(createRouterAbortError());
+                return;
+              }
+              const hasPartial = accumulatedText.length > 0;
+              const stageErr = parseRouterError(
+                {
+                  code: 504,
+                  status: 'DEADLINE_EXCEEDED',
+                  error: `The request to ${finalProvider || normalizedProvider} timed out while waiting for a response. Please try again.`,
+                  partial: hasPartial,
+                  partialText: hasPartial ? accumulatedText : undefined,
+                  canFallback: !hasPartial,
+                  retryable: false
+                },
+                504,
+                finalProvider || normalizedProvider
+              );
+              stageErr.timeoutStage = timeoutStage;
+              stageErr.partial = hasPartial;
+              stageErr.canFallback = !hasPartial;
+              if (hasPartial) {
+                stageErr.partialText = accumulatedText;
+                stageErr.retryable = false;
+              }
+              try {
+                void reader.cancel().catch(() => {});
+              } catch (_) {}
+              reject(stageErr);
+            }, activeTimeoutMs);
+          });
+
+          try {
+            return await Promise.race([reader.read(), timeoutPromise]);
+          } finally {
+            if (readTimer) {
+              clearTimeout(readTimer);
+              readTimer = null;
+            }
+          }
+        };
+
         try {
           while (true) {
             if (!isActive()) {
               throw createRouterAbortError();
             }
-            const { done, value } = await reader.read();
+            const { done, value } = await readChunkWithWatchdog();
             if (!isActive()) {
               throw createRouterAbortError();
             }

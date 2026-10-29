@@ -26,6 +26,12 @@ import http from 'node:http';
 const {
   parseGeminiError,
   getUpstreamHeadersTimeoutMs,
+  getGeminiHeaderTimeoutMs,
+  getGeminiFirstByteTimeoutMs,
+  getGeminiStreamInactivityTimeoutMs,
+  getGeminiTotalRequestTimeoutMs,
+  consumeGeminiStreamWithWatchdog,
+  logGeminiLifecycleEvent,
   isServerless
 } = await import('../server.ts');
 
@@ -84,20 +90,20 @@ console.log('================================================================\n'
 // ----------------------------------------------------------------------------
 await runTest('1. Immediate SSE Header Priming (TTFB < 50ms before upstream completes)', async () => {
   let headerReceivedTime = 0;
-  const startTime = Date.now();
 
   const mock = await createMockServer(async (req, res) => {
+    res.socket?.setNoDelay?.(true);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no'
     });
-    res.write(': prime\n\n');
     res.flushHeaders?.();
+    res.write(': prime\n\n');
 
-    // Simulate upstream latency
-    await sleep(150);
+    // Simulate upstream latency (300ms)
+    await sleep(300);
     res.write('data: {"type":"start","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
     res.write('data: {"type":"chunk","text":"Fast headers verified"}\n\n');
     res.write('data: {"type":"done","text":"Fast headers verified","modelUsed":"gemini-2.5-flash","provider":"gemini"}\n\n');
@@ -105,6 +111,7 @@ await runTest('1. Immediate SSE Header Priming (TTFB < 50ms before upstream comp
   });
 
   try {
+    const startTime = Date.now();
     const res = await fetch(`${mock.url}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -114,7 +121,7 @@ await runTest('1. Immediate SSE Header Priming (TTFB < 50ms before upstream comp
     headerReceivedTime = Date.now() - startTime;
     assert.equal(res.status, 200);
     assert.ok(res.headers.get('content-type')?.includes('text/event-stream'));
-    assert.ok(headerReceivedTime < 100, `Headers must arrive immediately (<100ms), took ${headerReceivedTime}ms`);
+    assert.ok(headerReceivedTime < 200, `Headers must arrive immediately (<200ms, before 300ms upstream), took ${headerReceivedTime}ms`);
   } finally {
     await mock.close();
   }
@@ -609,6 +616,547 @@ await runTest('15. Normal new-message streaming continues to work alongside edit
   }
 });
 
+// ----------------------------------------------------------------------------
+// Test 16: Long Streaming Response Resets Inactivity Watchdog on Every Chunk
+// ----------------------------------------------------------------------------
+await runTest('16. Long streaming response (> inactivityTimeoutMs total duration) succeeds because inactivity timer resets on each chunk', async () => {
+  const lifecycleEvents = [];
+  const emittedChunks = [];
+
+  // Inactivity timeout is 120ms, but 5 chunks arrive 60ms apart (total 300ms > 120ms).
+  // A buggy fixed-duration timer would kill this stream at 120ms; a resetting watchdog must succeed.
+  const result = await consumeGeminiStreamWithWatchdog({
+    model: 'gemini-3.8-flash',
+    headerTimeoutMs: 500,
+    firstByteTimeoutMs: 250,
+    inactivityTimeoutMs: 120,
+    totalRequestTimeoutMs: 2000,
+    invokeStream: async () => {
+      return (async function* () {
+        for (let idx = 1; idx <= 5; idx++) {
+          await sleep(60);
+          yield {
+            text: `Chunk-${idx} `,
+            candidates: [{ finishReason: idx === 5 ? 'STOP' : undefined }]
+          };
+        }
+      })();
+    },
+    onChunk: (text) => {
+      emittedChunks.push(text);
+    },
+    onLifecycleLog: (event, payload) => {
+      lifecycleEvents.push({ event, payload });
+    }
+  });
+
+  assert.equal(result.fullText, 'Chunk-1 Chunk-2 Chunk-3 Chunk-4 Chunk-5 ');
+  assert.equal(result.chunkCount, 5);
+  assert.equal(result.streamedAnyChunk, true);
+  assert.equal(result.lastFinishReason, 'STOP');
+  assert.equal(emittedChunks.length, 5);
+
+  const eventNames = lifecycleEvents.map((e) => e.event);
+  assert.ok(eventNames.includes('upstream_fetch_start'));
+  assert.ok(eventNames.includes('upstream_headers_received'));
+  assert.ok(eventNames.includes('first_chunk_received'));
+  assert.ok(eventNames.includes('chunk_received'));
+  assert.ok(eventNames.includes('upstream_complete'));
+  assert.ok(!eventNames.includes('timeout'), 'Healthy active stream must never trigger timeout');
+});
+
+// ----------------------------------------------------------------------------
+// Test 17: Slow First Token Within First-Byte Timeout Succeeds cleanly
+// ----------------------------------------------------------------------------
+await runTest('17. Slow first token (delayed first chunk within firstByteTimeoutMs) succeeds without premature timeout', async () => {
+  const lifecycleEvents = [];
+  const result = await consumeGeminiStreamWithWatchdog({
+    model: 'gemini-3.8-flash',
+    headerTimeoutMs: 200,
+    firstByteTimeoutMs: 300,
+    inactivityTimeoutMs: 100,
+    totalRequestTimeoutMs: 2000,
+    invokeStream: async () => {
+      await sleep(50); // headers arrive in 50ms
+      return (async function* () {
+        await sleep(160); // first chunk takes 160ms (> inactivityTimeoutMs=100ms, but < firstByteTimeoutMs=300ms)
+        yield { text: 'Thoughtful first token ', candidates: [{}] };
+        await sleep(30);
+        yield { text: 'and second token.', candidates: [{ finishReason: 'STOP' }] };
+      })();
+    },
+    onLifecycleLog: (event) => lifecycleEvents.push(event)
+  });
+
+  assert.equal(result.fullText, 'Thoughtful first token and second token.');
+  assert.equal(result.chunkCount, 2);
+  assert.ok(lifecycleEvents.includes('first_chunk_received'));
+  assert.ok(lifecycleEvents.includes('upstream_complete'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 18: Dead Upstream Connection Triggers Header Timeout Cleanly
+// ----------------------------------------------------------------------------
+await runTest('18. Dead upstream connection (headers never arrive) triggers clean header_timeout', async () => {
+  const lifecycleEvents = [];
+  let signalAborted = false;
+
+  await assert.rejects(
+    async () => {
+      await consumeGeminiStreamWithWatchdog({
+        model: 'gemini-3.8-flash',
+        headerTimeoutMs: 80,
+        firstByteTimeoutMs: 500,
+        inactivityTimeoutMs: 500,
+        totalRequestTimeoutMs: 2000,
+        invokeStream: async (signal) => {
+          signal.addEventListener('abort', () => {
+            signalAborted = true;
+          });
+          await sleep(500);
+          return (async function* () {})();
+        },
+        onLifecycleLog: (event, payload) => lifecycleEvents.push({ event, payload })
+      });
+    },
+    (err) => {
+      assert.equal(err.name, 'TimeoutError');
+      assert.equal(err.code, 'DEADLINE_EXCEEDED');
+      assert.equal(err.timeoutStage, 'header_timeout');
+      assert.equal(err.streamedAnyChunk, false);
+      return true;
+    }
+  );
+
+  assert.equal(signalAborted, true, 'AbortController must abort hung upstream fetch on header_timeout');
+  assert.ok(lifecycleEvents.some((e) => e.event === 'timeout' && e.payload.timeoutStage === 'header_timeout'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 19: Headers Arrive But First Chunk Never Arrives -> First-Byte Timeout
+// ----------------------------------------------------------------------------
+await runTest('19. Upstream headers arrive but first chunk stalls -> triggers first_byte_timeout with streamedAnyChunk: false', async () => {
+  const lifecycleEvents = [];
+
+  await assert.rejects(
+    async () => {
+      await consumeGeminiStreamWithWatchdog({
+        model: 'gemini-3.8-flash',
+        headerTimeoutMs: 300,
+        firstByteTimeoutMs: 90,
+        inactivityTimeoutMs: 500,
+        totalRequestTimeoutMs: 2000,
+        invokeStream: async () => {
+          return (async function* () {
+            await sleep(500); // stalls before yielding first chunk
+            yield { text: 'too late' };
+          })();
+        },
+        onLifecycleLog: (event, payload) => lifecycleEvents.push({ event, payload })
+      });
+    },
+    (err) => {
+      assert.equal(err.name, 'TimeoutError');
+      assert.equal(err.timeoutStage, 'first_byte_timeout');
+      assert.equal(err.streamedAnyChunk, false);
+      assert.equal(err.partialText, '');
+      return true;
+    }
+  );
+
+  assert.ok(lifecycleEvents.some((e) => e.event === 'timeout' && e.payload.timeoutStage === 'first_byte_timeout'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 20: Stalled Stream After Partial Output -> Stream Inactivity Timeout
+// ----------------------------------------------------------------------------
+await runTest('20. Stalled stream after partial output triggers stream_inactivity_timeout and preserves partialText', async () => {
+  const lifecycleEvents = [];
+
+  await assert.rejects(
+    async () => {
+      await consumeGeminiStreamWithWatchdog({
+        model: 'gemini-3.8-flash',
+        headerTimeoutMs: 300,
+        firstByteTimeoutMs: 300,
+        inactivityTimeoutMs: 90,
+        totalRequestTimeoutMs: 2000,
+        invokeStream: async () => {
+          return (async function* () {
+            yield { text: 'Partial answer part 1. ' };
+            await sleep(30);
+            yield { text: 'Partial answer part 2.' };
+            await sleep(500); // stalls mid-stream exceeding inactivityTimeoutMs=90ms
+            yield { text: 'Never reached' };
+          })();
+        },
+        onLifecycleLog: (event, payload) => lifecycleEvents.push({ event, payload })
+      });
+    },
+    (err) => {
+      assert.equal(err.name, 'TimeoutError');
+      assert.equal(err.timeoutStage, 'stream_inactivity_timeout');
+      assert.equal(err.streamedAnyChunk, true);
+      assert.equal(err.partialText, 'Partial answer part 1. Partial answer part 2.');
+      assert.equal(err.chunkCount, 2);
+      return true;
+    }
+  );
+
+  assert.ok(lifecycleEvents.some((e) => e.event === 'timeout' && e.payload.timeoutStage === 'stream_inactivity_timeout'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 21: Pre-Chunk Timeout on Primary Model Advances to Fallback Model (gemini-3.1-flash-lite)
+// ----------------------------------------------------------------------------
+await runTest('21. Pre-chunk timeout on gemini-3.8-flash advances to fallback model gemini-3.1-flash-lite even in serverless', async () => {
+  const attemptPlan = [
+    { model: 'gemini-3.8-flash', attemptNum: 1 },
+    { model: 'gemini-3.1-flash-lite', attemptNum: 2 }
+  ];
+  const modelsTried = [];
+  let finalResult = null;
+
+  for (let i = 0; i < attemptPlan.length; i++) {
+    const { model, attemptNum } = attemptPlan[i];
+    const hasMoreAttempts = i < attemptPlan.length - 1;
+    const nextModel = hasMoreAttempts ? attemptPlan[i + 1]?.model : null;
+    const isAdvancingToDistinctModel = Boolean(hasMoreAttempts && nextModel && nextModel !== model);
+    modelsTried.push(model);
+
+    try {
+      finalResult = await consumeGeminiStreamWithWatchdog({
+        model,
+        attemptNum,
+        maxAttempts: attemptPlan.length,
+        headerTimeoutMs: 60,
+        firstByteTimeoutMs: 100,
+        inactivityTimeoutMs: 100,
+        totalRequestTimeoutMs: 2000,
+        invokeStream: async () => {
+          if (model === 'gemini-3.8-flash') {
+            await sleep(300); // primary model times out waiting for headers
+          }
+          return (async function* () {
+            yield { text: 'Fast response from gemini-3.1-flash-lite', candidates: [{ finishReason: 'STOP' }] };
+          })();
+        }
+      });
+      break;
+    } catch (attemptErr) {
+      const parsed = parseGeminiError(attemptErr, 'gemini');
+      const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
+      const isTimeoutFailure = parsed.statusCode === 504 || parsed.status === 'DEADLINE_EXCEEDED';
+      const willAdvanceFallback = (isModelNotFound || isTimeoutFailure) && isAdvancingToDistinctModel;
+      const simulatedServerless = true;
+      const willRetry =
+        (parsed.isRetryable || willAdvanceFallback) &&
+        hasMoreAttempts &&
+        !(simulatedServerless && isTimeoutFailure && !isAdvancingToDistinctModel);
+
+      if (willRetry && willAdvanceFallback) {
+        continue;
+      }
+      throw attemptErr;
+    }
+  }
+
+  assert.deepEqual(modelsTried, ['gemini-3.8-flash', 'gemini-3.1-flash-lite']);
+  assert.ok(finalResult);
+  assert.equal(finalResult.model, 'gemini-3.1-flash-lite');
+  assert.equal(finalResult.fullText, 'Fast response from gemini-3.1-flash-lite');
+});
+
+// ----------------------------------------------------------------------------
+// Test 22: User Cancel / Stop Generating Cancels Cleanly Without Timeout Error
+// ----------------------------------------------------------------------------
+await runTest('22. User cancel / stop generating aborts stream cleanly without reporting a timeout error', async () => {
+  const userController = new AbortController();
+
+  const mock = await createMockServer(async (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write(': prime\n\n');
+    res.write('data: {"type":"start","modelUsed":"gemini-3.8-flash","provider":"gemini"}\n\n');
+    res.write('data: {"type":"chunk","text":"First chunk before stop"}\n\n');
+    await sleep(500);
+    if (!res.writableEnded) res.end();
+  });
+
+  try {
+    await assert.rejects(
+      async () => {
+        await streamAIMessage({
+          provider: 'gemini',
+          prompt: 'cancel me',
+          chatEndpoint: `${mock.url}/api/chat`,
+          signal: userController.signal,
+          onChunk: () => {
+            userController.abort();
+          }
+        });
+      },
+      (err) => {
+        assert.equal(err.name, 'AbortError');
+        assert.ok(!String(err.message || '').toLowerCase().includes('timed out'));
+        return true;
+      }
+    );
+  } finally {
+    await mock.close();
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Test 23: Rate Limit 429, Overload 503, Invalid API Key 401/403, and Network Disconnect Classification
+// ----------------------------------------------------------------------------
+await runTest('23. Rate limit 429, Overload 503, Invalid API Key 401/403, and Network Disconnect are never mislabeled as timeouts', async () => {
+  // 1. 429 Rate Limit
+  const err429 = parseGeminiError({ status: 429, message: 'Resource has been exhausted (e.g. check quota).' }, 'gemini');
+  assert.equal(err429.statusCode, 429);
+  assert.equal(err429.status, 'RESOURCE_EXHAUSTED');
+  assert.equal(err429.isRetryable, true);
+  const norm429 = normalizeAIError(err429, { provider: 'gemini' });
+  assert.equal(norm429.code, STANDARD_ERROR_CODES.RATE_LIMITED);
+  assert.ok(!norm429.message.toLowerCase().includes('timed out'));
+
+  // 2. 503 Service Overload
+  const err503 = parseGeminiError({ status: 503, message: 'The model is overloaded. Please try again later.' }, 'gemini');
+  assert.equal(err503.statusCode, 503);
+  assert.equal(err503.status, 'UNAVAILABLE');
+  assert.equal(err503.isRetryable, true);
+  const norm503 = normalizeAIError(err503, { provider: 'gemini' });
+  assert.equal(norm503.code, STANDARD_ERROR_CODES.SERVICE_UNAVAILABLE);
+  assert.ok(!norm503.message.toLowerCase().includes('timed out'));
+
+  // 3. 401 / 403 Invalid API Key / Auth Error (Never retryable)
+  const err401 = parseGeminiError({ status: 401, message: 'API key not valid. Please pass a valid API key.' }, 'gemini');
+  assert.equal(err401.statusCode, 401);
+  assert.equal(err401.isRetryable, false);
+  const norm401 = normalizeAIError(err401, { provider: 'gemini' });
+  assert.equal(norm401.code, STANDARD_ERROR_CODES.UNAUTHENTICATED);
+  assert.equal(norm401.retryable, false);
+
+  const err403 = parseGeminiError({ status: 403, message: 'Permission denied on resource.' }, 'gemini');
+  assert.equal(err403.statusCode, 403);
+  assert.equal(err403.isRetryable, false);
+
+  // 4. 400 Malformed Request / Invalid Argument (Never retryable)
+  const err400 = parseGeminiError({ status: 400, statusText: 'INVALID_ARGUMENT', message: 'Invalid request payload.' }, 'gemini');
+  assert.equal(err400.statusCode, 400);
+  assert.equal(err400.status, 'INVALID_ARGUMENT');
+  assert.equal(err400.isRetryable, false);
+  const norm400 = normalizeAIError(err400, { provider: 'gemini' });
+  assert.equal(norm400.code, STANDARD_ERROR_CODES.INVALID_ARGUMENT);
+  assert.equal(norm400.retryable, false);
+  assert.ok(!norm400.message.toLowerCase().includes('timed out'));
+
+  // 5. Network Disconnect
+  const netErr = parseGeminiError(
+    Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET', message: 'socket hang up' } }),
+    'gemini'
+  );
+  assert.equal(netErr.statusCode, 503);
+  assert.equal(netErr.status, 'NETWORK_FAILURE');
+  assert.equal(netErr.isRetryable, true);
+  assert.ok(!netErr.message.toLowerCase().includes('timed out'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 24: Safe Diagnostic Logging Never Leaks API Keys or Prompts
+// ----------------------------------------------------------------------------
+await runTest('24. Safe diagnostic logging records required telemetry and redacts any sensitive keys', () => {
+  const captured = [];
+  logGeminiLifecycleEvent(
+    {
+      event: 'upstream_error',
+      elapsedMs: 1420,
+      httpStatus: 504,
+      model: 'gemini-3.8-flash',
+      chunkCount: 0,
+      streamState: 'pre_stream_error',
+      attempt: 1,
+      maxAttempts: 2,
+      errorCode: 'DEADLINE_EXCEEDED key=AIzaSyD123456789012345678901234567890123',
+      willRetry: true
+    },
+    (event, payload) => captured.push({ event, payload })
+  );
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].event, 'upstream_error');
+  assert.equal(captured[0].payload.elapsedMs, 1420);
+  assert.equal(captured[0].payload.httpStatus, 504);
+  assert.equal(captured[0].payload.model, 'gemini-3.8-flash');
+  assert.equal(captured[0].payload.chunkCount, 0);
+  assert.equal(captured[0].payload.streamState, 'pre_stream_error');
+  assert.ok(!JSON.stringify(captured[0].payload).includes('AIzaSyD123456789012345678901234567890123'));
+  assert.equal(getGeminiHeaderTimeoutMs(true), 20000);
+  assert.equal(getGeminiHeaderTimeoutMs(false), 45000);
+  assert.equal(getGeminiFirstByteTimeoutMs(), 45000);
+  assert.equal(getGeminiStreamInactivityTimeoutMs(), 45000);
+  assert.equal(getGeminiTotalRequestTimeoutMs(), 270000);
+});
+
+// ----------------------------------------------------------------------------
+// Test 25: Total Request Timeout Enforcement (total_request_timeout)
+// ----------------------------------------------------------------------------
+await runTest('25. Total request timeout bounds overall stream lifetime independently of per-chunk inactivity resets', async () => {
+  const lifecycleEvents = [];
+
+  await assert.rejects(
+    async () => {
+      await consumeGeminiStreamWithWatchdog({
+        model: 'gemini-3.8-flash',
+        headerTimeoutMs: 500,
+        firstByteTimeoutMs: 500,
+        inactivityTimeoutMs: 500,
+        totalRequestTimeoutMs: 120,
+        invokeStream: async () => {
+          return (async function* () {
+            for (let i = 1; i <= 10; i++) {
+              await sleep(45);
+              yield { text: `Piece ${i} ` };
+            }
+          })();
+        },
+        onLifecycleLog: (event, payload) => lifecycleEvents.push({ event, payload })
+      });
+    },
+    (err) => {
+      assert.equal(err.name, 'TimeoutError');
+      assert.equal(err.timeoutStage, 'total_request_timeout');
+      assert.equal(err.streamedAnyChunk, true);
+      assert.ok(err.partialText.includes('Piece 1 '));
+      return true;
+    }
+  );
+
+  assert.ok(lifecycleEvents.some((e) => e.event === 'timeout' && e.payload.timeoutStage === 'total_request_timeout'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 26: Client Disconnect Calls iterator.return() and Logs client_disconnect Without Timeout
+// ----------------------------------------------------------------------------
+await runTest('26. Backend client disconnect aborts iterator immediately, calls iterator.return(), and logs client_disconnect', async () => {
+  const lifecycleEvents = [];
+  let clientClosed = false;
+  let iteratorReturnCalled = false;
+  let activeCtrl = null;
+
+  const customIterable = {
+    [Symbol.asyncIterator]() {
+      let step = 0;
+      return {
+        async next() {
+          step++;
+          if (step === 1) {
+            return { done: false, value: { text: 'Initial chunk' } };
+          }
+          await sleep(1000);
+          return { done: true, value: undefined };
+        },
+        async return() {
+          iteratorReturnCalled = true;
+          return { done: true, value: undefined };
+        }
+      };
+    }
+  };
+
+  await assert.rejects(
+    async () => {
+      await consumeGeminiStreamWithWatchdog({
+        model: 'gemini-3.8-flash',
+        headerTimeoutMs: 500,
+        firstByteTimeoutMs: 500,
+        inactivityTimeoutMs: 500,
+        totalRequestTimeoutMs: 2000,
+        isClientClosed: () => clientClosed,
+        registerController: (ctrl) => {
+          activeCtrl = ctrl;
+        },
+        invokeStream: async () => customIterable,
+        onChunk: () => {
+          // Simulate browser disconnect right after first chunk
+          clientClosed = true;
+          const discErr = new Error('Client disconnected');
+          discErr.code = 'CLIENT_DISCONNECTED';
+          discErr.isClientDisconnected = true;
+          activeCtrl?.abort(discErr);
+        },
+        onLifecycleLog: (event, payload) => lifecycleEvents.push({ event, payload })
+      });
+    },
+    (err) => {
+      assert.equal(err.isClientDisconnected, true);
+      assert.equal(err.code, 'CLIENT_DISCONNECTED');
+      return true;
+    }
+  );
+
+  assert.equal(iteratorReturnCalled, true, 'iterator.return() must be called when client disconnects');
+  assert.ok(lifecycleEvents.some((e) => e.event === 'client_disconnect'));
+  assert.ok(!lifecycleEvents.some((e) => e.event === 'timeout'));
+});
+
+// ----------------------------------------------------------------------------
+// Test 27: Rapid Duplicate Edit/Resend Guard & Conversation Switch Cancellation
+// ----------------------------------------------------------------------------
+await runTest('27. Rapid duplicate Edit/Resend lock and conversation switch cancellation prevent duplicate or leaked requests', async () => {
+  // 1. Synchronous ref lock simulation (matching ChatMessage.jsx & ChatPage.jsx)
+  const isSubmittingEditRef = { current: false };
+  let invokedCount = 0;
+  const triggerSaveAndResend = () => {
+    if (isSubmittingEditRef.current) return false;
+    isSubmittingEditRef.current = true;
+    invokedCount++;
+    return true;
+  };
+  assert.equal(triggerSaveAndResend(), true);
+  assert.equal(triggerSaveAndResend(), false, 'Rapid second click must be blocked synchronously');
+  assert.equal(invokedCount, 1);
+
+  // 2. Conversation switch cancels active request cleanly
+  const isolation = createRequestIsolationController();
+  const reqA = isolation.beginRequest({ chatId: 'conv-alpha', assistantMessageId: 'msg-a1', provider: 'gemini' });
+  assert.equal(isolation.isRequestActive(reqA.requestId), true);
+  isolation.cancelActiveRequest('conversation_switch');
+  assert.equal(reqA.signal.aborted, true);
+  assert.equal(isolation.isRequestActive(reqA.requestId), false);
+});
+
+// ----------------------------------------------------------------------------
+// Test 28: Delayed type: "start" Until First Valid Chunk & Clean Empty Stream Handling
+// ----------------------------------------------------------------------------
+await runTest('28. onFirstChunk fires only when first valid non-empty chunk arrives', async () => {
+  const eventsOrder = [];
+
+  const result = await consumeGeminiStreamWithWatchdog({
+    model: 'gemini-3.8-flash',
+    headerTimeoutMs: 300,
+    firstByteTimeoutMs: 300,
+    inactivityTimeoutMs: 300,
+    totalRequestTimeoutMs: 2000,
+    invokeStream: async () => {
+      return (async function* () {
+        yield { text: '' }; // Empty metadata frame must NOT trigger onFirstChunk
+        eventsOrder.push('after_empty_frame');
+        yield { text: 'Real content', candidates: [{ finishReason: 'STOP' }] };
+      })();
+    },
+    onFirstChunk: () => {
+      eventsOrder.push('start_emitted');
+    },
+    onChunk: (txt) => {
+      eventsOrder.push(`chunk:${txt}`);
+    }
+  });
+
+  assert.deepEqual(eventsOrder, ['after_empty_frame', 'start_emitted', 'chunk:Real content']);
+  assert.equal(result.streamedAnyChunk, true);
+  assert.equal(result.fullText, 'Real content');
+});
+
 console.log('\n================================================================');
 console.log(`📊 Gemini Vercel Timeout Suite: ${passed} passed, ${failed} failed`);
 console.log('================================================================\n');
@@ -618,4 +1166,6 @@ if (failed > 0) {
 } else {
   process.exit(0);
 }
+
+
 

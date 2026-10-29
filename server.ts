@@ -305,6 +305,205 @@ export function getUpstreamHeadersTimeoutMs(): number {
   return isServerless ? SERVERLESS_UPSTREAM_HEADERS_TIMEOUT_MS : DEFAULT_UPSTREAM_HEADERS_TIMEOUT_MS;
 }
 
+// Distinct Gemini timeout tiers:
+// A. Connection/Header timeout: time allowed before Gemini returns initial HTTP response/stream headers
+export const GEMINI_HEADER_TIMEOUT_MS = 45_000;
+export const GEMINI_PRIMARY_FAILOVER_HEADER_TIMEOUT_MS = 20_000;
+// B. First-byte timeout: time allowed waiting for the first valid stream chunk after headers arrive
+export const GEMINI_FIRST_BYTE_TIMEOUT_MS = 45_000;
+// C. Stream inactivity timeout: maximum period with no incoming chunk; resets whenever a valid chunk arrives
+export const GEMINI_STREAM_INACTIVITY_TIMEOUT_MS = 45_000;
+// D. Total request timeout: maximum overall lifetime of the complete Gemini request (within Vercel maxDuration=300s)
+export const GEMINI_TOTAL_REQUEST_TIMEOUT_MS = 270_000;
+// Non-streaming unary generation timeout
+export const GEMINI_UNARY_TIMEOUT_MS = 90_000;
+
+export function getGeminiHeaderTimeoutMs(hasFallbackModel = false): number {
+  const explicitGemini = Number(process.env.ORVIX_GEMINI_HEADER_TIMEOUT_MS);
+  if (Number.isFinite(explicitGemini) && explicitGemini > 0) {
+    return Math.floor(explicitGemini);
+  }
+  const explicitUpstream = Number(process.env.ORVIX_UPSTREAM_HEADERS_TIMEOUT_MS);
+  if (Number.isFinite(explicitUpstream) && explicitUpstream > 0) {
+    return Math.floor(explicitUpstream);
+  }
+  return hasFallbackModel ? GEMINI_PRIMARY_FAILOVER_HEADER_TIMEOUT_MS : GEMINI_HEADER_TIMEOUT_MS;
+}
+
+export function getGeminiFirstByteTimeoutMs(): number {
+  const raw = Number(process.env.ORVIX_GEMINI_FIRST_BYTE_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  return GEMINI_FIRST_BYTE_TIMEOUT_MS;
+}
+
+export function getGeminiStreamInactivityTimeoutMs(): number {
+  const raw = Number(process.env.ORVIX_GEMINI_STREAM_INACTIVITY_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  return GEMINI_STREAM_INACTIVITY_TIMEOUT_MS;
+}
+
+export function getGeminiTotalRequestTimeoutMs(): number {
+  const raw = Number(
+    process.env.ORVIX_GEMINI_TOTAL_REQUEST_TIMEOUT_MS ||
+      process.env.ORVIX_GEMINI_TOTAL_TIMEOUT_MS
+  );
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  return GEMINI_TOTAL_REQUEST_TIMEOUT_MS;
+}
+
+export function getGeminiUnaryTimeoutMs(hasFallbackModel = false): number {
+  const raw = Number(process.env.ORVIX_GEMINI_UNARY_TIMEOUT_MS);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  const explicitUpstream = Number(process.env.ORVIX_UPSTREAM_HEADERS_TIMEOUT_MS);
+  if (Number.isFinite(explicitUpstream) && explicitUpstream > 0) {
+    return Math.floor(explicitUpstream);
+  }
+  return hasFallbackModel ? 30_000 : GEMINI_UNARY_TIMEOUT_MS;
+}
+
+export type GeminiLifecycleEventName =
+  | 'request_start'
+  | 'upstream_fetch_start'
+  | 'upstream_headers_received'
+  | 'first_chunk_received'
+  | 'chunk_received'
+  | 'upstream_complete'
+  | 'upstream_error'
+  | 'timeout'
+  | 'client_disconnect';
+
+export type GeminiTimeoutStage =
+  | 'header_timeout'
+  | 'first_byte_timeout'
+  | 'stream_inactivity_timeout'
+  | 'total_request_timeout'
+  | 'unary_timeout';
+
+export interface GeminiLifecycleLogEntry {
+  event: GeminiLifecycleEventName;
+  elapsedMs: number;
+  httpStatus?: number | null;
+  model?: string | null;
+  chunkCount?: number;
+  streamState: string;
+  attempt?: number;
+  maxAttempts?: number;
+  timeoutStage?: GeminiTimeoutStage;
+  timeoutMs?: number;
+  errorCode?: string;
+  willRetry?: boolean;
+  finishReason?: string | null;
+}
+
+/**
+ * Safe diagnostic logger for Gemini request lifecycle events.
+ * Logs elapsed milliseconds, HTTP status, model, chunk count, and stream state.
+ * Never logs API keys, auth headers, user secrets, full user prompts, or full Gemini responses.
+ */
+export function logGeminiLifecycleEvent(
+  entry: GeminiLifecycleLogEntry,
+  customSink?: (event: GeminiLifecycleEventName, payload: GeminiLifecycleLogEntry) => void
+) {
+  const safeEntry: GeminiLifecycleLogEntry = {
+    event: entry.event,
+    elapsedMs: Math.max(0, Math.round(Number(entry.elapsedMs) || 0)),
+    httpStatus: entry.httpStatus ?? null,
+    model: entry.model || 'gemini-3.8-flash',
+    chunkCount: typeof entry.chunkCount === 'number' ? entry.chunkCount : 0,
+    streamState: entry.streamState || 'idle',
+    ...(typeof entry.attempt === 'number' ? { attempt: entry.attempt } : {}),
+    ...(typeof entry.maxAttempts === 'number' ? { maxAttempts: entry.maxAttempts } : {}),
+    ...(entry.timeoutStage ? { timeoutStage: entry.timeoutStage } : {}),
+    ...(typeof entry.timeoutMs === 'number' ? { timeoutMs: entry.timeoutMs } : {}),
+    ...(entry.errorCode ? { errorCode: sanitizeErrorLog(String(entry.errorCode)) } : {}),
+    ...(typeof entry.willRetry === 'boolean' ? { willRetry: entry.willRetry } : {}),
+    ...(entry.finishReason ? { finishReason: String(entry.finishReason) } : {})
+  };
+
+  if (typeof customSink === 'function') {
+    try {
+      customSink(entry.event, safeEntry);
+    } catch (_) {}
+  }
+
+  // Avoid noisy per-chunk console spam in automated test suites unless explicitly enabled,
+  // while always emitting key lifecycle transitions or when ORVIX_DEBUG_GEMINI_LOGS=1.
+  const isSilentTest = process.env.TESTING === '1' && process.env.ORVIX_DEBUG_GEMINI_LOGS !== '1';
+  if (isSilentTest && entry.event === 'chunk_received') {
+    return safeEntry;
+  }
+  if (!isSilentTest || process.env.ORVIX_DEBUG_GEMINI_LOGS === '1') {
+    const parts = [
+      `elapsedMs=${safeEntry.elapsedMs}`,
+      `httpStatus=${safeEntry.httpStatus ?? 'N/A'}`,
+      `model=${safeEntry.model}`,
+      `chunkCount=${safeEntry.chunkCount}`,
+      `streamState=${safeEntry.streamState}`
+    ];
+    if (safeEntry.attempt !== undefined && safeEntry.maxAttempts !== undefined) {
+      parts.push(`attempt=${safeEntry.attempt}/${safeEntry.maxAttempts}`);
+    }
+    if (safeEntry.timeoutStage) {
+      parts.push(`timeoutStage=${safeEntry.timeoutStage}`);
+    }
+    if (safeEntry.timeoutMs !== undefined) {
+      parts.push(`timeoutMs=${safeEntry.timeoutMs}`);
+    }
+    if (safeEntry.errorCode) {
+      parts.push(`errorCode=${safeEntry.errorCode}`);
+    }
+    if (safeEntry.willRetry !== undefined) {
+      parts.push(`willRetry=${safeEntry.willRetry}`);
+    }
+    if (safeEntry.finishReason) {
+      parts.push(`finishReason=${safeEntry.finishReason}`);
+    }
+    const logFn = entry.event === 'upstream_error' || entry.event === 'timeout' ? console.warn : console.info;
+    logFn(`[Gemini] ${entry.event} | ${parts.join(' | ')}`);
+  }
+
+  return safeEntry;
+}
+
+export function createGeminiStageTimeoutError(
+  stage: GeminiTimeoutStage,
+  timeoutMs: number,
+  streamedAnyChunk = false
+): Error {
+  const seconds = Math.max(0.1, Math.round((timeoutMs / 1000) * 10) / 10);
+  let stageDescription = 'waiting for initial response headers';
+  if (stage === 'first_byte_timeout') {
+    stageDescription = 'waiting for the first response chunk';
+  } else if (stage === 'stream_inactivity_timeout') {
+    stageDescription = 'due to stream inactivity';
+  } else if (stage === 'total_request_timeout') {
+    stageDescription = 'after reaching maximum request lifetime';
+  } else if (stage === 'unary_timeout') {
+    stageDescription = 'waiting for response generation';
+  }
+
+  const err: any = new Error(
+    `The request to Google Gemini timed out after ${seconds}s ${stageDescription}. Please try again.`
+  );
+  err.name = 'TimeoutError';
+  err.status = 504;
+  err.code = 'DEADLINE_EXCEEDED';
+  err.timeoutStage = stage;
+  err.timeoutMs = timeoutMs;
+  err.isUpstreamHeadersTimeout = stage === 'header_timeout';
+  err.isGeminiTimeout = true;
+  err.streamedAnyChunk = streamedAnyChunk;
+  return err;
+}
+
 export function isDemoModeEnabled(): boolean {
   return String(process.env.ORVIX_ENABLE_DEMO_MODE || '').trim().toLowerCase() === 'true';
 }
@@ -448,6 +647,7 @@ function createRequestUpstreamGuard(req: express.Request, res: express.Response)
   };
 
   res.on('close', onResClose);
+  req.on('close', onResClose);
   req.on('aborted', onReqAborted);
 
   const isClientDisconnected = (err?: any): boolean => {
@@ -577,10 +777,25 @@ function createRequestUpstreamGuard(req: express.Request, res: express.Response)
     }
   };
 
+  const registerController = (ctrl: AbortController) => {
+    if (clientDisconnected) {
+      try {
+        ctrl.abort(createClientDisconnectedError());
+      } catch (_) {}
+      return;
+    }
+    activeControllers.add(ctrl);
+  };
+
+  const unregisterController = (ctrl: AbortController) => {
+    activeControllers.delete(ctrl);
+  };
+
   const cleanup = () => {
     if (cleanedUp) return;
     cleanedUp = true;
     res.off('close', onResClose);
+    req.off('close', onResClose);
     req.off('aborted', onReqAborted);
     for (const timer of activeTimers) {
       clearTimeout(timer);
@@ -602,8 +817,445 @@ function createRequestUpstreamGuard(req: express.Request, res: express.Response)
     isUpstreamTimeout,
     fetchUpstream,
     callGeminiWithGuard,
+    registerController,
+    unregisterController,
     cleanup
   };
+}
+
+export interface ConsumeGeminiStreamOptions {
+  invokeStream: (signal: AbortSignal) => Promise<AsyncIterable<any>>;
+  model: string;
+  attemptNum?: number;
+  maxAttempts?: number;
+  requestStartTime?: number;
+  headerTimeoutMs?: number;
+  firstByteTimeoutMs?: number;
+  inactivityTimeoutMs?: number;
+  totalRequestTimeoutMs?: number;
+  isClientClosed?: () => boolean;
+  registerController?: (ctrl: AbortController) => void;
+  unregisterController?: (ctrl: AbortController) => void;
+  onFirstChunk?: (info: { model: string; elapsedMs: number }) => void;
+  onChunk?: (chunkText: string, rawChunk: any, meta: { chunkCount: number; elapsedMs: number }) => void;
+  onLifecycleLog?: (event: GeminiLifecycleEventName, payload: GeminiLifecycleLogEntry) => void;
+}
+
+export interface ConsumeGeminiStreamResult {
+  fullText: string;
+  chunkCount: number;
+  streamedAnyChunk: boolean;
+  lastFinishReason: string | null;
+  model: string;
+}
+
+/**
+ * Consumes a Gemini streaming response with 4 distinct, non-conflated timeout tiers:
+ *  1. Header timeout (bounds `generateContentStream` connection/header acquisition)
+ *  2. First-byte timeout (bounds wait for the first chunk from `iterator.next()`, cleared on first chunk)
+ *  3. Stream inactivity timeout (bounds idle gap between chunks, RESETTING on every incoming chunk)
+ *  4. Total request timeout (bounds overall request lifetime across the stream)
+ */
+export async function consumeGeminiStreamWithWatchdog(
+  options: ConsumeGeminiStreamOptions
+): Promise<ConsumeGeminiStreamResult> {
+  const {
+    invokeStream,
+    model,
+    attemptNum = 1,
+    maxAttempts = 1,
+    requestStartTime = Date.now(),
+    headerTimeoutMs = getGeminiHeaderTimeoutMs(false),
+    firstByteTimeoutMs = getGeminiFirstByteTimeoutMs(),
+    inactivityTimeoutMs = getGeminiStreamInactivityTimeoutMs(),
+    totalRequestTimeoutMs = getGeminiTotalRequestTimeoutMs(),
+    isClientClosed = () => false,
+    registerController,
+    unregisterController,
+    onFirstChunk,
+    onChunk,
+    onLifecycleLog
+  } = options;
+
+  const elapsed = () => Math.max(0, Date.now() - requestStartTime);
+  const remainingTotal = () => totalRequestTimeoutMs - elapsed();
+
+  if (isClientClosed()) {
+    logGeminiLifecycleEvent(
+      {
+        event: 'client_disconnect',
+        elapsedMs: elapsed(),
+        httpStatus: null,
+        model,
+        chunkCount: 0,
+        streamState: 'aborted_before_start',
+        attempt: attemptNum,
+        maxAttempts
+      },
+      onLifecycleLog
+    );
+    throw createClientDisconnectedError();
+  }
+
+  if (remainingTotal() <= 0) {
+    const totalErr = createGeminiStageTimeoutError('total_request_timeout', totalRequestTimeoutMs, false);
+    logGeminiLifecycleEvent(
+      {
+        event: 'timeout',
+        elapsedMs: elapsed(),
+        httpStatus: 504,
+        model,
+        chunkCount: 0,
+        streamState: 'expired_before_fetch',
+        attempt: attemptNum,
+        maxAttempts,
+        timeoutStage: 'total_request_timeout',
+        timeoutMs: totalRequestTimeoutMs
+      },
+      onLifecycleLog
+    );
+    throw totalErr;
+  }
+
+  const attemptController = new AbortController();
+  registerController?.(attemptController);
+
+  let headerTimer: ReturnType<typeof setTimeout> | null = null;
+  let chunkTimer: ReturnType<typeof setTimeout> | null = null;
+  let iterator: AsyncIterator<any> | null = null;
+  let fullText = '';
+  let chunkCount = 0;
+  let streamedAnyChunk = false;
+  let lastFinishReason: string | null = null;
+
+  const disconnectAbortPromise = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      const reason = attemptController.signal.reason;
+      if (isClientClosed() || reason?.isClientDisconnected || reason?.code === 'CLIENT_DISCONNECTED') {
+        reject(createClientDisconnectedError());
+      }
+    };
+    if (attemptController.signal.aborted) {
+      onAbort();
+    } else {
+      attemptController.signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  // Prevent unhandled rejection if disconnectAbortPromise is never raced or loses race
+  disconnectAbortPromise.catch(() => {});
+
+  const clearTimers = () => {
+    if (headerTimer) {
+      clearTimeout(headerTimer);
+      headerTimer = null;
+    }
+    if (chunkTimer) {
+      clearTimeout(chunkTimer);
+      chunkTimer = null;
+    }
+  };
+
+  try {
+    logGeminiLifecycleEvent(
+      {
+        event: 'upstream_fetch_start',
+        elapsedMs: elapsed(),
+        httpStatus: null,
+        model,
+        chunkCount: 0,
+        streamState: 'connecting',
+        attempt: attemptNum,
+        maxAttempts
+      },
+      onLifecycleLog
+    );
+
+    const effectiveHeaderTimeoutMs = Math.max(1, Math.min(headerTimeoutMs, remainingTotal()));
+    const headerTimeoutStage: GeminiTimeoutStage =
+      remainingTotal() < headerTimeoutMs ? 'total_request_timeout' : 'header_timeout';
+
+    const headerTimeoutPromise = new Promise<never>((_resolve, reject) => {
+      headerTimer = setTimeout(() => {
+        headerTimer = null;
+        if (isClientClosed()) {
+          reject(createClientDisconnectedError());
+          return;
+        }
+        const tErr = createGeminiStageTimeoutError(headerTimeoutStage, effectiveHeaderTimeoutMs, false);
+        try {
+          attemptController.abort(tErr);
+        } catch (_) {}
+        reject(tErr);
+      }, effectiveHeaderTimeoutMs);
+    });
+
+    const responseStream = await Promise.race([
+      invokeStream(attemptController.signal),
+      headerTimeoutPromise,
+      disconnectAbortPromise
+    ]);
+
+    if (headerTimer) {
+      clearTimeout(headerTimer);
+      headerTimer = null;
+    }
+
+    if (isClientClosed()) {
+      logGeminiLifecycleEvent(
+        {
+          event: 'client_disconnect',
+          elapsedMs: elapsed(),
+          httpStatus: 200,
+          model,
+          chunkCount: 0,
+          streamState: 'headers_received',
+          attempt: attemptNum,
+          maxAttempts
+        },
+        onLifecycleLog
+      );
+      throw createClientDisconnectedError();
+    }
+
+    logGeminiLifecycleEvent(
+      {
+        event: 'upstream_headers_received',
+        elapsedMs: elapsed(),
+        httpStatus: 200,
+        model,
+        chunkCount: 0,
+        streamState: 'headers_received',
+        attempt: attemptNum,
+        maxAttempts
+      },
+      onLifecycleLog
+    );
+
+    iterator = responseStream[Symbol.asyncIterator]();
+
+    while (true) {
+      if (isClientClosed()) {
+        logGeminiLifecycleEvent(
+          {
+            event: 'client_disconnect',
+            elapsedMs: elapsed(),
+            httpStatus: 200,
+            model,
+            chunkCount,
+            streamState: streamedAnyChunk ? 'streaming' : 'waiting_first_byte',
+            attempt: attemptNum,
+            maxAttempts
+          },
+          onLifecycleLog
+        );
+        throw createClientDisconnectedError();
+      }
+
+      const remTotalMs = remainingTotal();
+      if (remTotalMs <= 0) {
+        const totalErr = createGeminiStageTimeoutError(
+          'total_request_timeout',
+          totalRequestTimeoutMs,
+          streamedAnyChunk
+        );
+        try {
+          attemptController.abort(totalErr);
+        } catch (_) {}
+        throw totalErr;
+      }
+
+      const isWaitingFirstByte = !streamedAnyChunk;
+      const desiredStageTimeoutMs = isWaitingFirstByte ? firstByteTimeoutMs : inactivityTimeoutMs;
+      const effectiveChunkTimeoutMs = Math.max(1, Math.min(desiredStageTimeoutMs, remTotalMs));
+      const chunkTimeoutStage: GeminiTimeoutStage =
+        remTotalMs < desiredStageTimeoutMs
+          ? 'total_request_timeout'
+          : isWaitingFirstByte
+          ? 'first_byte_timeout'
+          : 'stream_inactivity_timeout';
+
+      const nextChunkTimeoutPromise = new Promise<never>((_resolve, reject) => {
+        chunkTimer = setTimeout(() => {
+          chunkTimer = null;
+          if (isClientClosed()) {
+            reject(createClientDisconnectedError());
+            return;
+          }
+          const cErr = createGeminiStageTimeoutError(
+            chunkTimeoutStage,
+            effectiveChunkTimeoutMs,
+            streamedAnyChunk
+          );
+          try {
+            attemptController.abort(cErr);
+          } catch (_) {}
+          reject(cErr);
+        }, effectiveChunkTimeoutMs);
+      });
+
+      const { done, value } = await Promise.race([
+        iterator.next(),
+        nextChunkTimeoutPromise,
+        disconnectAbortPromise
+      ]);
+
+      // Reset the stream inactivity / first-byte timer immediately upon receiving a chunk or stream completion
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = null;
+      }
+
+      if (isClientClosed()) {
+        logGeminiLifecycleEvent(
+          {
+            event: 'client_disconnect',
+            elapsedMs: elapsed(),
+            httpStatus: 200,
+            model,
+            chunkCount,
+            streamState: streamedAnyChunk ? 'streaming' : 'waiting_first_byte',
+            attempt: attemptNum,
+            maxAttempts
+          },
+          onLifecycleLog
+        );
+        throw createClientDisconnectedError();
+      }
+
+      if (done) {
+        break;
+      }
+
+      const candidate = value?.candidates?.[0];
+      const finishReason = candidate?.finishReason || (value as any)?.promptFeedback?.blockReason;
+      if (finishReason) {
+        lastFinishReason = finishReason;
+      }
+
+      let chunkText = '';
+      try {
+        chunkText = value?.text || '';
+      } catch (textAccessErr: any) {
+        if (String(textAccessErr?.message || '').toLowerCase().includes('safety')) {
+          lastFinishReason = 'SAFETY';
+        }
+      }
+
+      if (chunkText) {
+        chunkCount++;
+        const isFirstChunk = !streamedAnyChunk;
+        streamedAnyChunk = true;
+        fullText += chunkText;
+
+        if (isFirstChunk) {
+          logGeminiLifecycleEvent(
+            {
+              event: 'first_chunk_received',
+              elapsedMs: elapsed(),
+              httpStatus: 200,
+              model,
+              chunkCount,
+              streamState: 'streaming',
+              attempt: attemptNum,
+              maxAttempts
+            },
+            onLifecycleLog
+          );
+          onFirstChunk?.({ model, elapsedMs: elapsed() });
+        } else {
+          logGeminiLifecycleEvent(
+            {
+              event: 'chunk_received',
+              elapsedMs: elapsed(),
+              httpStatus: 200,
+              model,
+              chunkCount,
+              streamState: 'streaming',
+              attempt: attemptNum,
+              maxAttempts
+            },
+            onLifecycleLog
+          );
+        }
+
+        onChunk?.(chunkText, value, { chunkCount, elapsedMs: elapsed() });
+      }
+    }
+
+    logGeminiLifecycleEvent(
+      {
+        event: 'upstream_complete',
+        elapsedMs: elapsed(),
+        httpStatus: 200,
+        model,
+        chunkCount,
+        streamState: 'completed',
+        attempt: attemptNum,
+        maxAttempts,
+        finishReason: lastFinishReason
+      },
+      onLifecycleLog
+    );
+
+    return {
+      fullText,
+      chunkCount,
+      streamedAnyChunk,
+      lastFinishReason,
+      model
+    };
+  } catch (err: any) {
+    clearTimers();
+    try {
+      await iterator?.return?.();
+    } catch (_) {}
+
+    if (isClientClosed() || err?.isClientDisconnected) {
+      logGeminiLifecycleEvent(
+        {
+          event: 'client_disconnect',
+          elapsedMs: elapsed(),
+          httpStatus: 200,
+          model,
+          chunkCount,
+          streamState: streamedAnyChunk ? 'streaming' : 'waiting_response',
+          attempt: attemptNum,
+          maxAttempts
+        },
+        onLifecycleLog
+      );
+      throw createClientDisconnectedError();
+    }
+
+    if (err && typeof err === 'object') {
+      err.streamedAnyChunk = streamedAnyChunk;
+      err.partialText = fullText;
+      err.chunkCount = chunkCount;
+    }
+
+    if (err?.isGeminiTimeout || err?.name === 'TimeoutError' || err?.code === 'DEADLINE_EXCEEDED') {
+      logGeminiLifecycleEvent(
+        {
+          event: 'timeout',
+          elapsedMs: elapsed(),
+          httpStatus: 504,
+          model,
+          chunkCount,
+          streamState: streamedAnyChunk ? 'streaming_stalled' : 'waiting_response',
+          attempt: attemptNum,
+          maxAttempts,
+          timeoutStage: err?.timeoutStage || (streamedAnyChunk ? 'stream_inactivity_timeout' : 'header_timeout'),
+          timeoutMs: err?.timeoutMs
+        },
+        onLifecycleLog
+      );
+    }
+
+    throw err;
+  } finally {
+    clearTimers();
+    unregisterController?.(attemptController);
+  }
 }
 
 // Parses and normalizes API errors into clean user-facing representations across all providers
@@ -3357,14 +4009,62 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         targetGeminiTokens = 1024;
       }
 
+      const geminiRequestStartTime = Date.now();
+      const totalRequestTimeoutMs = getGeminiTotalRequestTimeoutMs();
+
+      logGeminiLifecycleEvent({
+        event: 'request_start',
+        elapsedMs: 0,
+        httpStatus: null,
+        model: requestedGeminiModel,
+        chunkCount: 0,
+        streamState: shouldStream ? 'sse_init' : 'unary_init',
+        attempt: 1,
+        maxAttempts
+      });
+
       if (!shouldStream) {
         let lastParsedErr = null;
 
         for (let i = 0; i < attemptPlan.length; i++) {
-          if (upstreamGuard.isClientClosed()) return;
+          if (upstreamGuard.isClientClosed()) {
+            logGeminiLifecycleEvent({
+              event: 'client_disconnect',
+              elapsedMs: Date.now() - geminiRequestStartTime,
+              httpStatus: null,
+              model: attemptPlan[i].model,
+              chunkCount: 0,
+              streamState: 'unary_aborted',
+              attempt: attemptPlan[i].attemptNum,
+              maxAttempts
+            });
+            return;
+          }
           const { model, attemptNum } = attemptPlan[i];
+          const hasMoreAttempts = i < attemptPlan.length - 1;
+          const nextModel = hasMoreAttempts ? attemptPlan[i + 1]?.model : null;
+          const isAdvancingToDistinctModel = Boolean(hasMoreAttempts && nextModel && nextModel !== model);
 
           try {
+            logGeminiLifecycleEvent({
+              event: 'upstream_fetch_start',
+              elapsedMs: Date.now() - geminiRequestStartTime,
+              httpStatus: null,
+              model,
+              chunkCount: 0,
+              streamState: 'unary_fetching',
+              attempt: attemptNum,
+              maxAttempts
+            });
+
+            const unaryTimeoutMs = Math.max(
+              1000,
+              Math.min(
+                getGeminiUnaryTimeoutMs(isAdvancingToDistinctModel),
+                totalRequestTimeoutMs - (Date.now() - geminiRequestStartTime)
+              )
+            );
+
             const response = await upstreamGuard.callGeminiWithGuard(
               (signal) =>
                 ai.models.generateContent({
@@ -3377,10 +4077,21 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                     temperature: 0.7
                   }
                 }),
-              { provider: 'gemini' }
+              { provider: 'gemini', headersTimeoutMs: unaryTimeoutMs }
             );
 
             if (upstreamGuard.isClientClosed()) return;
+
+            logGeminiLifecycleEvent({
+              event: 'upstream_headers_received',
+              elapsedMs: Date.now() - geminiRequestStartTime,
+              httpStatus: 200,
+              model,
+              chunkCount: 1,
+              streamState: 'unary_received',
+              attempt: attemptNum,
+              maxAttempts
+            });
 
             const candidate = response?.candidates?.[0];
             const finishReason = candidate?.finishReason || (response as any)?.promptFeedback?.blockReason;
@@ -3418,6 +4129,18 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
 
             if (finalText) {
+              logGeminiLifecycleEvent({
+                event: 'upstream_complete',
+                elapsedMs: Date.now() - geminiRequestStartTime,
+                httpStatus: 200,
+                model,
+                chunkCount: 1,
+                streamState: 'completed',
+                attempt: attemptNum,
+                maxAttempts,
+                finishReason: finishReason || null
+              });
+
               const isTruncated = finishReason === 'MAX_TOKENS';
               if ((isTruncated || isLikelyLarge) && !isContinuation && !responseHasContinuationNotice(finalText)) {
                 finalText += CONTINUATION_NOTICES.PART_1;
@@ -3432,20 +4155,45 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             }
           } catch (err: any) {
             if (upstreamGuard.isClientDisconnected(err)) {
+              logGeminiLifecycleEvent({
+                event: 'client_disconnect',
+                elapsedMs: Date.now() - geminiRequestStartTime,
+                httpStatus: null,
+                model,
+                chunkCount: 0,
+                streamState: 'unary_aborted',
+                attempt: attemptNum,
+                maxAttempts
+              });
               return;
             }
             const parsed = parseGeminiError(err, 'gemini');
             lastParsedErr = parsed;
-            const hasMoreAttempts = i < attemptPlan.length - 1;
 
             const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
-            const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
             const isTimeoutFailure = parsed.statusCode === 504 || parsed.status === 'DEADLINE_EXCEEDED';
+            const willAdvanceFallback = (isModelNotFound || isTimeoutFailure) && isAdvancingToDistinctModel;
+            const remainingBudgetMs = totalRequestTimeoutMs - (Date.now() - geminiRequestStartTime);
             const willRetry =
               (parsed.isRetryable || willAdvanceFallback) &&
               hasMoreAttempts &&
+              remainingBudgetMs > 5000 &&
               !upstreamGuard.isClientClosed() &&
-              !(isServerless && isTimeoutFailure);
+              !(isServerless && isTimeoutFailure && !isAdvancingToDistinctModel);
+
+            logGeminiLifecycleEvent({
+              event: isTimeoutFailure ? 'timeout' : 'upstream_error',
+              elapsedMs: Date.now() - geminiRequestStartTime,
+              httpStatus: parsed.statusCode,
+              model,
+              chunkCount: 0,
+              streamState: 'unary_error',
+              attempt: attemptNum,
+              maxAttempts,
+              ...(isTimeoutFailure ? { timeoutStage: 'unary_timeout' as const } : {}),
+              errorCode: parsed.status,
+              willRetry
+            });
 
             logAIDiagnostic({
               category: parsed.category,
@@ -3476,7 +4224,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
             if (willRetry) {
               if (willAdvanceFallback) {
-                // Immediately try fallback model without delay
+                // Immediately advance to the distinct fallback model without delay
                 continue;
               }
               const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);
@@ -3521,13 +4269,27 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
         for (let i = 0; i < attemptPlan.length; i++) {
           if (upstreamGuard.isClientClosed() || res.writableEnded) {
             stopHeartbeat();
+            logGeminiLifecycleEvent({
+              event: 'client_disconnect',
+              elapsedMs: Date.now() - geminiRequestStartTime,
+              httpStatus: 200,
+              model: attemptPlan[i].model,
+              chunkCount: 0,
+              streamState: 'aborted_before_attempt',
+              attempt: attemptPlan[i].attemptNum,
+              maxAttempts
+            });
             return;
           }
           const { model, attemptNum } = attemptPlan[i];
+          const hasMoreAttempts = i < attemptPlan.length - 1;
+          const nextModel = hasMoreAttempts ? attemptPlan[i + 1]?.model : null;
+          const isAdvancingToDistinctModel = Boolean(hasMoreAttempts && nextModel && nextModel !== model);
+          let sentStartEvent = false;
 
           try {
-            const responseStream = await upstreamGuard.callGeminiWithGuard(
-              (signal) =>
+            const streamResult = await consumeGeminiStreamWithWatchdog({
+              invokeStream: (signal) =>
                 ai.models.generateContentStream({
                   model,
                   contents,
@@ -3538,90 +4300,108 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                     temperature: 0.7
                   }
                 }),
-              { provider: 'gemini' }
-            );
+              model,
+              attemptNum,
+              maxAttempts,
+              requestStartTime: geminiRequestStartTime,
+              headerTimeoutMs: getGeminiHeaderTimeoutMs(isAdvancingToDistinctModel),
+              firstByteTimeoutMs: getGeminiFirstByteTimeoutMs(),
+              inactivityTimeoutMs: getGeminiStreamInactivityTimeoutMs(),
+              totalRequestTimeoutMs,
+              isClientClosed: () => upstreamGuard.isClientClosed() || res.writableEnded,
+              registerController: (ctrl) => upstreamGuard.registerController(ctrl),
+              unregisterController: (ctrl) => upstreamGuard.unregisterController(ctrl),
+              onFirstChunk: () => {
+                if (!sentStartEvent && !res.writableEnded) {
+                  sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
+                  sentStartEvent = true;
+                }
+              },
+              onChunk: (chunkText) => {
+                streamedAnyChunk = true;
+                if (!res.writableEnded) {
+                  sendSSE(res, { type: 'chunk', text: chunkText });
+                }
+              }
+            });
 
-            if (upstreamGuard.isClientClosed() || res.writableEnded) {
+            stopHeartbeat();
+
+            if (!upstreamGuard.isClientClosed() && !res.writableEnded) {
+              const { fullText: rawFullText, lastFinishReason } = streamResult;
+              let fullText = rawFullText;
+
+              // If blocked by SAFETY with no text, send error
+              if (lastFinishReason === 'SAFETY' && fullText.trim().length === 0) {
+                sendSSE(res, {
+                  type: 'error',
+                  error: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
+                  code: 400,
+                  status: 'SAFETY_BLOCKED',
+                  category: 'request validation error',
+                  provider: 'gemini',
+                  model,
+                  retryable: false,
+                  canFallback: false,
+                  finishReason: 'SAFETY'
+                });
+                res.end();
+                return;
+              }
+
+              if (!sentStartEvent) {
+                sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
+                sentStartEvent = true;
+              }
+
+              const isTruncated = lastFinishReason === 'MAX_TOKENS';
+              if ((isTruncated || isLikelyLarge) && !isContinuation && !responseHasContinuationNotice(fullText)) {
+                sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
+                fullText += CONTINUATION_NOTICES.PART_1;
+              }
+              sendSSE(res, {
+                type: 'done',
+                text: fullText,
+                modelUsed: model,
+                provider: 'gemini',
+                ...(lastFinishReason ? { finishReason: lastFinishReason } : {}),
+                ...(isTruncated ? { truncated: true } : {})
+              });
+              res.end();
+            }
+            return;
+          } catch (attemptErr: any) {
+            if (upstreamGuard.isClientDisconnected(attemptErr)) {
               stopHeartbeat();
               return;
             }
 
-            sendSSE(res, { type: 'start', modelUsed: model, provider: 'gemini' });
+            const attemptStreamedAny = Boolean(streamedAnyChunk || attemptErr?.streamedAnyChunk);
+            const partialText = String(attemptErr?.partialText || '');
+            const attemptChunkCount = Number(attemptErr?.chunkCount || 0);
 
-            const iterator = responseStream[Symbol.asyncIterator]();
-            let fullText = '';
-            let lastFinishReason: string | null = null;
-
-            try {
-              while (true) {
-                if (upstreamGuard.isClientClosed() || res.writableEnded) break;
-                const { done, value } = await iterator.next();
-                if (upstreamGuard.isClientClosed() || res.writableEnded) break;
-                if (done) break;
-
-                const candidate = value?.candidates?.[0];
-                const finishReason = candidate?.finishReason;
-                if (finishReason) {
-                  lastFinishReason = finishReason;
-                }
-
-                const chunkText = value?.text;
-                if (chunkText) {
-                  streamedAnyChunk = true;
-                  fullText += chunkText;
-                  sendSSE(res, { type: 'chunk', text: chunkText });
-                }
-              }
-
+            // If partial chunks were already streamed to the client, NEVER retry or switch models/providers
+            if (attemptStreamedAny || partialText.length > 0) {
               stopHeartbeat();
-
-              if (!upstreamGuard.isClientClosed() && !res.writableEnded) {
-                // If blocked by SAFETY with no text, send error
-                if (lastFinishReason === 'SAFETY' && fullText.trim().length === 0) {
-                  sendSSE(res, {
-                    type: 'error',
-                    error: "The response was blocked by Google Gemini's safety filters. Please rephrase your request.",
-                    code: 400,
-                    status: 'SAFETY_BLOCKED',
-                    category: 'request validation error',
-                    provider: 'gemini',
-                    model,
-                    retryable: false,
-                    canFallback: false,
-                    finishReason: 'SAFETY'
-                  });
-                  res.end();
-                  return;
-                }
-
-                const isTruncated = lastFinishReason === 'MAX_TOKENS';
-                if ((isTruncated || isLikelyLarge) && !isContinuation && !responseHasContinuationNotice(fullText)) {
-                  sendSSE(res, { type: 'chunk', text: CONTINUATION_NOTICES.PART_1 });
-                  fullText += CONTINUATION_NOTICES.PART_1;
-                }
-                sendSSE(res, {
-                  type: 'done',
-                  text: fullText,
-                  modelUsed: model,
-                  provider: 'gemini',
-                  ...(lastFinishReason ? { finishReason: lastFinishReason } : {}),
-                  ...(isTruncated ? { truncated: true } : {})
-                });
-                res.end();
-              }
-              return;
-            } catch (midStreamErr: any) {
-              stopHeartbeat();
-              if (upstreamGuard.isClientDisconnected(midStreamErr)) {
-                return;
-              }
-              const parsedMid = parseGeminiError(midStreamErr, 'gemini');
+              const parsedMid = parseGeminiError(attemptErr, 'gemini');
+              logGeminiLifecycleEvent({
+                event: 'upstream_error',
+                elapsedMs: Date.now() - geminiRequestStartTime,
+                httpStatus: parsedMid.statusCode,
+                model,
+                chunkCount: attemptChunkCount,
+                streamState: 'mid_stream_error',
+                attempt: attemptNum,
+                maxAttempts,
+                errorCode: parsedMid.status,
+                willRetry: false
+              });
               logAIDiagnostic({
                 category: 'streaming failure',
                 provider: 'gemini',
                 model,
                 phase: 'mid-stream',
-                attempt: 1,
+                attempt: attemptNum,
                 maxAttempts: 1,
                 upstreamStatus: parsedMid.statusCode,
                 upstreamErrorCode: parsedMid.status,
@@ -3639,32 +4419,43 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
                   provider: 'gemini',
                   model,
                   retryable: false,
-                  canFallback: !streamedAnyChunk && parsedMid.statusCode !== 400 && parsedMid.statusCode !== 413,
-                  partial: fullText.length > 0,
-                  partialText: fullText.length > 0 ? fullText : undefined,
+                  canFallback: false,
+                  partial: true,
+                  partialText: partialText.length > 0 ? partialText : undefined,
                   ...(parsedMid.status === 'SAFETY_BLOCKED' ? { finishReason: 'SAFETY' } : {})
                 });
                 res.end();
               }
               return;
             }
-          } catch (initialErr: any) {
-            if (upstreamGuard.isClientDisconnected(initialErr)) {
-              stopHeartbeat();
-              return;
-            }
-            const parsed = parseGeminiError(initialErr, 'gemini');
+
+            // Pre-stream error (zero chunks emitted to client): evaluate retry / fallback model progression
+            const parsed = parseGeminiError(attemptErr, 'gemini');
             lastParsedErr = parsed;
-            const hasMoreAttempts = i < attemptPlan.length - 1;
 
             const isModelNotFound = parsed.statusCode === 404 || parsed.status === 'NOT_FOUND';
-            const willAdvanceFallback = isModelNotFound && hasMoreAttempts;
             const isTimeoutFailure = parsed.statusCode === 504 || parsed.status === 'DEADLINE_EXCEEDED';
+            const willAdvanceFallback = (isModelNotFound || isTimeoutFailure) && isAdvancingToDistinctModel;
+            const remainingBudgetMs = totalRequestTimeoutMs - (Date.now() - geminiRequestStartTime);
             const willRetry =
               (parsed.isRetryable || willAdvanceFallback) &&
               hasMoreAttempts &&
+              remainingBudgetMs > 5000 &&
               !upstreamGuard.isClientClosed() &&
-              !(isServerless && isTimeoutFailure);
+              !(isServerless && isTimeoutFailure && !isAdvancingToDistinctModel);
+
+            logGeminiLifecycleEvent({
+              event: 'upstream_error',
+              elapsedMs: Date.now() - geminiRequestStartTime,
+              httpStatus: parsed.statusCode,
+              model,
+              chunkCount: 0,
+              streamState: 'pre_stream_error',
+              attempt: attemptNum,
+              maxAttempts,
+              errorCode: parsed.status,
+              willRetry
+            });
 
             logAIDiagnostic({
               category: parsed.category,
@@ -3702,6 +4493,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
             if (willRetry) {
               if (willAdvanceFallback) {
+                // Immediately advance to the distinct fallback model (e.g. gemini-3.1-flash-lite)
                 continue;
               }
               const delay = getBackoffWithJitter(attemptNum, parsed.retryAfterSeconds);

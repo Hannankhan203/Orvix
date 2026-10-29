@@ -727,12 +727,15 @@ function ChatMessage({
     [isUser, isError, isStopped, message?.isInterrupted, message?.responseTimeMs]
   );
 
+  const isSubmittingEditRef = useRef(false);
+
   // Sync draftContent whenever isEditing is toggled or message content changes
   useEffect(() => {
+    isSubmittingEditRef.current = false;
     if (isEditing) {
       setDraftContent(message?.content || '');
     }
-  }, [isEditing, message?.content]);
+  }, [isEditing, isLoading, message?.content]);
 
   // Focus and auto-size textarea when edit mode is entered
   useEffect(() => {
@@ -754,6 +757,7 @@ function ChatMessage({
   };
 
   const handleCancelEdit = () => {
+    isSubmittingEditRef.current = false;
     setDraftContent(message?.content || '');
     if (onCancelEdit) {
       onCancelEdit();
@@ -762,7 +766,8 @@ function ChatMessage({
 
   const handleSaveAndResend = () => {
     const trimmed = draftContent.trim();
-    if (!trimmed || isLoading) return;
+    if (!trimmed || isLoading || isSubmittingEditRef.current) return;
+    isSubmittingEditRef.current = true;
     if (onEditResend) {
       onEditResend(message.id, trimmed);
     }

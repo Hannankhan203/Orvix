@@ -2293,6 +2293,9 @@ export default function ChatPage() {
       return;
     }
 
+    // Lock submission synchronously before any state updates or async operations
+    isSubmittingRef.current = true;
+
     const initialChatId = activeChatIdRef.current;
     const editPreflight = requestControllerRef.current.beginRequest({
       chatId: initialChatId,
