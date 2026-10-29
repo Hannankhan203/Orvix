@@ -84,7 +84,7 @@ runTest('1. Target Model Isolation: Strictly identifies the 3 target models and 
   // Protected models MUST return false / null
   assert.strictEqual(isRefinedTargetModel(DEFAULT_WEBLLM_MODEL_ID), false);
   assert.strictEqual(isRefinedTargetModel(FALLBACK_F32_WEBLLM_MODEL_ID), false);
-  assert.strictEqual(isRefinedTargetModel('Qwen2.5-0.5B-Instruct-q4f16_1-MLC'), false);
+  assert.strictEqual(isRefinedTargetModel('unsupported-browser-model-MLC'), false);
   assert.strictEqual(isRefinedTargetModel('gemini-2.5-flash'), false);
   assert.strictEqual(isRefinedTargetModel('llama-3.3-70b-versatile'), false);
   assert.strictEqual(isRefinedTargetModel(null), false);

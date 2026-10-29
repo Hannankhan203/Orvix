@@ -22,8 +22,8 @@ import http from 'node:http';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
   FALLBACK_F32_WEBLLM_MODEL_ID,
-  LIGHTWEIGHT_WEBLLM_MODEL_ID,
-  LIGHTWEIGHT_F32_WEBLLM_MODEL_ID,
+  QWEN3_06B_WEBLLM_MODEL_ID,
+  QWEN3_06B_F32_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   WEBLLM_ERROR_CODES,
   WebLLMError,
@@ -267,12 +267,21 @@ await runTest('2. A valid supported model is selected correctly', async () => {
   setupMockBrowserEnvironment();
   resetWebLLMRuntimeForTesting();
 
-  const compat = checkModelCompatibilityForProvider('webllm', 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  const compat = checkModelCompatibilityForProvider('webllm', 'Qwen3-0.6B-q4f16_1-MLC');
   assert.strictEqual(compat.compatible, true);
-  assert.strictEqual(compat.normalizedModel, 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  assert.strictEqual(compat.normalizedModel, 'Qwen3-0.6B-q4f16_1-MLC');
 
-  const resolved = resolveWebLLMModelId('qwen2.5-0.5b-instruct-q4f16_1-mlc', { hasShaderF16: true });
-  assert.strictEqual(resolved, 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  const resolved = resolveWebLLMModelId('qwen3-0.6b-q4f16_1-mlc', { hasShaderF16: true });
+  assert.strictEqual(resolved, 'Qwen3-0.6B-q4f16_1-MLC');
+
+  // Verify obsolete 0.5B model is rejected by compatibility check
+  const obsoleteCompat = checkModelCompatibilityForProvider('webllm', 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  assert.strictEqual(obsoleteCompat.compatible, false);
+  assert.ok(obsoleteCompat.reason.includes('obsolete and no longer supported'));
+
+  // Verify obsolete 0.5B safely migrates to Qwen3 0.6B during resolution
+  const obsoleteResolved = resolveWebLLMModelId('qwen2.5-0.5b-instruct-q4f16_1-mlc', { hasShaderF16: true });
+  assert.strictEqual(obsoleteResolved, QWEN3_06B_WEBLLM_MODEL_ID);
 });
 
 await runTest('3. The configured default model is used when appropriate', async () => {
@@ -300,12 +309,12 @@ await runTest('4. A user-selected supported model is preserved', async () => {
 
   const res = await streamAIMessage({
     provider: 'webllm',
-    model: 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
+    model: 'Qwen3-0.6B-q4f16_1-MLC',
     prompt: 'Check model preservation'
   });
 
-  assert.strictEqual(loadedModel, 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
-  assert.strictEqual(res.modelUsed, 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC');
+  assert.strictEqual(loadedModel, 'Qwen3-0.6B-q4f16_1-MLC');
+  assert.strictEqual(res.modelUsed, 'Qwen3-0.6B-q4f16_1-MLC');
 });
 
 await runTest('5. Unsupported model identifiers produce a structured error', async () => {
@@ -573,9 +582,9 @@ await runTest('14. Model switching does not reuse an incompatible engine configu
   await ensureWebLLMEngine({ modelId: DEFAULT_WEBLLM_MODEL_ID });
   assert.deepStrictEqual(loadedModels, [DEFAULT_WEBLLM_MODEL_ID]);
 
-  await ensureWebLLMEngine({ modelId: LIGHTWEIGHT_WEBLLM_MODEL_ID });
+  await ensureWebLLMEngine({ modelId: QWEN3_06B_WEBLLM_MODEL_ID });
   assert.strictEqual(unloads, 1, 'Previous engine must be unloaded when switching models');
-  assert.deepStrictEqual(loadedModels, [DEFAULT_WEBLLM_MODEL_ID, LIGHTWEIGHT_WEBLLM_MODEL_ID]);
+  assert.deepStrictEqual(loadedModels, [DEFAULT_WEBLLM_MODEL_ID, QWEN3_06B_WEBLLM_MODEL_ID]);
 });
 
 await runTest('15. A failed model load can be retried deliberately', async () => {

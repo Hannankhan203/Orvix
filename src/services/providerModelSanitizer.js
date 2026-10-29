@@ -70,9 +70,7 @@ export const WEBLLM_SUPPORTED_MODELS = Object.freeze([
   'Qwen3-0.6B-q4f16_1-MLC',
   'Qwen3-0.6B-q4f32_1-MLC',
   'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
-  'Qwen2.5-1.5B-Instruct-q4f32_1-MLC',
-  'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
-  'Qwen2.5-0.5B-Instruct-q4f32_1-MLC'
+  'Qwen2.5-1.5B-Instruct-q4f32_1-MLC'
 ]);
 
 export const RETIRED_GROQ_MODELS = Object.freeze([
@@ -463,6 +461,14 @@ export function checkModelCompatibilityForProvider(provider, candidateModel) {
           compatible: false,
           normalizedModel: null,
           reason: `Model "${trimmed}" belongs to another provider and is not valid for Browser AI (WebLLM).`
+        };
+      }
+      // Reject obsolete / retired Qwen 2.5 0.5B models
+      if (lower.includes('0.5b') || lower.includes('qwen2.5-0.5b')) {
+        return {
+          compatible: false,
+          normalizedModel: null,
+          reason: `Model "${trimmed}" is obsolete and no longer supported. Supported Browser AI models are: SmolLM2 135M, SmolLM2 360M, Qwen3 0.6B, and Qwen 2.5 1.5B.`
         };
       }
       // Match against verified supported WebLLM models (case-insensitive)

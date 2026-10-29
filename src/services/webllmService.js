@@ -46,8 +46,6 @@ export const SMOLLM2_135M_WEBLLM_MODEL_ID = 'SmolLM2-135M-Instruct-q0f16-MLC';
 export const SMOLLM2_135M_F32_WEBLLM_MODEL_ID = 'SmolLM2-135M-Instruct-q0f32-MLC';
 export const QWEN3_06B_WEBLLM_MODEL_ID = 'Qwen3-0.6B-q4f16_1-MLC';
 export const QWEN3_06B_F32_WEBLLM_MODEL_ID = 'Qwen3-0.6B-q4f32_1-MLC';
-export const LIGHTWEIGHT_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f16_1-MLC';
-export const LIGHTWEIGHT_F32_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f32_1-MLC';
 
 /**
  * Verified Browser AI models present in @mlc-ai/web-llm@0.2.86 prebuiltAppConfig.model_list.
@@ -214,40 +212,6 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     maxDocChars: 10_000,
     maxHistoryMessages: 8,
     defaultMaxTokens: 1024,
-    isDefault: false
-  }),
-  [LIGHTWEIGHT_WEBLLM_MODEL_ID]: Object.freeze({
-    id: LIGHTWEIGHT_WEBLLM_MODEL_ID,
-    label: 'Qwen 2.5 0.5B Instruct (Lightweight)',
-    shortLabel: 'Qwen 2.5 0.5B',
-    tier: 'lightweight',
-    quantization: 'q4f16_1',
-    prefersShaderF16: true,
-    f32FallbackModelId: LIGHTWEIGHT_F32_WEBLLM_MODEL_ID,
-    vramRequiredMB: 944.62,
-    estimatedDownloadMB: 420,
-    minStorageBytes: 550 * 1024 * 1024,
-    contextWindowSize: 4096,
-    maxDocChars: 8_000,
-    maxHistoryMessages: 6,
-    defaultMaxTokens: 896,
-    isDefault: false
-  }),
-  [LIGHTWEIGHT_F32_WEBLLM_MODEL_ID]: Object.freeze({
-    id: LIGHTWEIGHT_F32_WEBLLM_MODEL_ID,
-    label: 'Qwen 2.5 0.5B Instruct (Lightweight FP32)',
-    shortLabel: 'Qwen 2.5 0.5B (FP32)',
-    tier: 'lightweight-f32',
-    quantization: 'q4f32_1',
-    prefersShaderF16: false,
-    f32FallbackModelId: null,
-    vramRequiredMB: 1060.2,
-    estimatedDownloadMB: 490,
-    minStorageBytes: 650 * 1024 * 1024,
-    contextWindowSize: 4096,
-    maxDocChars: 8_000,
-    maxHistoryMessages: 6,
-    defaultMaxTokens: 896,
     isDefault: false
   })
 });
@@ -905,11 +869,23 @@ export function resolveWebLLMModelId(requestedModelId, options = {}) {
       ? requestedModelId.trim()
       : DEFAULT_WEBLLM_MODEL_ID;
 
+  // Safe migration for obsolete 0.5B model:
+  // If an old session, profile, or localStorage passed the obsolete 0.5B model,
+  // migrate it to the current lightweight model (Qwen3 0.6B) instead of attempting
+  // to download or initialize obsolete weights.
+  const isObsolete05B =
+    rawId.toLowerCase().includes('0.5b') ||
+    rawId.toLowerCase().includes('qwen2.5-0.5b');
+
+  const normalizedRequestedId = isObsolete05B
+    ? QWEN3_06B_WEBLLM_MODEL_ID
+    : rawId;
+
   // Case-insensitive lookup against verified catalog keys
   const catalogKey = Object.keys(WEBLLM_MODEL_CATALOG).find(
-    (k) => k.toLowerCase() === rawId.toLowerCase()
+    (k) => k.toLowerCase() === normalizedRequestedId.toLowerCase()
   );
-  const baseId = catalogKey || rawId;
+  const baseId = catalogKey || (isObsolete05B ? QWEN3_06B_WEBLLM_MODEL_ID : DEFAULT_WEBLLM_MODEL_ID);
 
   const { hasShaderF16 = true, allowF32Fallback = true } = options;
   const catalogEntry = WEBLLM_MODEL_CATALOG[baseId];

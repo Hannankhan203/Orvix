@@ -18,9 +18,7 @@ import {
   SMOLLM2_360M_WEBLLM_MODEL_ID,
   SMOLLM2_360M_F32_WEBLLM_MODEL_ID,
   QWEN3_06B_WEBLLM_MODEL_ID,
-  QWEN3_06B_F32_WEBLLM_MODEL_ID,
-  LIGHTWEIGHT_WEBLLM_MODEL_ID,
-  LIGHTWEIGHT_F32_WEBLLM_MODEL_ID
+  QWEN3_06B_F32_WEBLLM_MODEL_ID
 } from '../services/webllmService.js';
 
 export const AI_PROVIDER_GUIDANCE = Object.freeze({
@@ -38,10 +36,7 @@ export const BROWSER_AI_MODEL_GUIDANCE = Object.freeze({
   [SMOLLM2_360M_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — offers a good balance between low resource usage and response quality, though it may be less capable than the larger local models.',
   [SMOLLM2_360M_F32_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — offers a good balance between low resource usage and response quality, though it may be less capable than the larger local models.',
   [QWEN3_06B_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — provides stronger response quality than the smallest models while using fewer resources than Qwen 2.5 1.5B.',
-  [QWEN3_06B_F32_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — provides stronger response quality than the smallest models while using fewer resources than Qwen 2.5 1.5B.',
-  // Graceful fallback for legacy 0.5B lightweight entry
-  [LIGHTWEIGHT_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — provides stronger response quality than the smallest models while using fewer resources than Qwen 2.5 1.5B.',
-  [LIGHTWEIGHT_F32_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — provides stronger response quality than the smallest models while using fewer resources than Qwen 2.5 1.5B.'
+  [QWEN3_06B_F32_WEBLLM_MODEL_ID]: 'Lightweight Browser AI — provides stronger response quality than the smallest models while using fewer resources than Qwen 2.5 1.5B.'
 });
 
 /**

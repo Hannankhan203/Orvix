@@ -28,8 +28,6 @@ import {
   SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
   QWEN3_06B_WEBLLM_MODEL_ID,
   QWEN3_06B_F32_WEBLLM_MODEL_ID,
-  LIGHTWEIGHT_WEBLLM_MODEL_ID,
-  LIGHTWEIGHT_F32_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   WEBLLM_ERROR_CODES,
   WebLLMError,
@@ -171,7 +169,7 @@ test('parseDelimitedText accurately parses quoted CSV and formats Markdown table
 // ----------------------------------------------------------------------------
 // 3. WebLLM Model Catalog & Resolution Logic
 // ----------------------------------------------------------------------------
-test('WEBLLM_MODEL_CATALOG contains verified 1.5B, SmolLM2 360M, SmolLM2 135M, and 0.5B models with valid configurations', () => {
+test('WEBLLM_MODEL_CATALOG contains verified 1.5B, SmolLM2 360M, SmolLM2 135M, and Qwen3 0.6B models with valid configurations (0.5B excluded)', () => {
   assert.ok(WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID], 'Default 1.5B model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[FALLBACK_F32_WEBLLM_MODEL_ID], 'Fallback 1.5B FP32 model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID], 'SmolLM2 360M model must exist');
@@ -180,8 +178,8 @@ test('WEBLLM_MODEL_CATALOG contains verified 1.5B, SmolLM2 360M, SmolLM2 135M, a
   assert.ok(WEBLLM_MODEL_CATALOG[SMOLLM2_135M_F32_WEBLLM_MODEL_ID], 'SmolLM2 135M FP32 model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[QWEN3_06B_WEBLLM_MODEL_ID], 'Qwen3 0.6B model must exist');
   assert.ok(WEBLLM_MODEL_CATALOG[QWEN3_06B_F32_WEBLLM_MODEL_ID], 'Qwen3 0.6B FP32 model must exist');
-  assert.ok(WEBLLM_MODEL_CATALOG[LIGHTWEIGHT_WEBLLM_MODEL_ID], 'Lightweight 0.5B model must exist');
-  assert.ok(WEBLLM_MODEL_CATALOG[LIGHTWEIGHT_F32_WEBLLM_MODEL_ID], 'Lightweight 0.5B FP32 model must exist');
+  assert.strictEqual(WEBLLM_MODEL_CATALOG['Qwen2.5-0.5B-Instruct-q4f16_1-MLC'], undefined, 'Obsolete 0.5B model must not exist in catalog');
+  assert.strictEqual(WEBLLM_MODEL_CATALOG['Qwen2.5-0.5B-Instruct-q4f32_1-MLC'], undefined, 'Obsolete 0.5B FP32 model must not exist in catalog');
 
   const defaultModel = WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID];
   assert.strictEqual(defaultModel.prefersShaderF16, true);
@@ -239,9 +237,11 @@ test('resolveWebLLMModelId correctly resolves shader-f16 vs fp32 fallback', () =
   const qwen3WithoutF16 = resolveWebLLMModelId(QWEN3_06B_WEBLLM_MODEL_ID, { hasShaderF16: false, allowF32Fallback: true });
   assert.strictEqual(qwen3WithoutF16, QWEN3_06B_F32_WEBLLM_MODEL_ID);
 
-  // Lightweight model fallback
-  const lightweightWithoutF16 = resolveWebLLMModelId(LIGHTWEIGHT_WEBLLM_MODEL_ID, { hasShaderF16: false, allowF32Fallback: true });
-  assert.strictEqual(lightweightWithoutF16, LIGHTWEIGHT_F32_WEBLLM_MODEL_ID);
+  // Obsolete 0.5B model safe migration to Qwen3 0.6B
+  const obsoleteMigratedF16 = resolveWebLLMModelId('Qwen2.5-0.5B-Instruct-q4f16_1-MLC', { hasShaderF16: true });
+  assert.strictEqual(obsoleteMigratedF16, QWEN3_06B_WEBLLM_MODEL_ID, 'Obsolete 0.5B model must safely migrate to Qwen3 0.6B');
+  const obsoleteMigratedF32 = resolveWebLLMModelId('Qwen2.5-0.5B-Instruct-q4f32_1-MLC', { hasShaderF16: false, allowF32Fallback: true });
+  assert.strictEqual(obsoleteMigratedF32, QWEN3_06B_F32_WEBLLM_MODEL_ID, 'Obsolete 0.5B model without F16 must safely migrate to Qwen3 0.6B FP32');
 });
 
 test('WebLLMError enforces local non-fallback invariants', () => {
@@ -1528,7 +1528,7 @@ await test('Phase 2D Test 3: TXT and LOG extraction preserves line breaks, inden
 });
 
 await test('Phase 2D Test 4: CSV and TSV extraction preserves row boundaries, quoted fields with embedded commas/newlines, and escapes pipe characters in Markdown tables', async () => {
-  const csvContent = `"ID","Service | Feature","Description","Active"\n"1","WebLLM | Engine","Supports Qwen2.5 1.5B\nand 0.5B models","true"\n"2","OCR | Tesseract","Runs offline in browser\nand server","true"`;
+  const csvContent = `"ID","Service | Feature","Description","Active"\n"1","WebLLM | Engine","Supports Qwen2.5 1.5B\nand Qwen3 0.6B models","true"\n"2","OCR | Tesseract","Runs offline in browser\nand server","true"`;
   const csvResult = await extractDocumentContent(
     Buffer.from(csvContent, 'utf8'),
     'services.csv',
