@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.2.9**
+**Version: V 0.2.9**
 
 An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, and four specialized chat modes.
 
@@ -81,25 +81,25 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
 
 ## Project Overview
 
-**Orvix** is an intelligent, multi-model conversational workspace engineered for privacy, performance, and flexibility. It combines cutting-edge cloud models with **100% on-device AI generation via WebGPU and WebLLM**, enabling fast, reliable AI chat both online and completely offline.
+**Orvix** is an intelligent, multi-model conversational workspace engineered for privacy, flexibility, and offline resilience. It pairs flexible cloud-hosted models (Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI) with **100% on-device AI generation via WebGPU and WebLLM**, enabling private and responsive AI chat both connected to the cloud and entirely offline.
 
-Built as a full-stack Node.js application, Orvix pairs a responsive React 19 single-page application with an Express backend running Vite in middleware mode. When connected to the internet, cloud AI completions (Google Gemini, Groq, OpenRouter, Cloudflare Workers AI), speech transcriptions, and OCR operations execute server-side to guarantee credentials remain secure. When offline, Orvix relies on Workbox PWA precaching, on-device WebLLM inference, and browser-side document parsing to deliver an uninterrupted local experience.
+Built as a full-stack Node.js application, Orvix combines a React 19 single-page application with an Express backend running Vite in middleware mode. When internet access is present, cloud model completions, audio transcriptions, and OCR operations execute server-side to guarantee credentials remain secure. When offline, Orvix leverages Workbox PWA precaching, on-device WebLLM inference across four integrated models, and client-side document extraction to maintain an uninterrupted local experience.
 
 ---
 
 ## Key Features
 
-- **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (Qwen2.5 1.5B, Qwen3 0.6B, SmallLM2 135M, SmallLM2 360M) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
-- **Offline PWA App-Shell Caching**: Workbox service worker precaches application assets, WASM bundles, and offline document extractors. The app can be reopened and used offline at any time after initial visit.
+- **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
+- **Offline PWA App-Shell Caching**: Workbox service worker precaches application assets, WASM bundles, and offline document extractors for instant offline re-access.
 - **Client-Side Document Extraction**: Extracts and grounds text locally from Word (`.docx`), PDF (`.pdf`), PowerPoint (`.pptx`), CSV, TSV, JSON, XML, and Markdown files without cloud dependencies.
 - **Dual-Format Table & Clipboard Copying**: Copies assistant responses as both styled `text/html` (with zebra striping and borders for Word, Docs, and Slack) and structured `text/plain` key-value records (`• Header: Value`) that never distort in messaging apps like WhatsApp or Telegram.
 - **Mobile Swipe Navigation**: Natural swipe-right gesture across the main conversation area on mobile and tablet viewports (`<= 1024px`) to open the chat history sidebar, complete with safe exclusions for inputs, headers, code blocks, and iOS back-navigation edges.
-- **Voice Dictation with Whisper Refinement**: Real-time browser speech recognition rendering interim transcript snapshots as you speak, seamlessly reconciled with server-side Groq Whisper Large v3 Turbo (with Gemini audio fallback) upon completion.
+- **Voice Dictation with Whisper Refinement**: Real-time browser speech recognition rendering interim transcript snapshots as you speak, reconciled with server-side Groq Whisper Large v3 Turbo (with Gemini audio fallback) upon completion.
 - **Four Specialized Chat Modes**: Dedicated modes for **General Assistant**, **Learning** (educational callouts), **Writing** (editorial layout), and **Coding** (VS Code styling with locked 22px line heights).
 - **Multi-Model Response Alternatives**: Compare answers from multiple providers for the same prompt using an `< X of Y >` pager without overwriting prior outputs.
 - **Global Input Auto-Focus**: Type anywhere on the page to automatically focus the composer without losing the first keystroke, protecting active text selection and shortcuts.
 - **Controlled Continuation**: Automatic segmentation of long outputs with continuation notices and an interactive composer chip (`[ → Continue response ]`).
-- **Deep Multimodal Attachments**: Drag-and-drop, clipboard paste (`Ctrl+V`), and file picker staging for documents and images with server-side Tesseract OCR and honest "No readable text detected" handling.
+- **Deep Multimodal Attachments**: Drag-and-drop, clipboard paste (`Ctrl+V`), and file picker staging for documents and images with server-side Tesseract OCR and honest `NO_TEXT_DETECTED` handling.
 - **Zero-Key Simulation Mode**: Runs immediately out of the box without requiring API keys, providing realistic local responses for testing all UI flows.
 
 ---
@@ -278,7 +278,7 @@ Follow these steps to set up and use Orvix offline:
 
 ## Message Copying & Dual-Format Clipboard
 
-Orvix features an advanced clipboard formatting pipeline (`src/utils/clipboardFormatter.js`) that produces two simultaneous payloads when copying assistant messages:
+Orvix features a clipboard formatting pipeline (`src/utils/clipboardFormatter.js`) that produces two simultaneous payloads when copying assistant messages:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -410,21 +410,21 @@ Orvix provides four specialized conversational modes configured in `src/config/c
 
 | Provider | Model Identifier | Architecture | Failover / Backup Model |
 | :--- | :--- | :--- | :--- |
-| **Browser AI (WebLLM)** | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` *(Default)*<br>`Qwen3-0.6B-q4f16_1-MLC`<br>`SmolLM2-360M-Instruct-q4f16_1-MLC`<br>`SmolLM2-135M-Instruct-q0f16-MLC` | 100% on-device WebGPU inference; runs offline without cloud APIs | Automatic runtime fallback to `q4f32_1` / `q0f32` variants for devices lacking `shader-f16` |
 | **Google Gemini** | `gemini-3.8-flash` | Cloud API via `@google/genai` SDK | `gemini-3.1-flash-lite` |
 | **Groq Cloud** | `openai/gpt-oss-120b` | Ultra-low latency LPU inference | `llama-3.1-8b-instant` |
 | **OpenRouter** | `openrouter/free` | Dynamic free community model router | Dynamic routing |
 | **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | Serverless edge inference | Edge fallback |
+| **Browser AI (WebLLM)** | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` *(Default)*<br>`Qwen3-0.6B-q4f16_1-MLC`<br>`SmolLM2-360M-Instruct-q4f16_1-MLC`<br>`SmolLM2-135M-Instruct-q0f16-MLC` | 100% on-device WebGPU inference; runs offline without cloud APIs | Automatic runtime fallback to `q4f32_1` / `q0f32` variants for devices lacking `shader-f16` |
 
 ### Provider Context Budgets
 
 | Provider | Max Context | Document Context Budget | Best Suited For |
 | :--- | :--- | :--- | :--- |
-| **Browser AI (WebLLM)** | 4,096 tokens | ~6,000–10,000 characters | 100% offline Q&A, complete privacy, zero API costs |
 | **Google Gemini** | 1,000,000 tokens | ~120,000 characters | Long documents, large codebases, complex reasoning |
 | **Groq Cloud** | 128,000 tokens | ~24,000 characters | Rapid structured responses, fast coding assistance |
 | **OpenRouter** | Variable by model | ~16,000 characters | Open-source model experimentation |
 | **Cloudflare Workers AI** | 8,192 tokens | ~16,000 characters | Quick edge summaries and lightweight queries |
+| **Browser AI (WebLLM)** | 4,096 tokens | ~6,000–10,000 characters | 100% offline Q&A, complete privacy, zero API costs |
 
 ### Streaming & Fallback System
 
@@ -689,83 +689,79 @@ Configured via `vercel.json` with handlers in `api/`:
 
 ## Version History & Release Changelog
 
-### 0.2.9 — Latest
+### V 0.2.9 — AI Model Selection Guidance and Provider Ordering
 - **AI Model Selection Guidance UX**: Integrated concise, static informational guidance explaining characteristics and trade-offs of all AI options across Cloud AI and Browser AI. Dynamic model-specific resolution updates immediately upon switching selections in `ModelSelector` and `BrowserAIStatusBar` with accessible `aria-describedby` announcements and zero network/generation overhead.
 - **AI Provider and Model Selector Ordering**: Reordered provider and model selector options strictly in sequence from least resource-intensive to most reliable:
   - *Cloud AI Providers*: Google Gemini, Groq, OpenRouter, Cloudflare Workers AI.
   - *Browser AI Models*: SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B (Standard Default).
 
-### 0.2.8
+### V 0.2.8 — Refined Responses and Profiling for SmallLM2 and Qwen3
 - **Refined Responses & Profiling for SmallLM2 135M, SmallLM2 360M, and Qwen3 0.6B**: Tuned response profiles, positive instruction formatting, calibrated temperatures, repetition penalties, stop tokens, and streaming sanitizers to eliminate token loops, thinking block leakage, and unprompted refusals in small parameter models while strictly preserving baseline defaults for Qwen2.5 1.5B and cloud providers.
 
-### 0.2.7
+### V 0.2.7 — Qwen3 0.6B Browser AI Lightweight Model
 - **Qwen3 0.6B Browser AI Lightweight Model**: Added `Qwen3-0.6B-q4f16_1-MLC` (~335 MB download, 4,096-token context window) and its FP32 fallback `Qwen3-0.6B-q4f32_1-MLC` as a selectable offline Browser AI model with WebGPU shader compilation and cache isolation.
 
-### 0.2.6
+### V 0.2.6 — SmallLM2 360M Browser AI Compact Model
 - **SmallLM2 360M Browser AI Compact Model**: Added `SmolLM2-360M-Instruct-q4f16_1-MLC` (~210 MB download, ~380 MB VRAM) and its FP32 fallback `SmolLM2-360M-Instruct-q4f32_1-MLC` as a user-selectable model under the Browser AI provider.
 
-### 0.2.5
+### V 0.2.5 — SmallLM2 135M Browser AI Ultra-Lightweight Model
 - **SmallLM2 135M Browser AI Ultra-Lightweight Model**: Added the ultra-lightweight `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 fallback `SmolLM2-135M-Instruct-q0f32-MLC` under the Browser AI provider.
 
-### 0.2.4
+### V 0.2.4 — Legacy Fallback Hardening
 - **Legacy Fallback Hardening**: Hardened provider fallback normalization and legacy session handling to ensure smooth failover across supported providers.
 
-### 0.2.2
+### V 0.2.2 — Gemini Reliability and Fallback Hardening
 - **Gemini Reliability & Fallback Hardening**: Configured `gemini-3.8-flash` as primary default and `gemini-3.1-flash-lite` as automatic fallback candidate for rate limits and timeouts. Added 50ms SSE header priming (`: prime`) and 8s keepalive heartbeats.
 
-### 0.2.1
+### V 0.2.1 — Empty New Chat Hero and Responsive CSS Refinements
 - **Empty New Chat Hero & Responsive CSS Refinement**: Refined empty-state layout with fluid clamp sizing across screen widths from 320px mobile to 2560px widescreen.
 
-### 0.2.0
+### V 0.2.0 — Mobile UI/UX and Viewport Refinement
 - **Mobile UI/UX & Viewport Refinement**: Dynamic viewport height management (`--app-viewport-height`), virtual keyboard adaptivity, compact header bar, and full-screen document preview modal.
 
-### 0.1.0
+### V 0.1.0 — Desktop UI/UX, Accessibility and Multi-Provider Core
 - **Desktop UI/UX, Accessibility & Performance**: Progressive desktop scaling, memoized message rendering, accessible keyboard navigation, and unified multi-provider streaming core.
 
----
-
-### Historical Feature Milestones
-
-#### v0.9.4 — Browser AI (WebLLM), Offline PWA Precaching & Document Extractor
+### V 0.9.4 — Browser AI, Backend Offline PWA, Pre-Caching and Document Extraction
 - Embedded `@mlc-ai/web-llm` running on-device models directly on visitor GPUs via WebGPU and dedicated worker.
 - Workbox service worker precaching UI assets, WASM bundles, and offline document extractors.
 - Client-side document parsing for `.docx`, `.pdf`, `.pptx`, `.csv`, `.tsv`, `.json`, and `.txt`.
 
-#### v0.9.3 — Mobile PWA Live Dictation & Interim Transcript Deduplication
+### V 0.9.3 — Mobile PWA Live Dictation and Interim Transcript Deduplication
 - Live speech recognition displaying words in composer during speech.
 - Interim snapshot replacement eliminating duplicate phrase concatenation.
 - Concurrent live recognition followed by server Whisper Large v3 Turbo refinement.
 
-#### v0.9.2 — Table Copying, Mobile Swipe Navigation & Dictation Hardening
+### V 0.9.2 — Table Copying, Mobile Swipe Navigation and Dictation Hardening
 - Dual-payload clipboard formatting: HTML tables and structured plain-text records (`• Header: Value`).
 - Mobile swipe-right gesture on screens `<= 1024px` to open chat history.
 - Audio transcription pipeline with Groq Whisper Large v3 Turbo and Gemini fallback.
 
-#### v0.9.1 — High-Accuracy Voice Dictation Pipeline
+### V 0.9.1 — High-Accuracy Voice Dictation Pipeline
 - Server-side Whisper transcription at `/api/transcribe`.
 - Hybrid desktop dictation and Direct-Audio mode with 9 supported locales.
 - Context-aware technical polishing for programming terms.
 
-#### v0.9.0 — Four Chatbot Modes
+### V 0.9.0 — Four Chatbot Modes
 - Purpose-built modes for General Assistant, Learning, Writing, and Coding with custom directives and CSS themes.
 
-#### v0.8.0 — Multi-Model Response Alternatives
+### V 0.8.0 — Multi-Model Response Alternatives
 - Regenerate responses with alternative providers and navigate using `< X of Y >` pager.
 
-#### v0.7.1 — Automatic Chat-Input Focus & Code Alignment
+### V 0.7.1 — Automatic Chat-Input Focus and Code Alignment
 - Global typing capture focusing the composer without dropped keystrokes.
 - Locked 22px line height eliminating line-number drift.
 
-#### v0.7.0 — Live Response-Time Measurement
+### V 0.7.0 — Live Response-Time Measurement
 - Real-time duration timer updating every 100ms during streaming, saved as an immutable badge.
 
-#### v0.6.0 — Controlled Large-Response Continuation
+### V 0.6.0 — Controlled Large-Response Continuation
 - Multi-part output segmentation with interactive composer continuation chip.
 
-#### v0.5.0 — Serverless Upload Architecture
+### V 0.5.0 — Serverless Upload Architecture
 - In-memory staging via `multer.memoryStorage()` eliminating serverless read-only filesystem errors.
 
-#### v0.4.0 — Image Attachments & OCR
+### V 0.4.0 — Image Attachments and OCR
 - Server-side Tesseract OCR with magic number verification and dual-tab preview modal.
 
 ---
