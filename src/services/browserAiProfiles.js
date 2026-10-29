@@ -62,15 +62,15 @@ export const BROWSER_AI_PROFILES = Object.freeze({
     label: 'SmolLM2 135M Instruct',
     tier: 'ultra-lightweight',
     temperature: Object.freeze({
-      general: 0.3,
-      coding: 0.15
+      general: 0.2,
+      coding: 0.1
     }),
     top_p: 0.85,
-    repetition_penalty: 1.15,
+    repetition_penalty: 1.03,
     maxTokens: Object.freeze({
-      concise: 256,
-      default: 448,
-      detailed: 640
+      concise: 128,
+      default: 256,
+      detailed: 512
     }),
     stop: Object.freeze([
       '<|endoftext|>',
@@ -82,7 +82,7 @@ export const BROWSER_AI_PROFILES = Object.freeze({
       '\n\nuser:'
     ]),
     maxInputChars: 5_000,
-    systemPromptDescription: 'Compact, plain-language instruction optimized for ultra-lightweight ~135M parameter capacity.'
+    systemPromptDescription: 'Minimal, direct plain-language instruction optimized for ultra-lightweight ~135M parameter capacity.'
   }),
 
   [REFINED_MODEL_KEYS.SMOLLM2_360M]: Object.freeze({
@@ -90,15 +90,15 @@ export const BROWSER_AI_PROFILES = Object.freeze({
     label: 'SmolLM2 360M Instruct',
     tier: 'compact',
     temperature: Object.freeze({
-      general: 0.45,
-      coding: 0.2
+      general: 0.3,
+      coding: 0.15
     }),
-    top_p: 0.9,
-    repetition_penalty: 1.10,
+    top_p: 0.85,
+    repetition_penalty: 1.04,
     maxTokens: Object.freeze({
-      concise: 384,
-      default: 768,
-      detailed: 1024
+      concise: 256,
+      default: 512,
+      detailed: 896
     }),
     stop: Object.freeze([
       '<|endoftext|>',
@@ -110,7 +110,7 @@ export const BROWSER_AI_PROFILES = Object.freeze({
       '\n\nuser:'
     ]),
     maxInputChars: 8_000,
-    systemPromptDescription: 'Structured, bullet-point and code-friendly instruction for compact ~360M parameter model.'
+    systemPromptDescription: 'Clean, direct instruction prioritizing structured answers and instruction following for compact ~360M parameter model.'
   }),
 
   [REFINED_MODEL_KEYS.QWEN3_06B]: Object.freeze({
@@ -118,15 +118,18 @@ export const BROWSER_AI_PROFILES = Object.freeze({
     label: 'Qwen3 0.6B',
     tier: 'lightweight',
     temperature: Object.freeze({
-      general: 0.5,
-      coding: 0.25
+      general: 0.3,
+      coding: 0.15
     }),
-    top_p: 0.9,
-    repetition_penalty: 1.08,
+    top_p: 0.85,
+    repetition_penalty: 1.05,
+    extra_body: Object.freeze({
+      enable_thinking: false
+    }),
     maxTokens: Object.freeze({
-      concise: 448,
-      default: 896,
-      detailed: 1280
+      concise: 256,
+      default: 512,
+      detailed: 1024
     }),
     stop: Object.freeze([
       '<|im_end|>',
@@ -142,7 +145,7 @@ export const BROWSER_AI_PROFILES = Object.freeze({
       '\n\nuser:'
     ]),
     maxInputChars: 10_000,
-    systemPromptDescription: 'Natural, coherent markdown framing preventing preamble, control tokens, and internal monologues.'
+    systemPromptDescription: 'Clean direct instruction bypassing reasoning drift with non-thinking execution for Qwen3 0.6B.'
   })
 });
 
@@ -168,90 +171,60 @@ export function buildProfileSystemInstruction(modelId, { username = null, prefer
     : null;
 
   if (profileKey === REFINED_MODEL_KEYS.SMOLLM2_135M) {
-    const parts = [
-      'You are Orvix, a helpful AI assistant. Answer the user\'s question directly first. Use simple words and clear, concise sentences. Avoid filler, repetition, or unnecessary headings. If unsure, admit uncertainty rather than guessing. Follow requested formats and preserve original meaning when rewriting.'
-    ];
+    if (mode === 'coding') {
+      return 'You are a helpful assistant. Provide clean, working code directly.';
+    }
+
+    const parts = ['You are a helpful assistant. Answer the question directly in simple words.'];
 
     if (cleanName) {
       parts.push(`User name: ${cleanName}.`);
     }
 
     if (preferences?.responseLength === 'concise') {
-      parts.push('Keep answers very brief.');
+      parts.push('Keep answers brief.');
     } else if (preferences?.responseLength === 'detailed') {
       parts.push('Explain clearly with simple steps.');
-    }
-
-    if (mode === 'coding') {
-      parts.push('Provide short, working code with minimal explanation.');
-    } else if (mode === 'writing') {
-      parts.push('Write clearly and directly in simple prose.');
-    } else if (mode === 'learning') {
-      parts.push('Explain the concept simply step by step.');
     }
 
     return parts.join(' ');
   }
 
   if (profileKey === REFINED_MODEL_KEYS.SMOLLM2_360M) {
-    const parts = [
-      'You are Orvix, a helpful and direct AI assistant. Answer the user\'s question directly first. Provide well-structured answers using concise paragraphs, clean lists, or code when requested. Be accurate, avoid repetition, conversational preamble, or generic filler. Use examples only when helpful. If unsure, state uncertainty plainly. Preserve meaning when summarizing or rewriting.'
-    ];
+    if (mode === 'coding') {
+      return 'You are a helpful assistant. Provide clear, correct code with brief explanations.';
+    }
+
+    const parts = ['You are a helpful assistant. Answer the user\'s question directly and follow any formatting instructions.'];
 
     if (cleanName) {
-      parts.push(`The user's preferred name is ${cleanName}. Address naturally when appropriate.`);
+      parts.push(`User name: ${cleanName}.`);
     }
 
     if (preferences?.responseLength === 'concise') {
-      parts.push('Preferred response length: Concise. Keep explanations brief, compact, and directly to the point.');
+      parts.push('Keep answers brief and to the point.');
     } else if (preferences?.responseLength === 'detailed') {
-      parts.push('Preferred response length: Detailed. Provide organized explanations with practical examples.');
-    } else if (preferences?.responseLength === 'balanced') {
-      parts.push('Provide an optimal balance of clarity and conciseness.');
-    }
-
-    if (preferences?.beginnerFriendly) {
-      parts.push('Use accessible language and clear analogies without jargon.');
-    }
-
-    if (mode === 'coding') {
-      parts.push('Provide clean, well-formatted code blocks with language tags and concise explanations.');
-    } else if (mode === 'writing') {
-      parts.push('Focus on clear writing, structured paragraphs, and engaging phrasing.');
-    } else if (mode === 'learning') {
-      parts.push('Break concepts into logical, easy-to-digest parts with key takeaways.');
+      parts.push('Provide structured explanations with clear examples.');
     }
 
     return parts.join(' ');
   }
 
   if (profileKey === REFINED_MODEL_KEYS.QWEN3_06B) {
-    const parts = [
-      'You are Orvix, an intelligent, accurate AI assistant. Answer the user\'s question directly first. Return a clean final answer with coherent logical structure and clean markdown formatting. Provide accurate technical explanations, step-by-step guidance, or code blocks when requested. Avoid internal thoughts, conversational preambles, repetitive conclusions, and filler. Admit uncertainty honestly instead of guessing. Adhere strictly to user constraints for length, tone, and format.'
-    ];
+    if (mode === 'coding') {
+      return 'You are a helpful assistant. Provide clean, efficient code with clear explanations.';
+    }
+
+    const parts = ['You are a helpful assistant. Answer the user\'s question directly, accurately, and follow all instructions.'];
 
     if (cleanName) {
-      parts.push(`The user's preferred name is ${cleanName}. Address naturally when appropriate.`);
+      parts.push(`User name: ${cleanName}.`);
     }
 
     if (preferences?.responseLength === 'concise') {
-      parts.push('Preferred response length: Concise. Keep explanations brief, compact, and directly to the point.');
+      parts.push('Keep answers brief and to the point.');
     } else if (preferences?.responseLength === 'detailed') {
-      parts.push('Preferred response length: Detailed. Provide thorough, well-structured explanations with background context.');
-    } else if (preferences?.responseLength === 'balanced') {
-      parts.push('Provide an optimal balance between conciseness and thoroughness.');
-    }
-
-    if (preferences?.beginnerFriendly) {
-      parts.push('Explanation style: Clear and approachable. Explain complex topics using plain language and helpful analogies.');
-    }
-
-    if (mode === 'coding') {
-      parts.push('Provide clean, robust code with syntax highlighting tags, clear variable names, and concise technical rationale.');
-    } else if (mode === 'writing') {
-      parts.push('Produce polished, cohesive text adhering to the requested style and tone.');
-    } else if (mode === 'learning') {
-      parts.push('Structure educational answers with intuitive conceptual overviews, numbered steps, and actionable summaries.');
+      parts.push('Provide organized, thorough explanations.');
     }
 
     return parts.join(' ');
@@ -315,6 +288,7 @@ export function resolveProfileGenerationParams(modelId, {
       max_tokens: effectiveMaxTokens,
       repetition_penalty: repetition_penalty !== undefined ? Number(repetition_penalty) : undefined,
       stop: undefined,
+      extra_body: undefined,
       maxInputChars: 12_500,
       isRefined: false
     };
@@ -377,6 +351,7 @@ export function resolveProfileGenerationParams(modelId, {
     repetition_penalty: effectiveRepPenalty,
     max_tokens: effectiveMaxTokens,
     stop: [...profile.stop],
+    extra_body: profile.extra_body ? { ...profile.extra_body } : undefined,
     maxInputChars: profile.maxInputChars,
     isRefined: true
   };
@@ -461,6 +436,14 @@ export function cleanModelOutput(rawText, modelId) {
       }
     } else {
       text = text.replace(/^<think>\s*/i, '');
+    }
+  } else if (text.includes('</think>')) {
+    const parts = text.split('</think>');
+    const afterThink = parts.slice(1).join('</think>').trim();
+    if (afterThink.length > 0) {
+      text = afterThink;
+    } else {
+      text = text.replace(/<\/think>/gi, '').trim();
     }
   }
 

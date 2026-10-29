@@ -3889,6 +3889,9 @@ export async function streamWebLLMMessage({
       if (genParams.stop !== undefined && Array.isArray(genParams.stop)) {
         completionPayload.stop = genParams.stop;
       }
+      if (genParams.extra_body !== undefined) {
+        completionPayload.extra_body = genParams.extra_body;
+      }
 
       const asyncChunkGenerator = await engine.chat.completions.create(completionPayload);
 

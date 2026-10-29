@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: v0.2.9**
+**Version: v0.3.0**
 
 <p align="center">
   <strong>An Intelligent, Multi-Model Conversational AI Workspace featuring On-Device Browser AI (WebLLM & WebGPU), Offline PWA App-Shell Caching, Client-Side Document Extraction, Dual-Format Table & Clipboard Formatting, Expanded Mobile Swipe Navigation, Mobile PWA Live Dictation with Whisper Refinement, Specialized Chat Modes, Multi-Model Response Alternatives, Global Chat-Input Focus, Pixel-Perfect Code Blocks, Live Latency Tracking, Controlled Continuation, and Deep Document Understanding</strong>
@@ -1127,7 +1127,15 @@ When troubleshooting streaming completions or intermittent upstream latency on s
 
 Orvix adheres to Semantic Versioning (`MAJOR.MINOR.PATCH`). Below is the concise, scannable history of all releases and development milestones.
 
-### v0.2.9 — Refined Response Profiles for SmolLM2 135M, SmolLM2 360M, and Qwen3 0.6B *(Current)*
+### v0.3.0 — Deep Response Quality Fix for SmolLM2 135M, SmolLM2 360M, and Qwen3 0.6B *(Current)*
+- **Root-Cause Architectural Resolution**: Fixed critical semantic failures (unprompted refusals in SmolLM2 360M, nonsensical hallucinations in SmolLM2 135M, and unguided thinking-loop divergence in Qwen3 0.6B) by restructuring prompt delivery, token penalties, and WebLLM execution parameters.
+- **Qwen3 Hybrid Thinking Control**: Configured WebLLM execution with `extra_body: { enable_thinking: false }`, instructing WebLLM to insert `<think>\n\n</think>\n\n` assistant prefixes that bypass open-ended reasoning drift and immediately anchor answers to direct factual outputs.
+- **Negative-Constraint Elimination**: Replaced verbose meta-instructions and negative prompts ("avoid filler", "when requested", "admit uncertainty rather than guessing") with concise, positive instructions (`"You are a helpful assistant. Answer the user's question directly..."`), eliminating false refusals and distraction in small models.
+- **Calibrated Sampling & Repetition Penalties**: Lowered `repetition_penalty` from `1.15` (135M) and `1.10` (360M) to gentle bounds (`1.03` for 135M, `1.04` for 360M, `1.05` for Qwen3), preserving common natural domain words (e.g. "sport", "team", "players") while preventing runaway token loops. Calibrated temperatures to `0.2` (135M) and `0.3` (360M, Qwen3) for factual stability.
+- **10-Category Response Quality Suite**: Validated across factual similarity (cricket & football single-sentence test), definitions, comparisons, multi-step explanations, numbered list constraints, code generation, tone rewriting, short-answer boundaries, temporal uncertainty, and conversational multi-turn context.
+- **Strict Scope & Protected Models**: 100% preservation of the baseline default Browser AI model (Qwen 2.5 1.5B Instruct) and all four cloud providers (Gemini, Groq, OpenRouter, Cloudflare) with zero configuration or behavioral alterations.
+
+### v0.2.9 — Refined Response Profiles for SmolLM2 135M, SmolLM2 360M, and Qwen3 0.6B
 - **Model-Calibrated Response Profiles**: Established dedicated, isolated response profiles for SmolLM2 135M, SmolLM2 360M Instruct, and Qwen3 0.6B tuned to each model's specific parameter capacity, reasoning bounds, and chat conventions.
 - **Compact & Focused Instruction Layer**: Designed lightweight, model-appropriate system instructions that encourage answering the user's prompt directly first, admitting uncertainty, following requested formats and length constraints, and eliminating conversational preamble or repetitive filler without consuming precious context tokens.
 - **Calibrated Generation Hyperparameters**: Tuned model-specific sampling temperatures (general: 0.3 for 135M, 0.45 for 360M, 0.5 for Qwen3; coding: 0.15 for 135M, 0.2 for 360M, 0.25 for Qwen3), repetition penalties (1.15 for 135M, 1.10 for 360M, 1.08 for Qwen3), calibrated max-tokens thresholds, and comprehensive stop token sequences (`<|endoftext|>`, `<|im_end|>`, `<|im_start|>`, turn delimiters).

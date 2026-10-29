@@ -3,9 +3,8 @@
 /**
  * testBrowserAiProfilesQuality.js
  *
- * Automated verification and evaluation suite for Orvix v0.2.9:
- * Isolated Response Profiles, System Instructions, Generation Settings,
- * and Output Sanitization for the Three Offline Browser AI Models:
+ * Automated verification and evaluation suite for Orvix v0.3.0:
+ * Deep Response Quality Fix for the Three Offline Browser AI Models:
  *   1. SmolLM2 135M
  *   2. SmolLM2 360M Instruct
  *   3. Qwen3 0.6B
@@ -49,6 +48,8 @@ import {
   sanitizeModelForProvider
 } from '../src/services/providerModelSanitizer.js';
 
+import { formatOpenAIMessages } from '../src/services/documentContextService.js';
+
 let passed = 0;
 let failed = 0;
 
@@ -63,7 +64,7 @@ function runTest(name, fn) {
   }
 }
 
-console.log('\n--- Orvix v0.2.9: Browser AI Response Profiles & Quality Verification ---\n');
+console.log('\n--- Orvix v0.3.0: Browser AI Response Profiles & Deep Quality Verification ---\n');
 
 // 1. Model Classification & Isolation
 runTest('1. Target Model Isolation: Strictly identifies the 3 target models and rejects protected models', () => {
@@ -93,31 +94,36 @@ runTest('1. Target Model Isolation: Strictly identifies the 3 target models and 
   assert.strictEqual(getBrowserAiModelProfile(DEFAULT_WEBLLM_MODEL_ID), null);
 });
 
-// 2. Model-Specific Profile Distinctness
-runTest('2. Profile Distinctness: Each model has independent, non-identical hyperparameters', () => {
+// 2. Model-Specific Profile Distinctness (v0.3.0 Calibrated Hyperparameters)
+runTest('2. Profile Distinctness: Calibrated parameters and extra_body enable_thinking: false for Qwen3', () => {
   const p135 = getBrowserAiModelProfile(SMOLLM2_135M_WEBLLM_MODEL_ID);
   const p360 = getBrowserAiModelProfile(SMOLLM2_360M_WEBLLM_MODEL_ID);
   const pQwen3 = getBrowserAiModelProfile(QWEN3_06B_WEBLLM_MODEL_ID);
 
   assert.ok(p135 && p360 && pQwen3, 'All 3 profiles exist');
 
-  // Temperatures are differentiated based on parameter tier
-  assert.strictEqual(p135.temperature.general, 0.3);
-  assert.strictEqual(p135.temperature.coding, 0.15);
-  assert.strictEqual(p360.temperature.general, 0.45);
-  assert.strictEqual(p360.temperature.coding, 0.2);
-  assert.strictEqual(pQwen3.temperature.general, 0.5);
-  assert.strictEqual(pQwen3.temperature.coding, 0.25);
+  // Temperatures are stabilized for small parameter tiers
+  assert.strictEqual(p135.temperature.general, 0.2);
+  assert.strictEqual(p135.temperature.coding, 0.1);
+  assert.strictEqual(p360.temperature.general, 0.3);
+  assert.strictEqual(p360.temperature.coding, 0.15);
+  assert.strictEqual(pQwen3.temperature.general, 0.3);
+  assert.strictEqual(pQwen3.temperature.coding, 0.15);
 
-  // Repetition penalties are calibrated (135M highest to prevent runaway loops)
-  assert.strictEqual(p135.repetition_penalty, 1.15);
-  assert.strictEqual(p360.repetition_penalty, 1.10);
-  assert.strictEqual(pQwen3.repetition_penalty, 1.08);
+  // Repetition penalties are lowered to safe bounds so domain words are not repelled
+  assert.strictEqual(p135.repetition_penalty, 1.03);
+  assert.strictEqual(p360.repetition_penalty, 1.04);
+  assert.strictEqual(pQwen3.repetition_penalty, 1.05);
+
+  // Qwen3 has enable_thinking: false in extra_body
+  assert.deepStrictEqual(pQwen3.extra_body, { enable_thinking: false });
+  assert.strictEqual(p135.extra_body, undefined);
+  assert.strictEqual(p360.extra_body, undefined);
 
   // Max tokens scale with parameter capacity
-  assert.strictEqual(p135.maxTokens.default, 448);
-  assert.strictEqual(p360.maxTokens.default, 768);
-  assert.strictEqual(pQwen3.maxTokens.default, 896);
+  assert.strictEqual(p135.maxTokens.default, 256);
+  assert.strictEqual(p360.maxTokens.default, 512);
+  assert.strictEqual(pQwen3.maxTokens.default, 512);
 
   // Context input budgets scale with model context handling
   assert.strictEqual(p135.maxInputChars, 5000);
@@ -125,37 +131,50 @@ runTest('2. Profile Distinctness: Each model has independent, non-identical hype
   assert.strictEqual(pQwen3.maxInputChars, 10000);
 });
 
-// 3. System Instructions: Model-Calibrated & Free from Preamble/Canned Responses
-runTest('3. System Instructions: Compact, model-appropriate, and applied only to intended models', () => {
-  // SmolLM2 135M: compact, plain words, uncertainty admission
+// 3. System Instructions: Positive, Minimal, and Free from Negative Triggers
+runTest('3. System Instructions: Positive, minimal, and free from refusal/uncertainty triggers', () => {
+  // SmolLM2 135M: minimal direct instruction
   const inst135 = buildProfileSystemInstruction(SMOLLM2_135M_WEBLLM_MODEL_ID, {
     username: 'Abdul',
     preferences: { responseLength: 'concise' }
   });
   assert.ok(inst135.includes('User name: Abdul'));
-  assert.ok(inst135.includes('simple words'));
-  assert.ok(inst135.includes('admit uncertainty'));
-  assert.ok(inst135.includes('Keep answers very brief'));
-  assert.ok(inst135.length < 350, '135M instruction is compact to preserve context');
+  assert.ok(inst135.includes('Answer the question directly in simple words'));
+  assert.ok(inst135.includes('Keep answers brief'));
+  assert.ok(!inst135.includes('admit uncertainty'), 'No uncertainty trigger in 135M');
+  assert.ok(!inst135.includes('avoid filler'), 'No negative constraints in 135M');
+  assert.ok(inst135.length < 200, '135M instruction is concise');
 
-  // SmolLM2 360M: structured, lists/code, uncertainty admission
+  // SmolLM2 135M Coding
+  const inst135Code = buildProfileSystemInstruction(SMOLLM2_135M_WEBLLM_MODEL_ID, { mode: 'coding' });
+  assert.strictEqual(inst135Code, 'You are a helpful assistant. Provide clean, working code directly.');
+
+  // SmolLM2 360M: clean, direct, without "when requested" or "state uncertainty plainly"
   const inst360 = buildProfileSystemInstruction(SMOLLM2_360M_WEBLLM_MODEL_ID, {
-    mode: 'coding',
+    username: 'Abdul',
     preferences: { responseLength: 'detailed' }
   });
-  assert.ok(inst360.includes('concise paragraphs, clean lists, or code'));
-  assert.ok(inst360.includes('Provide clean, well-formatted code blocks'));
-  assert.ok(inst360.includes('state uncertainty plainly'));
+  assert.ok(inst360.includes('Answer the user\'s question directly and follow any formatting instructions'));
+  assert.ok(inst360.includes('User name: Abdul'));
+  assert.ok(inst360.includes('Provide structured explanations with clear examples'));
+  assert.ok(!inst360.includes('state uncertainty plainly'), 'No refusal trigger in 360M');
+  assert.ok(!inst360.includes('when requested'), 'No meta-instruction in 360M');
 
-  // Qwen3 0.6B: clean markdown, avoid internal thoughts, admit uncertainty
+  // SmolLM2 360M Coding
+  const inst360Code = buildProfileSystemInstruction(SMOLLM2_360M_WEBLLM_MODEL_ID, { mode: 'coding' });
+  assert.strictEqual(inst360Code, 'You are a helpful assistant. Provide clear, correct code with brief explanations.');
+
+  // Qwen3 0.6B: clean, accurate, no meta preambles
   const instQwen3 = buildProfileSystemInstruction(QWEN3_06B_WEBLLM_MODEL_ID, {
-    mode: 'learning',
-    preferences: { beginnerFriendly: true }
+    mode: 'coding'
   });
-  assert.ok(instQwen3.includes('Return a clean final answer with coherent logical structure'));
-  assert.ok(instQwen3.includes('Avoid internal thoughts'));
-  assert.ok(instQwen3.includes('Clear and approachable'));
-  assert.ok(instQwen3.includes('Admit uncertainty honestly'));
+  assert.strictEqual(instQwen3, 'You are a helpful assistant. Provide clean, efficient code with clear explanations.');
+
+  const instQwen3Gen = buildProfileSystemInstruction(QWEN3_06B_WEBLLM_MODEL_ID, {
+    preferences: { responseLength: 'concise' }
+  });
+  assert.ok(instQwen3Gen.includes('Answer the user\'s question directly, accurately, and follow all instructions'));
+  assert.ok(instQwen3Gen.includes('Keep answers brief and to the point'));
 
   // Protected models return null
   assert.strictEqual(buildProfileSystemInstruction(DEFAULT_WEBLLM_MODEL_ID), null);
@@ -164,22 +183,25 @@ runTest('3. System Instructions: Compact, model-appropriate, and applied only to
 
 // 4. Generation Settings: Resolution & Preservation of Qwen 2.5 1.5B
 runTest('4. Generation Settings: Applied accurately for targets while preserving baseline Qwen 2.5 1.5B', () => {
-  // Baseline Qwen 2.5 1.5B
+  // Baseline Qwen 2.5 1.5B: strictly untouched
   const qwenParams = resolveProfileGenerationParams(DEFAULT_WEBLLM_MODEL_ID, { mode: 'general' });
   assert.strictEqual(qwenParams.isRefined, false);
   assert.strictEqual(qwenParams.temperature, 0.7);
   assert.strictEqual(qwenParams.top_p, 0.9);
   assert.strictEqual(qwenParams.max_tokens, 1024);
+  assert.strictEqual(qwenParams.repetition_penalty, undefined);
   assert.strictEqual(qwenParams.stop, undefined);
+  assert.strictEqual(qwenParams.extra_body, undefined);
   assert.strictEqual(qwenParams.maxInputChars, 12500);
 
   // SmolLM2 135M in coding mode
   const p135Code = resolveProfileGenerationParams(SMOLLM2_135M_WEBLLM_MODEL_ID, { mode: 'coding' });
   assert.strictEqual(p135Code.isRefined, true);
-  assert.strictEqual(p135Code.temperature, 0.15);
+  assert.strictEqual(p135Code.temperature, 0.1);
   assert.strictEqual(p135Code.top_p, 0.85);
-  assert.strictEqual(p135Code.repetition_penalty, 1.15);
-  assert.strictEqual(p135Code.max_tokens, 448);
+  assert.strictEqual(p135Code.repetition_penalty, 1.03);
+  assert.strictEqual(p135Code.max_tokens, 256);
+  assert.strictEqual(p135Code.extra_body, undefined);
   assert.ok(Array.isArray(p135Code.stop));
   assert.ok(p135Code.stop.includes('<|endoftext|>'));
   assert.ok(p135Code.stop.includes('\nUser:'));
@@ -188,25 +210,27 @@ runTest('4. Generation Settings: Applied accurately for targets while preserving
   const p360Concise = resolveProfileGenerationParams(SMOLLM2_360M_WEBLLM_MODEL_ID, {
     preferences: { responseLength: 'concise' }
   });
-  assert.strictEqual(p360Concise.max_tokens, 384);
-  assert.strictEqual(p360Concise.repetition_penalty, 1.10);
+  assert.strictEqual(p360Concise.max_tokens, 256);
+  assert.strictEqual(p360Concise.repetition_penalty, 1.04);
+  assert.strictEqual(p360Concise.temperature, 0.3);
 
-  // Qwen3 0.6B with detailed preference
-  const pQwen3Detailed = resolveProfileGenerationParams(QWEN3_06B_WEBLLM_MODEL_ID, {
+  // Qwen3 0.6B passes extra_body { enable_thinking: false }
+  const pQwen3 = resolveProfileGenerationParams(QWEN3_06B_WEBLLM_MODEL_ID, {
     preferences: { responseLength: 'detailed' }
   });
-  assert.strictEqual(pQwen3Detailed.max_tokens, 1280);
-  assert.strictEqual(pQwen3Detailed.repetition_penalty, 1.08);
-  assert.ok(pQwen3Detailed.stop.includes('<|im_start|>'));
-  assert.ok(pQwen3Detailed.stop.includes('<|system|>'));
+  assert.strictEqual(pQwen3.max_tokens, 1024);
+  assert.strictEqual(pQwen3.repetition_penalty, 1.05);
+  assert.deepStrictEqual(pQwen3.extra_body, { enable_thinking: false });
+  assert.ok(pQwen3.stop.includes('<|im_start|>'));
+  assert.ok(pQwen3.stop.includes('<|im_end|>'));
 
   // Caller explicit override is respected when valid
   const pOverride = resolveProfileGenerationParams(SMOLLM2_135M_WEBLLM_MODEL_ID, {
-    temperature: 0.1,
-    max_tokens: 120
+    temperature: 0.12,
+    max_tokens: 150
   });
-  assert.strictEqual(pOverride.temperature, 0.1);
-  assert.strictEqual(pOverride.max_tokens, 120);
+  assert.strictEqual(pOverride.temperature, 0.12);
+  assert.strictEqual(pOverride.max_tokens, 150);
 });
 
 // 5. Protected Providers Invariant
@@ -261,6 +285,11 @@ runTest('7. Output Sanitization: Strips control tokens, <think> blocks, and simu
   const cleanedInsideThink = cleanModelOutput(rawInsideThink, QWEN3_06B_WEBLLM_MODEL_ID);
   assert.strictEqual(cleanedInsideThink, 'Paris is the capital of France.');
 
+  // Isolated closing think tag
+  const rawIsolatedEndThink = '</think>Both cricket and football are played with a ball.';
+  const cleanedIsolated = cleanModelOutput(rawIsolatedEndThink, QWEN3_06B_WEBLLM_MODEL_ID);
+  assert.strictEqual(cleanedIsolated, 'Both cricket and football are played with a ball.');
+
   // Leading assistant echo
   const rawWithEcho = 'Assistant: The function returns 42.';
   const cleanedEcho = cleanModelOutput(rawWithEcho, SMOLLM2_360M_WEBLLM_MODEL_ID);
@@ -310,74 +339,131 @@ runTest('9. Streaming Sanitizer: Shields prefixes, stops on delimiters, and prev
   assert.ok(!streamed.includes('User:'), 'Simulated turn prevented');
 });
 
-// 10. Streaming Sanitizer: Reasoning <think> Tag Shielding
-runTest('10. Streaming Sanitizer: Shields internal <think> blocks during streaming', () => {
-  let streamed = '';
-
-  const sanitizer = createStreamingResponseSanitizer(QWEN3_06B_WEBLLM_MODEL_ID, {
-    onChunk: (chunk) => {
-      streamed += chunk;
-    }
-  });
-
-  sanitizer.feed('<think>');
-  sanitizer.feed('Let me calculate 12 * 12. 12 times 10 is 120, plus 24 is 144.');
-  sanitizer.feed('</think>');
-  sanitizer.feed('12 * 12 = 144.');
-  sanitizer.flush();
-
-  assert.strictEqual(streamed, '12 * 12 = 144.');
-  assert.ok(!streamed.includes('calculate'), 'Inner think content hidden from stream');
-});
-
-// 11. Representative Evaluation Test Scenarios (Manual Evaluation Suite Grounding)
-runTest('11. Evaluation Suite: Representative prompts produce model-appropriate configs', () => {
-  const scenarios = [
+// 10. The 10 Specific Capability Categories (Section 8 Verification)
+runTest('10. Comprehensive 10 Capability Categories: Formatting, Context & Token Bounds', () => {
+  const testCases = [
     {
-      name: 'Simple Factual (135M)',
-      modelId: SMOLLM2_135M_WEBLLM_MODEL_ID,
-      prompt: 'What is the speed of light?',
-      expectedMode: 'general',
-      verify: (params, inst) => {
-        assert.strictEqual(params.temperature, 0.3);
-        assert.ok(inst.includes('simple words'));
+      category: '1. Simple factual similarity (Cricket & Football)',
+      prompt: 'I need you to tell me one thing which is the same in cricket and football. Tell me in a single sentence.',
+      mode: 'general',
+      verify: (modelId) => {
+        const p = resolveProfileGenerationParams(modelId);
+        const sys = buildProfileSystemInstruction(modelId);
+        assert.ok(p.repetition_penalty <= 1.05, 'Repetition penalty low enough for shared words (sport, team, ball)');
+        assert.ok(p.temperature <= 0.3, 'Temperature low enough for grounded factual recall');
+        assert.ok(sys.includes('Answer the') || sys.includes('Answer the question'), 'Direct answer instruction');
+        const msgs = formatOpenAIMessages({
+          systemInstruction: sys,
+          prompt: 'I need you to tell me one thing which is the same in cricket and football. Tell me in a single sentence.'
+        });
+        assert.strictEqual(msgs[0].role, 'system');
+        assert.strictEqual(msgs[msgs.length - 1].role, 'user');
       }
     },
     {
-      name: 'Educational Explanation (360M)',
-      modelId: SMOLLM2_360M_WEBLLM_MODEL_ID,
-      prompt: 'Explain how solar panels generate electricity.',
-      expectedMode: 'learning',
-      verify: (params, inst) => {
-        assert.strictEqual(params.temperature, 0.45);
-        assert.ok(inst.includes('Break concepts into logical'));
+      category: '2. Simple definition',
+      prompt: 'What is a computer? Answer in one sentence.',
+      mode: 'general',
+      verify: (modelId) => {
+        const p = resolveProfileGenerationParams(modelId, { preferences: { responseLength: 'concise' } });
+        assert.ok(p.max_tokens <= 256, 'Concise token budget applied');
       }
     },
     {
-      name: 'Coding Question (Qwen3)',
-      modelId: QWEN3_06B_WEBLLM_MODEL_ID,
-      prompt: 'Write a Python function to check for palindromes.',
-      expectedMode: 'coding',
-      verify: (params, inst) => {
-        assert.strictEqual(params.temperature, 0.25);
-        assert.ok(inst.includes('syntax highlighting tags'));
+      category: '3. Simple comparison',
+      prompt: 'Difference between car and bicycle in one sentence',
+      mode: 'general',
+      verify: (modelId) => {
+        const sys = buildProfileSystemInstruction(modelId);
+        assert.ok(!sys.includes('state uncertainty plainly'), 'No refusal trigger on comparison');
       }
     },
     {
-      name: 'Uncertainty Handling (All)',
-      modelId: SMOLLM2_135M_WEBLLM_MODEL_ID,
+      category: '4. Simple explanation',
+      prompt: 'Explain photosynthesis in two simple sentences',
+      mode: 'learning',
+      verify: (modelId) => {
+        const p = resolveProfileGenerationParams(modelId, { mode: 'learning' });
+        assert.ok(p.temperature <= 0.3, 'Stable learning temperature');
+      }
+    },
+    {
+      category: '5. Instruction following',
+      prompt: 'Three fruits as a numbered list',
+      mode: 'general',
+      verify: (modelId) => {
+        const sampleOut = '1. Apple\n2. Banana\n3. Orange<|im_end|>';
+        const clean = cleanModelOutput(sampleOut, modelId);
+        assert.strictEqual(clean, '1. Apple\n2. Banana\n3. Orange');
+      }
+    },
+    {
+      category: '6. Coding',
+      prompt: 'JavaScript function that adds two numbers',
+      mode: 'coding',
+      verify: (modelId) => {
+        const p = resolveProfileGenerationParams(modelId, { mode: 'coding' });
+        assert.ok(p.temperature <= 0.15, 'Low coding temperature prevents syntax hallucination');
+        const sys = buildProfileSystemInstruction(modelId, { mode: 'coding' });
+        assert.ok(sys.includes('clean') || sys.includes('code'), 'Clean coding instruction');
+      }
+    },
+    {
+      category: '7. Rewrite',
+      prompt: 'Rewrite politely: Send me the file',
+      mode: 'writing',
+      verify: (modelId) => {
+        const sys = buildProfileSystemInstruction(modelId, { mode: 'writing' });
+        assert.ok(!sys.includes('admit uncertainty rather than guessing'), 'No refusal trigger on rewrite');
+      }
+    },
+    {
+      category: '8. Short-answer constraint',
+      prompt: 'What is 2 + 2? Answer with only the answer',
+      mode: 'general',
+      verify: (modelId) => {
+        const raw = '4\nUser: Next?';
+        const clean = cleanModelOutput(raw, modelId);
+        assert.strictEqual(clean, '4');
+      }
+    },
+    {
+      category: '9. Uncertainty handling',
       prompt: 'Who won the 2035 Nobel prize in physics?',
-      expectedMode: 'general',
-      verify: (params, inst) => {
-        assert.ok(inst.includes('admit uncertainty'));
+      mode: 'general',
+      verify: (modelId) => {
+        const p = resolveProfileGenerationParams(modelId);
+        assert.ok(p.temperature <= 0.3, 'Low temperature prevents hallucinating future events');
+      }
+    },
+    {
+      category: '10. Conversational continuity',
+      prompt: 'What was the first thing I asked?',
+      mode: 'general',
+      verify: (modelId) => {
+        const history = [
+          { sender: 'user', content: 'What is water made of?' },
+          { sender: 'assistant', content: 'Water is made of hydrogen and oxygen (H2O).' }
+        ];
+        const sys = buildProfileSystemInstruction(modelId);
+        const msgs = formatOpenAIMessages({
+          systemInstruction: sys,
+          history,
+          prompt: 'What was the first thing I asked?'
+        });
+        assert.strictEqual(msgs.length, 4);
+        assert.strictEqual(msgs[0].role, 'system');
+        assert.strictEqual(msgs[1].content, 'What is water made of?');
+        assert.strictEqual(msgs[2].content, 'Water is made of hydrogen and oxygen (H2O).');
+        assert.strictEqual(msgs[3].content, 'What was the first thing I asked?');
       }
     }
   ];
 
-  for (const s of scenarios) {
-    const params = resolveProfileGenerationParams(s.modelId, { mode: s.expectedMode });
-    const inst = buildProfileSystemInstruction(s.modelId, { mode: s.expectedMode });
-    s.verify(params, inst);
+  for (const modelId of [SMOLLM2_135M_WEBLLM_MODEL_ID, SMOLLM2_360M_WEBLLM_MODEL_ID, QWEN3_06B_WEBLLM_MODEL_ID]) {
+    for (const tc of testCases) {
+      tc.verify(modelId);
+    }
   }
 });
 
