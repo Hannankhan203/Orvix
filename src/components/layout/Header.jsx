@@ -10,6 +10,8 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useSettings } from '../../context/SettingsContext.jsx';
 import { validateUsername } from '../../services/userProfileService.js';
 import { usePWAInstall } from '../../hooks/usePWAInstall.js';
+import { getAISelectionGuidance } from '../../config/aiGuidance.js';
+import { DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
 
 /**
  * Header Component
@@ -46,8 +48,11 @@ export default function Header({
   onExportMarkdown,
   onExportText,
   hasExportableMessages = false,
-  providerConfig = null
+  providerConfig = null,
+  selectedModelId = DEFAULT_WEBLLM_MODEL_ID
 }) {
+  const activeGuidanceText = getAISelectionGuidance(selectedProvider, selectedModelId);
+
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
   const { isInstallable, install } = usePWAInstall();
@@ -189,6 +194,7 @@ export default function Header({
               selectedProvider={selectedProvider}
               onSelectProvider={onSelectProvider}
               providerConfig={providerConfig}
+              selectedModelId={selectedModelId}
               className="header-model-selector"
               id="ai-model-select-desktop"
             />
@@ -349,6 +355,7 @@ export default function Header({
                 selectedProvider={selectedProvider}
                 onSelectProvider={onSelectProvider}
                 providerConfig={providerConfig}
+                selectedModelId={selectedModelId}
                 compact
                 className="mobile-model-selector"
                 id="ai-model-select-mobile"
@@ -376,6 +383,19 @@ export default function Header({
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* AI Model Selection Guidance Strip */}
+      <div
+        className="header-model-guidance-strip"
+        role="status"
+        aria-live="polite"
+        id="header-active-model-guidance"
+      >
+        <div className="header-guidance-inner">
+          <Sparkles size={12} className="header-guidance-icon" aria-hidden="true" />
+          <span className="header-guidance-text">{activeGuidanceText}</span>
         </div>
       </div>
 

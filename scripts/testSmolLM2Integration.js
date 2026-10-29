@@ -346,15 +346,15 @@ runTest('Hardware Resolution: shader-f16 fallback for SmolLM2 360M & 135M', () =
 });
 
 // 9. UI Dropdown List
-runTest('UI Options: getSupportedWebLLMModels returns Qwen 1.5B, SmolLM2 360M, SmolLM2 135M, and Qwen3 0.6B', () => {
+runTest('UI Options: getSupportedWebLLMModels returns SmolLM2 135M, SmolLM2 360M, Qwen3 0.6B, and Qwen 1.5B in least-to-most reliable sequence', () => {
   const models = getSupportedWebLLMModels();
   assert.strictEqual(models.length, 4);
   const ids = models.map((m) => m.id);
   assert.deepStrictEqual(ids, [
-    DEFAULT_WEBLLM_MODEL_ID,
-    SMOLLM2_360M_WEBLLM_MODEL_ID,
     SMOLLM2_135M_WEBLLM_MODEL_ID,
-    QWEN3_06B_WEBLLM_MODEL_ID
+    SMOLLM2_360M_WEBLLM_MODEL_ID,
+    QWEN3_06B_WEBLLM_MODEL_ID,
+    DEFAULT_WEBLLM_MODEL_ID
   ]);
 });
 

@@ -1305,6 +1305,50 @@ html, body {
   font-weight: 500;
 }
 
+/* AI Model Selection Guidance Bar */
+.header-model-guidance-strip {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 4px 16px;
+  background-color: var(--bg-card);
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: 26px;
+  font-size: 0.735rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+.header-guidance-inner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.header-guidance-icon {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.header-guidance-text {
+  white-space: normal;
+  font-weight: 450;
+  letter-spacing: -0.005em;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 767px) {
+  .header-model-guidance-strip {
+    padding: 4px 12px;
+    font-size: 0.71rem;
+    min-height: 28px;
+  }
+}
+
 /* Universal Account Popover Menu */
 .account-popover-card {
   position: absolute;
@@ -1648,11 +1692,22 @@ html, body {
   text-overflow: ellipsis;
 }
 
-.model-selector-select option {
+.model-selector-select option,
+.browser-ai-model-select option {
   background-color: var(--bg-sidebar);
   color: var(--text-primary);
   font-size: 0.85rem;
   padding: 6px;
+}
+
+.model-selector-select optgroup,
+.browser-ai-model-select optgroup {
+  background-color: var(--bg-sidebar);
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  padding: 4px 6px;
 }
 
 .model-selector-chevron {
@@ -11334,6 +11389,22 @@ body.theme-light .notice-retry-btn,
 .browser-ai-status-bar.tone-error .browser-ai-detail {
   color: #fca5a5;
   -webkit-line-clamp: 3;
+}
+
+.browser-ai-guidance-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  font-weight: 450;
+}
+
+.browser-ai-guidance-icon {
+  color: var(--accent-primary);
+  flex-shrink: 0;
 }
 
 .browser-ai-controls {

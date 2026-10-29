@@ -40,7 +40,8 @@ export default function Layout({
   onExportText,
   hasExportableMessages = false,
   isOffline = false,
-  providerConfig = null
+  providerConfig = null,
+  selectedModelId = undefined
 }) {
   // Desktop defaults to open, mobile defaults to closed
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -634,6 +635,7 @@ export default function Layout({
           onExportText={onExportText}
           hasExportableMessages={hasExportableMessages}
           providerConfig={providerConfig}
+          selectedModelId={selectedModelId}
         />
         {children}
       </div>

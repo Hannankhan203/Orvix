@@ -2577,6 +2577,7 @@ export default function ChatPage() {
       isOffline={isOffline}
       selectedProvider={selectedProvider}
       onSelectProvider={handleSelectProvider}
+      selectedModelId={webllmModelId}
       activeMode={activeMode}
       onSelectMode={handleSelectMode}
       onExportMarkdown={handleExportMarkdown}

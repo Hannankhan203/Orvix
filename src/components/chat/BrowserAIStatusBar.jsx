@@ -8,8 +8,10 @@ import {
   X,
   RotateCcw,
   Trash2,
-  ChevronDown
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
+import { getAISelectionGuidance } from '../../config/aiGuidance.js';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
   SMOLLM2_360M_WEBLLM_MODEL_ID,
@@ -207,6 +209,16 @@ export default function BrowserAIStatusBar({
                 {detail}
               </p>
             )}
+            {isSelectedProvider && (
+              <p
+                id="browser-ai-model-guidance-desc"
+                className="browser-ai-guidance-note"
+                role="note"
+              >
+                <Sparkles size={11} className="browser-ai-guidance-icon" aria-hidden="true" />
+                <span>{getAISelectionGuidance('webllm', selectedModelId)}</span>
+              </p>
+            )}
           </div>
         </div>
 
@@ -219,12 +231,15 @@ export default function BrowserAIStatusBar({
                 value={selectedModelId}
                 disabled={isBusy}
                 onChange={(e) => onSelectModel && onSelectModel(e.target.value)}
+                aria-describedby="browser-ai-model-guidance-desc"
               >
-                {modelOptions.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {`${opt.shortLabel} — ${opt.tierLabel || (opt.tier === 'ultra-lightweight' ? 'Ultra Lightweight' : opt.tier === 'lightweight' ? 'Lightweight' : 'Standard')} (~${opt.estimatedDownloadMB} MB)`}
-                  </option>
-                ))}
+                <optgroup label="Browser AI Models">
+                  {modelOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {`${opt.shortLabel} — ${opt.tierLabel || (opt.tier === 'ultra-lightweight' ? 'Ultra Lightweight' : opt.tier === 'lightweight' ? 'Lightweight' : 'Standard')} (~${opt.estimatedDownloadMB} MB)`}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
               <ChevronDown size={11} className="browser-ai-select-chevron" aria-hidden="true" />
             </div>

@@ -51,45 +51,51 @@ export const LIGHTWEIGHT_F32_WEBLLM_MODEL_ID = 'Qwen2.5-0.5B-Instruct-q4f32_1-ML
 
 /**
  * Verified Browser AI models present in @mlc-ai/web-llm@0.2.86 prebuiltAppConfig.model_list.
- * Includes primary Qwen 2.5 1.5B (Standard), SmolLM2 360M (Compact), and SmolLM2 135M (Ultra Lightweight).
+ * Ordered from least reliable to most reliable:
+ * 1. SmolLM2 135M (Ultra Lightweight)
+ * 2. SmolLM2 360M (Compact)
+ * 3. Qwen3 0.6B (Lightweight)
+ * 4. Qwen 2.5 1.5B (Standard — default)
  */
 export const WEBLLM_MODEL_CATALOG = Object.freeze({
-  [DEFAULT_WEBLLM_MODEL_ID]: Object.freeze({
-    id: DEFAULT_WEBLLM_MODEL_ID,
-    label: 'Qwen 2.5 1.5B Instruct',
-    shortLabel: 'Qwen 2.5 1.5B',
-    tier: 'standard',
-    tierLabel: 'Standard',
-    parameters: '~1.5B parameters',
-    quantization: 'q4f16_1',
+  [SMOLLM2_135M_WEBLLM_MODEL_ID]: Object.freeze({
+    id: SMOLLM2_135M_WEBLLM_MODEL_ID,
+    label: 'SmolLM2 135M Instruct (Ultra Lightweight)',
+    shortLabel: 'SmolLM2 135M',
+    tier: 'ultra-lightweight',
+    tierLabel: 'Ultra Lightweight',
+    parameters: '~135M parameters',
+    description: 'Ultra Lightweight (~135M parameters, Offline / Browser AI)',
+    quantization: 'q0f16',
     prefersShaderF16: true,
-    f32FallbackModelId: FALLBACK_F32_WEBLLM_MODEL_ID,
-    vramRequiredMB: 1629.75,
-    estimatedDownloadMB: 960,
-    minStorageBytes: 1_150 * 1024 * 1024, // ~1.15 GB safety buffer for shards + WASM + tokenizer
+    f32FallbackModelId: SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
+    vramRequiredMB: 359.69,
+    estimatedDownloadMB: 270,
+    minStorageBytes: 350 * 1024 * 1024,
     contextWindowSize: 4096,
-    maxDocChars: 10_000,
-    maxHistoryMessages: 8,
-    defaultMaxTokens: 1024,
-    isDefault: true
+    maxDocChars: 6_000,
+    maxHistoryMessages: 6,
+    defaultMaxTokens: 768,
+    isDefault: false
   }),
-  [FALLBACK_F32_WEBLLM_MODEL_ID]: Object.freeze({
-    id: FALLBACK_F32_WEBLLM_MODEL_ID,
-    label: 'Qwen 2.5 1.5B Instruct (FP32 Compat)',
-    shortLabel: 'Qwen 2.5 1.5B (FP32)',
-    tier: 'standard-f32',
-    tierLabel: 'Standard (FP32)',
-    parameters: '~1.5B parameters',
-    quantization: 'q4f32_1',
+  [SMOLLM2_135M_F32_WEBLLM_MODEL_ID]: Object.freeze({
+    id: SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
+    label: 'SmolLM2 135M Instruct (Ultra Lightweight FP32)',
+    shortLabel: 'SmolLM2 135M (FP32)',
+    tier: 'ultra-lightweight-f32',
+    tierLabel: 'Ultra Lightweight (FP32)',
+    parameters: '~135M parameters',
+    description: 'Ultra Lightweight (~135M parameters, Offline / Browser AI, FP32)',
+    quantization: 'q0f32',
     prefersShaderF16: false,
     f32FallbackModelId: null,
-    vramRequiredMB: 1888.97,
-    estimatedDownloadMB: 1120,
-    minStorageBytes: 1_300 * 1024 * 1024,
+    vramRequiredMB: 719.38,
+    estimatedDownloadMB: 270,
+    minStorageBytes: 400 * 1024 * 1024,
     contextWindowSize: 4096,
-    maxDocChars: 10_000,
-    maxHistoryMessages: 8,
-    defaultMaxTokens: 1024,
+    maxDocChars: 6_000,
+    maxHistoryMessages: 6,
+    defaultMaxTokens: 768,
     isDefault: false
   }),
   [SMOLLM2_360M_WEBLLM_MODEL_ID]: Object.freeze({
@@ -132,46 +138,6 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     defaultMaxTokens: 896,
     isDefault: false
   }),
-  [SMOLLM2_135M_WEBLLM_MODEL_ID]: Object.freeze({
-    id: SMOLLM2_135M_WEBLLM_MODEL_ID,
-    label: 'SmolLM2 135M Instruct (Ultra Lightweight)',
-    shortLabel: 'SmolLM2 135M',
-    tier: 'ultra-lightweight',
-    tierLabel: 'Ultra Lightweight',
-    parameters: '~135M parameters',
-    description: 'Ultra Lightweight (~135M parameters, Offline / Browser AI)',
-    quantization: 'q0f16',
-    prefersShaderF16: true,
-    f32FallbackModelId: SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
-    vramRequiredMB: 359.69,
-    estimatedDownloadMB: 270,
-    minStorageBytes: 350 * 1024 * 1024,
-    contextWindowSize: 4096,
-    maxDocChars: 6_000,
-    maxHistoryMessages: 6,
-    defaultMaxTokens: 768,
-    isDefault: false
-  }),
-  [SMOLLM2_135M_F32_WEBLLM_MODEL_ID]: Object.freeze({
-    id: SMOLLM2_135M_F32_WEBLLM_MODEL_ID,
-    label: 'SmolLM2 135M Instruct (Ultra Lightweight FP32)',
-    shortLabel: 'SmolLM2 135M (FP32)',
-    tier: 'ultra-lightweight-f32',
-    tierLabel: 'Ultra Lightweight (FP32)',
-    parameters: '~135M parameters',
-    description: 'Ultra Lightweight (~135M parameters, Offline / Browser AI, FP32)',
-    quantization: 'q0f32',
-    prefersShaderF16: false,
-    f32FallbackModelId: null,
-    vramRequiredMB: 719.38,
-    estimatedDownloadMB: 270,
-    minStorageBytes: 400 * 1024 * 1024,
-    contextWindowSize: 4096,
-    maxDocChars: 6_000,
-    maxHistoryMessages: 6,
-    defaultMaxTokens: 768,
-    isDefault: false
-  }),
   [QWEN3_06B_WEBLLM_MODEL_ID]: Object.freeze({
     id: QWEN3_06B_WEBLLM_MODEL_ID,
     label: 'Qwen3 0.6B',
@@ -210,6 +176,44 @@ export const WEBLLM_MODEL_CATALOG = Object.freeze({
     maxDocChars: 8_000,
     maxHistoryMessages: 6,
     defaultMaxTokens: 896,
+    isDefault: false
+  }),
+  [DEFAULT_WEBLLM_MODEL_ID]: Object.freeze({
+    id: DEFAULT_WEBLLM_MODEL_ID,
+    label: 'Qwen 2.5 1.5B Instruct',
+    shortLabel: 'Qwen 2.5 1.5B',
+    tier: 'standard',
+    tierLabel: 'Standard',
+    parameters: '~1.5B parameters',
+    quantization: 'q4f16_1',
+    prefersShaderF16: true,
+    f32FallbackModelId: FALLBACK_F32_WEBLLM_MODEL_ID,
+    vramRequiredMB: 1629.75,
+    estimatedDownloadMB: 960,
+    minStorageBytes: 1_150 * 1024 * 1024, // ~1.15 GB safety buffer for shards + WASM + tokenizer
+    contextWindowSize: 4096,
+    maxDocChars: 10_000,
+    maxHistoryMessages: 8,
+    defaultMaxTokens: 1024,
+    isDefault: true
+  }),
+  [FALLBACK_F32_WEBLLM_MODEL_ID]: Object.freeze({
+    id: FALLBACK_F32_WEBLLM_MODEL_ID,
+    label: 'Qwen 2.5 1.5B Instruct (FP32 Compat)',
+    shortLabel: 'Qwen 2.5 1.5B (FP32)',
+    tier: 'standard-f32',
+    tierLabel: 'Standard (FP32)',
+    parameters: '~1.5B parameters',
+    quantization: 'q4f32_1',
+    prefersShaderF16: false,
+    f32FallbackModelId: null,
+    vramRequiredMB: 1888.97,
+    estimatedDownloadMB: 1120,
+    minStorageBytes: 1_300 * 1024 * 1024,
+    contextWindowSize: 4096,
+    maxDocChars: 10_000,
+    maxHistoryMessages: 8,
+    defaultMaxTokens: 1024,
     isDefault: false
   }),
   [LIGHTWEIGHT_WEBLLM_MODEL_ID]: Object.freeze({
@@ -629,10 +633,11 @@ export function subscribeWebLLMState(listener) {
 
 /**
  * Returns the catalog of verified Browser AI models.
- * By default returns the primary user-selectable models:
- * 1. Qwen 2.5 1.5B (Standard offline model — default)
+ * By default returns the primary user-selectable models in sequence from least to most reliable:
+ * 1. SmolLM2 135M (Ultra-lightweight offline model)
  * 2. SmolLM2 360M (Compact offline model)
- * 3. SmolLM2 135M (Ultra-lightweight offline model)
+ * 3. Qwen3 0.6B (Lightweight offline model)
+ * 4. Qwen 2.5 1.5B (Standard offline model — default)
  *
  * @param {{ includeF32Variants?: boolean, includeAllTiers?: boolean }} [options]
  */
@@ -644,10 +649,10 @@ export function getSupportedWebLLMModels(options = {}) {
   }
 
   const primaryModels = [
-    WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID],
-    WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID],
     WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID],
-    WEBLLM_MODEL_CATALOG[QWEN3_06B_WEBLLM_MODEL_ID]
+    WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID],
+    WEBLLM_MODEL_CATALOG[QWEN3_06B_WEBLLM_MODEL_ID],
+    WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID]
   ].filter(Boolean);
 
   if (includeF32Variants) {

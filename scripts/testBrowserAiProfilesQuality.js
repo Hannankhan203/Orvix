@@ -250,17 +250,17 @@ runTest('5. Protected Providers: Gemini, Groq, OpenRouter, Cloudflare are untouc
 });
 
 // 6. UI Catalog & Selector Labels Preservation
-runTest('6. UI Catalog: Model IDs and display labels preserved exactly', () => {
+runTest('6. UI Catalog: Model IDs and display labels preserved exactly in least-to-most reliable order', () => {
   const models = getSupportedWebLLMModels();
   assert.strictEqual(models.length, 4);
-  assert.strictEqual(models[0].id, DEFAULT_WEBLLM_MODEL_ID);
-  assert.strictEqual(models[0].shortLabel, 'Qwen 2.5 1.5B');
+  assert.strictEqual(models[0].id, SMOLLM2_135M_WEBLLM_MODEL_ID);
+  assert.strictEqual(models[0].shortLabel, 'SmolLM2 135M');
   assert.strictEqual(models[1].id, SMOLLM2_360M_WEBLLM_MODEL_ID);
   assert.strictEqual(models[1].shortLabel, 'SmolLM2 360M');
-  assert.strictEqual(models[2].id, SMOLLM2_135M_WEBLLM_MODEL_ID);
-  assert.strictEqual(models[2].shortLabel, 'SmolLM2 135M');
-  assert.strictEqual(models[3].id, QWEN3_06B_WEBLLM_MODEL_ID);
-  assert.strictEqual(models[3].shortLabel, 'Qwen3 0.6B');
+  assert.strictEqual(models[2].id, QWEN3_06B_WEBLLM_MODEL_ID);
+  assert.strictEqual(models[2].shortLabel, 'Qwen3 0.6B');
+  assert.strictEqual(models[3].id, DEFAULT_WEBLLM_MODEL_ID);
+  assert.strictEqual(models[3].shortLabel, 'Qwen 2.5 1.5B');
 });
 
 // 7. Output Cleanup: Removal of Leaked Tokens, Thinking Blocks, and Preamble Echoes

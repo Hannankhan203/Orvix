@@ -63,14 +63,14 @@ export const OPENROUTER_DYNAMIC_ROUTERS = Object.freeze([
 export const CLOUDFLARE_DEFAULT_MODEL = '@cf/meta/llama-3.1-8b-instruct';
 
 export const WEBLLM_SUPPORTED_MODELS = Object.freeze([
-  'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
-  'Qwen2.5-1.5B-Instruct-q4f32_1-MLC',
-  'SmolLM2-360M-Instruct-q4f16_1-MLC',
-  'SmolLM2-360M-Instruct-q4f32_1-MLC',
   'SmolLM2-135M-Instruct-q0f16-MLC',
   'SmolLM2-135M-Instruct-q0f32-MLC',
+  'SmolLM2-360M-Instruct-q4f16_1-MLC',
+  'SmolLM2-360M-Instruct-q4f32_1-MLC',
   'Qwen3-0.6B-q4f16_1-MLC',
   'Qwen3-0.6B-q4f32_1-MLC',
+  'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+  'Qwen2.5-1.5B-Instruct-q4f32_1-MLC',
   'Qwen2.5-0.5B-Instruct-q4f16_1-MLC',
   'Qwen2.5-0.5B-Instruct-q4f32_1-MLC'
 ]);
