@@ -77,6 +77,14 @@
   /* Font Stacks */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  /* Welcoming Empty State Hero Tokens */
+  --welcome-logo-size: 72px;
+  --welcome-logo-gap: 22px;
+  --welcome-heading-size: 2.35rem;
+  --welcome-heading-line-height: 1.18;
+  --welcome-heading-letter-spacing: -0.026em;
+  --welcome-max-width: 720px;
 }
 
 /* Responsive Desktop Layout Scaling (1440px, 1600px, 1920px, 2560px) */
@@ -1783,11 +1791,6 @@ html, body {
   box-shadow: 0 0 0 2px var(--accent-ring);
 }
 
-.mode-compact-trigger:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
-}
-
 .mode-compact-trigger.mode-general .mode-compact-icon {
   color: #60a5fa;
 }
@@ -1845,6 +1848,7 @@ html, body {
 
 .mode-dropdown-menu.align-right,
 .header-mode-selector .mode-dropdown-menu {
+  top: calc(100% + 6px);
   left: auto;
   right: 0;
 }
@@ -2017,12 +2021,6 @@ html, body {
 .composer-mode-strip .mode-dropdown-menu {
   top: auto;
   bottom: calc(100% + 8px);
-  left: 0;
-}
-
-/* Header Mode Selector placement */
-.header-mode-selector .mode-dropdown-menu {
-  top: calc(100% + 6px);
   left: 0;
 }
 
@@ -2251,15 +2249,6 @@ html, body {
 /* ==========================================================================
    Welcoming Empty State — Responsive Hero Centerpiece
    ========================================================================== */
-:root {
-  --welcome-logo-size: 72px;
-  --welcome-logo-gap: 22px;
-  --welcome-heading-size: 2.35rem;
-  --welcome-heading-line-height: 1.18;
-  --welcome-heading-letter-spacing: -0.026em;
-  --welcome-max-width: 720px;
-}
-
 .welcome-screen {
   margin: auto 0;
   display: flex;
@@ -2625,11 +2614,6 @@ html, body {
   transform: translateY(0);
 }
 
-.message-attachment-card:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 1px;
-}
-
 /* Compact mode (for assistant referenced documents) */
 .message-attachment-card.is-compact {
   padding: 4px 8px;
@@ -2892,7 +2876,6 @@ html, body {
 
 [data-theme="light"] .attachment-action-btn:hover {
   background-color: rgba(0, 0, 0, 0.08);
-  color: var(--text-primary);
 }
 
 [data-theme="light"] .attachment-notice-popover {
@@ -2957,11 +2940,6 @@ html, body {
   border-color: rgba(96, 165, 250, 0.65);
   transform: translateY(-1px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-}
-
-.message-image-card:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 1px;
 }
 
 .message-image-card.is-error {
@@ -3725,11 +3703,6 @@ html, body {
   outline: none;
 }
 
-.table-responsive-wrapper:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 1px;
-}
-
 .markdown-table {
   width: 100%;
   border-collapse: separate;
@@ -3802,7 +3775,6 @@ html, body {
 [data-theme="light"] .markdown-blockquote {
   background-color: rgba(0, 0, 0, 0.025);
   border-left-color: rgba(0, 0, 0, 0.2);
-  color: var(--text-secondary);
 }
 
 [data-theme="light"] .markdown-ul > .markdown-li::marker {
@@ -3823,13 +3795,11 @@ html, body {
 }
 
 [data-theme="light"] .markdown-th {
-  color: var(--text-primary);
   border-bottom-color: rgba(0, 0, 0, 0.12);
 }
 
 [data-theme="light"] .markdown-td {
   border-bottom-color: rgba(0, 0, 0, 0.06);
-  color: var(--text-secondary);
 }
 
 [data-theme="light"] .markdown-tr:hover .markdown-td {
@@ -5496,28 +5466,6 @@ html, body {
   border-right-color: rgba(255, 255, 255, 0.08);
 }
 
-[data-theme="light"] .code-content {
-  color: #f1f5f9;
-}
-
-[data-theme="light"] .code-copy-btn {
-  color: #cbd5e1;
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.14);
-}
-
-[data-theme="light"] .code-copy-btn:hover {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.28);
-}
-
-[data-theme="light"] .code-lines-count {
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
 [data-theme="light"] .code-lang-label {
   color: #f1f5f9;
 }
@@ -5578,28 +5526,6 @@ html, body {
   color: #f87171;
   border: 1px solid rgba(239, 68, 68, 0.25);
   margin-left: 4px;
-}
-
-.composer-stop-btn {
-  color: #f87171 !important;
-  background-color: rgba(239, 68, 68, 0.12) !important;
-  border: 1px solid rgba(239, 68, 68, 0.35) !important;
-  animation: pulse-stop 2s infinite ease-in-out;
-}
-
-.composer-stop-btn:hover {
-  background-color: rgba(239, 68, 68, 0.22) !important;
-  border-color: rgba(239, 68, 68, 0.5) !important;
-  color: #ffffff !important;
-}
-
-@keyframes pulse-stop {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3);
-  }
-  50% {
-    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.1);
-  }
 }
 
 /* ==========================================================================
@@ -7067,6 +6993,16 @@ body.theme-light .composer-send-btn.is-empty,
   font-weight: 600;
   gap: 6px;
   transition: all var(--transition-fast);
+  animation: pulse-stop 2s infinite ease-in-out;
+}
+
+@keyframes pulse-stop {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.1);
+  }
 }
 
 .composer-stop-btn:hover:not(:disabled) {
@@ -8739,11 +8675,6 @@ body.theme-light .notice-retry-btn,
   color: #dc2626;
   border-color: var(--status-danger-border);
 }
-[data-theme="light"] .btn-danger:hover:not(:disabled) {
-  background-color: #dc2626;
-  color: #ffffff;
-  border-color: #dc2626;
-}
 
 .btn-sm {
   padding: 5px 10px;
@@ -9620,7 +9551,6 @@ body.theme-light .notice-retry-btn,
   }
 
   .attachment-card-actions {
-    opacity: 1;
     gap: 4px;
   }
 
@@ -9660,15 +9590,6 @@ body.theme-light .notice-retry-btn,
 
   .message-image-actions {
     gap: 6px;
-  }
-
-  .image-card-action-btn {
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    min-height: 32px;
-    border-radius: var(--radius-sm);
-    touch-action: manipulation;
   }
 
   /* Document Preview Modal on Mobile */
@@ -9891,10 +9812,6 @@ body.theme-light .notice-retry-btn,
     max-width: 100%;
     padding: 0 4px;
     gap: 18px;
-  }
-
-  .form-input {
-    font-size: 16px !important; /* Prevents auto-zoom in iOS Safari */
   }
 }
 
@@ -10447,6 +10364,10 @@ body.theme-light .notice-retry-btn,
 }
 
 .settings-segment-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
@@ -11264,13 +11185,6 @@ body.theme-light .notice-retry-btn,
 /* ==========================================================================
    Browser AI (WebLLM) Non-Blocking Status & Progress Bar
    ========================================================================== */
-.offline-switch-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
 .browser-ai-status-bar {
   display: flex;
   flex-direction: column;
@@ -11646,13 +11560,6 @@ body.theme-light .notice-retry-btn,
   grid-template-columns: repeat(5, 1fr);
 }
 
-.settings-segment-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
 .settings-theme-card:focus-visible,
 .settings-segment-btn:focus-visible,
 .settings-close-btn:focus-visible,
@@ -11858,12 +11765,6 @@ body.theme-light .notice-retry-btn,
   color: #b91c1c;
 }
 
-[data-theme="light"] .recent-chat-item-confirm-delete .chat-action-btn.danger-confirm-btn:hover:not(:disabled) {
-  background-color: #dc2626;
-  border-color: #dc2626;
-  color: #ffffff;
-}
-
 .chat-action-btn:focus-visible,
 .sidebar-logout-btn:focus-visible {
   outline: 2px solid var(--accent-primary);
@@ -11881,9 +11782,6 @@ body.theme-light .notice-retry-btn,
 }
 
 .export-dropdown-item:focus-visible,
-.mode-dropdown-item:focus-visible,
-.alternative-provider-option:focus-visible,
-.alternative-nav-btn:focus-visible,
 .account-popover-item-btn:focus-visible,
 .account-signout-btn:focus-visible,
 .account-username-edit-trigger:focus-visible,
@@ -12541,12 +12439,6 @@ body.theme-light .notice-retry-btn,
 .message-attachment-card:focus-within .attachment-card-actions,
 .message-image-card:focus-within .message-image-actions {
   opacity: 1;
-}
-
-.recent-chat-item-container:focus-within .chat-item-actions {
-  opacity: 1;
-  pointer-events: auto;
-  background: linear-gradient(to right, transparent 0%, var(--bg-card) 30%, var(--bg-card) 100%);
 }
 
 @media (prefers-reduced-motion: reduce) {
