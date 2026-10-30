@@ -283,6 +283,16 @@ let webllmModulePromise = null;
 let engineInstance = null;
 let workerInstance = null;
 let loadedModelId = null;
+let warmedEngineRef = null;
+let warmedModelId = null;
+let activeWarmupPromise = null;
+let activeWarmupModelId = null;
+let activeWarmupEngineRef = null;
+let activeWarmupAbortController = null;
+const warmupTimedOutModels = new Set();
+const workerTerminationListeners = new Set();
+let cachedGpuSupportEntry = null;
+let activeGpuSupportCheckPromise = null;
 let activeInitPromise = null;
 let activeInitModelId = null;
 let activeInitAbortReject = null;
@@ -294,6 +304,9 @@ let customWorkerFactory = null;
 let customEngineFactory = null;
 let customFetchFactory = null;
 let customDownloadConfig = null;
+
+const GPU_SUPPORT_CACHE_TTL_MS = 60_000;
+const DEFAULT_WARMUP_TIMEOUT_MS = 8_000;
 
 const MAX_DIAGNOSTIC_EVENTS = 80;
 const recentDiagnosticEvents = [];
@@ -512,7 +525,22 @@ export function resetWebLLMRuntimeForTesting() {
     }
     activeInitAbortController = null;
   }
+  if (activeWarmupAbortController) {
+    try {
+      activeWarmupAbortController.abort();
+    } catch (_) {
+      // Ignore abort errors during reset
+    }
+    activeWarmupAbortController = null;
+  }
   terminateWorkerImmediate();
+  cachedGpuSupportEntry = null;
+  activeGpuSupportCheckPromise = null;
+  activeWarmupPromise = null;
+  activeWarmupModelId = null;
+  activeWarmupEngineRef = null;
+  warmupTimedOutModels.clear();
+  workerTerminationListeners.clear();
   generationQueuePromise = Promise.resolve();
   isGeneratingNow = false;
   manualStopRequested = false;
@@ -550,11 +578,18 @@ let engineState = {
 };
 
 function updateEngineState(patch) {
+  const prevSnapshot = getWebLLMState();
   engineState = {
     ...engineState,
     ...patch
   };
   const snapshot = getWebLLMState();
+  const hasStateChanged = Object.keys(snapshot).some(
+    (key) => !Object.is(snapshot[key], prevSnapshot[key])
+  );
+  if (!hasStateChanged) {
+    return snapshot;
+  }
   for (const listener of stateListeners) {
     try {
       listener(snapshot);
@@ -566,12 +601,26 @@ function updateEngineState(patch) {
 }
 
 /**
+ * Returns whether the active WebLLM engine has completed pipeline warm-up for `modelId`.
+ */
+export function isWebLLMModelWarmed(modelId = loadedModelId) {
+  return Boolean(
+    engineInstance &&
+      warmedEngineRef === engineInstance &&
+      warmedModelId &&
+      modelId &&
+      warmedModelId === modelId
+  );
+}
+
+/**
  * Returns a shallow snapshot of the current Browser AI engine state.
  */
 export function getWebLLMState() {
   return {
     ...engineState,
-    loadedModelId
+    loadedModelId,
+    isWarmed: isWebLLMModelWarmed(loadedModelId)
   };
 }
 
@@ -684,6 +733,38 @@ async function loadWebLLMModule(stageStartMs = null) {
 }
 
 /**
+ * Schedules a low-priority idle import of the `@mlc-ai/web-llm` JS runtime module
+ * ONLY when Browser AI is selected, without creating a WebGPU device, spawning a worker,
+ * or downloading model weights. Removes JS bundle parse latency from the first load path.
+ */
+export function preloadWebLLMRuntimeModule() {
+  if (webllmModulePromise) {
+    return;
+  }
+  if (
+    typeof window === 'undefined' ||
+    window.isSecureContext === false ||
+    typeof navigator === 'undefined' ||
+    !navigator.gpu
+  ) {
+    return;
+  }
+
+  const triggerImport = () => {
+    if (webllmModulePromise) return;
+    loadWebLLMModule().catch(() => {
+      // Silently ignore idle prefetch failure; explicit load retries cleanly
+    });
+  };
+
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(triggerImport, { timeout: 1500 });
+  } else {
+    setTimeout(triggerImport, 120);
+  }
+}
+
+/**
  * Normalizes a Hugging Face model base URL the exact same way @mlc-ai/web-llm's cleanModelUrl() does.
  * @param {string} rawModelUrl
  * @returns {string}
@@ -742,13 +823,16 @@ function isAbortError(err) {
  *   adapterInfo: { vendor?: string, architecture?: string, description?: string } | null
  * }>}
  */
-export async function checkWebGPUSupport() {
+export async function checkWebGPUSupport(options = {}) {
+  const { forceRefresh = false } = options;
+
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return {
       supported: false,
       reasonCode: WEBLLM_ERROR_CODES.WEBGPU_UNSUPPORTED,
       message: 'Browser AI requires a web browser environment with WebGPU support.',
       hasShaderF16: false,
+      isFallbackAdapter: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
       adapterInfo: null
@@ -762,6 +846,7 @@ export async function checkWebGPUSupport() {
       message:
         'Browser AI requires a secure context (HTTPS or localhost) to access WebGPU and browser model caching.',
       hasShaderF16: false,
+      isFallbackAdapter: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
       adapterInfo: null
@@ -775,83 +860,207 @@ export async function checkWebGPUSupport() {
       message:
         'WebGPU is not available in this browser. Please use a recent version of Chrome (113+), Edge (113+), or Safari (18+) on a compatible device.',
       hasShaderF16: false,
+      isFallbackAdapter: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
       adapterInfo: null
     };
   }
 
-  const gpuTimeoutMs = customDownloadConfig?.gpuCheckTimeoutMs ?? DEFAULT_GPU_CHECK_TIMEOUT_MS;
-  try {
-    const adapter = await raceWithStageDeadline(
-      () =>
-        navigator.gpu.requestAdapter({
-          powerPreference: 'high-performance'
-        }),
-      gpuTimeoutMs,
-      (ms) => {
-        const timeoutErr = new Error(`WebGPU requestAdapter timed out after ${formatDurationSeconds(ms)}`);
-        timeoutErr.code = 'WEBGPU_ADAPTER_TIMEOUT';
-        return timeoutErr;
-      }
-    );
+  const currentGpuRef = navigator.gpu;
+  const currentSecure = Boolean(window.isSecureContext);
+  const now = Date.now();
 
-    if (!adapter) {
+  if (
+    !forceRefresh &&
+    cachedGpuSupportEntry &&
+    cachedGpuSupportEntry.gpuRef === currentGpuRef &&
+    cachedGpuSupportEntry.isSecureContext === currentSecure &&
+    now - cachedGpuSupportEntry.timestamp < GPU_SUPPORT_CACHE_TTL_MS
+  ) {
+    return {
+      ...cachedGpuSupportEntry.result,
+      adapterInfo: cachedGpuSupportEntry.result.adapterInfo
+        ? { ...cachedGpuSupportEntry.result.adapterInfo }
+        : null
+    };
+  }
+
+  if (!forceRefresh && activeGpuSupportCheckPromise) {
+    return activeGpuSupportCheckPromise;
+  }
+
+  const gpuTimeoutMs = customDownloadConfig?.gpuCheckTimeoutMs ?? DEFAULT_GPU_CHECK_TIMEOUT_MS;
+  const probePromise = (async () => {
+    try {
+      const adapter = await raceWithStageDeadline(
+        () =>
+          currentGpuRef.requestAdapter({
+            powerPreference: 'high-performance'
+          }),
+        gpuTimeoutMs,
+        (ms) => {
+          const timeoutErr = new Error(`WebGPU requestAdapter timed out after ${formatDurationSeconds(ms)}`);
+          timeoutErr.code = 'WEBGPU_ADAPTER_TIMEOUT';
+          return timeoutErr;
+        }
+      );
+
+      if (!adapter) {
+        return {
+          supported: false,
+          reasonCode: WEBLLM_ERROR_CODES.WEBGPU_ADAPTER_UNAVAILABLE,
+          message:
+            'No compatible WebGPU graphics adapter was found. Please ensure hardware acceleration is enabled in your browser settings and your GPU drivers are up to date.',
+          hasShaderF16: false,
+          isFallbackAdapter: false,
+          maxStorageBufferBindingSize: null,
+          maxBufferSize: null,
+          adapterInfo: null
+        };
+      }
+
+      const hasShaderF16 = Boolean(adapter.features && adapter.features.has('shader-f16'));
+      const isFallbackAdapter = Boolean(
+        adapter.isFallbackAdapter || adapter.info?.isFallbackAdapter
+      );
+      const maxStorageBufferBindingSize =
+        typeof adapter.limits?.maxStorageBufferBindingSize === 'number'
+          ? adapter.limits.maxStorageBufferBindingSize
+          : null;
+      const maxBufferSize =
+        typeof adapter.limits?.maxBufferSize === 'number' ? adapter.limits.maxBufferSize : null;
+
+      let adapterInfo = null;
+      if (adapter.info) {
+        adapterInfo = {
+          vendor: adapter.info.vendor || '',
+          architecture: adapter.info.architecture || '',
+          device: adapter.info.device || '',
+          description: adapter.info.description || '',
+          isFallbackAdapter: Boolean(adapter.info.isFallbackAdapter || isFallbackAdapter)
+        };
+      }
+
+      const positiveResult = {
+        supported: true,
+        reasonCode: null,
+        message: null,
+        hasShaderF16,
+        isFallbackAdapter,
+        maxStorageBufferBindingSize,
+        maxBufferSize,
+        adapterInfo
+      };
+
+      cachedGpuSupportEntry = {
+        gpuRef: currentGpuRef,
+        isSecureContext: currentSecure,
+        timestamp: Date.now(),
+        result: positiveResult
+      };
+
+      return {
+        ...positiveResult,
+        adapterInfo: positiveResult.adapterInfo ? { ...positiveResult.adapterInfo } : null
+      };
+    } catch (err) {
+      const isTimeout = err?.code === 'WEBGPU_ADAPTER_TIMEOUT';
+      if (isTimeout) {
+        logWebLLMStage('init_timeout', { subStage: 'gpu_request_adapter', timeoutMs: gpuTimeoutMs }, { level: 'warn' });
+      }
       return {
         supported: false,
         reasonCode: WEBLLM_ERROR_CODES.WEBGPU_ADAPTER_UNAVAILABLE,
-        message:
-          'No compatible WebGPU graphics adapter was found. Please ensure hardware acceleration is enabled in your browser settings and your GPU drivers are up to date.',
+        message: isTimeout
+          ? `WebGPU graphics adapter detection timed out after ${formatDurationSeconds(gpuTimeoutMs)}. Restart Chrome or update your Windows GPU driver, then retry.`
+          : 'Failed to access the WebGPU graphics adapter. Please check that hardware acceleration is enabled in your browser.',
         hasShaderF16: false,
+        isFallbackAdapter: false,
         maxStorageBufferBindingSize: null,
         maxBufferSize: null,
         adapterInfo: null
       };
+    } finally {
+      if (activeGpuSupportCheckPromise === probePromise) {
+        activeGpuSupportCheckPromise = null;
+      }
     }
+  })();
 
-    const hasShaderF16 = Boolean(adapter.features && adapter.features.has('shader-f16'));
-    const maxStorageBufferBindingSize =
-      typeof adapter.limits?.maxStorageBufferBindingSize === 'number'
-        ? adapter.limits.maxStorageBufferBindingSize
-        : null;
-    const maxBufferSize =
-      typeof adapter.limits?.maxBufferSize === 'number' ? adapter.limits.maxBufferSize : null;
+  activeGpuSupportCheckPromise = probePromise;
+  return probePromise;
+}
 
-    let adapterInfo = null;
-    if (adapter.info) {
-      adapterInfo = {
-        vendor: adapter.info.vendor || '',
-        architecture: adapter.info.architecture || '',
-        description: adapter.info.description || ''
-      };
-    }
-
-    return {
-      supported: true,
-      reasonCode: null,
-      message: null,
-      hasShaderF16,
-      maxStorageBufferBindingSize,
-      maxBufferSize,
-      adapterInfo
-    };
-  } catch (err) {
-    const isTimeout = err?.code === 'WEBGPU_ADAPTER_TIMEOUT';
-    if (isTimeout) {
-      logWebLLMStage('init_timeout', { subStage: 'gpu_request_adapter', timeoutMs: gpuTimeoutMs }, { level: 'warn' });
-    }
-    return {
-      supported: false,
-      reasonCode: WEBLLM_ERROR_CODES.WEBGPU_ADAPTER_UNAVAILABLE,
-      message: isTimeout
-        ? `WebGPU graphics adapter detection timed out after ${formatDurationSeconds(gpuTimeoutMs)}. Restart Chrome or update your Windows GPU driver, then retry.`
-        : 'Failed to access the WebGPU graphics adapter. Please check that hardware acceleration is enabled in your browser.',
-      hasShaderF16: false,
-      maxStorageBufferBindingSize: null,
-      maxBufferSize: null,
-      adapterInfo: null
-    };
+/**
+ * Evaluates whether a WebGPU device can safely execute lightweight 2-token pipeline warm-up
+ * without risking CPU-fallback hangs or unified-memory pressure on constrained devices.
+ * Degrades gracefully when `adapterInfo` or `navigator.deviceMemory` are unavailable.
+ *
+ * @param {Awaited<ReturnType<typeof checkWebGPUSupport>> | null | undefined} gpuSupport
+ * @param {string} [modelId=DEFAULT_WEBLLM_MODEL_ID]
+ * @returns {{ shouldWarmup: boolean, reason: string }}
+ */
+export function evaluateWebGPUWarmupSuitability(gpuSupport, modelId = DEFAULT_WEBLLM_MODEL_ID) {
+  if (!gpuSupport || !gpuSupport.supported) {
+    return { shouldWarmup: false, reason: 'webgpu_unsupported' };
   }
+
+  if (modelId && warmupTimedOutModels.has(modelId)) {
+    return { shouldWarmup: false, reason: 'prior_warmup_timeout' };
+  }
+
+  const info = gpuSupport.adapterInfo;
+  if (gpuSupport.isFallbackAdapter === true || info?.isFallbackAdapter === true) {
+    return { shouldWarmup: false, reason: 'software_adapter' };
+  }
+
+  if (info && typeof info === 'object') {
+    const combinedAdapterText = `${info.vendor || ''} ${info.architecture || ''} ${info.device || ''} ${info.description || ''}`
+      .trim()
+      .toLowerCase();
+    if (
+      combinedAdapterText &&
+      (combinedAdapterText.includes('swiftshader') ||
+        combinedAdapterText.includes('llvmpipe') ||
+        combinedAdapterText.includes('lavapipe') ||
+        combinedAdapterText.includes('microsoft basic render') ||
+        combinedAdapterText.includes('software rasterizer') ||
+        /\bwarp\b/.test(combinedAdapterText))
+    ) {
+      return { shouldWarmup: false, reason: 'software_adapter' };
+    }
+  }
+
+  const catalogEntry = WEBLLM_MODEL_CATALOG[modelId] || null;
+  const vramRequiredMB = Number(catalogEntry?.vramRequiredMB) || 0;
+
+  if (
+    typeof gpuSupport.maxStorageBufferBindingSize === 'number' &&
+    gpuSupport.maxStorageBufferBindingSize < 256 * 1024 * 1024 &&
+    vramRequiredMB >= 1000
+  ) {
+    return { shouldWarmup: false, reason: 'constrained_gpu_buffer_limits' };
+  }
+
+  if (
+    typeof gpuSupport.maxBufferSize === 'number' &&
+    gpuSupport.maxBufferSize <= 256 * 1024 * 1024 &&
+    vramRequiredMB >= 1400
+  ) {
+    return { shouldWarmup: false, reason: 'constrained_gpu_buffer_limits' };
+  }
+
+  const deviceMemoryGB =
+    typeof navigator !== 'undefined' && typeof navigator?.deviceMemory === 'number'
+      ? navigator.deviceMemory
+      : null;
+
+  if (deviceMemoryGB !== null && deviceMemoryGB <= 4 && vramRequiredMB >= 1200) {
+    return { shouldWarmup: false, reason: 'low_device_memory' };
+  }
+
+  return { shouldWarmup: true, reason: 'suitable' };
 }
 
 /**
@@ -2331,6 +2540,8 @@ function isFatalEngineError(rawErr) {
     text.includes('devicelosterror') ||
     text.includes('device was lost') ||
     text.includes('device lost') ||
+    text.includes('modelnotloadederror') ||
+    text.includes('model is not loaded') ||
     text.includes('out of memory') ||
     text.includes('oom') ||
     text.includes('instance reference no longer exists') ||
@@ -2400,6 +2611,8 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
   if (
     lower.includes('devicelosterror') ||
     lower.includes('device was lost') ||
+    lower.includes('modelnotloadederror') ||
+    lower.includes('model is not loaded') ||
     lower.includes('out of memory') ||
     lower.includes('allocation failed') ||
     lower.includes('oom')
@@ -2527,18 +2740,343 @@ function terminateWorkerImmediate() {
   }
   engineInstance = null;
   loadedModelId = null;
+  warmedEngineRef = null;
+  warmedModelId = null;
+
+  if (workerTerminationListeners.size > 0) {
+    const callbacks = [...workerTerminationListeners];
+    workerTerminationListeners.clear();
+    for (const cb of callbacks) {
+      try {
+        cb();
+      } catch (_) {
+        // Ignore termination listener errors
+      }
+    }
+  }
+}
+
+/**
+ * Executes a minimal, non-polluting WebGPU pipeline warm-up (`forwardTokensAndSample`
+ * 2-token prefill `[1, 1]` + 1-token decode `[sampledToken]`) followed by `resetChat(false)`
+ * inside the dedicated Web Worker.
+ *
+ * Verified against `@mlc-ai/web-llm@0.2.86`: `LLMChatPipeline.embedAndForward` dispatches
+ * `invokePrefill` strictly when `inputDataLen > 1` and `invokeDecode` when `inputDataLen === 1`.
+ * Passing `[1, 1]` for prefill and `[sampledToken]` for decode compiles/warms `embed`,
+ * `prefill` / `batch_prefill`, `decode` / `batch_decode`, and sampling compute pipelines,
+ * touches paged KV sequence 0, flushes the GPU queue via `device.sync()`, and clears all
+ * conversation, KV, and runtime statistics via `resetChat(false, modelId)`.
+ */
+async function runSafeEnginePipelineWarmup(
+  engine,
+  modelId,
+  gpuSupport,
+  { signal = null, startMs = null } = {}
+) {
+  if (!engine || !modelId) {
+    return { warmed: false, skipped: true, reason: 'missing_engine' };
+  }
+
+  if (warmedEngineRef === engine && warmedModelId === modelId) {
+    return { warmed: true, deduplicated: true, reason: 'already_warmed' };
+  }
+
+  if (
+    activeWarmupPromise &&
+    activeWarmupModelId === modelId &&
+    activeWarmupEngineRef === engine &&
+    !activeWarmupAbortController?.signal?.aborted
+  ) {
+    if (!signal) {
+      return activeWarmupPromise;
+    }
+    return Promise.race([
+      activeWarmupPromise,
+      new Promise((_, reject) => {
+        if (signal.aborted) {
+          reject(createAbortError('Model warm-up cancelled by user.'));
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => reject(createAbortError('Model warm-up cancelled by user.')),
+          { once: true }
+        );
+      })
+    ]);
+  }
+
+  if (signal?.aborted) {
+    throw createAbortError('Model warm-up cancelled by user.');
+  }
+
+  if (
+    typeof engine.forwardTokensAndSample !== 'function' ||
+    typeof engine.resetChat !== 'function'
+  ) {
+    logWebLLMStage(
+      'warmup_skipped',
+      { modelId, reason: 'unsupported_engine_interface' },
+      { startMs }
+    );
+    return { warmed: false, skipped: true, reason: 'unsupported_engine_interface' };
+  }
+
+  const suitability = evaluateWebGPUWarmupSuitability(gpuSupport, modelId);
+  if (!suitability.shouldWarmup) {
+    logWebLLMStage(
+      'warmup_skipped',
+      { modelId, reason: suitability.reason },
+      { startMs }
+    );
+    return { warmed: false, skipped: true, reason: suitability.reason };
+  }
+
+  const warmupTimeoutMs =
+    customDownloadConfig?.warmupTimeoutMs ?? DEFAULT_WARMUP_TIMEOUT_MS;
+  const warmupStartMs = startMs ?? Date.now();
+  const warmupController = new AbortController();
+  const warmupWorker = workerInstance;
+  activeWarmupAbortController = warmupController;
+  activeWarmupModelId = modelId;
+  activeWarmupEngineRef = engine;
+
+  let removeCallerAbort = null;
+  if (signal) {
+    const forwardAbort = () => warmupController.abort();
+    if (signal.aborted) {
+      warmupController.abort();
+    } else {
+      signal.addEventListener('abort', forwardAbort, { once: true });
+      removeCallerAbort = () => signal.removeEventListener('abort', forwardAbort);
+    }
+  }
+
+  let unregisterWorkerTerminated = null;
+  const workerTerminatedPromise = new Promise((_, reject) => {
+    const onTerminated = () => {
+      warmupController.abort();
+      reject(createAbortError('Model warm-up cancelled (worker terminated).'));
+    };
+    if (!workerInstance || (warmupWorker && workerInstance !== warmupWorker)) {
+      onTerminated();
+      return;
+    }
+    workerTerminationListeners.add(onTerminated);
+    unregisterWorkerTerminated = () => workerTerminationListeners.delete(onTerminated);
+  });
+  // Prevent unhandled rejection when warm-up completes normally without worker termination
+  workerTerminatedPromise.catch(() => {});
+
+  let removeInternalAbortListener = null;
+  const warmupAbortPromise = new Promise((_, reject) => {
+    const onAborted = () => {
+      reject(createAbortError('Model warm-up cancelled by user.'));
+    };
+    if (warmupController.signal.aborted) {
+      onAborted();
+      return;
+    }
+    warmupController.signal.addEventListener('abort', onAborted, { once: true });
+    removeInternalAbortListener = () =>
+      warmupController.signal.removeEventListener('abort', onAborted);
+  });
+  warmupAbortPromise.catch(() => {});
+
+  const taskPromise = (async () => {
+    let touchedPipeline = false;
+    let inFlightRpc = false;
+    try {
+      if (warmupController.signal.aborted) {
+        throw createAbortError('Model warm-up cancelled by user.');
+      }
+
+      logWebLLMStage('warmup_start', { modelId }, { startMs: warmupStartMs });
+
+      await raceWithStageDeadline(
+        () =>
+          Promise.race([
+            (async () => {
+              touchedPipeline = true;
+              // 2-token input ([1, 1], inputDataLen > 1) forces LLMChatPipeline.embedAndForward
+              // to invoke `prefill` / `batch_prefill` rather than `decode`.
+              inFlightRpc = true;
+              let sampledToken;
+              try {
+                sampledToken = await engine.forwardTokensAndSample([1, 1], true, modelId);
+              } finally {
+                inFlightRpc = false;
+              }
+
+              if (warmupController.signal.aborted) {
+                throw createAbortError('Model warm-up cancelled by user.');
+              }
+
+              const decodeTokenId =
+                typeof sampledToken === 'number' &&
+                Number.isFinite(sampledToken) &&
+                sampledToken >= 0
+                  ? Math.floor(sampledToken)
+                  : 1;
+              // 1-token input (inputDataLen === 1) invokes `decode` / `batch_decode`.
+              inFlightRpc = true;
+              try {
+                await engine.forwardTokensAndSample([decodeTokenId], false, modelId);
+              } finally {
+                inFlightRpc = false;
+              }
+
+              if (warmupController.signal.aborted) {
+                throw createAbortError('Model warm-up cancelled by user.');
+              }
+
+              inFlightRpc = true;
+              try {
+                await engine.resetChat(false, modelId);
+              } finally {
+                inFlightRpc = false;
+              }
+              touchedPipeline = false;
+            })(),
+            workerTerminatedPromise,
+            warmupAbortPromise
+          ]),
+        warmupTimeoutMs,
+        (ms) => {
+          const timeoutErr = new Error(`GPU pipeline warm-up timed out after ${formatDurationSeconds(ms)}`);
+          timeoutErr.code = 'WEBLLM_WARMUP_TIMEOUT';
+          return timeoutErr;
+        }
+      );
+
+      if (
+        warmupController.signal.aborted ||
+        !workerInstance ||
+        (warmupWorker && workerInstance !== warmupWorker)
+      ) {
+        throw createAbortError('Model warm-up cancelled by user.');
+      }
+
+      warmedEngineRef = engine;
+      warmedModelId = modelId;
+      logWebLLMStage('warmup_done', { modelId }, { startMs: warmupStartMs });
+      return { warmed: true, skipped: false, reason: 'warmed' };
+    } catch (err) {
+      const isWarmupTimeout = err?.code === 'WEBLLM_WARMUP_TIMEOUT';
+      const isCancelled = Boolean(warmupController.signal.aborted || isAbortError(err));
+      const workerStillIntact = Boolean(
+        workerInstance && (!warmupWorker || workerInstance === warmupWorker)
+      );
+
+      // Never post a concurrent resetChat RPC if forwardTokensAndSample is still in-flight:
+      // MLCEngine.forwardTokensAndSample & resetChat do not acquire loadedModelIdToLock, so an
+      // overlapping RPC would corrupt TVM scope state.
+      if (touchedPipeline && !inFlightRpc && workerStillIntact && !isWarmupTimeout && !isCancelled) {
+        try {
+          await raceWithStageDeadline(
+            () => Promise.race([engine.resetChat(false, modelId), workerTerminatedPromise]),
+            1_500,
+            () => new Error('resetChat cleanup timeout')
+          );
+        } catch (_) {
+          // Ignore reset failure if worker was terminated or device lost
+        }
+      }
+
+      if (isCancelled) {
+        // Ensure Stop / AbortSignal cannot leave an uninterruptible warm-up forward pass
+        // running inside the background worker.
+        if (inFlightRpc && workerStillIntact) {
+          if (engineInstance === engine) {
+            await destroyWebLLMEngine({ skipUnload: true });
+          } else {
+            terminateWorkerImmediate();
+          }
+        }
+        logWebLLMStage('warmup_aborted', { modelId }, { startMs: warmupStartMs });
+        throw createAbortError('Model warm-up cancelled by user.');
+      }
+
+      if (isFatalEngineError(err)) {
+        logWebLLMStage(
+          'warmup_fatal_error',
+          { modelId, message: String(err?.message || err) },
+          { startMs: warmupStartMs, level: 'warn' }
+        );
+        throw err;
+      }
+
+      if (isWarmupTimeout) {
+        warmupTimedOutModels.add(modelId);
+      }
+
+      logWebLLMStage(
+        'warmup_skipped',
+        {
+          modelId,
+          reason: isWarmupTimeout ? 'warmup_timeout' : 'non_fatal_warmup_error',
+          detail: String(err?.message || err).slice(0, 120)
+        },
+        { startMs: warmupStartMs, level: 'warn' }
+      );
+      return {
+        warmed: false,
+        skipped: true,
+        reason: isWarmupTimeout ? 'warmup_timeout' : 'non_fatal_warmup_error',
+        timedOutWithDirtyWorker: Boolean(isWarmupTimeout && workerStillIntact)
+      };
+    } finally {
+      if (removeInternalAbortListener) {
+        removeInternalAbortListener();
+      }
+      if (unregisterWorkerTerminated) {
+        unregisterWorkerTerminated();
+      }
+      if (removeCallerAbort) {
+        removeCallerAbort();
+      }
+      if (activeWarmupAbortController === warmupController) {
+        activeWarmupAbortController = null;
+      }
+      if (activeWarmupPromise === taskPromise) {
+        activeWarmupPromise = null;
+        activeWarmupModelId = null;
+        activeWarmupEngineRef = null;
+      }
+    }
+  })();
+
+  activeWarmupPromise = taskPromise;
+  return taskPromise;
 }
 
 /**
  * Unloads any loaded model from WebGPU memory and terminates the dedicated Web Worker.
  * Safe to call multiple times or during error recovery.
+ *
+ * @param {{ skipUnload?: boolean }} [options]
  */
-export async function destroyWebLLMEngine() {
+export async function destroyWebLLMEngine(options = {}) {
   const currentEngine = engineInstance;
+  const skipUnload = Boolean(options?.skipUnload || activeWarmupPromise);
   engineInstance = null;
   loadedModelId = null;
+  warmedEngineRef = null;
+  warmedModelId = null;
+  cachedGpuSupportEntry = null;
+  activeGpuSupportCheckPromise = null;
   isGeneratingNow = false;
   manualStopRequested = false;
+
+  if (activeWarmupAbortController) {
+    try {
+      activeWarmupAbortController.abort();
+    } catch (_) {
+      // Ignore
+    }
+    activeWarmupAbortController = null;
+  }
 
   if (activeInitAbortController) {
     try {
@@ -2561,13 +3099,15 @@ export async function destroyWebLLMEngine() {
     } catch (_) {
       // Ignore
     }
-    try {
-      await Promise.race([
-        currentEngine.unload(),
-        new Promise((resolve) => setTimeout(resolve, 1500))
-      ]);
-    } catch (_) {
-      // Ignore unload failure on lost GPU device
+    if (!skipUnload) {
+      try {
+        await Promise.race([
+          currentEngine.unload(),
+          new Promise((resolve) => setTimeout(resolve, 1500))
+        ]);
+      } catch (_) {
+        // Ignore unload failure on lost GPU device
+      }
     }
   }
 
@@ -2603,6 +3143,8 @@ export async function ensureWebLLMEngine(options = {}) {
   const {
     modelId: requestedModelId = DEFAULT_WEBLLM_MODEL_ID,
     allowF32Fallback = true,
+    skipWarmup = false,
+    _callerHoldsGenerationLock = false,
     onProgress,
     signal
   } = options;
@@ -2651,6 +3193,112 @@ export async function ensureWebLLMEngine(options = {}) {
         { startMs: entryStartMs, level: 'warn' }
       );
       throw unsuppErr;
+    }
+  }
+
+  // Zero-IPC warm fast path: if the resolved model is already loaded in the active worker,
+  // return immediately without flipping status to 'checking' or re-querying requestAdapter().
+  if (engineInstance && workerInstance && loadedModelId) {
+    const knownHasShaderF16 =
+      typeof engineState.hasShaderF16 === 'boolean'
+        ? engineState.hasShaderF16
+        : Boolean(cachedGpuSupportEntry?.result?.hasShaderF16);
+    const fastResolvedModelId = resolveWebLLMModelId(requestedModelId, {
+      hasShaderF16: knownHasShaderF16,
+      allowF32Fallback
+    });
+    const fastCatalogEntry = WEBLLM_MODEL_CATALOG[fastResolvedModelId];
+    if (
+      loadedModelId === fastResolvedModelId &&
+      fastCatalogEntry &&
+      !(fastCatalogEntry.prefersShaderF16 && !knownHasShaderF16)
+    ) {
+      let stillLoadedOnFastPath = true;
+      if (!skipWarmup && !isWebLLMModelWarmed(fastResolvedModelId) && !isGeneratingNow) {
+        const executeFastPathWarmup = async () => {
+          if (signal?.aborted) {
+            throw createAbortError();
+          }
+          if (!engineInstance || !workerInstance || loadedModelId !== fastResolvedModelId) {
+            stillLoadedOnFastPath = false;
+            return null;
+          }
+          const cachedSupport = cachedGpuSupportEntry?.result || (await checkWebGPUSupport());
+          const fastWarmupOutcome = await runSafeEnginePipelineWarmup(
+            engineInstance,
+            fastResolvedModelId,
+            cachedSupport,
+            {
+              signal,
+              startMs: entryStartMs
+            }
+          );
+          if (fastWarmupOutcome?.timedOutWithDirtyWorker) {
+            logWebLLMStage(
+              'warmup_timeout_recycle_worker',
+              { modelId: fastResolvedModelId, path: 'fast_path' },
+              { startMs: entryStartMs, level: 'warn' }
+            );
+            await destroyWebLLMEngine({ skipUnload: true });
+            return await ensureWebLLMEngine({
+              modelId: fastResolvedModelId,
+              allowF32Fallback: false,
+              skipWarmup: true,
+              _callerHoldsGenerationLock: true,
+              onProgress,
+              signal
+            });
+          }
+          return null;
+        };
+
+        if (_callerHoldsGenerationLock) {
+          const recycled = await executeFastPathWarmup();
+          if (recycled) return recycled;
+        } else {
+          const prevTurn = generationQueuePromise.catch(() => {});
+          let releaseFastLock;
+          generationQueuePromise = new Promise((resolve) => {
+            releaseFastLock = resolve;
+          });
+          await prevTurn;
+          try {
+            const recycled = await executeFastPathWarmup();
+            if (recycled) return recycled;
+          } finally {
+            releaseFastLock?.();
+          }
+        }
+      }
+
+      if (stillLoadedOnFastPath && engineInstance && workerInstance && loadedModelId === fastResolvedModelId) {
+        const readyPayload = {
+          status: 'ready',
+          modelId: fastResolvedModelId,
+          loadedModelId: fastResolvedModelId,
+          progress: 1,
+          progressPercent: 100,
+          progressText: 'Model ready on device',
+          timeElapsed: 0,
+          isCached: true
+        };
+        if (!isGeneratingNow) {
+          updateEngineState({
+            ...readyPayload,
+            hasShaderF16: knownHasShaderF16,
+            error: null
+          });
+        }
+        if (typeof onProgress === 'function') {
+          onProgress(readyPayload);
+        }
+        logWebLLMStage('init_fast_path_ready', { modelId: fastResolvedModelId }, { startMs: entryStartMs });
+        return {
+          engine: engineInstance,
+          modelId: fastResolvedModelId,
+          isCached: true
+        };
+      }
     }
   }
 
@@ -2844,7 +3492,7 @@ export async function ensureWebLLMEngine(options = {}) {
   const initController = new AbortController();
   activeInitAbortController = initController;
   activeInitModelId = resolvedModelId;
-  activeInitPromise = (async () => {
+  const currentInitPromise = (async () => {
     const initStartMs = entryStartMs;
     let wasCachedBeforeInit = false;
     let hasVerifiedLocalCache = false;
@@ -3281,7 +3929,72 @@ export async function ensureWebLLMEngine(options = {}) {
       clearWorkerWatchdog?.();
       detachWorkerDiagListener?.();
       detachWorkerDiagListener = null;
+
+      if (signal?.aborted || initController.signal.aborted) {
+        activeInitAbortReject = null;
+        throw createAbortError('Model initialization cancelled by user.');
+      }
+
+      // Pre-warm WebGPU prefill + decode pipelines when initialized explicitly (e.g. Load Model)
+      // so shader PSOs, uniform buffer pools, and KV sequence state are hot before the first user prompt.
+      if (!skipWarmup) {
+        const canRunLowLevelWarmup =
+          typeof createdEngine?.forwardTokensAndSample === 'function' &&
+          typeof createdEngine?.resetChat === 'function' &&
+          evaluateWebGPUWarmupSuitability(gpuSupport, resolvedModelId).shouldWarmup;
+
+        if (canRunLowLevelWarmup) {
+          const warmupStatusText = `Optimizing ${catalogEntry?.shortLabel || resolvedModelId} GPU pipelines...`;
+          updateEngineState({
+            status: 'loading',
+            modelId: resolvedModelId,
+            loadedModelId: null,
+            progress: 1,
+            progressPercent: 100,
+            progressText: warmupStatusText,
+            isCached: true
+          });
+        }
+
+        const warmupOutcome = await Promise.race([
+          runSafeEnginePipelineWarmup(createdEngine, resolvedModelId, gpuSupport, {
+            signal: initController.signal,
+            startMs: initStartMs
+          }),
+          workerCrashPromise
+        ]);
+
+        if (warmupOutcome?.timedOutWithDirtyWorker) {
+          logWebLLMStage(
+            'warmup_timeout_recycle_worker',
+            { modelId: resolvedModelId, path: 'cold_init' },
+            { startMs: initStartMs, level: 'warn' }
+          );
+          activeInitAbortReject = null;
+          terminateWorkerImmediate();
+          if (activeInitAbortController === initController) {
+            activeInitAbortController = null;
+          }
+          if (activeInitPromise === currentInitPromise) {
+            activeInitPromise = null;
+            activeInitModelId = null;
+          }
+          return await ensureWebLLMEngine({
+            modelId: resolvedModelId,
+            allowF32Fallback: false,
+            skipWarmup: true,
+            _callerHoldsGenerationLock,
+            onProgress,
+            signal
+          });
+        }
+      }
+
       activeInitAbortReject = null;
+
+      if (signal?.aborted || initController.signal.aborted) {
+        throw createAbortError('Model initialization cancelled by user.');
+      }
 
       // Keep runtime worker error listener active after init so runtime crashes recover cleanly
       worker.onerror = (event) => {
@@ -3316,7 +4029,11 @@ export async function ensureWebLLMEngine(options = {}) {
 
       logWebLLMStage(
         'init_ready',
-        { modelId: resolvedModelId, wasCachedBeforeInit },
+        {
+          modelId: resolvedModelId,
+          wasCachedBeforeInit,
+          isWarmed: isWebLLMModelWarmed(resolvedModelId)
+        },
         { startMs: initStartMs }
       );
 
@@ -3367,9 +4084,18 @@ export async function ensureWebLLMEngine(options = {}) {
           { fromModelId: resolvedModelId, toModelId: catalogEntry.f32FallbackModelId },
           { startMs: initStartMs, level: 'warn' }
         );
+        if (activeInitAbortController === initController) {
+          activeInitAbortController = null;
+        }
+        if (activeInitPromise === currentInitPromise) {
+          activeInitPromise = null;
+          activeInitModelId = null;
+        }
         return await ensureWebLLMEngine({
           modelId: catalogEntry.f32FallbackModelId,
           allowF32Fallback: false,
+          skipWarmup,
+          _callerHoldsGenerationLock,
           onProgress,
           signal
         });
@@ -3413,12 +4139,15 @@ export async function ensureWebLLMEngine(options = {}) {
       if (activeInitAbortController === initController) {
         activeInitAbortController = null;
       }
-      activeInitPromise = null;
-      activeInitModelId = null;
+      if (activeInitPromise === currentInitPromise) {
+        activeInitPromise = null;
+        activeInitModelId = null;
+      }
     }
   })();
 
-  return activeInitPromise;
+  activeInitPromise = currentInitPromise;
+  return currentInitPromise;
 }
 
 // ============================================================================
@@ -3520,7 +4249,18 @@ function trimMessagesToContextBudget(messages, maxInputChars = 12_500) {
  * If initialization is currently running, aborts initialization cleanly.
  */
 export function stopWebLLMGeneration() {
-  manualStopRequested = true;
+  if (isGeneratingNow) {
+    manualStopRequested = true;
+  }
+
+  if (activeWarmupAbortController) {
+    try {
+      activeWarmupAbortController.abort();
+    } catch (_) {
+      // Ignore
+    }
+    activeWarmupAbortController = null;
+  }
 
   if ((activeInitAbortController || activeInitAbortReject) && !engineInstance) {
     if (activeInitAbortController) {
@@ -3547,6 +4287,85 @@ export function stopWebLLMGeneration() {
       engineInstance.interruptGenerate();
     } catch (err) {
       console.warn('[Orvix WebLLM] interruptGenerate warning:', err?.message || err);
+    }
+  }
+}
+
+/**
+ * Explicitly ensures the target Browser AI model is loaded and runs safe, idempotent
+ * WebGPU pipeline warm-up serialized with the single-worker generation queue.
+ *
+ * @param {{ modelId?: string, allowF32Fallback?: boolean, onProgress?: (report: any) => void, signal?: AbortSignal }} [options]
+ */
+export async function warmupWebLLMEngine(options = {}) {
+  const {
+    modelId = DEFAULT_WEBLLM_MODEL_ID,
+    allowF32Fallback = true,
+    onProgress,
+    signal
+  } = options;
+
+  if (signal?.aborted) {
+    throw createAbortError('Model warm-up cancelled by user.');
+  }
+
+  const previousTurn = generationQueuePromise.catch(() => {});
+  let releaseQueue;
+  generationQueuePromise = new Promise((resolve) => {
+    releaseQueue = resolve;
+  });
+
+  await previousTurn;
+
+  try {
+    if (signal?.aborted) {
+      throw createAbortError('Model warm-up cancelled by user.');
+    }
+
+    const { engine, modelId: resolvedModelId } = await ensureWebLLMEngine({
+      modelId,
+      allowF32Fallback,
+      skipWarmup: false,
+      _callerHoldsGenerationLock: true,
+      onProgress,
+      signal
+    });
+
+    if (isWebLLMModelWarmed(resolvedModelId)) {
+      return {
+        modelId: resolvedModelId,
+        warmed: true,
+        deduplicated: true,
+        reason: 'already_warmed'
+      };
+    }
+
+    const gpuSupport = cachedGpuSupportEntry?.result || (await checkWebGPUSupport());
+    const result = await runSafeEnginePipelineWarmup(engine, resolvedModelId, gpuSupport, {
+      signal
+    });
+
+    if (result?.timedOutWithDirtyWorker) {
+      await destroyWebLLMEngine({ skipUnload: true });
+      await ensureWebLLMEngine({
+        modelId: resolvedModelId,
+        allowF32Fallback: false,
+        skipWarmup: true,
+        _callerHoldsGenerationLock: true,
+        onProgress,
+        signal
+      });
+    }
+
+    return {
+      modelId: resolvedModelId,
+      warmed: Boolean(result?.warmed),
+      skipped: Boolean(result?.skipped),
+      reason: result?.reason || 'skipped'
+    };
+  } finally {
+    if (releaseQueue) {
+      releaseQueue();
     }
   }
 }
@@ -3684,11 +4503,25 @@ export async function streamWebLLMMessage({
       throw createAbortError();
     }
 
+    if (activeWarmupPromise) {
+      await activeWarmupPromise.catch(() => {});
+    }
+
+    if (signal?.aborted) {
+      throw createAbortError();
+    }
+
     const { engine, modelId } = await ensureWebLLMEngine({
       modelId: model || modelIdParam || DEFAULT_WEBLLM_MODEL_ID,
+      skipWarmup: true,
+      _callerHoldsGenerationLock: true,
       onProgress,
       signal
     });
+
+    if (activeWarmupPromise) {
+      await activeWarmupPromise.catch(() => {});
+    }
 
     if (signal?.aborted) {
       throw createAbortError();
@@ -3911,6 +4744,11 @@ export async function streamWebLLMMessage({
           httpCode: 500,
           retryable: true
         });
+      }
+
+      if (accumulatedText.length > 0 && engineInstance === engine && loadedModelId === modelId) {
+        warmedEngineRef = engine;
+        warmedModelId = modelId;
       }
 
       updateEngineState({

@@ -647,10 +647,32 @@ export async function runIsolatedPromptStream({
     }
 
     const backlog = targetText.length - displayedText.length;
+    const isLocalWebLLM = providerToUse === 'webllm' || finalProvider === 'webllm';
 
     if (backlog > 0) {
       if (prefersReducedMotion) {
         displayedText = targetText;
+      } else if (isLocalWebLLM) {
+        // Local WebLLM already decodes one token per WebGPU dispatch on the shared GPU process.
+        // Coalescing token chunks at a ~40ms (~25 fps) cadence avoids ~55 Hz single-character
+        // React + Markdown + scroll-layout churn competing with integrated GPU compute queues.
+        const localStep = isStreamDone
+          ? backlog <= 24
+            ? backlog
+            : Math.max(12, Math.ceil(backlog / 2))
+          : backlog <= 12
+            ? backlog
+            : Math.max(8, Math.ceil(backlog / 3));
+        let nextLen = Math.min(targetText.length, displayedText.length + localStep);
+        if (
+          nextLen < targetText.length &&
+          nextLen > 0 &&
+          targetText.charCodeAt(nextLen - 1) >= 0xd800 &&
+          targetText.charCodeAt(nextLen - 1) <= 0xdbff
+        ) {
+          nextLen += 1;
+        }
+        displayedText = targetText.slice(0, nextLen);
       } else {
         let stepSize = 1;
 
@@ -689,7 +711,7 @@ export async function runIsolatedPromptStream({
         })
       );
 
-      timerId = setTimeout(pumpAnimation, 18);
+      timerId = setTimeout(pumpAnimation, isLocalWebLLM ? 40 : 18);
       return;
     }
 
@@ -713,7 +735,8 @@ export async function runIsolatedPromptStream({
     ) {
       return;
     }
-    timerId = setTimeout(pumpAnimation, 10);
+    const isLocalWebLLM = providerToUse === 'webllm' || finalProvider === 'webllm';
+    timerId = setTimeout(pumpAnimation, isLocalWebLLM ? 16 : 10);
   };
 
   if (controller.canMutateChatUI(requestId, targetChatId, getActiveChatId())) {

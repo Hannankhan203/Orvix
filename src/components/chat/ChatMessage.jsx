@@ -488,21 +488,23 @@ function createMarkdownComponents(isStreaming = false, effectiveMode = 'general'
  * Only re-renders this tiny badge component, completely avoiding chat re-renders.
  */
 
-function LiveResponseTimer({ startTime }) {
+function LiveResponseTimer({ startTime, isLocalGpu = false }) {
   const [elapsedText, setElapsedText] = useState(() => formatLiveElapsed(startTime));
 
   useEffect(() => {
     if (typeof startTime !== 'number' || startTime <= 0) return;
 
     const updateTimer = () => {
-      setElapsedText(formatLiveElapsed(startTime));
+      const next = formatLiveElapsed(startTime);
+      setElapsedText((prev) => (prev === next ? prev : next));
     };
 
     updateTimer();
-    const intervalId = setInterval(updateTimer, 100);
+    const intervalMs = isLocalGpu ? 250 : 100;
+    const intervalId = setInterval(updateTimer, intervalMs);
 
     return () => clearInterval(intervalId);
-  }, [startTime]);
+  }, [startTime, isLocalGpu]);
 
   return (
     <span
@@ -891,7 +893,10 @@ function ChatMessage({
           {!isUser && !isError && !isStopped && !message?.isInterrupted && (
             <>
               {isStreaming && !message?.responseTimeMs && typeof message?.requestStartTime === 'number' && (
-                <LiveResponseTimer startTime={message.requestStartTime} />
+                <LiveResponseTimer
+                  startTime={message.requestStartTime}
+                  isLocalGpu={currentProviderId === 'webllm'}
+                />
               )}
               {formattedResponseTime && (
                 <span

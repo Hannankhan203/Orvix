@@ -69,6 +69,7 @@ import {
   subscribeWebLLMState,
   checkWebGPUSupport,
   inspectWebLLMReadiness,
+  preloadWebLLMRuntimeModule,
   ensureWebLLMEngine,
   stopWebLLMGeneration,
   unloadWebLLMEngine,
@@ -249,7 +250,18 @@ export default function ChatPage() {
   };
 
   const handleSelectWebLLMModel = (nextModelId) => {
-    if (!nextModelId || !WEBLLM_MODEL_CATALOG[nextModelId]) return;
+    if (!nextModelId || !WEBLLM_MODEL_CATALOG[nextModelId] || nextModelId === webllmModelId) {
+      return;
+    }
+    if (selectedProvider === 'webllm' && requestControllerRef.current.hasActiveRequest()) {
+      cancelCurrentGeneration('model_switched');
+    } else if (
+      webllmState.status === 'checking' ||
+      webllmState.status === 'downloading' ||
+      webllmState.status === 'loading'
+    ) {
+      stopWebLLMGeneration();
+    }
     setWebllmModelId(nextModelId);
     if (typeof window !== 'undefined') {
       localStorage.setItem('orvix_webllm_model_id', nextModelId);
@@ -316,11 +328,15 @@ export default function ChatPage() {
     inspectWebLLMReadiness(webllmModelId)
       .then((res) => {
         if (cancelled) return;
+        const isSupported = Boolean(res?.gpuSupport?.supported);
         setWebllmGpuCheck({
           checking: false,
-          supported: Boolean(res?.gpuSupport?.supported),
+          supported: isSupported,
           message: res?.gpuSupport?.message || null
         });
+        if (isSupported) {
+          preloadWebLLMRuntimeModule();
+        }
       })
       .catch(() => {
         if (cancelled) return;
