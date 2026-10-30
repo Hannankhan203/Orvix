@@ -49,6 +49,11 @@
           "type": "string",
           "description": "Firebase UID of the owner."
         },
+        "mode": {
+          "type": "string",
+          "enum": ["general", "coding", "writing", "learning"],
+          "description": "Active conversation mode."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -67,6 +72,14 @@
           "type": "string",
           "format": "date-time",
           "description": "Timestamp when the chat was pinned."
+        },
+        "isImported": {
+          "type": "boolean",
+          "description": "Whether this conversation was imported from a shared chat snapshot. Defaults to false for ordinary conversations."
+        },
+        "importedFromShareId": {
+          "type": "string",
+          "description": "Unique shareId of the shared conversation snapshot from which this conversation was imported, or null for ordinary conversations."
         }
       },
       "required": ["id", "title", "userId"]
@@ -92,6 +105,42 @@
         "modelUsed": {
           "type": "string",
           "description": "Identifier of the AI model that produced the message if applicable."
+        },
+        "provider": {
+          "type": "string",
+          "description": "AI provider identifier that generated the response if applicable."
+        },
+        "responseTimeMs": {
+          "type": "number",
+          "description": "Response generation latency in milliseconds for assistant messages."
+        },
+        "parentMessageId": {
+          "type": "string",
+          "description": "Identifier of the preceding user message that triggered an assistant response."
+        },
+        "interactionId": {
+          "type": "string",
+          "description": "Shared interaction identifier pairing a user prompt and assistant response."
+        },
+        "activeAlternativeId": {
+          "type": "string",
+          "description": "Identifier of the currently active alternative response on an assistant message."
+        },
+        "alternatives": {
+          "type": "array",
+          "description": "Sanitized alternative responses generated across providers or models."
+        },
+        "attachments": {
+          "type": "array",
+          "description": "Sanitized metadata and extracted document/OCR text for user attachments (excluding raw binary blobs or base64 data)."
+        },
+        "referencedAttachments": {
+          "type": "array",
+          "description": "Sanitized attachment references used as context for assistant responses."
+        },
+        "createdAtMs": {
+          "type": "number",
+          "description": "Deterministic client epoch timestamp in milliseconds for chronological ordering."
         },
         "createdAt": {
           "type": "string",
@@ -138,6 +187,154 @@
           "description": "Server timestamp when settings were last modified."
         }
       }
+    },
+    "SharedChat": {
+      "title": "SharedChat",
+      "description": "An immutable, sanitized public snapshot of a deliberately shared conversation containing no private owner identifiers.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 128,
+          "description": "Unique unguessable share identifier matching the sharedChats/{shareId} document ID."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Sanitized display title of the shared conversation."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["general", "coding", "writing", "learning"],
+          "description": "Conversation mode at the time the snapshot was shared."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore server timestamp when the shared snapshot was created."
+        },
+        "messageCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Total number of messages included in the shared snapshot, matching messages.length."
+        },
+        "messages": {
+          "type": "array",
+          "description": "Ordered array of sanitized user and assistant messages.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable message identifier within the snapshot."
+              },
+              "sender": {
+                "type": "string",
+                "enum": ["user", "assistant"],
+                "description": "Role of the message author."
+              },
+              "content": {
+                "type": "string",
+                "description": "Plain text or markdown content of the message."
+              },
+              "modelUsed": {
+                "type": "string",
+                "description": "AI model identifier for assistant messages, or null."
+              },
+              "provider": {
+                "type": "string",
+                "description": "AI provider identifier for assistant messages, or null."
+              },
+              "mode": {
+                "type": "string",
+                "enum": ["general", "coding", "writing", "learning"],
+                "description": "Optional conversation mode under which the message was generated."
+              },
+              "responseTimeMs": {
+                "type": "number",
+                "description": "Generation duration in milliseconds for assistant responses, or null."
+              },
+              "parentMessageId": {
+                "type": "string",
+                "description": "ID of the triggering user message for assistant responses, or null."
+              },
+              "interactionId": {
+                "type": "string",
+                "description": "Shared turn identifier pairing a user prompt and its assistant response."
+              },
+              "activeAlternativeId": {
+                "type": "string",
+                "description": "Currently selected alternative response ID for assistant messages."
+              },
+              "alternatives": {
+                "type": "array",
+                "description": "Sanitized history of alternative responses generated for an assistant turn.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "parentMessageId": { "type": "string" },
+                    "sender": { "type": "string", "enum": ["assistant"] },
+                    "content": { "type": "string" },
+                    "provider": { "type": "string" },
+                    "modelUsed": { "type": "string" },
+                    "responseTimeMs": { "type": "number" },
+                    "timestamp": { "type": "string" },
+                    "createdAt": { "type": "number" },
+                    "referencedAttachments": { "type": "array" },
+                    "isError": { "type": "boolean" },
+                    "isStopped": { "type": "boolean" }
+                  }
+                }
+              },
+              "attachments": {
+                "type": "array",
+                "description": "Sanitized attachment metadata and extracted text/OCR content (no binary blobs, base64, or data URLs).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "originalName": { "type": "string" },
+                    "size": { "type": "number" },
+                    "formattedSize": { "type": "string" },
+                    "type": { "type": "string" },
+                    "mimeType": { "type": "string" },
+                    "extension": { "type": "string" },
+                    "isImage": { "type": "boolean" },
+                    "status": { "type": "string" },
+                    "extraction": {
+                      "type": "object",
+                      "description": "Sanitized document/image text extraction metadata and extracted text."
+                    }
+                  }
+                }
+              },
+              "referencedAttachments": {
+                "type": "array",
+                "description": "Sanitized attachment metadata referenced by an assistant response."
+              },
+              "createdAtMs": {
+                "type": "number",
+                "description": "Epoch timestamp in milliseconds preserving chronological message ordering."
+              },
+              "clientTimestamp": {
+                "type": "string",
+                "description": "Formatted display timestamp (e.g., '10:15 AM')."
+              },
+              "timestamp": {
+                "type": "string",
+                "description": "Optional display timestamp alias."
+              }
+            },
+            "required": ["id", "sender", "content"]
+          }
+        }
+      },
+      "required": ["id", "title", "mode", "createdAt", "messageCount", "messages"]
     }
   },
   "firestore": {
@@ -164,6 +361,12 @@
         "$ref": "ChatMessage"
       },
       "description": "Subcollection holding chronological messages belonging to a specific conversation."
+    },
+    "/sharedChats/{shareId}": {
+      "schema": {
+        "$ref": "SharedChat"
+      },
+      "description": "Top-level collection holding deliberately published, immutable, sanitized conversation snapshots accessible by exact shareId."
     }
   }
 }

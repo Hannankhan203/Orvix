@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User, WifiOff } from 'lucide-react';
+import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User, WifiOff, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -12,7 +12,7 @@ import { isBrowserOnline, subscribeToNetworkStatus } from '../../config/firebase
  * Authentication view providing Email/Password signup with required Username,
  * existing user login, and guest demo mode.
  */
-export default function AuthScreen() {
+export default function AuthScreen({ onClose }) {
   const { login, signup, actionLoading, error, clearError, isConfigured, continueAsGuest } = useAuth();
 
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
@@ -28,6 +28,18 @@ export default function AuthScreen() {
       setIsOffline(!online);
     });
   }, []);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const switchMode = (newMode) => {
     setMode(newMode);
@@ -105,8 +117,19 @@ export default function AuthScreen() {
   const displayedError = localValidation || error;
 
   return (
-    <div className="auth-screen-container">
+    <div className={`auth-screen-container ${onClose ? 'is-modal-view' : ''}`}>
       <div className="auth-content-wrap">
+        {onClose && (
+          <button
+            type="button"
+            className="auth-modal-close-btn"
+            onClick={onClose}
+            title="Return to shared conversation (Esc)"
+            aria-label="Close authentication dialog"
+          >
+            <X size={18} />
+          </button>
+        )}
         {/* Brand Header */}
         <header className="auth-brand-header">
           <div className="auth-logo-badge" aria-hidden="true">

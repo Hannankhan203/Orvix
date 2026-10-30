@@ -8,8 +8,71 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isNonAnonymousUser() {
+      return isAuthenticated()
+             && request.auth.token != null
+             && (!('isAnonymous' in request.auth.token) || request.auth.token.isAnonymous != true)
+             && (!('firebase' in request.auth.token)
+                 || !('sign_in_provider' in request.auth.token.firebase)
+                 || request.auth.token.firebase.sign_in_provider != 'anonymous');
+    }
+
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidChatMode(mode) {
+      return mode in ['general', 'coding', 'writing', 'learning'];
+    }
+
+    function isValidOptionalShareIdRef(val) {
+      return val == null
+             || (val is string
+                 && val.size() >= 12
+                 && val.size() <= 128
+                 && val.matches('^[a-zA-Z0-9_-]+$'));
+    }
+
+    function isValidSharedMessageItem(msg) {
+      return msg is map
+             && msg.keys().hasAll(['id', 'sender', 'content'])
+             && msg.keys().hasOnly([
+               'id',
+               'sender',
+               'content',
+               'modelUsed',
+               'provider',
+               'mode',
+               'responseTimeMs',
+               'parentMessageId',
+               'interactionId',
+               'activeAlternativeId',
+               'alternatives',
+               'attachments',
+               'referencedAttachments',
+               'createdAtMs',
+               'clientTimestamp',
+               'timestamp'
+             ])
+             && msg.id is string
+             && msg.id.size() > 0
+             && msg.id.size() <= 128
+             && msg.sender in ['user', 'assistant']
+             && msg.content is string
+             && msg.content.size() <= 100000
+             && (!('modelUsed' in msg) || msg.modelUsed == null || msg.modelUsed is string)
+             && (!('provider' in msg) || msg.provider == null || msg.provider is string)
+             && (!('mode' in msg) || msg.mode == null || isValidChatMode(msg.mode))
+             && (!('responseTimeMs' in msg) || msg.responseTimeMs == null || msg.responseTimeMs is number)
+             && (!('parentMessageId' in msg) || msg.parentMessageId == null || msg.parentMessageId is string)
+             && (!('interactionId' in msg) || msg.interactionId == null || msg.interactionId is string)
+             && (!('activeAlternativeId' in msg) || msg.activeAlternativeId == null || msg.activeAlternativeId is string)
+             && (!('alternatives' in msg) || msg.alternatives is list)
+             && (!('attachments' in msg) || msg.attachments is list)
+             && (!('referencedAttachments' in msg) || msg.referencedAttachments is list)
+             && (!('createdAtMs' in msg) || msg.createdAtMs is number)
+             && (!('clientTimestamp' in msg) || msg.clientTimestamp is string)
+             && (!('timestamp' in msg) || msg.timestamp is string);
     }
 
     // User profile document: strictly restricted to authenticated owner
@@ -50,22 +113,28 @@ service cloud.firestore {
 
         allow create: if isOwner(userId)
                       && request.resource.data.keys().hasAll(['id', 'title', 'userId', 'createdAt', 'updatedAt'])
-                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt'])
+                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt', 'isImported', 'importedFromShareId'])
                       && request.resource.data.userId == userId
                       && request.resource.data.id == chatId
                       && request.resource.data.title is string
                       && request.resource.data.title.size() > 0
                       && request.resource.data.title.size() <= 120
-                      && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool);
+                      && (!('mode' in request.resource.data) || isValidChatMode(request.resource.data.mode))
+                      && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool)
+                      && (!('isImported' in request.resource.data) || request.resource.data.isImported is bool)
+                      && (!('importedFromShareId' in request.resource.data) || isValidOptionalShareIdRef(request.resource.data.importedFromShareId));
 
         allow update: if isOwner(userId)
-                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt'])
+                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt', 'isImported', 'importedFromShareId'])
                       && request.resource.data.userId == resource.data.userId
                       && request.resource.data.id == resource.data.id
                       && request.resource.data.title is string
                       && request.resource.data.title.size() > 0
                       && request.resource.data.title.size() <= 120
-                      && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool);
+                      && (!('mode' in request.resource.data) || isValidChatMode(request.resource.data.mode))
+                      && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool)
+                      && (!('isImported' in request.resource.data) || request.resource.data.isImported is bool)
+                      && (!('importedFromShareId' in request.resource.data) || isValidOptionalShareIdRef(request.resource.data.importedFromShareId));
 
         // Messages subcollection
         match /messages/{messageId} {
@@ -73,7 +142,7 @@ service cloud.firestore {
 
           allow create: if isOwner(userId)
                         && request.resource.data.keys().hasAll(['id', 'sender', 'content', 'createdAt', 'clientTimestamp'])
-                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'provider', 'responseTimeMs', 'parentMessageId', 'activeAlternativeId', 'alternatives', 'attachments', 'referencedAttachments', 'createdAt', 'clientTimestamp'])
+                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'provider', 'responseTimeMs', 'parentMessageId', 'interactionId', 'createdAtMs', 'activeAlternativeId', 'alternatives', 'attachments', 'referencedAttachments', 'createdAt', 'clientTimestamp'])
                         && request.resource.data.id == messageId
                         && request.resource.data.sender in ['user', 'assistant']
                         && request.resource.data.content is string
@@ -81,7 +150,7 @@ service cloud.firestore {
                         && request.resource.data.content.size() <= 100000;
 
           allow update: if isOwner(userId)
-                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'provider', 'responseTimeMs', 'parentMessageId', 'activeAlternativeId', 'alternatives', 'attachments', 'referencedAttachments', 'createdAt', 'clientTimestamp'])
+                        && request.resource.data.keys().hasOnly(['id', 'sender', 'content', 'modelUsed', 'provider', 'responseTimeMs', 'parentMessageId', 'interactionId', 'createdAtMs', 'activeAlternativeId', 'alternatives', 'attachments', 'referencedAttachments', 'createdAt', 'clientTimestamp'])
                         && request.resource.data.id == resource.data.id
                         && request.resource.data.sender == resource.data.sender
                         && request.resource.data.content is string
@@ -89,6 +158,42 @@ service cloud.firestore {
                         && request.resource.data.content.size() <= 100000;
         }
       }
+    }
+
+    // Deliberately published, immutable shared conversation snapshots
+    match /sharedChats/{shareId} {
+      // Allow reading an individual shared conversation by its exact shareId (including unauthenticated visitors)
+      allow get: if true;
+
+      // Never allow listing or querying the sharedChats collection to prevent enumeration
+      allow list: if false;
+
+      // Only properly authenticated, non-anonymous Firebase users can create a validated shared snapshot
+      allow create: if isNonAnonymousUser()
+                    && shareId is string
+                    && shareId.size() >= 12
+                    && shareId.size() <= 128
+                    && shareId.matches('^[a-zA-Z0-9_-]+$')
+                    && request.resource.data.keys().hasAll(['id', 'title', 'mode', 'createdAt', 'messageCount', 'messages'])
+                    && request.resource.data.keys().hasOnly(['id', 'title', 'mode', 'createdAt', 'messageCount', 'messages'])
+                    && request.resource.data.id == shareId
+                    && request.resource.data.title is string
+                    && request.resource.data.title.size() > 0
+                    && request.resource.data.title.size() <= 120
+                    && isValidChatMode(request.resource.data.mode)
+                    && request.resource.data.createdAt is timestamp
+                    && request.resource.data.messageCount is int
+                    && request.resource.data.messageCount >= 1
+                    && request.resource.data.messageCount <= 500
+                    && request.resource.data.messages is list
+                    && request.resource.data.messages.size() >= 1
+                    && request.resource.data.messages.size() <= 500
+                    && request.resource.data.messageCount == request.resource.data.messages.size()
+                    && isValidSharedMessageItem(request.resource.data.messages[0])
+                    && isValidSharedMessageItem(request.resource.data.messages[request.resource.data.messages.size() - 1]);
+
+      // Shared snapshots are strictly immutable and cannot be modified or deleted via public sharing rules
+      allow update, delete: if false;
     }
 
     // Default deny all other paths

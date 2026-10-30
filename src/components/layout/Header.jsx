@@ -49,7 +49,10 @@ export default function Header({
   onExportText,
   hasExportableMessages = false,
   providerConfig = null,
-  selectedModelId = DEFAULT_WEBLLM_MODEL_ID
+  selectedModelId = DEFAULT_WEBLLM_MODEL_ID,
+  isSharedView = false,
+  isImported = false,
+  onSignInClick = undefined
 }) {
   const activeGuidanceText = getAISelectionGuidance(selectedProvider, selectedModelId);
 
@@ -183,6 +186,11 @@ export default function Header({
               <span className="header-thread-title" title={activeTitle}>
                 {activeTitle}
               </span>
+              {isImported && (
+                <span className="header-imported-pill" title="Imported conversation">
+                  Imported
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -246,8 +254,8 @@ export default function Header({
             <span className="header-new-chat-label">New Chat</span>
           </Button>
 
-          {/* Consolidated User Account Menu Trigger */}
-          {currentUser && (
+          {/* Consolidated User Account Menu Trigger or Public Sign In */}
+          {currentUser ? (
             <div className="header-user-block">
               <button
                 type="button"
@@ -267,7 +275,19 @@ export default function Header({
                 <ChevronDown size={12} className="desktop-user-chevron" />
               </button>
             </div>
-          )}
+          ) : onSignInClick ? (
+            <div className="header-user-block">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={onSignInClick}
+                className="header-signin-btn"
+                title="Sign in to your Orvix account"
+              >
+                Sign In
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -328,8 +348,8 @@ export default function Header({
               <span>New</span>
             </button>
 
-            {/* Mobile User Profile Avatar Trigger */}
-            {currentUser && (
+            {/* Mobile User Profile Avatar Trigger or Sign In */}
+            {currentUser ? (
               <button
                 type="button"
                 className={`mobile-avatar-btn ${accountMenuOpen ? 'active' : ''}`}
@@ -343,7 +363,17 @@ export default function Header({
                   {currentUser.isAnonymous && !username ? <User size={14} /> : userInitial}
                 </span>
               </button>
-            )}
+            ) : onSignInClick ? (
+              <button
+                type="button"
+                className="mobile-header-signin-btn"
+                onClick={onSignInClick}
+                title="Sign in to your account"
+                aria-label="Sign in"
+              >
+                Sign In
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -375,6 +405,11 @@ export default function Header({
             {activeTitle ? (
               <div className="mobile-thread-context" title={activeTitle}>
                 <span className="mobile-thread-name">{activeTitle}</span>
+                {isImported && (
+                  <span className="header-imported-pill" title="Imported conversation">
+                    Imported
+                  </span>
+                )}
               </div>
             ) : (
               <div className="mobile-status-pill">

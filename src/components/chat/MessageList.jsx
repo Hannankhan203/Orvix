@@ -33,7 +33,12 @@ function MessageList({
   showTimestamps = true,
   selectedProvider = 'gemini',
   activeMode = 'general',
-  providerConfig = null
+  providerConfig = null,
+  onShareChat,
+  canShareChat = false,
+  shareChatDisabledReason = '',
+  isSharingChat = false,
+  isReadOnly = false
 }) {
   const bottomAnchorRef = useRef(null);
   const orderMemoRef = useRef(null);
@@ -76,6 +81,11 @@ function MessageList({
           selectedProvider={selectedProvider}
           activeMode={activeMode}
           providerConfig={providerConfig}
+          onShareChat={onShareChat}
+          canShareChat={canShareChat}
+          shareChatDisabledReason={shareChatDisabledReason}
+          isSharingChat={isSharingChat}
+          isReadOnly={isReadOnly}
         />
       ))}
 

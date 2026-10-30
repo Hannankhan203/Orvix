@@ -25,7 +25,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   Bookmark,
-  Info
+  Info,
+  Share2,
+  Loader2
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import OrvixLogo from '../ui/OrvixLogo.jsx';
@@ -535,7 +537,12 @@ function ChatMessage({
   showTimestamps = true,
   selectedProvider = 'gemini',
   activeMode = 'general',
-  providerConfig = null
+  providerConfig = null,
+  onShareChat,
+  canShareChat = false,
+  shareChatDisabledReason = '',
+  isSharingChat = false,
+  isReadOnly = false
 }) {
   const effectiveMode = message?.mode || activeMode || 'general';
   const isUser = message?.sender === 'user';
@@ -1176,9 +1183,15 @@ function ChatMessage({
                 variant="ghost"
                 size="sm"
                 onClick={() => onStartEdit(message.id)}
-                disabled={isLoading}
+                disabled={isLoading || isReadOnly}
                 className="message-action-btn edit-message-btn"
-                title={isLoading ? 'Generation in progress...' : 'Edit and resend this message'}
+                title={
+                  isReadOnly
+                    ? 'This is a read-only shared conversation.'
+                    : isLoading
+                    ? 'Generation in progress...'
+                    : 'Edit and resend this message'
+                }
                 ariaLabel="Edit message"
                 icon={<Edit3 size={13} />}
               >
@@ -1352,13 +1365,20 @@ function ChatMessage({
                     variant="ghost"
                     size="sm"
                     onClick={() => {
+                      if (isReadOnly) return;
                       if (isCurrentSpeaking) stopSpeech(false);
                       if (message?.id) resetMessageSpeech(message.id);
                       onRegenerate(message);
                     }}
-                    disabled={isLoading}
+                    disabled={isLoading || isReadOnly}
                     className="message-action-btn regenerate-btn"
-                    title={isLoading ? 'Generation in progress...' : 'Regenerate response'}
+                    title={
+                      isReadOnly
+                        ? 'This is a read-only shared conversation.'
+                        : isLoading
+                        ? 'Generation in progress...'
+                        : 'Regenerate response'
+                    }
                     ariaLabel="Regenerate response"
                     icon={<RotateCcw size={13} />}
                   >
@@ -1420,10 +1440,19 @@ function ChatMessage({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setShowAltMenu((prev) => !prev)}
-                      disabled={isLoading}
+                      onClick={() => {
+                        if (isReadOnly) return;
+                        setShowAltMenu((prev) => !prev);
+                      }}
+                      disabled={isLoading || isReadOnly}
                       className={`message-action-btn alternative-trigger-btn ${showAltMenu ? 'active' : ''}`}
-                      title={isLoading ? 'Generation in progress...' : 'Regenerate with another AI Model'}
+                      title={
+                        isReadOnly
+                          ? 'This is a read-only shared conversation.'
+                          : isLoading
+                          ? 'Generation in progress...'
+                          : 'Regenerate with another AI Model'
+                      }
                       ariaLabel="Regenerate with another AI Model"
                       aria-haspopup="true"
                       aria-expanded={showAltMenu}
@@ -1492,6 +1521,45 @@ function ChatMessage({
                       </div>
                     )}
                   </div>
+                )}
+
+                {/* Share Chat Action (shares the entire active conversation) */}
+                {onShareChat && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (isReadOnly) return;
+                      onShareChat(message);
+                    }}
+                    disabled={isLoading || isSharingChat || !canShareChat || isReadOnly}
+                    className={`message-action-btn share-chat-btn ${isSharingChat ? 'is-sharing' : ''}`}
+                    title={
+                      isReadOnly
+                        ? 'Shared conversation previews cannot be re-shared.'
+                        : isSharingChat
+                        ? 'Creating share link...'
+                        : !canShareChat && shareChatDisabledReason
+                        ? shareChatDisabledReason
+                        : isLoading
+                        ? 'Generation in progress...'
+                        : 'Share entire conversation'
+                    }
+                    ariaLabel={
+                      isSharingChat
+                        ? 'Creating share link'
+                        : 'Share Chat'
+                    }
+                    icon={
+                      isSharingChat ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Share2 size={13} />
+                      )
+                    }
+                  >
+                    {isSharingChat ? 'Sharing...' : 'Share Chat'}
+                  </Button>
                 )}
               </>
             )}

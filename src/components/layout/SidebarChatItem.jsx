@@ -248,6 +248,14 @@ export default function SidebarChatItem({
                 </span>
               </>
             )}
+            {Boolean(chat.isImported) && (
+              <>
+                <span className="chat-item-meta-dot" aria-hidden="true">·</span>
+                <span className="chat-item-imported-badge" title="Imported from shared chat">
+                  Imported
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>

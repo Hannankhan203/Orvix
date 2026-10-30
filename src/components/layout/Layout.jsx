@@ -41,7 +41,9 @@ export default function Layout({
   hasExportableMessages = false,
   isOffline = false,
   providerConfig = null,
-  selectedModelId = undefined
+  selectedModelId = undefined,
+  isSharedView = false,
+  onSignInClick = undefined
 }) {
   // Desktop defaults to open, mobile defaults to closed
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -636,6 +638,9 @@ export default function Layout({
           hasExportableMessages={hasExportableMessages}
           providerConfig={providerConfig}
           selectedModelId={selectedModelId}
+          isSharedView={isSharedView}
+          isImported={Boolean(recentChats.find((c) => c.id === activeChatId)?.isImported)}
+          onSignInClick={onSignInClick}
         />
         {children}
       </div>

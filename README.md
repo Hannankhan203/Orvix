@@ -1,8 +1,8 @@
 # Orvix
 
-**Version: V 0.2.9**
+**Version: V 0.3.0**
 
-An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, and four specialized chat modes.
+An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
 
 ---
 
@@ -64,18 +64,27 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [Controlled Large-Response Continuation](#controlled-large-response-continuation)
     - [Edit & Resend with Branch Truncation](#edit--resend-with-branch-truncation)
     - [Conversation Pinning & Client-Side Export](#conversation-pinning--client-side-export)
-15. [Architecture & Technology Stack](#architecture--technology-stack)
-16. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
-17. [Project Structure](#project-structure)
-18. [Environment Variables & Configuration](#environment-variables--configuration)
-19. [Installation & Running Locally](#installation--running-locally)
-20. [Build & Deployment Instructions](#build--deployment-instructions)
-21. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
+15. [Share Chat & Conversation Collaboration](#share-chat--conversation-collaboration)
+    - [Share Entire Conversations](#share-entire-conversations)
+    - [Public Shared Conversation Viewer](#public-shared-conversation-viewer)
+    - [Sign In and Continue](#sign-in-and-continue)
+    - [Independent Conversation Import](#independent-conversation-import)
+    - [Imported Chat Management](#imported-chat-management)
+    - [Security and Data Isolation](#security-and-data-isolation)
+    - [Persistence and Reliability](#persistence-and-reliability)
+16. [Architecture & Technology Stack](#architecture--technology-stack)
+17. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
+18. [Project Structure](#project-structure)
+19. [Environment Variables & Configuration](#environment-variables--configuration)
+20. [Installation & Running Locally](#installation--running-locally)
+21. [Build & Deployment Instructions](#build--deployment-instructions)
+    - [Firestore Security Rules Deployment for Share Chat](#firestore-security-rules-deployment-for-share-chat)
+22. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
     - [Troubleshooting Gemini Timeouts & Streaming](#troubleshooting-gemini-timeouts--streaming)
-22. [Security Architecture](#security-architecture)
-23. [Current Limitations](#current-limitations)
-24. [Version History & Release Changelog](#version-history--release-changelog)
-25. [Future Roadmap](#future-roadmap)
+23. [Security Architecture](#security-architecture)
+24. [Current Limitations](#current-limitations)
+25. [Version History & Release Changelog](#version-history--release-changelog)
+26. [Future Roadmap](#future-roadmap)
 
 ---
 
@@ -89,6 +98,7 @@ Built as a full-stack Node.js application, Orvix combines a React 19 single-page
 
 ## Key Features
 
+- **Share Chat & Immutable Public Snapshots**: Share complete conversations via unique URLs with instant Copy Link, WhatsApp, and native OS share dialogs. Public visitors can view, copy, and listen read-only without accounts; authenticated users can preview and fork conversations into independent, full-featured private chats upon their first message turn ([learn more](#share-chat--conversation-collaboration)).
 - **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
 - **Offline PWA App-Shell Caching**: Workbox service worker precaches application assets, WASM bundles, and offline document extractors for instant offline re-access.
 - **Client-Side Document Extraction**: Extracts and grounds text locally from Word (`.docx`), PDF (`.pdf`), PowerPoint (`.pptx`), CSV, TSV, JSON, XML, and Markdown files without cloud dependencies.
@@ -510,6 +520,80 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 
 ---
 
+## Share Chat & Conversation Collaboration
+
+Orvix Share Chat provides privacy-preserving conversation sharing and collaborative branching. It allows authenticated users to publish immutable snapshots of their conversations, enables public visitors to inspect conversations in a high-fidelity read-only viewer, and empowers authenticated recipients to fork conversations into their own independent chat history.
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                   ORVIX SHARE CHAT LIFECYCLE & FORKING                 │
+├────────────────────────────────────────────────────────────────────────┤
+│ 1. PRIVATE CONVERSATION (`users/{uid}/chats/{chatId}`)                 │
+│    • User clicks "Share" in header or sidebar context menu             │
+│    • Client sanitizes message payloads, removes auth & private metadata│
+│    • Creates immutable snapshot in `sharedChats/{shareId}` (<= 950 KB) │
+│                                    │                                   │
+│                                    ▼                                   │
+│ 2. PUBLIC SHARED VIEWER (`/share/{shareId}`)                           │
+│    • Open to anyone without sign-in; exact document lookup             │
+│    • Read-only: Copy code/messages and Read Aloud (TTS) available      │
+│    • Composer disabled; 0 modifications permitted on source snapshot   │
+│                                    │                                   │
+│                                    ▼ (Sign in)                         │
+│ 3. AUTHENTICATED TEMPORARY PREVIEW                                     │
+│    • Composer unlocks; attachments & microphone locked                 │
+│    • Zero database side-effects before recipient interaction           │
+│                                    │                                   │
+│                                    ▼ (First turn completed)            │
+│ 4. INDEPENDENT FORK IMPORT (`users/{recipientUid}/chats/{newChatId}`) │
+│    • Snapshot messages + recipient prompt + AI completion persisted    │
+│    • Independent private chat with "Imported" provenance indicator     │
+│    • Original owner conversation and shared snapshot remain unchanged  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Share Entire Conversations
+- **One-Click Sharing**: Authenticated users can share any saved conversation using the **Share** button in the top navigation header or via the conversation action menu in the sidebar.
+- **Versatile Distribution Options**: The Share modal provides one-click **Copy Link**, direct sharing to **WhatsApp**, and native OS share dialogs via the Web Share API (`navigator.share`).
+- **Immutable Snapshot Creation**: Sharing freezes the conversation at that exact point in time and publishes an immutable snapshot document. Subsequent messages sent by the owner in their private chat do not alter the published snapshot.
+
+### Public Shared Conversation Viewer
+- **No Account Required for Viewing**: Anyone with the unique share URL (`/share/{shareId}`) can open and read the complete conversation transcript immediately without creating an account or logging in.
+- **Strict Read-Only Enforcement**: Public visitors cannot alter, overwrite, or delete the shared snapshot. The message input composer is safely disabled with an informational callout prompting visitors to sign in to continue or fork the conversation.
+- **Full Reading Utility**: Public visitors retain access to core reading tools, including dual-format clipboard copying (`text/html` and `text/plain`), syntax-highlighted code blocks with line numbers, and browser-native Text-to-Speech (Read Aloud).
+
+### Sign In and Continue
+- **Frictionless Onboarding**: Authenticated users opening a shared URL enter an **Authenticated Temporary Preview** state.
+- **Temporary Preview Safety**: The shared conversation is presented in the chat window with the composer unlocked, but it is **not** immediately added to the recipient's private chat history or persisted to their database.
+- **Owner Conversation Protection**: The original owner's private conversation and the shared snapshot remain entirely protected and immutable.
+
+### Independent Conversation Import
+- **Interaction-Gated Forking**: The temporary preview is imported into the recipient's account **only** after they successfully send their first prompt and the AI model finishes generating a complete response (`status: 'completed'`).
+- **Zero Ghost Chats on Failure**: If the recipient cancels generation, closes the tab, or encounters an upstream API error during the first turn, no orphan chat document or history entry is left in their account.
+- **Combined Transcript**: Once the first turn completes successfully, an independent private chat document is atomically created containing all original shared messages followed by the recipient's new prompt and assistant response.
+- **Complete Decoupling**: The imported chat is 100% independent. Deleting, modifying, or continuing the imported chat has zero effect on the original conversation or shared snapshot.
+
+### Imported Chat Management
+- **Provenance Indicator**: Imported conversations feature an **Imported** indicator badge in the conversation header and sidebar, along with a deep link back to the source shared snapshot.
+- **Standard Conversation Controls**: Recipients can rename, pin (up to 5 priority chats), search, delete, and export (Markdown, TXT, JSON) their imported chats just like any native conversation.
+- **Resharing Support**: Recipients can continue chatting and choose to reshare the extended conversation at any time. Resharing creates a brand-new, independent shared snapshot with its own unique URL.
+
+### Security and Data Isolation
+- **Collection Isolation**: Shared snapshots reside in a distinct top-level `sharedChats/{shareId}` Firestore collection, completely segregated from private user paths (`users/{uid}/chats/{chatId}`).
+- **Immutable Database Rules**: Firestore security rules enforce `allow update: if false;` and `allow delete: if false;`, ensuring snapshots cannot be tampered with or deleted through client operations.
+- **No Collection Enumeration**: Exact document lookups are permitted (`allow get: if true;`), while collection listing is strictly blocked (`allow list: if false;`) to protect user privacy and prevent link harvesting.
+- **Sanitization Pipeline**: Private user attributes (`userId`, user profile emails, private authentication tokens, local filesystem paths, and raw binary attachments) are strictly stripped during snapshot generation.
+- **Strict Boundary Constraints**: Payload size is capped at 950 KB (UTF-8 encoded) to guarantee single-document Firestore integrity, and conversations are constrained to a maximum of 500 messages with titles up to 120 characters.
+
+### Persistence and Reliability
+- **History Cleanliness**: Merely visiting or reloading `/share/{shareId}` never injects placeholder entries into local storage or account history.
+- **Reload Resilience**: Reloading a `/share/{shareId}` URL cleanly restores the temporary preview with full fidelity.
+- **Deduplication Lock**: Fast double-submissions or concurrent import attempts are protected by an in-flight import mutex lock, preventing duplicate chats.
+- **Multi-Tab Sync**: When an import completes in one tab, a lightweight `BroadcastChannel` event notifies open tabs to synchronize their sidebar history without interrupting active conversations.
+- **Offline Resilience**: If network connectivity drops after an import has been established, subsequent conversation edits and new messages are buffered in the local offline write queue and replayed once the connection recovers.
+
+---
+
 ## Architecture & Technology Stack
 
 ```text
@@ -520,9 +604,10 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 │ • React 19, Tailwind CSS v4       │ • Express in TypeScript (server.ts)│
 │ • Lucide React, React-Markdown    │ • @google/genai TypeScript SDK     │
 │ • WebLLM Web Worker (WebGPU)      │ • Groq, OpenRouter & Cloudflare SSE│
-│ • Dual-Format Clipboard Formatter │ • In-Memory Multer & Tesseract OCR │
-│ • Web Speech API & Visualizer     │ • Document Parsers (unpdf, mammoth)│
-│ • IndexedDB (Attachment Caching)  │ • Host 0.0.0.0, Port 3000          │
+│ • Share Chat & Forking Service    │ • In-Memory Multer & Tesseract OCR │
+│ • Dual-Format Clipboard Formatter │ • Document Parsers (unpdf, mammoth)│
+│ • Web Speech API & Visualizer     │ • Host 0.0.0.0, Port 3000          │
+│ • IndexedDB (Attachment Caching)  │                                    │
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -531,7 +616,7 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 - **Backend**: Express 4 running via `tsx` in TypeScript (`server.ts`) with Vite middlewares mounted on port 3000 (`0.0.0.0`).
 - **Cloud AI**: `@google/genai` TypeScript SDK (Gemini), REST streaming for Groq, OpenRouter, and Cloudflare Workers AI.
 - **Audio & Documents**: Web Speech API, MediaRecorder, Groq Whisper Large v3 Turbo, `unpdf`, `mammoth`, `jszip`, `tesseract.js`.
-- **Persistence**: IndexedDB for local file blobs, Firebase Auth & Cloud Firestore for cloud sync, and `localStorage` for Guest Mode.
+- **Persistence & Sharing**: IndexedDB for local file blobs and offline queues, Firebase Auth, Cloud Firestore (`users/{uid}/chats` for private sync and `sharedChats/{shareId}` for immutable snapshots), and `localStorage` for Guest Mode.
 
 ---
 
@@ -541,6 +626,7 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 2. **In-Memory Server Staging**: Uploads stage in memory via `multer.memoryStorage()`, preventing read-only filesystem errors (`EROFS`) in serverless environments.
 3. **Cloud Firestore**: Authenticated users sync chats and preferences under `users/{uid}/chats/{chatId}/messages/{messageId}`.
 4. **Guest Mode**: Full functionality for unauthenticated visitors with persistence in `localStorage`.
+5. **Immutable Shared Snapshots (`sharedChats/{shareId}`)**: Public conversation snapshots are stored separately from private user partitions. Forked conversations are imported to `users/{uid}/chats/{newChatId}` only after the recipient's first prompt and assistant response complete successfully.
 
 ---
 
@@ -644,6 +730,12 @@ Configured via `vercel.json` with handlers in `api/`:
 - `api/transcribe.ts`: Serverless audio transcription handler.
 - `api/upload.ts`: Serverless in-memory upload and OCR handler.
 
+### Firestore Security Rules Deployment for Share Chat
+> **Important Production Deployment Note for Share Chat**: Production deployment of Share Chat requires deploying the security rules in `firestore.rules` to enforce the immutability of `sharedChats/{shareId}`, prevent collection listing, and isolate user private data. The required Firestore security rules have **not yet been deployed** and must be deployed via Firebase CLI before enabling Share Chat in production:
+> ```bash
+> firebase deploy --only firestore:rules
+> ```
+
 ---
 
 ## Troubleshooting & Common Issues
@@ -674,6 +766,7 @@ Configured via `vercel.json` with handlers in `api/`:
 3. **Text Sanitization**: Document and OCR text is stripped of non-printable control characters before insertion into prompts.
 4. **Memory Management**: Object URLs are revoked upon unmounting to avoid browser memory leaks.
 5. **Microphone Release**: Audio tracks stop immediately when the tab is hidden or closed to release hardware.
+6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 950 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
 
 ---
 
@@ -684,10 +777,22 @@ Configured via `vercel.json` with handlers in `api/`:
 3. **OCR vs. Multimodal Vision**: Orvix extracts printed text via OCR; it does not perform spatial visual reasoning on image content.
 4. **Binary Storage TTL**: Raw binary attachments are cached locally in browser IndexedDB; temporary server files expire after a 2-hour TTL.
 5. **Initial Online Requirement**: Browser AI requires one initial online visit to precache the PWA app shell and download model weights.
+6. **Online Snapshot Generation**: Creating a shared conversation snapshot requires active internet connectivity to contact Cloud Firestore; offline snapshot creation is disabled to prevent invalid or unreachable share links.
+7. **Shared Snapshot Size & Message Boundaries**: Individual shared snapshots are limited to 950 KB UTF-8 and a maximum of 500 messages to ensure single-document atomic storage limits.
 
 ---
 
 ## Version History & Release Changelog
+
+### V 0.3.0 — Orvix Share Chat, Public Previews & Independent Fork Imports
+- **Orvix Share Chat Complete Lifecycle**: Implemented complete 8-stage conversation sharing architecture allowing authenticated users to create immutable snapshots of their conversations accessible via `/share/{shareId}`.
+- **Public Read-Only Viewer**: Direct URL access to shared conversations without requiring authentication. Visitors can read, copy formatted code/text, and listen via Text-to-Speech (Read Aloud) while message input is locked.
+- **Authenticated Temporary Preview**: Seamless transition for authenticated recipients into a temporary preview mode where composer is available without polluting account history before interaction.
+- **Interaction-Gated Independent Import**: Atomic conversation forking into recipient's private history triggered only upon recipient's first message turn receiving a successfully completed AI response (`status: 'completed'`).
+- **Zero Ghost Chats on Abort/Failure**: Generation errors or cancellations during the first turn cleanly leave no orphan chat documents or partial history items.
+- **Provenance & Resharing**: Imported conversations display an Imported indicator badge, maintain deep-link provenance to the source snapshot, and support standard chat operations including renaming, pinning, client-side export, and resharing under a new distinct snapshot ID.
+- **Data Sanitization & Strict Security Boundaries**: Automated stripping of private credentials, local file paths, and large binary attachments before snapshot generation; strict enforcement of 950 KB UTF-8 payload limit and 500-message ceiling.
+- **Multi-Tab & Offline Resilience**: Integrated cross-tab `BroadcastChannel` synchronization and offline write queue protection for imported conversations.
 
 ### V 0.2.9 — AI Model Selection Guidance and Provider Ordering
 - **AI Model Selection Guidance UX**: Integrated concise, static informational guidance explaining characteristics and trade-offs of all AI options across Cloud AI and Browser AI. Dynamic model-specific resolution updates immediately upon switching selections in `ModelSelector` and `BrowserAIStatusBar` with accessible `aria-describedby` announcements and zero network/generation overhead.

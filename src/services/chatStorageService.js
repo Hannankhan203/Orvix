@@ -193,7 +193,7 @@ function savePendingDeletedChatIds(userId, ids) {
   } catch (_) {}
 }
 
-function upsertCachedUserChat(userId, chatPatch) {
+export function upsertCachedUserChat(userId, chatPatch) {
   if (!userId || !chatPatch?.id) return [];
   const existing = getCachedUserChats(userId);
   const idx = existing.findIndex((c) => c.id === chatPatch.id);
@@ -271,7 +271,7 @@ export function sanitizeMessageForStorage(msg) {
   return next;
 }
 
-function buildFirestoreMessagePayload(targetMessage) {
+export function buildFirestoreMessagePayload(targetMessage) {
   return {
     id: targetMessage.id,
     sender: targetMessage.sender,
@@ -370,7 +370,7 @@ export function generateLocalChatId(userId = '') {
  * @param {string} [mode='general'] - Active chat mode (general | coding | writing | learning)
  * @returns {Promise<string>} The generated chatId
  */
-export async function createChatDocument(userId, initialTitle = 'New Conversation', mode = 'general') {
+export async function createChatDocument(userId, initialTitle = 'New Conversation', mode = 'general', extraMetadata = {}) {
   if (!userId) {
     throw new Error('Valid userId is required to create a conversation.');
   }
@@ -389,6 +389,8 @@ export async function createChatDocument(userId, initialTitle = 'New Conversatio
     createdAtMs: nowMs,
     isPinned: false,
     pinnedAt: null,
+    isImported: Boolean(extraMetadata.isImported),
+    importedFromShareId: extraMetadata.importedFromShareId || null,
     pendingSync: true,
     createdOffline: !isBrowserOnline()
   });
@@ -406,7 +408,9 @@ export async function createChatDocument(userId, initialTitle = 'New Conversatio
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     isPinned: false,
-    pinnedAt: null
+    pinnedAt: null,
+    ...(extraMetadata.isImported ? { isImported: true } : {}),
+    ...(extraMetadata.importedFromShareId ? { importedFromShareId: extraMetadata.importedFromShareId } : {})
   };
 
   try {
@@ -643,7 +647,10 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
   }
 
   const cachedChats = getCachedUserChats(userId);
-  if (isPinned) {
+  const targetChat = cachedChats.find((c) => c.id === chatId);
+  const targetPinnedState = typeof isPinned === 'boolean' ? isPinned : !targetChat?.isPinned;
+
+  if (targetPinnedState) {
     const localPinnedCount = cachedChats.filter((c) => c.isPinned && c.id !== chatId).length;
     if (localPinnedCount >= 5) {
       throw new Error('You can pin up to 5 chats. Unpin a chat before pinning another.');
@@ -655,18 +662,18 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
   if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
     upsertCachedUserChat(userId, {
       id: chatId,
-      isPinned: Boolean(isPinned),
-      pinnedAt: isPinned ? nowMs : null,
+      isPinned: Boolean(targetPinnedState),
+      pinnedAt: targetPinnedState ? nowMs : null,
       rawUpdatedAt: nowMs,
       pendingMetaSync: true
     });
-    return Boolean(isPinned);
+    return Boolean(targetPinnedState);
   }
 
   const chatDocRef = doc(db, 'users', userId, 'chats', chatId);
 
   try {
-    if (isPinned) {
+    if (targetPinnedState) {
       const chatsRef = collection(db, 'users', userId, 'chats');
       const pinnedQuery = query(chatsRef, where('isPinned', '==', true));
       const snapshot = await withBoundedTimeout(getDocs(pinnedQuery), FIRESTORE_OP_TIMEOUT_MS, 'checkPinnedLimit');
@@ -953,7 +960,9 @@ export async function syncOfflineUserChatsToFirestore(userId) {
                   createdAt: serverTimestamp(),
                   updatedAt: serverTimestamp(),
                   isPinned: Boolean(localChat.isPinned),
-                  pinnedAt: localChat.isPinned ? serverTimestamp() : null
+                  pinnedAt: localChat.isPinned ? serverTimestamp() : null,
+                  ...(localChat.isImported ? { isImported: true } : {}),
+                  ...(localChat.importedFromShareId ? { importedFromShareId: localChat.importedFromShareId } : {})
                 },
                 { merge: true }
               ),
@@ -1084,7 +1093,9 @@ export function subscribeToUserChats(userId, onUpdate, onError) {
           timestamp: formattedDate,
           rawUpdatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : Date.now(),
           isPinned: Boolean(data.isPinned),
-          pinnedAt: data.pinnedAt?.toMillis ? data.pinnedAt.toMillis() : (data.pinnedAt || null)
+          pinnedAt: data.pinnedAt?.toMillis ? data.pinnedAt.toMillis() : (data.pinnedAt || null),
+          isImported: Boolean(data.isImported),
+          importedFromShareId: data.importedFromShareId || null
         });
       });
 
