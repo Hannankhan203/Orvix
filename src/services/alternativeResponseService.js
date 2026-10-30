@@ -91,6 +91,19 @@ export function createAlternativeRecord({
  * @param {Object|null} [precedingUserMessage=null] - Preceding user message for parent linking
  * @returns {Object} Normalized message with alternatives structure
  */
+function hasActiveAlternativeRecord(alternatives, activeAlternativeId) {
+  if (!activeAlternativeId || !Array.isArray(alternatives) || alternatives.length === 0) {
+    return false;
+  }
+  for (let i = 0; i < alternatives.length; i++) {
+    const alt = alternatives[i];
+    if (alt && alt.id === activeAlternativeId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function normalizeAssistantMessage(message, precedingUserMessage = null) {
   if (!message || message.sender === 'user') {
     return message;
@@ -115,7 +128,7 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
     message.activeAlternativeId &&
     (!parentMessageId || message.parentMessageId === parentMessageId) &&
     (!interactionId || message.interactionId === interactionId) &&
-    message.alternatives.some((a) => a.id === message.activeAlternativeId)
+    hasActiveAlternativeRecord(message.alternatives, message.activeAlternativeId)
   ) {
     return message;
   }
@@ -382,40 +395,117 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
  */
 export function ensureConversationAlternatives(messages = []) {
   if (!Array.isArray(messages)) return [];
+  const len = messages.length;
+  if (len === 0) return messages;
 
-  const userById = new Map();
-  for (const m of messages) {
-    if (m?.sender === 'user' && m.id) {
-      userById.set(m.id, m);
-    }
-  }
-
+  let userById = null;
+  let userByInteractionId = null;
   let lastUserMessage = null;
-  let hasChanges = false;
+  let next = null;
 
-  const next = messages.map((msg) => {
-    if (!msg) return msg;
+  const ensureUserLookups = () => {
+    if (userById !== null) return;
+    userById = new Map();
+    userByInteractionId = new Map();
+    for (let j = 0; j < len; j++) {
+      const m = messages[j];
+      if (m?.sender === 'user' && m.id) {
+        userById.set(m.id, m);
+      }
+    }
+    for (const u of userById.values()) {
+      if (u.interactionId && !userByInteractionId.has(u.interactionId)) {
+        userByInteractionId.set(u.interactionId, u);
+      }
+    }
+  };
+
+  for (let i = 0; i < len; i++) {
+    const msg = messages[i];
+    if (!msg) continue;
+
     if (msg.sender === 'user') {
       lastUserMessage = msg;
-      return msg;
+      continue;
     }
 
     if (msg.sender === 'assistant') {
+      // Zero-allocation fast path when assistant message already carries parentMessageId,
+      // interactionId, and a valid active alternative record.
+      if (
+        msg.parentMessageId &&
+        msg.interactionId &&
+        Array.isArray(msg.alternatives) &&
+        msg.alternatives.length > 0 &&
+        hasActiveAlternativeRecord(msg.alternatives, msg.activeAlternativeId)
+      ) {
+        continue;
+      }
+
+      ensureUserLookups();
       const linkedUser =
         (msg.parentMessageId && userById.get(msg.parentMessageId)) ||
-        (msg.interactionId && Array.from(userById.values()).find((u) => u.interactionId === msg.interactionId)) ||
+        (msg.interactionId && userByInteractionId.get(msg.interactionId)) ||
         lastUserMessage;
       const normalized = normalizeAssistantMessage(msg, linkedUser);
       if (normalized !== msg) {
-        hasChanges = true;
+        if (next === null) {
+          next = messages.slice();
+        }
+        next[i] = normalized;
       }
-      return normalized;
     }
+  }
 
-    return msg;
-  });
+  return next !== null ? next : messages;
+}
 
-  return hasChanges ? next : messages;
+function isFastNormalizedAssistantForUser(msg, parentUser) {
+  if (!msg || !parentUser || !parentUser.id) return false;
+  if (msg.parentMessageId !== parentUser.id) return false;
+  if (!msg.interactionId && parentUser.interactionId) return false;
+  return hasActiveAlternativeRecord(msg.alternatives, msg.activeAlternativeId);
+}
+
+function canReuseMessageSlotOrder(prevMsg, nextMsg) {
+  if (!prevMsg || !nextMsg) return false;
+  if (!nextMsg.id || prevMsg.id !== nextMsg.id) return false;
+  if (prevMsg.sender !== nextMsg.sender) return false;
+  if (prevMsg.parentMessageId !== nextMsg.parentMessageId) return false;
+  if (prevMsg.interactionId !== nextMsg.interactionId) return false;
+  if (prevMsg.createdAtMs !== nextMsg.createdAtMs) return false;
+  if (prevMsg.createdAt !== nextMsg.createdAt) return false;
+
+  if (nextMsg.sender === 'assistant') {
+    if (
+      !nextMsg.parentMessageId ||
+      !Array.isArray(nextMsg.alternatives) ||
+      nextMsg.alternatives.length === 0 ||
+      !nextMsg.activeAlternativeId
+    ) {
+      return false;
+    }
+    const expectedParentId = nextMsg.parentMessageId;
+    const expectedInteractionId = nextMsg.interactionId || null;
+    const alts = nextMsg.alternatives;
+    let foundActive = false;
+    for (let i = 0; i < alts.length; i++) {
+      const alt = alts[i];
+      if (!alt || !alt.id) return false;
+      if (alt.parentMessageId !== expectedParentId) {
+        return false;
+      }
+      if (expectedInteractionId && alt.interactionId && alt.interactionId !== expectedInteractionId) {
+        return false;
+      }
+      if (alt.id === nextMsg.activeAlternativeId) {
+        foundActive = true;
+      }
+    }
+    if (!foundActive) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -432,13 +522,54 @@ export function ensureConversationAlternatives(messages = []) {
  * @returns {Array} Canonically ordered and aligned message array
  */
 export function orderConversationMessages(messages = []) {
-  if (!Array.isArray(messages) || messages.length <= 1) {
-    return Array.isArray(messages) ? [...messages] : [];
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+  const initialLen = messages.length;
+  if (initialLen === 0) {
+    return messages;
+  }
+  if (initialLen === 1) {
+    return messages[0]?.sender === 'assistant'
+      ? ensureConversationAlternatives(messages)
+      : messages;
+  }
+
+  // Zero-allocation single-pass fast path:
+  // If every user message is already chronological and every assistant message is already
+  // normalized and positioned directly beneath its parent user message, return `messages` as-is.
+  let canReturnInputDirectly = true;
+  let fastParentUser = null;
+  let fastLastUserTime = -Infinity;
+
+  for (let i = 0; i < initialLen; i++) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.sender === 'user') {
+      const uTime = typeof m.createdAtMs === 'number' ? m.createdAtMs : (m.createdAt || null);
+      if (uTime !== null && uTime < fastLastUserTime) {
+        canReturnInputDirectly = false;
+        break;
+      }
+      if (uTime !== null) {
+        fastLastUserTime = uTime;
+      }
+      fastParentUser = m;
+    } else if (m.sender === 'assistant') {
+      if (!isFastNormalizedAssistantForUser(m, fastParentUser)) {
+        canReturnInputDirectly = false;
+        break;
+      }
+    }
+  }
+
+  if (canReturnInputDirectly) {
+    return messages;
   }
 
   const normalized = ensureConversationAlternatives(messages);
 
-  // Fast path: verify if the list is already in strict canonical sequence
+  // Fast path after normalization: verify if the normalized list is already in strict canonical sequence
   let isAlreadyOrdered = true;
   let activeParentUser = null;
   let lastUserTime = -Infinity;
@@ -477,6 +608,7 @@ export function orderConversationMessages(messages = []) {
   // Step 1: Catalog all user messages
   const userOrder = [];
   const userMap = new Map();
+  const userIndexById = new Map();
   const assistantBuckets = new Map();
   const leadingOrphans = [];
   const trailingOrphans = [];
@@ -486,12 +618,13 @@ export function orderConversationMessages(messages = []) {
     if (!m) continue;
     if (m.sender === 'user') {
       if (!userMap.has(m.id)) {
+        userIndexById.set(m.id, userOrder.length);
         userOrder.push(m);
         userMap.set(m.id, m);
         assistantBuckets.set(m.id, []);
       } else {
-        const idx = userOrder.findIndex((u) => u.id === m.id);
-        if (idx >= 0) userOrder[idx] = m;
+        const idx = userIndexById.get(m.id);
+        if (idx !== undefined) userOrder[idx] = m;
         userMap.set(m.id, m);
       }
     }
@@ -500,6 +633,24 @@ export function orderConversationMessages(messages = []) {
   if (userOrder.length === 0) {
     return normalized;
   }
+
+  // Lazy lookup table for assistant messages missing parentMessageId that link via interactionId
+  let userIdByInteractionKey = null;
+  const resolveParentIdByInteraction = (interactionKey) => {
+    if (userIdByInteractionKey === null) {
+      userIdByInteractionKey = new Map();
+      for (let j = 0; j < userOrder.length; j++) {
+        const u = userOrder[j];
+        if (u.interactionId && !userIdByInteractionKey.has(u.interactionId)) {
+          userIdByInteractionKey.set(u.interactionId, u.id);
+        }
+        if (u.id && !userIdByInteractionKey.has(u.id)) {
+          userIdByInteractionKey.set(u.id, u.id);
+        }
+      }
+    }
+    return userIdByInteractionKey.get(interactionKey) || null;
+  };
 
   // Step 2: Map each assistant message to its parent user message
   let runningUser = null;
@@ -516,10 +667,7 @@ export function orderConversationMessages(messages = []) {
     if (m.sender === 'assistant') {
       let parentId = m.parentMessageId;
       if (!parentId && m.interactionId) {
-        const found = userOrder.find(
-          (u) => u.interactionId === m.interactionId || u.id === m.interactionId
-        );
-        if (found) parentId = found.id;
+        parentId = resolveParentIdByInteraction(m.interactionId);
       }
       if (!parentId && runningUser) {
         parentId = runningUser.id;
@@ -564,11 +712,13 @@ export function orderConversationMessages(messages = []) {
   for (const userMsg of userOrder) {
     result.push(userMsg);
     const assistants = assistantBuckets.get(userMsg.id) || [];
-    assistants.sort((a, b) => {
-      const timeA = typeof a.createdAtMs === 'number' ? a.createdAtMs : (a.createdAt || 0);
-      const timeB = typeof b.createdAtMs === 'number' ? b.createdAtMs : (b.createdAt || 0);
-      return timeA - timeB;
-    });
+    if (assistants.length > 1) {
+      assistants.sort((a, b) => {
+        const timeA = typeof a.createdAtMs === 'number' ? a.createdAtMs : (a.createdAt || 0);
+        const timeB = typeof b.createdAtMs === 'number' ? b.createdAtMs : (b.createdAt || 0);
+        return timeA - timeB;
+      });
+    }
     for (const asst of assistants) {
       result.push(asst);
     }
@@ -579,6 +729,133 @@ export function orderConversationMessages(messages = []) {
   }
 
   return result;
+}
+
+/**
+ * Creates an isolated, topology-aware memoized wrapper around `orderConversationMessages`.
+ *
+ * Avoids redundant full normalization, bucket construction, and sorting when:
+ * - The exact same `messages` array reference is passed again (O(1)).
+ * - A shallow copy contains identical message object references in every slot.
+ * - Streaming chunks or in-place updates (e.g. active alternative switches) update message
+ *   content/metadata without altering message count, IDs, sender roles, parent/interaction
+ *   links, or creation timestamps.
+ *
+ * @param {{ onFullOrder?: () => void }} [options]
+ * @returns {(messages?: Array) => Array}
+ */
+export function createConversationOrderMemo(options = {}) {
+  const onFullOrder = typeof options?.onFullOrder === 'function' ? options.onFullOrder : null;
+  /** @type {Array | null} */
+  let prevInput = null;
+  let prevInputLength = -1;
+  /** @type {Array | null} */
+  let prevOutput = null;
+
+  return function memoizedOrderConversationMessages(messages = []) {
+    if (!Array.isArray(messages)) {
+      return [];
+    }
+
+    const len = messages.length;
+
+    if (messages === prevInput && len === prevInputLength && prevOutput !== null) {
+      return prevOutput;
+    }
+
+    if (messages === prevOutput && prevOutput !== null && len === prevOutput.length) {
+      prevInput = prevOutput;
+      prevInputLength = len;
+      return prevOutput;
+    }
+
+    if (len === 0 && prevInputLength === 0 && prevOutput !== null && prevOutput.length === 0) {
+      prevInput = messages;
+      return prevOutput;
+    }
+
+    if (
+      len > 1 &&
+      prevInput !== null &&
+      prevOutput !== null &&
+      len === prevInputLength &&
+      prevOutput.length === len
+    ) {
+      let canReuseTopology = true;
+      let firstChangedIdx = -1;
+      /** @type {Array<number> | null} */
+      let extraChangedIndices = null;
+
+      for (let i = 0; i < len; i++) {
+        const prevMsg = prevInput[i];
+        const nextMsg = messages[i];
+        if (nextMsg === prevMsg) {
+          continue;
+        }
+        if (!canReuseMessageSlotOrder(prevMsg, nextMsg)) {
+          canReuseTopology = false;
+          break;
+        }
+        if (firstChangedIdx === -1) {
+          firstChangedIdx = i;
+        } else {
+          if (extraChangedIndices === null) {
+            extraChangedIndices = [i];
+          } else {
+            extraChangedIndices.push(i);
+          }
+        }
+      }
+
+      if (canReuseTopology) {
+        if (firstChangedIdx === -1) {
+          prevInput = messages;
+          prevInputLength = len;
+          return prevOutput;
+        }
+
+        if (prevOutput === prevInput) {
+          prevInput = messages;
+          prevInputLength = len;
+          prevOutput = messages;
+          return messages;
+        }
+
+        const nextOutput = prevOutput.slice();
+        const firstOutPos = prevOutput.indexOf(prevInput[firstChangedIdx]);
+        if (firstOutPos !== -1) {
+          nextOutput[firstOutPos] = messages[firstChangedIdx];
+          let patchedAll = true;
+          if (extraChangedIndices !== null) {
+            for (let c = 0; c < extraChangedIndices.length; c++) {
+              const idx = extraChangedIndices[c];
+              const outPos = prevOutput.indexOf(prevInput[idx]);
+              if (outPos === -1) {
+                patchedAll = false;
+                break;
+              }
+              nextOutput[outPos] = messages[idx];
+            }
+          }
+          if (patchedAll) {
+            prevInput = messages;
+            prevInputLength = len;
+            prevOutput = nextOutput;
+            return nextOutput;
+          }
+        }
+      }
+    }
+
+    if (onFullOrder) {
+      onFullOrder();
+    }
+    const ordered = orderConversationMessages(messages);
+    prevInput = messages;
+    prevInputLength = len;
+    prevOutput = ordered;
+    return ordered;
+  };
 }
 
 

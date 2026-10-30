@@ -59,7 +59,8 @@ import {
   ensureConversationAlternatives,
   createAlternativeRecord,
   getActiveAlternative,
-  orderConversationMessages
+  orderConversationMessages,
+  createConversationOrderMemo
 } from '../services/alternativeResponseService.js';
 import {
   DEFAULT_WEBLLM_MODEL_ID,
@@ -189,10 +190,15 @@ export default function ChatPage() {
     isSubmittingRef.current = loading;
   };
 
+  const messageOrderMemoRef = useRef(null);
+  if (!messageOrderMemoRef.current) {
+    messageOrderMemoRef.current = createConversationOrderMemo();
+  }
+
   const updateMessagesState = (updater) => {
     setMessages((previous) => {
       const next = typeof updater === 'function' ? updater(previous) : updater;
-      const canonicallyOrdered = orderConversationMessages(next);
+      const canonicallyOrdered = messageOrderMemoRef.current(next);
       messagesRef.current = canonicallyOrdered;
       return canonicallyOrdered;
     });
@@ -623,7 +629,7 @@ export default function ChatPage() {
     );
 
     if (sample) {
-      setMessages(orderConversationMessages(sample.messages));
+      setMessages(messageOrderMemoRef.current(sample.messages));
       setActiveMode(sample.mode || 'general');
       setMessagesLoading(false);
       return undefined;
@@ -639,7 +645,7 @@ export default function ChatPage() {
       guestChat &&
       Array.isArray(guestChat.messages)
     ) {
-      setMessages(orderConversationMessages(guestChat.messages));
+      setMessages(messageOrderMemoRef.current(guestChat.messages));
       setMessagesLoading(false);
       return undefined;
     }
@@ -661,7 +667,7 @@ export default function ChatPage() {
           }
 
           const safeMessages = Array.isArray(loadedMessages)
-            ? orderConversationMessages(loadedMessages)
+            ? messageOrderMemoRef.current(loadedMessages)
             : [];
 
           setMessages(safeMessages);
