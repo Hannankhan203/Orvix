@@ -13,6 +13,18 @@
     {
       "source": "/api/upload/:subpath*",
       "destination": "/api/upload?__subpath=:subpath*"
+    },
+    {
+      "source": "/share/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/share",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/((?!api/|.*\\..*).*)",
+      "destination": "/index.html"
     }
   ],
   "headers": [

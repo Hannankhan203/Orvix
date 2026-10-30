@@ -6913,6 +6913,15 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
   }
 });
 
+// Explicitly catch all unmatched /api routes and return JSON 404 so API requests never fall through to SPA HTML
+app.use('/api', (_req, res) => {
+  res.status(404).json({
+    error: 'API route not found',
+    code: 404,
+    status: 'NOT_FOUND'
+  });
+});
+
 // Setup Vite middleware in dev or static serving in production
 async function startServer() {
   const publicPath = path.resolve(__dirname, 'public');
@@ -6921,7 +6930,14 @@ async function startServer() {
   const distPath = path.resolve(__dirname, 'dist');
   if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({
+          error: 'API route not found',
+          code: 404,
+          status: 'NOT_FOUND'
+        });
+      }
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
