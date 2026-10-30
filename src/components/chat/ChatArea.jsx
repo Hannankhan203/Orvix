@@ -25,9 +25,41 @@ const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx
 import Button from '../ui/Button.jsx';
 import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
+import { PROVIDER_DEFAULT_MODELS } from '../../services/providerModelSanitizer.js';
 import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
+
+function formatGeminiModelDisplayName(modelId) {
+  if (typeof modelId !== 'string' || !modelId.trim()) return '';
+  return modelId
+    .trim()
+    .replace(/^models\//i, '')
+    .split('-')
+    .filter(Boolean)
+    .map((segment) =>
+      /^[a-z]/i.test(segment)
+        ? segment.charAt(0).toUpperCase() + segment.slice(1)
+        : segment
+    )
+    .join(' ');
+}
+
+function getGeminiFootnote() {
+  const geminiOption = Array.isArray(PROVIDER_OPTIONS)
+    ? PROVIDER_OPTIONS.find((p) => p.id === 'gemini')
+    : null;
+  const configuredModelId =
+    PROVIDER_DEFAULT_MODELS?.gemini || geminiOption?.defaultModel || '';
+  const modelLabel =
+    (geminiOption?.modelTag &&
+    (!configuredModelId || geminiOption.defaultModel === configuredModelId)
+      ? geminiOption.modelTag
+      : formatGeminiModelDisplayName(configuredModelId)) ||
+    geminiOption?.modelTag ||
+    'Gemini';
+  return `Orvix is powered by Google Gemini (${modelLabel}). Client integration — verify important facts independently.`;
+}
 
 export function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
   if (providerId === 'webllm') {
@@ -49,14 +81,14 @@ export function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_M
     return 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.';
   }
   if (providerId === 'gemini') {
-    return 'Orvix is powered by Google Gemini (Gemini 2.5 Flash). Client integration — verify important facts independently.';
+    return getGeminiFootnote();
   }
   const config = Array.isArray(PROVIDER_OPTIONS) ? PROVIDER_OPTIONS.find((p) => p.id === providerId) : null;
   if (config) {
     const model = config.defaultModel || config.modelTag || 'AI Model';
     return `Orvix is powered by ${config.name} (${model}). ${config.description || 'Inference'} — verify important facts independently.`;
   }
-  return 'Orvix is powered by Google Gemini (Gemini 2.5 Flash). Client integration — verify important facts independently.';
+  return getGeminiFootnote();
 }
 
 // Whitelist of supported image extensions
