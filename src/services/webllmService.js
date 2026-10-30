@@ -292,6 +292,7 @@ let activeWarmupAbortController = null;
 const warmupTimedOutModels = new Set();
 const workerTerminationListeners = new Set();
 let cachedGpuSupportEntry = null;
+let workerRejectedShaderF16GpuRef = null;
 let activeGpuSupportCheckPromise = null;
 let activeInitPromise = null;
 let activeInitModelId = null;
@@ -500,6 +501,8 @@ export function setWebLLMWorkerFactoryForTesting(factory) {
 
 export function setWebLLMEngineFactoryForTesting(factory) {
   customEngineFactory = factory;
+  workerRejectedShaderF16GpuRef = null;
+  cachedGpuSupportEntry = null;
 }
 
 export function setWebLLMFetchForTesting(fetchFn) {
@@ -535,6 +538,7 @@ export function resetWebLLMRuntimeForTesting() {
   }
   terminateWorkerImmediate();
   cachedGpuSupportEntry = null;
+  workerRejectedShaderF16GpuRef = null;
   activeGpuSupportCheckPromise = null;
   activeWarmupPromise = null;
   activeWarmupModelId = null;
@@ -878,8 +882,13 @@ export async function checkWebGPUSupport(options = {}) {
     cachedGpuSupportEntry.isSecureContext === currentSecure &&
     now - cachedGpuSupportEntry.timestamp < GPU_SUPPORT_CACHE_TTL_MS
   ) {
+    const effectiveHasShaderF16 =
+      workerRejectedShaderF16GpuRef === currentGpuRef
+        ? false
+        : cachedGpuSupportEntry.result.hasShaderF16;
     return {
       ...cachedGpuSupportEntry.result,
+      hasShaderF16: effectiveHasShaderF16,
       adapterInfo: cachedGpuSupportEntry.result.adapterInfo
         ? { ...cachedGpuSupportEntry.result.adapterInfo }
         : null
@@ -920,7 +929,9 @@ export async function checkWebGPUSupport(options = {}) {
         };
       }
 
-      const hasShaderF16 = Boolean(adapter.features && adapter.features.has('shader-f16'));
+      const hasShaderF16 =
+        workerRejectedShaderF16GpuRef !== currentGpuRef &&
+        Boolean(adapter.features && adapter.features.has('shader-f16'));
       const isFallbackAdapter = Boolean(
         adapter.isFallbackAdapter || adapter.info?.isFallbackAdapter
       );
@@ -2553,6 +2564,17 @@ function isFatalEngineError(rawErr) {
   );
 }
 
+function isShaderF16ErrorText(lowerMsg) {
+  if (!lowerMsg) return false;
+  return (
+    lowerMsg.includes('shaderf16') ||
+    lowerMsg.includes('shader-f16') ||
+    lowerMsg.includes("extension 'f16'") ||
+    lowerMsg.includes('extension "f16"') ||
+    lowerMsg.includes('enable f16')
+  );
+}
+
 export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase = 'generate', wasCached = false } = {}) {
   if (rawErr instanceof WebLLMError) {
     return rawErr;
@@ -2566,7 +2588,7 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
   const lower = rawText.toLowerCase();
   const label = WEBLLM_MODEL_CATALOG[modelId]?.label || modelId;
 
-  if (lower.includes('shaderf16supporterror') || lower.includes('shader-f16')) {
+  if (isShaderF16ErrorText(lower)) {
     return new WebLLMError(
       `Your GPU browser driver does not support the WebGPU 16-bit shader extension (shader-f16) required by ${label}.`,
       {
@@ -3199,10 +3221,13 @@ export async function ensureWebLLMEngine(options = {}) {
   // Zero-IPC warm fast path: if the resolved model is already loaded in the active worker,
   // return immediately without flipping status to 'checking' or re-querying requestAdapter().
   if (engineInstance && workerInstance && loadedModelId) {
+    const currentGpuRef = typeof navigator !== 'undefined' ? navigator?.gpu : null;
     const knownHasShaderF16 =
-      typeof engineState.hasShaderF16 === 'boolean'
-        ? engineState.hasShaderF16
-        : Boolean(cachedGpuSupportEntry?.result?.hasShaderF16);
+      currentGpuRef && workerRejectedShaderF16GpuRef === currentGpuRef
+        ? false
+        : typeof engineState.hasShaderF16 === 'boolean'
+          ? engineState.hasShaderF16
+          : Boolean(cachedGpuSupportEntry?.result?.hasShaderF16);
     const fastResolvedModelId = resolveWebLLMModelId(requestedModelId, {
       hasShaderF16: knownHasShaderF16,
       allowF32Fallback
@@ -3398,6 +3423,7 @@ export async function ensureWebLLMEngine(options = {}) {
     const readyPayload = {
       status: 'ready',
       modelId: resolvedModelId,
+      loadedModelId: resolvedModelId,
       progress: 1,
       progressPercent: 100,
       progressText: 'Model ready on device',
@@ -4072,13 +4098,28 @@ export async function ensureWebLLMEngine(options = {}) {
       }
 
       const rawMsg = String(rawErr?.message || rawErr || '').toLowerCase();
-      const isShaderF16Err = rawMsg.includes('shaderf16') || rawMsg.includes('shader-f16');
+      const isShaderF16Err = isShaderF16ErrorText(rawMsg);
       if (
         isShaderF16Err &&
         allowF32Fallback &&
         catalogEntry?.f32FallbackModelId &&
         resolvedModelId !== catalogEntry.f32FallbackModelId
       ) {
+        if (typeof navigator !== 'undefined' && navigator?.gpu) {
+          workerRejectedShaderF16GpuRef = navigator.gpu;
+        }
+        if (cachedGpuSupportEntry?.result) {
+          cachedGpuSupportEntry = {
+            ...cachedGpuSupportEntry,
+            result: {
+              ...cachedGpuSupportEntry.result,
+              hasShaderF16: false
+            }
+          };
+        }
+        updateEngineState({
+          hasShaderF16: false
+        });
         logWebLLMStage(
           'init_f32_fallback',
           { fromModelId: resolvedModelId, toModelId: catalogEntry.f32FallbackModelId },

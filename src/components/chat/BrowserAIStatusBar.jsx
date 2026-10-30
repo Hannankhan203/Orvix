@@ -88,7 +88,7 @@ export default function BrowserAIStatusBar({
 
   let tone = 'neutral';
   let statusBadge = null;
-  let headline = `${selectedCatalog.shortLabel} — Browser AI`;
+  let headline = `${effectiveSpecCatalog.shortLabel} — Browser AI`;
   let detail = '';
 
   if (isGpuUnsupported) {
@@ -148,14 +148,14 @@ export default function BrowserAIStatusBar({
   } else if (isUncachedOffline) {
     tone = 'warning';
     statusBadge = { label: 'Offline • Not Cached', variant: 'warning' };
-    headline = `${selectedCatalog.shortLabel} — Browser AI`;
+    headline = `${effectiveSpecCatalog.shortLabel} — Browser AI`;
     detail = `Offline — Initial download (~${effectiveSpecCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`;
   } else {
     tone = isCached ? 'ready' : 'neutral';
     statusBadge = isCached
       ? { label: isOffline ? 'Offline Cached' : 'Cached', variant: 'ready' }
       : { label: 'Not Downloaded', variant: 'neutral' };
-    headline = `${selectedCatalog.shortLabel} — Browser AI`;
+    headline = `${effectiveSpecCatalog.shortLabel} — Browser AI`;
     detail = isOffline
       ? 'Offline — Model is cached locally. Click Load Model or send a message to run on your device via WebGPU.'
       : isCached
@@ -282,10 +282,10 @@ export default function BrowserAIStatusBar({
               disabled={isUncachedOffline}
               title={
                 isUncachedOffline
-                  ? `Connect to the internet once to download ${selectedCatalog.shortLabel} (~${selectedCatalog.estimatedDownloadMB} MB)`
+                  ? `Connect to the internet once to download ${effectiveSpecCatalog.shortLabel} (~${effectiveSpecCatalog.estimatedDownloadMB} MB)`
                   : isCached
-                  ? `Load cached ${selectedCatalog.shortLabel} into browser WebGPU memory`
-                  : `Download and load ${selectedCatalog.shortLabel} (~${selectedCatalog.estimatedDownloadMB} MB) into browser WebGPU memory`
+                  ? `Load cached ${effectiveSpecCatalog.shortLabel} into browser WebGPU memory`
+                  : `Download and load ${effectiveSpecCatalog.shortLabel} (~${effectiveSpecCatalog.estimatedDownloadMB} MB) into browser WebGPU memory`
               }
             >
               <Download size={12} />

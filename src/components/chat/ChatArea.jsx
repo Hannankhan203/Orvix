@@ -2269,7 +2269,20 @@ Transcript:
           </form>
 
           <p className="composer-footnote">
-            {getProviderFootnote(selectedProvider, webllmModelId)}
+            {getProviderFootnote(
+              selectedProvider,
+              selectedProvider === 'webllm'
+                ? webllmState?.loadedModelId &&
+                  (webllmState.loadedModelId === webllmModelId ||
+                    WEBLLM_MODEL_CATALOG[webllmModelId]?.f32FallbackModelId ===
+                      webllmState.loadedModelId)
+                  ? webllmState.loadedModelId
+                  : webllmState?.hasShaderF16 === false &&
+                      WEBLLM_MODEL_CATALOG[webllmModelId]?.f32FallbackModelId
+                    ? WEBLLM_MODEL_CATALOG[webllmModelId].f32FallbackModelId
+                    : webllmModelId
+                : webllmModelId
+            )}
           </p>
         </div>
       </div>
