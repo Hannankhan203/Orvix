@@ -109,11 +109,13 @@ export async function transcribeAudioBlob({
     formData.append('prompt', prompt);
   }
 
+  const startTime = Date.now();
   const response = await fetch('/api/transcribe', {
     method: 'POST',
     body: formData,
     signal
   });
+  const latencyMs = Date.now() - startTime;
 
   if (!response.ok) {
     let errJson = null;
@@ -135,6 +137,7 @@ export async function transcribeAudioBlob({
     error.retryable = Boolean(errJson?.retryable ?? (response.status === 429 || response.status >= 500));
     error.fallbackAvailable = Boolean(errJson?.fallbackAvailable ?? true);
     error.isTimeout = response.status === 504 || errJson?.code === 'TRANSCRIPTION_TIMEOUT';
+    error.latencyMs = latencyMs;
     throw error;
   }
 
@@ -146,7 +149,9 @@ export async function transcribeAudioBlob({
     duration: data.duration || 0,
     model: data.model || 'whisper-large-v3-turbo',
     provider: data.provider || 'groq',
-    highAccuracy: Boolean(data.highAccuracy ?? true)
+    highAccuracy: Boolean(data.highAccuracy ?? true),
+    status: response.status,
+    latencyMs
   };
 }
 
