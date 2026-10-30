@@ -22,6 +22,7 @@ import {
   deleteChatMessages,
   toggleChatPinned,
   subscribeToUserChats,
+  subscribeToChatMessages,
   loadConversationMessages,
   generateChatTitle,
   updateChatMode,
@@ -672,8 +673,10 @@ export default function ChatPage() {
 
       setMessagesLoading(true);
 
-      loadConversationMessages(currentUser.uid, activeChatId)
-        .then((loadedMessages) => {
+      const unsubscribe = subscribeToChatMessages(
+        currentUser.uid,
+        activeChatId,
+        (loadedMessages) => {
           if (
             cancelled ||
             fetchRequestIdRef.current !== currentRequestId ||
@@ -686,15 +689,28 @@ export default function ChatPage() {
             ? messageOrderMemoRef.current(loadedMessages)
             : [];
 
-          setMessages(safeMessages);
+          setMessages((prevMessages) => {
+            // If a prompt is actively generating or streaming in this tab, preserve the in-progress assistant message
+            if (requestControllerRef.current?.hasActiveRequest()) {
+              const activeMsgs = prevMessages.filter(
+                (m) => m.id && !safeMessages.some((sm) => sm.id === m.id)
+              );
+              if (activeMsgs.length > 0) {
+                return messageOrderMemoRef.current([...safeMessages, ...activeMsgs]);
+              }
+            }
+            return safeMessages;
+          });
 
           safeMessages.forEach((message) => {
             if (message.id) {
               persistedMessageIdsRef.current.add(message.id);
             }
           });
-        })
-        .catch((error) => {
+
+          setMessagesLoading(false);
+        },
+        (error) => {
           if (
             cancelled ||
             fetchRequestIdRef.current !== currentRequestId
@@ -703,7 +719,7 @@ export default function ChatPage() {
           }
 
           console.error(
-            'Failed to load conversation messages:',
+            'Failed to subscribe to conversation messages:',
             error
           );
 
@@ -712,18 +728,13 @@ export default function ChatPage() {
               'Failed to load conversation history from Cloud Firestore.'
             );
           }
-        })
-        .finally(() => {
-          if (
-            !cancelled &&
-            fetchRequestIdRef.current === currentRequestId
-          ) {
-            setMessagesLoading(false);
-          }
-        });
+          setMessagesLoading(false);
+        }
+      );
 
       return () => {
         cancelled = true;
+        unsubscribe();
       };
     }
 

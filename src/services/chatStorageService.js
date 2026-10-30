@@ -1178,3 +1178,102 @@ export async function loadConversationMessages(userId, chatId) {
     throw err;
   }
 }
+
+/**
+ * Subscribes in real-time to the messages of an active conversation in Cloud Firestore.
+ * Hydrates immediately from local cache, ensures zero duplicates, and falls back to local cache when offline.
+ *
+ * @param {string} userId - Authenticated user UID
+ * @param {string} chatId - Chat document ID
+ * @param {(messages: Array) => void} onUpdate - Snapshot update callback receiving canonically ordered messages
+ * @param {(err: Error) => void} [onError] - Optional error handler callback
+ * @returns {() => void} Unsubscribe function
+ */
+export function subscribeToChatMessages(userId, chatId, onUpdate, onError) {
+  if (!userId || !chatId) {
+    onUpdate([]);
+    return () => {};
+  }
+
+  const local = getCachedChatMessages(userId, chatId);
+  if (local.length > 0) {
+    onUpdate(orderConversationMessages(ensureConversationAlternatives(local)));
+  }
+
+  if (!db || !isFirebaseConfigured()) {
+    if (local.length === 0) onUpdate([]);
+    return () => {};
+  }
+
+  if (!isBrowserOnline()) {
+    return () => {};
+  }
+
+  const messagesRef = collection(db, 'users', userId, 'chats', chatId, 'messages');
+  const q = query(messagesRef, orderBy('createdAt', 'asc'));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const cloudMessages = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        cloudMessages.push({
+          id: docSnap.id,
+          sender: data.sender,
+          content: data.content,
+          modelUsed: data.modelUsed || null,
+          provider: data.provider || null,
+          responseTimeMs: typeof data.responseTimeMs === 'number' ? data.responseTimeMs : null,
+          parentMessageId: data.parentMessageId || null,
+          interactionId: data.interactionId || null,
+          activeAlternativeId: data.activeAlternativeId || null,
+          alternatives: Array.isArray(data.alternatives) ? data.alternatives : [],
+          attachments: Array.isArray(data.attachments) ? data.attachments : [],
+          referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments : [],
+          createdAtMs:
+            typeof data.createdAtMs === 'number'
+              ? data.createdAtMs
+              : data.createdAt?.toMillis
+              ? data.createdAt.toMillis()
+              : undefined,
+          timestamp:
+            data.clientTimestamp ||
+            (data.createdAt?.toDate
+              ? data.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : ''),
+          pendingSync: false
+        });
+      });
+
+      const currentLocal = getCachedChatMessages(userId, chatId);
+      const byId = new Map();
+      for (const cm of cloudMessages) {
+        byId.set(cm.id, cm);
+      }
+      for (const lm of currentLocal) {
+        if (!lm?.id) continue;
+        if (!byId.has(lm.id)) {
+          if (lm.pendingSync || cloudMessages.length === 0) {
+            byId.set(lm.id, lm);
+          }
+        } else if (lm.pendingSync) {
+          byId.set(lm.id, lm);
+        }
+      }
+
+      const merged = Array.from(byId.values());
+      const normalized = orderConversationMessages(ensureConversationAlternatives(merged));
+      saveCachedChatMessages(userId, chatId, normalized);
+      onUpdate(normalized);
+    },
+    (err) => {
+      if (isOfflineOrNetworkError(err)) {
+        onUpdate(orderConversationMessages(ensureConversationAlternatives(getCachedChatMessages(userId, chatId))));
+        return;
+      }
+      console.warn('Error subscribing to conversation messages:', err);
+      if (onError) onError(err);
+    }
+  );
+}
