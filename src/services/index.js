@@ -9,13 +9,11 @@ export const ServiceRegistry = {
 };
 
 export * from './aiRouter.js';
-export * from './geminiService.js';
-export * from './groqService.js';
-export * from './openrouterService.js';
 export * from './documentContextService.js';
 export * from './alternativeResponseService.js';
 export * from './providerModelSanitizer.js';
 export * from './transcriptionService.js';
 export * from './browserDocumentExtractor.js';
 export * from './errorNormalizationService.js';
+
 

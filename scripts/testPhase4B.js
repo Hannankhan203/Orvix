@@ -966,15 +966,18 @@ await runTest(
 // 9. Obsolete client fallback removal
 // ---------------------------------------------------------------------------
 await runTest(
-  '9. Obsolete direct client fallback path is removed from aiRouter while preserving service exports',
+  '9. Obsolete direct client fallback path and duplicate standalone provider services are removed from aiRouter',
   async () => {
     const routerSrc = fs.readFileSync(
       path.join(ROOT_DIR, 'src/services/aiRouter.js'),
       'utf8'
     );
-    assert.ok(!routerSrc.includes("from './geminiService.js'"));
-    assert.ok(!routerSrc.includes("from './groqService.js'"));
-    assert.ok(!routerSrc.includes("from './openrouterService.js'"));
+    assert.ok(!routerSrc.includes('geminiService'));
+    assert.ok(!routerSrc.includes('groqService'));
+    assert.ok(!routerSrc.includes('openrouterService'));
+    assert.strictEqual(fs.existsSync(path.join(ROOT_DIR, 'src/services/geminiService.js')), false);
+    assert.strictEqual(fs.existsSync(path.join(ROOT_DIR, 'src/services/groqService.js')), false);
+    assert.strictEqual(fs.existsSync(path.join(ROOT_DIR, 'src/services/openrouterService.js')), false);
 
     const outboundUrls = [];
     const originalFetch = globalThis.fetch;

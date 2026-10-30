@@ -33,11 +33,7 @@ import {
   streamAIMessage
 } from '../src/services/aiRouter.js';
 
-import {
-  formatGroqMessages,
-  sendGroqMessage,
-  streamGroqMessage
-} from '../src/services/groqService.js';
+import { formatOpenAIMessages } from '../src/services/documentContextService.js';
 
 import {
   transcribeAudioBlob,
@@ -246,8 +242,7 @@ async function startTestServer(port, mockGroqBaseUrl) {
 
 /**
  * Re-roots relative `/api/...` fetch calls to the ephemeral test server URL
- * so `sendAIMessage`, `streamAIMessage`, `sendGroqMessage`, `streamGroqMessage`,
- * and `transcribeAudioBlob` hit the live test server.
+ * so `sendAIMessage`, `streamAIMessage`, and `transcribeAudioBlob` hit the live test server.
  */
 function installRelativeFetchInterceptor(serverBaseUrl) {
   const originalFetch = globalThis.fetch;
@@ -543,7 +538,7 @@ async function main() {
           assert.equal(err.code, 429);
           assert.equal(err.status, 'rate_limit_exceeded');
           assert.equal(err.retryable, false, 'Mid-stream error after partial text must not auto-retry');
-          assert.equal(err.canFallback, true);
+          assert.equal(err.canFallback, false);
           assert.equal(err.partial, true);
           assert.equal(err.partialText, 'First valid chunk. Second valid chunk.');
           assert.match(err.message, /Rate limit|quota exceeded/i);
@@ -648,7 +643,8 @@ async function main() {
 
       await assert.rejects(
         async () => {
-          await streamGroqMessage({
+          await streamAIMessage({
+            provider: 'groq',
             prompt: 'Test trailing malformed error buffer'
           });
         },
@@ -949,9 +945,11 @@ async function main() {
       assert.equal(mockGroq.state.chatCalls[0].body.model, 'openai/gpt-oss-120b');
       assert.equal(mockGroq.state.chatCalls[1].body.model, 'llama-3.1-8b-instant');
 
-      // Also verify non-streaming sendGroqMessage 404 fallback advancement
+      // Also verify non-streaming sendAIMessage (stream: false) 404 fallback advancement
       mockGroq.state.chatCalls = [];
-      const nonStreamRes = await sendGroqMessage({
+      const nonStreamRes = await sendAIMessage({
+        provider: 'groq',
+        stream: false,
         prompt: 'Test non-streaming 404 fallback advancement',
         model: 'openai/gpt-oss-120b'
       });
@@ -1024,13 +1022,13 @@ async function main() {
       assert.equal(checkModelCompatibilityForProvider('groq', 'qwen2.5:1.5b').compatible, false);
       assert.equal(checkModelCompatibilityForProvider('groq', 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC').compatible, false);
 
-      // FormatGroqMessages & sanitizer fallback invariants
-      const formatted = formatGroqMessages(
-        [{ sender: 'user', content: 'Hello' }, { sender: 'ai', content: 'Hi there!' }],
-        'Explain closures',
-        12,
-        'coding'
-      );
+      // formatOpenAIMessages & sanitizer fallback invariants
+      const formatted = formatOpenAIMessages({
+        systemInstruction: 'You are Orvix, an intelligent coding assistant.',
+        history: [{ sender: 'user', content: 'Hello' }, { sender: 'ai', content: 'Hi there!' }],
+        prompt: 'Explain closures',
+        maxContextMessages: 12
+      });
       assert.equal(formatted[0].role, 'system');
       assert.equal(formatted[1].role, 'user');
       assert.equal(formatted[2].role, 'assistant');

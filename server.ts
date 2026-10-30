@@ -642,12 +642,18 @@ function createRequestUpstreamGuard(req: express.Request, res: express.Response)
     }
   };
 
+  const onReqClose = () => {
+    if (!req.complete && !res.writableEnded) {
+      markDisconnected();
+    }
+  };
+
   const onReqAborted = () => {
     markDisconnected();
   };
 
   res.on('close', onResClose);
-  req.on('close', onResClose);
+  req.on('close', onReqClose);
   req.on('aborted', onReqAborted);
 
   const isClientDisconnected = (err?: any): boolean => {
@@ -795,7 +801,7 @@ function createRequestUpstreamGuard(req: express.Request, res: express.Response)
     if (cleanedUp) return;
     cleanedUp = true;
     res.off('close', onResClose);
-    req.off('close', onResClose);
+    req.off('close', onReqClose);
     req.off('aborted', onReqAborted);
     for (const timer of activeTimers) {
       clearTimeout(timer);

@@ -32,8 +32,7 @@ import {
   adaptDocumentContextForProvider,
   isVisionCapableProvider
 } from '../src/services/documentContextService.js';
-import { streamAIMessage } from '../src/services/aiRouter.js';
-import { sendGeminiMessage, streamGeminiMessage } from '../src/services/geminiService.js';
+import { sendAIMessage, streamAIMessage } from '../src/services/aiRouter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -894,9 +893,9 @@ await test('Assertion 9: Existing OCR text on images and non-image document atta
 });
 
 // ---------------------------------------------------------------------------
-// Phase 2B.3 — Test 10: Gemini receives hydrated image bytes & direct Gemini service calls validate payloads
+// Phase 2B.3 — Test 10: Gemini receives hydrated image bytes & canonical router calls validate payloads
 // ---------------------------------------------------------------------------
-await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB and direct geminiService calls enforce payload validation', async () => {
+await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB and canonical Gemini router calls enforce payload validation', async () => {
   const gemId = 'att-2b3-gemini-vision';
   await saveAttachmentBlob(gemId, new Blob([VALID_1X1_PNG_BYTES], { type: 'image/png' }), {
     name: 'gemini_diagram.png',
@@ -926,7 +925,7 @@ await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB a
   assert.strictEqual(hydratedGem.dataUrl, undefined);
   assert.strictEqual(hydratedGem.mimeType, 'image/png');
 
-  // Verify direct sendGeminiMessage & streamGeminiMessage calls enforce deduplication and size limits before fetch
+  // Verify canonical sendAIMessage & streamAIMessage Gemini calls enforce deduplication and size limits before fetch
   const originalFetch = globalThis.fetch;
   let capturedBodies = [];
   globalThis.fetch = async (_url, init) => {
@@ -948,7 +947,9 @@ await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB a
       dataUrl: `data:image/png;base64,${expectedB64}`
     };
 
-    const directRes = await sendGeminiMessage({
+    const directRes = await sendAIMessage({
+      provider: 'gemini',
+      stream: false,
       prompt: 'Describe this diagram',
       attachments: [dupAtt]
     });
@@ -959,7 +960,7 @@ await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB a
     assert.strictEqual(parsedDirectBody.attachments[0].base64, expectedB64);
     assert.strictEqual(parsedDirectBody.attachments[0].dataUrl, undefined);
 
-    // Direct oversized image must throw ImagePayloadLimitError before fetch is called
+    // Oversized image must throw ImagePayloadLimitError before fetch is called
     const oversizedAtt = {
       id: 'att-direct-oversized',
       name: 'oversized_direct.png',
@@ -969,14 +970,14 @@ await test('Phase 2B.3 — Gemini provider hydrates image bytes from IndexedDB a
     };
 
     await assert.rejects(
-      () => sendGeminiMessage({ prompt: 'Inspect', attachments: [oversizedAtt] }),
+      () => sendAIMessage({ provider: 'gemini', stream: false, prompt: 'Inspect', attachments: [oversizedAtt] }),
       (err) => err instanceof ImagePayloadLimitError && err.code === 413
     );
     await assert.rejects(
-      () => streamGeminiMessage({ prompt: 'Inspect stream', attachments: [oversizedAtt] }),
+      () => streamAIMessage({ provider: 'gemini', prompt: 'Inspect stream', attachments: [oversizedAtt] }),
       (err) => err instanceof ImagePayloadLimitError && err.code === 413
     );
-    assert.strictEqual(capturedBodies.length, 1, 'Oversized direct Gemini calls must fail before network fetch');
+    assert.strictEqual(capturedBodies.length, 1, 'Oversized Gemini calls must fail before network fetch');
   } finally {
     globalThis.fetch = originalFetch;
   }

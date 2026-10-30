@@ -572,6 +572,7 @@ export async function streamAIMessage(params = {}) {
     history = [],
     username = null,
     preferences = null,
+    stream = true,
     onChunk,
     onStart,
     signal,
@@ -589,6 +590,7 @@ export async function streamAIMessage(params = {}) {
     streamInactivityTimeoutMs = 90000
   } = params || {};
 
+  const shouldStream = stream !== false;
   const normalizedProvider = normalizeProviderId(provider);
   const normalizedMode = (mode || 'general').toLowerCase();
   const sanitizedModel = sanitizeModelForProvider(normalizedProvider, model);
@@ -670,7 +672,7 @@ export async function streamAIMessage(params = {}) {
         history,
         username: username ? String(username).trim() : null,
         preferences: preferences || null,
-        stream: true,
+        stream: shouldStream,
         conversationId: conversationId || null,
         attachments: Array.isArray(attachments) ? attachments : [],
         isContinuation: Boolean(isContinuation),
@@ -709,7 +711,7 @@ export async function streamAIMessage(params = {}) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Accept: 'text/event-stream'
+            ...(shouldStream ? { Accept: 'text/event-stream' } : {})
           },
           body: requestBody,
           signal: fetchController.signal
@@ -902,6 +904,27 @@ export async function streamAIMessage(params = {}) {
             }
             if (jsonErr.message && !jsonErr.message.includes('JSON')) {
               throw jsonErr;
+            }
+            if (/"error"\s*:/.test(dataStr)) {
+              const malformedErr = parseRouterError(
+                {
+                  error: dataStr,
+                  status: 'STREAM_ERROR',
+                  errorCode: 'STREAM_ERROR',
+                  retryable: false,
+                  canFallback: accumulatedText.length === 0
+                },
+                502,
+                finalProvider || normalizedProvider
+              );
+              if (accumulatedText.length > 0) {
+                malformedErr.partial = true;
+                malformedErr.partialText = accumulatedText;
+                malformedErr.retryable = false;
+                malformedErr.canFallback = false;
+              }
+              malformedErr.provider = finalProvider || normalizedProvider;
+              throw malformedErr;
             }
           }
           return null;
@@ -1130,7 +1153,11 @@ export async function streamAIMessage(params = {}) {
         onChunk?.(data.text, data.text);
         return {
           text: data.text,
-          modelUsed: data.modelUsed,
+          modelUsed:
+            data.modelUsed ||
+            sanitizedModel ||
+            PROVIDER_DEFAULT_MODELS[normalizedProvider] ||
+            'AI Model',
           provider: data.provider || normalizedProvider,
           ...(data.isDemo ? { isDemo: true } : {})
         };

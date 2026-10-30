@@ -28,17 +28,11 @@ import {
 import {
   AI_PROVIDERS,
   PROVIDER_OPTIONS,
+  fetchProviderConfig,
   parseRouterError,
   sendAIMessage,
   streamAIMessage
 } from '../src/services/aiRouter.js';
-
-import {
-  formatOpenRouterMessages,
-  getOpenRouterApiKey,
-  sendOpenRouterMessage,
-  streamOpenRouterMessage
-} from '../src/services/openrouterService.js';
 
 import { createRequestIsolationController } from '../src/services/requestIsolationService.js';
 
@@ -651,7 +645,8 @@ async function main() {
       };
 
       const chunks = [];
-      const streamRes = await streamOpenRouterMessage({
+      const streamRes = await streamAIMessage({
+        provider: 'openrouter',
         prompt: 'Stream test',
         model: 'openrouter/free',
         onChunk: (chunk, acc) => chunks.push({ chunk, acc })
@@ -749,7 +744,7 @@ async function main() {
       assert.equal(caughtError.partial, true);
       assert.equal(caughtError.partialText, 'Partial answer before crash...');
       assert.equal(caughtError.retryable, false);
-      assert.equal(caughtError.canFallback, true);
+      assert.equal(caughtError.canFallback, false);
       assert.deepEqual(streamedChunks, ['Partial answer before crash...']);
     });
 
@@ -874,7 +869,8 @@ async function main() {
 
       let caught = null;
       try {
-        await streamOpenRouterMessage({
+        await streamAIMessage({
+          provider: 'openrouter',
           prompt: 'Test socket reset',
           onChunk: () => {}
         });
@@ -882,7 +878,7 @@ async function main() {
         caught = err;
       }
 
-      assert.ok(caught, 'Expected streamOpenRouterMessage to reject on midstream socket reset');
+      assert.ok(caught, 'Expected streamAIMessage to reject on midstream socket reset');
       assert.equal(caught.provider, 'openrouter');
       assert.equal(caught.partial, true);
       assert.equal(caught.partialText, 'Before socket drop');
@@ -1095,7 +1091,9 @@ async function main() {
       mockOpenRouter.state.reset();
       mockOpenRouter.state.chatHandler = null; // Use default sync/stream handler
 
-      const syncReply = await sendOpenRouterMessage({
+      const syncReply = await sendAIMessage({
+        provider: 'openrouter',
+        stream: false,
         prompt: 'Second question',
         history: [
           { sender: 'user', content: 'First question' },
@@ -1130,9 +1128,7 @@ async function main() {
     // =========================================================================
     // 20. Authorization is server-side only (no secret leakage)
     // =========================================================================
-    await runTest('20. OpenRouter API key is strictly server-side only and never exposed via getOpenRouterApiKey() or /api/config', async () => {
-      assert.equal(getOpenRouterApiKey(), '');
-
+    await runTest('20. OpenRouter API key is strictly server-side only and never exposed via fetchProviderConfig() or /api/config', async () => {
       const configRes = await fetch('/api/config');
       assert.equal(configRes.status, 200);
       const configBody = await configRes.json();
@@ -1142,6 +1138,14 @@ async function main() {
       assert.ok(
         !serialized.includes('sk-or-v1-test-phase4e-valid-key'),
         '/api/config must never leak OPENROUTER_API_KEY value'
+      );
+
+      const routerConfig = await fetchProviderConfig({ forceRefresh: true });
+      assert.equal(routerConfig.status, 'ready');
+      assert.equal(routerConfig.data?.openrouterConfigured, true);
+      assert.ok(
+        !JSON.stringify(routerConfig).includes('sk-or-v1-test-phase4e-valid-key'),
+        'fetchProviderConfig() must never leak OPENROUTER_API_KEY value'
       );
     });
 
