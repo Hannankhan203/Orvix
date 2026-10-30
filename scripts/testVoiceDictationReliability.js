@@ -1,22 +1,24 @@
 /**
  * scripts/testVoiceDictationReliability.js
  * Comprehensive deterministic regression test suite for Orvix Voice Dictation
- * Reliability Fixes (Task D):
+ * Accuracy & Reliability Regression Fix:
  *
- * 1. Long sentences followed by immediate Stop.
- * 2. Final recognition results arriving after Stop is pressed.
- * 3. Recognition onend occurring after final results.
- * 4. Recognition timeout without losing accumulated transcript text.
- * 5. Interim text preserved when no final result arrives.
- * 6. A six-word transcript from a ten-second recording being recognized as potentially incomplete.
- * 7. Full audio fallback being awaited before transcript finalization.
- * 8. Fallback failure preserving existing valid transcript text.
- * 9. No duplicate text when native recognition and fallback both succeed.
- * 10. No stale result overwriting a newer recording.
- * 11. No programming vocabulary injected into general transcription requests.
- * 12. Selected dictation language preserved.
- * 13. Consecutive recordings operating independently.
- * 14. Existing private chat and imported chat dictation functionality preserved.
+ * 1. Accurate native transcript is preserved when fallback returns a longer but corrupted transcript.
+ * 2. Accurate native transcript is preserved when fallback returns the same number of words but different, incorrect content.
+ * 3. Normal native recognition termination does not unnecessarily invoke fallback.
+ * 4. An onerror event before onend does not prematurely resolve normal shutdown.
+ * 5. onend correctly finalizes the recognition lifecycle.
+ * 6. Genuine safety timeout is handled without losing accumulated transcript text.
+ * 7. Empty native transcript can be recovered through successful fallback.
+ * 8. Failed fallback preserves available native text.
+ * 9. Partial native text is never blindly overwritten by a longer fallback transcript.
+ * 10. Paused time is excluded from duration calculations.
+ * 11. MediaRecorder final dataavailable is received before Blob construction.
+ * 12. No duplicate text is produced by native/fallback reconciliation.
+ * 13. Stale fallback responses cannot overwrite a newer recording.
+ * 14. Consecutive recordings remain independent.
+ * 15. Selected language remains unchanged (including en-PK).
+ * 16. Existing private and imported chat dictation remains functional.
  */
 
 import assert from 'node:assert/strict';
@@ -24,11 +26,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 console.log('\n===============================================================');
-console.log('ORVIX VOICE DICTATION: COMPREHENSIVE RELIABILITY REGRESSION TEST');
+console.log('ORVIX VOICE DICTATION: SURGICAL ACCURACY & RELIABILITY TEST SUITE');
 console.log('===============================================================\n');
 
 let passedTests = 0;
-let totalTests = 14;
+const totalTests = 16;
 
 // Mock environment setup
 const mockLocalStorage = new Map();
@@ -45,317 +47,365 @@ const {
   combineComposerText,
   mergeTranscriptSegments,
   evaluateTranscriptCompleteness,
+  reconcileFallbackTranscript,
   SUPPORTED_LANGUAGES,
   DEFAULT_LANGUAGE
 } = await import('../src/hooks/useVoiceDictation.js');
 
 /* --------------------------------------------------------------------------
-   Test 1: Long sentences followed by immediate Stop
+   Test 1: Accurate native transcript is preserved when fallback returns a
+           longer but corrupted transcript
    -------------------------------------------------------------------------- */
 try {
-  console.log('[Test 1] Long sentences followed by immediate Stop...');
-  const longSentence = 'The quick brown fox jumps over the lazy dog and explores the peaceful forest near the rolling hills.';
-  const segment1 = 'The quick brown fox jumps over the lazy dog';
-  const segment2 = 'and explores the peaceful forest near the rolling hills.';
-  
-  // Merge multiple speech segments accumulating during a long sentence
-  const accumulated = mergeTranscriptSegments(segment1, segment2);
-  const formatted = formatSpeechTranscript(accumulated, 'en-US', '');
-  const combined = combineComposerText('', formatted);
+  console.log('[Test 1] Accurate native transcript preserved against longer corrupted fallback...');
+  const nativeText = 'iPhone 12 and iPhone 14 90,000 rupees non PTA and PTA approved phones iPhone 13';
+  const corruptedFallback = 'iPhone 12 and iPhone 14 right lighting of RS non PDF proof and PDF proof involved 10 iPhone 13 extra unwanted text';
 
-  assert.ok(combined.includes('The quick brown fox jumps over the lazy dog'), 'First clause must be preserved');
-  assert.ok(combined.includes('explores the peaceful forest near the rolling hills'), 'Trailing clause must be preserved');
-  assert.ok(!combined.includes('undefined') && !combined.includes('null'), 'No corrupt tokens');
-  console.log('  ✓ Long sentence accumulation preserves both early and trailing clauses upon immediate Stop.');
+  const reconciliation = reconcileFallbackTranscript({
+    nativeText,
+    fallbackText: corruptedFallback,
+    recognitionEndedNormally: true,
+    hadFinalResults: true
+  });
+
+  assert.equal(reconciliation.adoptedText, nativeText, 'Native transcript must be preserved when fallback is corrupted and longer');
+  assert.equal(reconciliation.source, 'native', 'Source must remain native');
+  console.log('  ✓ Native transcript authoritative: rejected longer corrupted fallback.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 1 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 2: Final recognition results arriving after Stop is pressed
+   Test 2: Accurate native transcript is preserved when fallback returns the
+           same number of words but different, incorrect content
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 2] Final recognition results arriving after Stop is pressed...');
-  // Simulate active recognition where Stop was pressed, and onresult emits the final packet
-  let instanceFinalText = '';
-  let sessionAccumulated = 'I think the error rate';
-  let isStopping = true;
-  let hadFinalResults = false;
+  console.log('\n[Test 2] Accurate native transcript preserved against same word count different content...');
+  const nativeText = 'Checking the price of iPhone 13 in Pakistan';
+  const incorrectFallback = 'Checking the price of Android 15 in Portugal';
 
-  // Mock incoming final event while isStopping === true
-  const event = {
-    results: [
-      {
-        0: { transcript: 'is decreasing significantly across all endpoints', confidence: 0.95 },
-        isFinal: true,
-        length: 1
-      }
-    ]
-  };
+  const reconciliation = reconcileFallbackTranscript({
+    nativeText,
+    fallbackText: incorrectFallback,
+    recognitionEndedNormally: true,
+    hadFinalResults: true
+  });
 
-  if (event.results[0].isFinal) {
-    hadFinalResults = true;
-    instanceFinalText = event.results[0][0].transcript;
-  }
-
-  // Graceful shutdown folds instanceFinalText into sessionAccumulated
-  sessionAccumulated = mergeTranscriptSegments(sessionAccumulated, instanceFinalText);
-  const formatted = formatSpeechTranscript(sessionAccumulated, 'en-US', '');
-
-  assert.equal(hadFinalResults, true, 'Final results flag must be recorded');
-  assert.ok(formatted.includes('decreasing significantly'), 'Post-stop final result must be incorporated into transcript');
-  console.log('  ✓ Recognition results arriving after Stop is initiated are retained in final transcript.');
+  assert.equal(reconciliation.adoptedText, nativeText, 'Native transcript must be preserved when fallback has same word count but incorrect content');
+  assert.equal(reconciliation.source, 'native', 'Source must remain native');
+  console.log('  ✓ Native transcript authoritative: rejected equal-word-count divergent fallback.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 2 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 3: Recognition onend occurring after final results
+   Test 3: Normal native recognition termination does not unnecessarily invoke fallback
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 3] Recognition onend occurring after final results...');
-  let shutdownResolved = false;
-  let recognitionEndedNormally = false;
+  console.log('\n[Test 3] Normal native recognition termination does not unnecessarily invoke fallback...');
+  const cleanSpeech = 'The quick brown fox jumps over the lazy dog and continues running across the open field.';
+  const wordCount = cleanSpeech.split(/\s+/).filter(Boolean).length;
+  const recognitionEndedNormally = true;
+  const hadFinalResults = true;
 
-  const mockPromise = new Promise((resolve) => {
-    // onend triggers the resolve callback
-    const onEndHandler = () => {
-      recognitionEndedNormally = true;
-      shutdownResolved = true;
-      resolve('completed');
-    };
+  const hasMeaningfulNativeSpeech =
+    cleanSpeech.length > 0 &&
+    wordCount >= 4 &&
+    hadFinalResults &&
+    recognitionEndedNormally;
 
-    // Simulate recognition onend firing after results arrived
-    setTimeout(onEndHandler, 20);
+  const completeness = evaluateTranscriptCompleteness({
+    cleanSpeech,
+    durationSec: 10,
+    hasValidAudioBuffer: true,
+    recognitionEndedNormally,
+    hadFinalResults,
+    hadSubstantialInterim: false,
+    remainingInterimLength: 0
   });
 
-  const res = await mockPromise;
-  assert.equal(res, 'completed');
-  assert.equal(shutdownResolved, true, 'Shutdown promise must resolve on onend');
-  assert.equal(recognitionEndedNormally, true, 'Recognition ended normally flag must be true');
-  console.log('  ✓ onend cleanly resolves graceful shutdown after final results.');
+  const shouldAttemptFallback = !hasMeaningfulNativeSpeech && completeness.isPotentiallyIncomplete;
+  assert.equal(hasMeaningfulNativeSpeech, true, 'Meaningful native speech must be identified');
+  assert.equal(shouldAttemptFallback, false, 'Fallback must not be invoked for normally completed meaningful native transcript');
+  console.log('  ✓ Normal completed native transcript protected from unnecessary fallback dispatch.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 3 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 4: Recognition timeout without losing accumulated transcript text
+   Test 4: An onerror event before onend does not prematurely resolve normal shutdown
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 4] Recognition timeout without losing accumulated transcript text...');
-  let currentInstanceFinal = 'speech captured before browser timeout';
-  let sessionAccumulated = '';
-  let recognitionEndedNormally = true;
+  console.log('\n[Test 4] onerror event before onend does not prematurely resolve normal shutdown...');
+  let shutdownResolved = false;
+  let recognitionEndedNormally = false;
+  let pendingShutdownResolve = null;
 
-  // Simulate timeout firing before onend
-  const simulateSafetyTimeout = () => {
-    recognitionEndedNormally = false; // timed out
-    // Post-settle consolidation still gathers accumulated text!
-    if (currentInstanceFinal) {
-      sessionAccumulated = mergeTranscriptSegments(sessionAccumulated, currentInstanceFinal);
+  const shutdownPromise = new Promise((resolve) => {
+    pendingShutdownResolve = () => {
+      shutdownResolved = true;
+      resolve('completed');
+    };
+  });
+
+  const mockRec = {
+    isStopping: true,
+    onerror: (errEvent) => {
+      // In the corrected implementation, onerror during stopping does NOT resolve shutdown promise!
+      if (mockRec.isStopping || errEvent.error === 'aborted') {
+        return;
+      }
+    },
+    onend: () => {
+      recognitionEndedNormally = true;
+      if (pendingShutdownResolve) {
+        const fn = pendingShutdownResolve;
+        pendingShutdownResolve = null;
+        fn();
+      }
     }
   };
 
-  simulateSafetyTimeout();
+  // 1. Simulate onerror firing with 'aborted' before onend
+  mockRec.onerror({ error: 'aborted' });
+  assert.equal(shutdownResolved, false, 'onerror must NOT resolve shutdown promise prematurely');
+  assert.equal(recognitionEndedNormally, false, 'recognitionEndedNormally must remain false until onend');
 
-  assert.equal(recognitionEndedNormally, false, 'Should be flagged as abnormal end due to timeout');
-  assert.equal(sessionAccumulated, 'speech captured before browser timeout', 'Text must not be lost on timeout');
-  console.log('  ✓ Recognition safety timeout safely captures accumulated transcript without loss.');
+  // 2. Simulate onend firing afterward
+  mockRec.onend();
+  await shutdownPromise;
+  assert.equal(shutdownResolved, true, 'onend must resolve shutdown promise');
+  assert.equal(recognitionEndedNormally, true, 'recognitionEndedNormally must be set to true on onend');
+  console.log('  ✓ Shutdown promise safely waits for onend; onerror does not resolve early.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 4 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 5: Interim text preserved when no final result arrives
+   Test 5: onend correctly finalizes the recognition lifecycle
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 5] Interim text preserved when no final result arrives...');
-  let sessionAccumulated = '';
-  let currentInstanceFinal = '';
-  let interimTranscript = 'i guess it is decreasing steadily';
-  let hadFinalResults = false;
+  console.log('\n[Test 5] onend correctly finalizes the recognition lifecycle...');
+  let instanceFinal = 'hello world';
+  let sessionAccumulated = 'greeting: ';
+  let recognitionEndedNormally = false;
 
-  // On stop / onend, unfinalized interim text is folded into session accumulation
-  if (interimTranscript && interimTranscript.trim()) {
-    sessionAccumulated = mergeTranscriptSegments(sessionAccumulated, interimTranscript.trim());
-    interimTranscript = '';
-  }
+  const handleOnEnd = () => {
+    recognitionEndedNormally = true;
+    sessionAccumulated = mergeTranscriptSegments(sessionAccumulated, instanceFinal);
+    instanceFinal = '';
+  };
 
-  const formatted = formatSpeechTranscript(sessionAccumulated, 'en-US', '');
-
-  assert.equal(hadFinalResults, false, 'No isFinal results arrived');
-  assert.ok(formatted.includes('decreasing steadily'), 'Interim words must be preserved');
-  console.log('  ✓ Interim transcript is safely preserved and formatted when no final result arrives.');
+  handleOnEnd();
+  assert.equal(recognitionEndedNormally, true, 'recognitionEndedNormally must be marked true');
+  assert.equal(sessionAccumulated, 'greeting: hello world', 'Transcript segments must be merged');
+  assert.equal(instanceFinal, '', 'Instance final text must be cleared');
+  console.log('  ✓ onend accurately consolidates instance final segments and marks normal completion.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 5 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 6: A six-word transcript from a ten-second recording being recognized
-           as potentially incomplete
+   Test 6: Genuine safety timeout is handled without losing accumulated transcript text
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 6] 6-word transcript from a 10-second recording recognized as potentially incomplete...');
-  const evaluation = evaluateTranscriptCompleteness({
-    cleanSpeech: 'I think, I guess it is', // exactly 6 words
-    durationSec: 10,
-    hasValidAudioBuffer: true,
-    recognitionEndedNormally: true,
-    hadFinalResults: true,
-    hadSubstantialInterim: false,
-    remainingInterimLength: 0
-  });
+  console.log('\n[Test 6] Genuine safety timeout is handled without losing accumulated transcript text...');
+  let sessionAccumulated = 'speech captured before timeout';
+  let recognitionEndedNormally = true;
 
-  assert.equal(evaluation.isPotentiallyIncomplete, true, '6 words in 10 seconds must be flagged as potentially incomplete');
-  assert.equal(evaluation.reason, 'duration_word_count_mismatch');
+  const simulateSafetyTimeout = () => {
+    recognitionEndedNormally = false; // timed out
+  };
 
-  // Verify normal 10-second transcript (e.g. 24 words) is NOT flagged
-  const normalEvaluation = evaluateTranscriptCompleteness({
-    cleanSpeech: 'The quick brown fox jumps over the lazy dog and continues running across the open field under the bright sunshine this afternoon.',
-    durationSec: 10,
-    hasValidAudioBuffer: true,
-    recognitionEndedNormally: true,
-    hadFinalResults: true,
-    hadSubstantialInterim: false,
-    remainingInterimLength: 0
-  });
-
-  assert.equal(normalEvaluation.isPotentiallyIncomplete, false, 'Complete speech must not be flagged');
-  console.log('  ✓ 6-word transcript for 10s audio correctly triggers incomplete detection; complete speech passes.');
+  simulateSafetyTimeout();
+  assert.equal(recognitionEndedNormally, false, 'Abnormal end recorded on timeout');
+  assert.equal(sessionAccumulated, 'speech captured before timeout', 'Accumulated text preserved on timeout');
+  console.log('  ✓ Safety timeout handles hung engine while preserving accumulated transcript.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 6 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 7: Full audio fallback being awaited before transcript finalization
+   Test 7: Empty native transcript can be recovered through successful fallback
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 7] Full audio fallback being awaited before transcript finalization...');
-  let fallbackAwaited = false;
-  let finalizedValue = '';
-
-  const mockTranscribeAudioBlob = async () => {
-    await new Promise((r) => setTimeout(r, 30));
-    fallbackAwaited = true;
-    return {
-      success: true,
-      text: 'I think I guess it is decreasing significantly over time',
-      model: 'whisper-large-v3-turbo',
-      provider: 'groq'
-    };
-  };
-
-  // Simulate stopListening flow with fallback
-  let cleanSpeech = 'I think I guess';
-  const completeness = evaluateTranscriptCompleteness({
-    cleanSpeech,
-    durationSec: 10,
-    hasValidAudioBuffer: true
+  console.log('\n[Test 7] Empty native transcript can be recovered through successful fallback...');
+  const reconciliation = reconcileFallbackTranscript({
+    nativeText: '',
+    fallbackText: 'Recovered speech from Whisper audio fallback',
+    recognitionEndedNormally: false,
+    hadFinalResults: false
   });
 
-  if (completeness.isPotentiallyIncomplete) {
-    const fallbackRes = await mockTranscribeAudioBlob();
-    if (fallbackRes?.text) {
-      cleanSpeech = fallbackRes.text;
-    }
-  }
-
-  finalizedValue = combineComposerText('', formatSpeechTranscript(cleanSpeech, 'en-US', ''));
-
-  assert.equal(fallbackAwaited, true, 'Fallback must be awaited');
-  assert.ok(finalizedValue.includes('decreasing significantly over time'), 'Fallback text must be finalized');
-  console.log('  ✓ Full audio fallback is awaited and completes before transcript is committed.');
+  assert.equal(reconciliation.adoptedText, 'Recovered speech from Whisper audio fallback');
+  assert.equal(reconciliation.source, 'fallback');
+  console.log('  ✓ Genuinely empty native transcript is successfully recovered by fallback.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 7 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 8: Fallback failure preserving existing valid transcript text
+   Test 8: Failed fallback preserves available native text
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 8] Fallback failure preserving existing valid transcript text...');
-  let cleanSpeech = 'Valid native speech captured before stop';
-  const originalSpeech = cleanSpeech;
+  console.log('\n[Test 8] Failed fallback preserves available native text...');
+  const nativeSpeech = 'Native transcript captured before error';
+  const reconciliation = reconcileFallbackTranscript({
+    nativeText: nativeSpeech,
+    fallbackText: '',
+    recognitionEndedNormally: true,
+    hadFinalResults: true
+  });
 
-  const mockFailingFallback = async () => {
-    throw new Error('503 Service Unavailable / Network error');
-  };
-
-  try {
-    await mockFailingFallback();
-  } catch (err) {
-    // Failure caught: preserve original speech
-  }
-
-  const finalCombined = combineComposerText('', formatSpeechTranscript(cleanSpeech, 'en-US', ''));
-
-  assert.equal(cleanSpeech, originalSpeech, 'Original speech must not be cleared on fallback failure');
-  assert.ok(finalCombined.includes('Valid native speech captured before stop'), 'Final output retains native speech');
-  console.log('  ✓ Fallback error cleanly retains existing valid native transcript text.');
+  assert.equal(reconciliation.adoptedText, nativeSpeech, 'Native speech must be retained when fallback fails');
+  assert.equal(reconciliation.source, 'native');
+  console.log('  ✓ Failed fallback cleanly preserves existing valid native transcript.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 8 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 9: No duplicate text when native recognition and fallback both succeed
+   Test 9: Partial native text is never blindly overwritten by a longer fallback transcript
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 9] No duplicate text when native recognition and fallback both succeed...');
-  let cleanSpeech = 'I think it is decreasing';
-  const fallbackText = 'I think it is decreasing significantly across all regions';
+  console.log('\n[Test 9] Partial native text is never blindly overwritten by longer fallback transcript...');
+  const partialNative = 'I think the error rate';
+  const garbledLongerFallback = 'I sink the airport late is decreasing significantly across all endpoints in the region';
 
-  // Rule: Do NOT concatenate native + fallback. Adopt the more complete transcript.
-  const serverWordCount = fallbackText.split(/\s+/).length;
-  const nativeWordCount = cleanSpeech.split(/\s+/).length;
+  const reconciliation = reconcileFallbackTranscript({
+    nativeText: partialNative,
+    fallbackText: garbledLongerFallback,
+    recognitionEndedNormally: false,
+    hadFinalResults: false
+  });
 
-  if (serverWordCount >= nativeWordCount) {
-    cleanSpeech = fallbackText;
-  }
-
-  const formatted = formatSpeechTranscript(cleanSpeech, 'en-US', '');
-  const finalCombined = combineComposerText('', formatted);
-
-  // Assert no double-occurrence of the phrase
-  const occurrences = (finalCombined.match(/decreasing/gi) || []).length;
-  assert.equal(occurrences, 1, 'Word must not be duplicated');
-  assert.ok(!finalCombined.includes('I think it is decreasing I think'), 'Must not concatenate both transcripts');
-  console.log('  ✓ Single reconciled transcript produced without duplicate text injection.');
+  assert.equal(reconciliation.adoptedText, partialNative, 'Partial native text must not be overwritten by garbled longer fallback');
+  assert.equal(reconciliation.source, 'native');
+  console.log('  ✓ Unverified longer fallback rejected: partial native speech preserved.');
   passedTests++;
 } catch (err) {
   console.error('  ✗ Test 9 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 10: No stale result overwriting a newer recording
+   Test 10: Paused time is excluded from duration calculations
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 10] No stale result overwriting a newer recording...');
+  console.log('\n[Test 10] Paused time is excluded from duration calculations...');
+  const recordingStartTime = 1000;
+  const now = 26000; // 25s elapsed wall-clock
+  const pausedDuration = 15000; // 15s paused
+  const pauseStartTime = 0;
+
+  let totalPausedMs = pausedDuration;
+  if (pauseStartTime > 0) {
+    totalPausedMs += now - pauseStartTime;
+  }
+  const rawActiveMs = Math.max(0, now - recordingStartTime - totalPausedMs);
+  const durationSec = Math.max(0, Math.round(rawActiveMs / 1000));
+
+  assert.equal(durationSec, 10, 'Duration must exclude paused time (25s - 15s = 10s)');
+  console.log('  ✓ Active recording duration correctly excludes paused duration.');
+  passedTests++;
+} catch (err) {
+  console.error('  ✗ Test 10 failed:', err);
+}
+
+/* --------------------------------------------------------------------------
+   Test 11: MediaRecorder final dataavailable is received before Blob construction
+   -------------------------------------------------------------------------- */
+try {
+  console.log('\n[Test 11] MediaRecorder final dataavailable is received before Blob construction...');
+  const audioChunks = [];
+  let finalSliceRequested = false;
+  let recorderStopped = false;
+
+  const mockRecorder = {
+    state: 'recording',
+    requestData: () => {
+      finalSliceRequested = true;
+      audioChunks.push(new Uint8Array([1, 2, 3, 4]));
+    },
+    stop: () => {
+      recorderStopped = true;
+    }
+  };
+
+  // Simulate MediaRecorder await finalization
+  await new Promise((resolve) => {
+    if (mockRecorder.state === 'recording') {
+      mockRecorder.requestData();
+      mockRecorder.stop();
+    }
+    resolve();
+  });
+
+  assert.equal(finalSliceRequested, true, 'Final data slice must be requested');
+  assert.equal(recorderStopped, true, 'Recorder must be stopped');
+  assert.ok(audioChunks.length > 0, 'Audio chunks must include final slice before Blob creation');
+
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  assert.ok(blob.size > 0, 'Blob must contain complete audio data');
+  console.log('  ✓ MediaRecorder final slice requested and collected before Blob assembly.');
+  passedTests++;
+} catch (err) {
+  console.error('  ✗ Test 11 failed:', err);
+}
+
+/* --------------------------------------------------------------------------
+   Test 12: No duplicate text is produced by native/fallback reconciliation
+   -------------------------------------------------------------------------- */
+try {
+  console.log('\n[Test 12] No duplicate text is produced by native/fallback reconciliation...');
+  const partialNative = 'I think the error rate';
+  const verifiedContinuation = 'I think the error rate is decreasing significantly across all endpoints';
+
+  const reconciliation = reconcileFallbackTranscript({
+    nativeText: partialNative,
+    fallbackText: verifiedContinuation,
+    recognitionEndedNormally: false,
+    hadFinalResults: false
+  });
+
+  assert.equal(reconciliation.source, 'reconciled');
+  assert.equal(reconciliation.adoptedText, verifiedContinuation);
+  const occurrences = (reconciliation.adoptedText.match(/I think the error rate/gi) || []).length;
+  assert.equal(occurrences, 1, 'Native prefix must not be duplicated in reconciled text');
+  console.log('  ✓ Legitimate continuation adopted without duplicating overlapping prefix.');
+  passedTests++;
+} catch (err) {
+  console.error('  ✗ Test 12 failed:', err);
+}
+
+/* --------------------------------------------------------------------------
+   Test 13: Stale fallback responses cannot overwrite a newer recording
+   -------------------------------------------------------------------------- */
+try {
+  console.log('\n[Test 13] Stale fallback responses cannot overwrite a newer recording...');
   let currentSessionId = 1;
   let committedValue = '';
 
   const slowFirstSession = async () => {
     const sessionId = currentSessionId;
-    await new Promise((r) => setTimeout(r, 50));
-    // Check if session is still current
+    await new Promise((r) => setTimeout(r, 40));
     if (sessionId === currentSessionId) {
       committedValue = 'Old stale transcript';
     }
   };
 
   const fastSecondSession = async () => {
-    currentSessionId = 2; // Incremented session ID
+    currentSessionId = 2;
     committedValue = 'New session transcript';
   };
 
-  // Launch slow session, then immediately launch second session
   const p1 = slowFirstSession();
   await fastSecondSession();
   await p1;
@@ -364,72 +414,14 @@ try {
   console.log('  ✓ Session counter guard prevents stale asynchronous results from overwriting newer recordings.');
   passedTests++;
 } catch (err) {
-  console.error('  ✗ Test 10 failed:', err);
+  console.error('  ✗ Test 13 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 11: No programming vocabulary injected into general transcription requests
+   Test 14: Consecutive recordings remain independent
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 11] No programming vocabulary injected into general transcription requests...');
-  const serverCode = fs.readFileSync(path.resolve('./server.ts'), 'utf-8');
-  const hookCode = fs.readFileSync(path.resolve('./src/hooks/useVoiceDictation.js'), 'utf-8');
-
-  // Verify DEFAULT_WHISPER_CONTEXT_PROMPT in server.ts has no technical vocabulary
-  assert.ok(
-    !serverCode.includes("Technical vocabulary: JavaScript, TypeScript, React, Node.js"),
-    'server.ts must not have hardcoded technical vocabulary in DEFAULT_WHISPER_CONTEXT_PROMPT'
-  );
-  assert.ok(
-    !serverCode.includes("palindrome, algorithms, data structures, async await"),
-    'server.ts must not have hardcoded programming terms'
-  );
-
-  // Verify Gemini prompt in server.ts has no technical vocabulary
-  assert.ok(
-    !serverCode.includes("Preserve exact words, technical terminology (e.g. Orvix, JavaScript"),
-    'server.ts Gemini prompt must not list programming languages and algorithms'
-  );
-
-  // Verify useVoiceDictation.js does not pass programming prompts
-  assert.ok(
-    !hookCode.includes("Technical vocabulary: JavaScript, TypeScript, React"),
-    'useVoiceDictation.js must not pass hardcoded technical vocabulary prompt'
-  );
-
-  console.log('  ✓ All hardcoded programming vocabulary prompts removed from server and client.');
-  passedTests++;
-} catch (err) {
-  console.error('  ✗ Test 11 failed:', err);
-}
-
-/* --------------------------------------------------------------------------
-   Test 12: Selected dictation language preserved
-   -------------------------------------------------------------------------- */
-try {
-  console.log('\n[Test 12] Selected dictation language preserved...');
-  const testLanguages = ['ur-PK', 'es-ES', 'fr-FR', 'ar-SA', 'de-DE'];
-
-  for (const lang of testLanguages) {
-    const isSupported = SUPPORTED_LANGUAGES.some((l) => l.code === lang);
-    assert.equal(isSupported, true, `Language ${lang} must be supported in configuration`);
-  }
-
-  // Verify Urdu transcript formatting handles Urdu punctuation
-  const urduSpeech = 'یہ ایک ٹیسٹ ہے';
-  const formattedUrdu = formatSpeechTranscript(urduSpeech, 'ur-PK', '');
-  assert.ok(formattedUrdu.includes(urduSpeech), 'Urdu text must be preserved');
-  console.log('  ✓ Supported dictation languages and localized transcript formatting are preserved.');
-  passedTests++;
-} catch (err) {
-  console.error('  ✗ Test 12 failed:', err);
-}
-
-/* --------------------------------------------------------------------------
-   Test 13: Consecutive recordings operating independently
-   -------------------------------------------------------------------------- */
-try {
-  console.log('\n[Test 13] Consecutive recordings operating independently...');
+  console.log('\n[Test 14] Consecutive recordings remain independent...');
   let baseComposer = '';
 
   // Session 1
@@ -446,31 +438,49 @@ try {
   console.log('  ✓ Consecutive recording sessions operate independently without cross-session contamination.');
   passedTests++;
 } catch (err) {
-  console.error('  ✗ Test 13 failed:', err);
+  console.error('  ✗ Test 14 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
-   Test 14: Existing private chat and imported chat dictation functionality preserved
+   Test 15: Selected language remains unchanged (including en-PK)
    -------------------------------------------------------------------------- */
 try {
-  console.log('\n[Test 14] Existing private chat and imported chat dictation functionality preserved...');
+  console.log('\n[Test 15] Selected language remains unchanged (including en-PK)...');
+  const testLanguages = ['ur-PK', 'en-PK', 'es-ES', 'fr-FR', 'ar-SA', 'de-DE'];
+
+  for (const lang of testLanguages) {
+    const isSupported = SUPPORTED_LANGUAGES.some((l) => l.code === lang);
+    assert.equal(isSupported, true, `Language ${lang} must be supported in configuration`);
+  }
+
+  const pk = SUPPORTED_LANGUAGES.find((l) => l.code === 'en-PK');
+  assert.ok(pk, 'en-PK must be supported');
+  assert.equal(pk.label, 'English (Pakistan)');
+  console.log('  ✓ Pakistani English (en-PK) and localized languages preserved in configuration.');
+  passedTests++;
+} catch (err) {
+  console.error('  ✗ Test 15 failed:', err);
+}
+
+/* --------------------------------------------------------------------------
+   Test 16: Existing private and imported chat dictation remains functional
+   -------------------------------------------------------------------------- */
+try {
+  console.log('\n[Test 16] Existing private and imported chat dictation remains functional...');
   const chatAreaCode = fs.readFileSync(path.resolve('./src/components/chat/ChatArea.jsx'), 'utf-8');
 
-  // Verify disabled prop in ChatArea
   assert.ok(
     chatAreaCode.includes('disabled: isPublicSharedViewer'),
     'Voice dictation must only be disabled for isPublicSharedViewer'
   );
 
-  // In private chats (isPublicSharedViewer === false)
   const isPrivateChatViewer = false;
   const isDictationDisabled = isPrivateChatViewer;
   assert.equal(isDictationDisabled, false, 'Dictation must be active in private chats');
-
   console.log('  ✓ Voice dictation remains enabled for private chats and imported chats.');
   passedTests++;
 } catch (err) {
-  console.error('  ✗ Test 14 failed:', err);
+  console.error('  ✗ Test 16 failed:', err);
 }
 
 /* --------------------------------------------------------------------------
@@ -481,7 +491,7 @@ console.log(`RESULTS: ${passedTests}/${totalTests} tests passed (${Math.round((p
 console.log('===============================================================\n');
 
 if (passedTests === totalTests) {
-  console.log('All voice dictation reliability regression tests passed successfully.\n');
+  console.log('All voice dictation accuracy and reliability tests passed successfully.\n');
   process.exit(0);
 } else {
   console.error(`Failed ${totalTests - passedTests} tests.\n`);

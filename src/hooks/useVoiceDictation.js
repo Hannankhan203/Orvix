@@ -470,6 +470,102 @@ export function evaluateTranscriptCompleteness({
 }
 
 /**
+ * Conservative, deterministic reconciliation of native speech transcript with fallback transcription.
+ * Protects valid native speech from being replaced by inferior, garbled, or hallucinated fallback text.
+ *
+ * Rules:
+ * 1. If native speech is empty or unusable, fallback provides the recovery transcript.
+ * 2. If fallback is empty or failed, native speech is preserved.
+ * 3. Never replace a non-empty native transcript merely because fallback contains more words or characters.
+ * 4. If native recognition completed normally and produced a meaningful transcript with final results,
+ *    native transcript is preserved as authoritative.
+ * 5. If native recognition produced partial text and fallback is attempted, only adopt fallback if
+ *    the fallback demonstrably contains the recognized native content as a prefix/superset plus
+ *    additional missing speech.
+ * 6. If fallback content diverges or cannot be safely reconciled, native text is strictly retained.
+ * 7. Never concatenate two complete transcripts blindly.
+ *
+ * @param {Object} params
+ * @param {string} [params.nativeText=''] - Recognized native speech
+ * @param {string} [params.fallbackText=''] - Server fallback transcription (Whisper/Gemini)
+ * @param {boolean} [params.recognitionEndedNormally=true] - Whether native recognition completed normally
+ * @param {boolean} [params.hadFinalResults=true] - Whether engine produced isFinal: true results
+ * @returns {{ adoptedText: string, source: 'native' | 'fallback' | 'reconciled', reason: string }}
+ */
+export function reconcileFallbackTranscript({
+  nativeText = '',
+  fallbackText = '',
+  recognitionEndedNormally = true,
+  hadFinalResults = true
+}) {
+  const cleanNative = (nativeText || '').trim();
+  const cleanFallback = (fallbackText || '').trim();
+
+  // 1. If native text is empty, adopt fallback if available
+  if (!cleanNative) {
+    if (cleanFallback) {
+      return { adoptedText: cleanFallback, source: 'fallback', reason: 'empty_native_recovered' };
+    }
+    return { adoptedText: '', source: 'native', reason: 'both_empty' };
+  }
+
+  // 2. If fallback text is empty, preserve native text
+  if (!cleanFallback) {
+    return { adoptedText: cleanNative, source: 'native', reason: 'empty_fallback_preserved_native' };
+  }
+
+  // 3. Exact match (case-insensitive)
+  if (cleanNative.toLowerCase() === cleanFallback.toLowerCase()) {
+    return { adoptedText: cleanNative, source: 'native', reason: 'identical_content' };
+  }
+
+  // Helper to normalize words (strips punctuation and whitespace)
+  const toWords = (str) =>
+    str
+      .toLowerCase()
+      .replace(/[.,!?:;۔،؟"'-]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const nativeWords = toWords(cleanNative);
+  const fallbackWords = toWords(cleanFallback);
+
+  // 4. If native recognition completed normally with final results and produced meaningful speech,
+  // it is authoritative and must not be overwritten by fallback.
+  if (recognitionEndedNormally && hadFinalResults && nativeWords.length >= 4) {
+    return { adoptedText: cleanNative, source: 'native', reason: 'native_authoritative_preserved' };
+  }
+
+  // 5. If native recognition was partial (e.g. abnormal stop or cut off), check if fallback
+  // demonstrably contains the recognized native content as a prefix plus additional missing speech.
+  if (nativeWords.length > 0 && fallbackWords.length > nativeWords.length) {
+    let prefixMatches = true;
+    for (let i = 0; i < nativeWords.length; i++) {
+      if (nativeWords[i] !== fallbackWords[i]) {
+        prefixMatches = false;
+        break;
+      }
+    }
+
+    if (prefixMatches) {
+      return {
+        adoptedText: cleanFallback,
+        source: 'reconciled',
+        reason: 'demonstrated_native_continuation'
+      };
+    }
+  }
+
+  // 6. Fallback cannot demonstrate that it contains the same recognized content:
+  // Retain native transcript rather than replacing it with an unverified alternative.
+  return {
+    adoptedText: cleanNative,
+    source: 'native',
+    reason: 'unverified_fallback_rejected'
+  };
+}
+
+/**
  * Hook providing reliable, robust voice dictation using browser Web Speech API.
  *
  * Implements:
@@ -1259,19 +1355,15 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           isStartingRef.current = false;
           const errorType = event?.error;
 
-          // If stop was in progress and recognition was stopped/aborted, resolve gracefully
+          // If stop was in progress and error is aborted or no-speech, do NOT treat as fatal
+          // and DO NOT resolve the shutdown promise prematurely — let onend finalize normally.
           if (isStoppingRef.current || isExplicitStopRef.current || errorType === 'aborted') {
-            if (pendingRecognitionShutdownResolveRef.current) {
-              pendingRecognitionShutdownResolveRef.current();
-              pendingRecognitionShutdownResolveRef.current = null;
-            }
             return;
           }
 
-          recognitionEndedNormallyRef.current = false;
-          if (pendingRecognitionShutdownResolveRef.current) {
-            pendingRecognitionShutdownResolveRef.current();
-            pendingRecognitionShutdownResolveRef.current = null;
+          // Mark abnormal termination for unexpected/fatal errors
+          if (errorType !== 'no-speech') {
+            recognitionEndedNormallyRef.current = false;
           }
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
@@ -1328,7 +1420,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           if (instanceCounterRef.current !== currentInstanceId) return;
           isStartingRef.current = false;
           recognitionRef.current = null;
-          recognitionEndedNormallyRef.current = true;
+          if (!hasFatalErrorRef.current) {
+            recognitionEndedNormallyRef.current = true;
+          }
 
           // Fold any finalized or pending interim text into persistent session accumulation before instance teardown
           if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
@@ -1350,8 +1444,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
           // Signal pending shutdown promise that onend has executed
           if (pendingRecognitionShutdownResolveRef.current) {
-            pendingRecognitionShutdownResolveRef.current();
+            const resolveFn = pendingRecognitionShutdownResolveRef.current;
             pendingRecognitionShutdownResolveRef.current = null;
+            resolveFn();
           }
 
           if (hasFatalErrorRef.current) {
@@ -1620,68 +1715,104 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     updateRecordingState('stopping');
 
     try {
-      // Safely request final audio slice from MediaRecorder if active
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        try {
-          if (typeof mediaRecorderRef.current.requestData === 'function') {
-            mediaRecorderRef.current.requestData();
-          }
-          mediaRecorderRef.current.stop();
-        } catch (_) {}
-      }
-
-      // 2. Gracefully signal the speech recognizer to finish and wait for final results to settle via onend
+      // 1. Gracefully signal the speech recognizer to finish and wait for final results to settle via onend
       if (recognitionRef.current) {
         const rec = recognitionRef.current;
         await new Promise((resolve) => {
           let resolved = false;
           let timeoutId = null;
 
-          const finishShutdown = () => {
+          const finishShutdown = (isTimeout = false) => {
             if (!resolved) {
               resolved = true;
               if (timeoutId) clearTimeout(timeoutId);
               pendingRecognitionShutdownResolveRef.current = null;
+              if (isTimeout) {
+                console.warn('[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
+                recognitionEndedNormallyRef.current = false;
+              }
               resolve();
             }
           };
 
-          pendingRecognitionShutdownResolveRef.current = finishShutdown;
+          pendingRecognitionShutdownResolveRef.current = () => finishShutdown(false);
 
           // Bounded safety timeout (3500ms) prevents hanging if browser fails to trigger onend
           timeoutId = setTimeout(() => {
-            console.warn('[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
-            recognitionEndedNormallyRef.current = false;
-            finishShutdown();
+            finishShutdown(true);
           }, 3500);
 
           try {
             rec.stop();
           } catch (stopErr) {
             console.warn('[Dictation] rec.stop() threw:', stopErr);
-            finishShutdown();
+            finishShutdown(true);
           }
         });
       }
 
-      // 3. Stop audio tracks and Web Audio visualizer only after recognition has settled
-      stopAudioResources();
+      // 2. Await MediaRecorder finalization properly so the final audio slice and stop event are delivered
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== 'inactive') {
+        await new Promise((resolve) => {
+          let resolved = false;
+          let timer = null;
 
-      // Assemble captured audio chunks into Blob for retry and server fallback
+          const onRecorderFinish = () => {
+            if (!resolved) {
+              resolved = true;
+              if (timer) clearTimeout(timer);
+              try {
+                recorder.removeEventListener('stop', onRecorderFinish);
+                recorder.removeEventListener('error', onRecorderFinish);
+              } catch (_) {}
+              resolve();
+            }
+          };
+
+          timer = setTimeout(onRecorderFinish, 1500);
+
+          try {
+            recorder.addEventListener('stop', onRecorderFinish, { once: true });
+            recorder.addEventListener('error', onRecorderFinish, { once: true });
+
+            if (typeof recorder.requestData === 'function' && recorder.state === 'recording') {
+              try {
+                recorder.requestData();
+              } catch (_) {}
+            }
+            recorder.stop();
+          } catch (_) {
+            onRecorderFinish();
+          }
+        });
+      }
+
+      // Calculate active recording duration excluding paused time
+      let totalPausedMs = pausedDurationRef.current || 0;
+      if (pauseStartTimeRef.current > 0) {
+        totalPausedMs += Date.now() - pauseStartTimeRef.current;
+      }
+      const rawActiveMs = recordingStartTimeRef.current
+        ? Math.max(0, Date.now() - recordingStartTimeRef.current - totalPausedMs)
+        : (recordingDuration || 0) * 1000;
+      const durationSec = Math.max(0, Math.round(rawActiveMs / 1000));
+
+      // 3. Assemble captured audio chunks into complete Blob before releasing audio hardware resources
       if (audioChunksRef.current && audioChunksRef.current.length > 0) {
         try {
           const mimeType = activeMimeTypeRef.current || 'audio/webm';
           const blob = new Blob(audioChunksRef.current, { type: mimeType });
           recordedAudioBlobRef.current = blob;
           setRecordedAudioBlob(blob);
-          const durationSec = recordingStartTimeRef.current
-            ? Math.round((Date.now() - recordingStartTimeRef.current) / 1000)
-            : 0;
           setRecordedAudioDuration(durationSec);
         } catch (_) {}
       }
 
-      // 4. Gather all accumulated speech from memory buffers, including unfinalized interim text
+      // 4. Safely stop microphone tracks and Web Audio visualizer only AFTER Blob construction
+      stopAudioResources();
+
+      // 5. Gather all accumulated speech from memory buffers, including unfinalized interim text
       if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
         sessionAccumulatedTextRef.current = mergeTranscriptSegments(
           sessionAccumulatedTextRef.current,
@@ -1702,7 +1833,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
       // Safely cleanup recognition instance now that all pending results have been handled
       cleanupRecognitionInstance();
 
-      // 5. Stale session safeguard: If session was cancelled during the settle window, abort
+      // Stale session safeguard: If session was cancelled during the settle window, abort
       if (transcriptionSessionCounterRef.current !== currentSessionId) {
         return '';
       }
@@ -1712,13 +1843,16 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
       let cleanSpeech = (sessionAccumulatedTextRef.current || '').trim();
       const wordCount = cleanSpeech ? cleanSpeech.split(/\s+/).filter(Boolean).length : 0;
-      const durationSec =
-        recordingDuration ||
-        (recordingStartTimeRef.current ? Math.round((Date.now() - recordingStartTimeRef.current) / 1000) : 0);
       const audioBlob = recordedAudioBlobRef.current;
       const hasValidAudio = Boolean(audioBlob && audioBlob.size > 2000);
 
       // 6. Truncation and empty speech recovery using multi-factor evidence
+      const hasMeaningfulNativeSpeech =
+        cleanSpeech.length > 0 &&
+        wordCount >= 4 &&
+        hadFinalResultsRef.current &&
+        recognitionEndedNormallyRef.current;
+
       const completeness = evaluateTranscriptCompleteness({
         cleanSpeech,
         durationSec,
@@ -1729,25 +1863,29 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         remainingInterimLength: hadPendingInterimLenRef.current
       });
 
-      if (completeness.isPotentiallyIncomplete && hasValidAudio) {
+      // Do not automatically invoke fallback for a normally completed, meaningful native transcript
+      // merely because a duration-based heuristic considers it suspicious.
+      if (!hasMeaningfulNativeSpeech && completeness.isPotentiallyIncomplete && hasValidAudio) {
         try {
           const fallbackRes = await transcribeAudioBlob({
             audioBlob,
             language: selectedLanguageRef.current
-            // Prompt kept empty for general dictation to prevent vocabulary hallucination
           });
 
           // Check stale session after async fallback
           if (transcriptionSessionCounterRef.current === currentSessionId) {
             if (fallbackRes?.text && fallbackRes.text.trim()) {
               const serverText = fallbackRes.text.trim();
-              const serverWordCount = serverText.split(/\s+/).filter(Boolean).length;
-              const nativeWordCount = cleanSpeech ? cleanSpeech.split(/\s+/).filter(Boolean).length : 0;
+              const reconciliation = reconcileFallbackTranscript({
+                nativeText: cleanSpeech,
+                fallbackText: serverText,
+                recognitionEndedNormally: recognitionEndedNormallyRef.current,
+                hadFinalResults: hadFinalResultsRef.current
+              });
 
-              // Only adopt fallback if it provides equal or better completeness than native speech
-              if (!cleanSpeech || serverWordCount >= nativeWordCount || serverText.length > cleanSpeech.length) {
-                cleanSpeech = serverText;
-                sessionAccumulatedTextRef.current = serverText;
+              if (reconciliation.adoptedText && reconciliation.adoptedText !== cleanSpeech) {
+                cleanSpeech = reconciliation.adoptedText;
+                sessionAccumulatedTextRef.current = cleanSpeech;
                 setTranscriptionMeta({
                   provider: fallbackRes.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
                   model: fallbackRes.model,
@@ -1873,6 +2011,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     nativeSessionTranscriptRef.current = '';
     expectedEmittedBeforeTranscribeRef.current = '';
     lastCommittedSegmentRef.current = { text: '', timestamp: 0 };
+    pausedDurationRef.current = 0;
+    pauseStartTimeRef.current = 0;
     setInterimTranscript('');
     setLastSessionTranscript('');
     setTranscriptionNotice(null);
