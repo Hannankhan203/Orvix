@@ -11,8 +11,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "test:idb-quota": "node scripts/testIndexedDBQuotaExceeded.js",
     "test:webgpu-fallback": "node scripts/testWebGPUFallbackBrowser.js",
-    "test": "npm run lint && node scripts/testMessageAlignmentOrdering.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js"
+    "test": "npm run lint && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMessageAlignmentOrdering.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",

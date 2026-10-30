@@ -60,8 +60,60 @@ function getDB() {
   return dbPromise;
 }
 
+let lastStorageError = null;
+
+/**
+ * Returns the most recent IndexedDB storage error, if any.
+ * @returns {DOMException|Error|null}
+ */
+export function getLastStorageError() {
+  return lastStorageError;
+}
+
+/**
+ * Clears the stored last storage error.
+ */
+export function clearLastStorageError() {
+  lastStorageError = null;
+}
+
+/**
+ * Resets the cached IndexedDB database promise for testing purposes.
+ */
+export function resetAttachmentDBForTesting() {
+  dbPromise = null;
+  lastStorageError = null;
+}
+
+/**
+ * Identifies whether an error represents a browser storage quota exhaustion.
+ * Distinguishes QuotaExceededError from other IndexedDB or DOM exceptions.
+ * @param {any} err
+ * @returns {boolean}
+ */
+export function isQuotaExceededError(err) {
+  if (!err) return false;
+  const candidate = err.target?.error || err.error || err.cause || err;
+  const name = candidate.name || err.name || '';
+  const code = candidate.code || err.code;
+  const message = String(candidate.message || err.message || candidate || err || '').toLowerCase();
+
+  return (
+    name === 'QuotaExceededError' ||
+    name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    code === 22 ||
+    code === 1014 ||
+    message.includes('quotaexceedederror') ||
+    message.includes('quota exceeded') ||
+    message.includes('storage quota')
+  );
+}
+
 /**
  * Saves a file Blob/File to browser IndexedDB storage for offline & persistent message access.
+ * Safely handles storage quota exhaustion (QuotaExceededError) and transaction-level aborts,
+ * returning false without throwing unhandled exceptions so callers can gracefully retain in-memory data.
+ *
  * @param {string} id - Stable attachment UUID
  * @param {Blob|File} fileOrBlob - The actual binary file data
  * @param {Object} [metadata={}] - File metadata (name, size, type, etc.)
@@ -75,32 +127,126 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
     if (!db) return false;
 
     return new Promise((resolve) => {
-      const transaction = db.transaction([STORE_NAME], 'readwrite');
-      const store = transaction.objectStore(STORE_NAME);
-
-      const record = {
-        id,
-        name: metadata.name || metadata.originalName || fileOrBlob.name || 'document',
-        originalName: metadata.originalName || metadata.name || fileOrBlob.name || 'document',
-        size: metadata.size || fileOrBlob.size || 0,
-        formattedSize: metadata.formattedSize || '',
-        type: metadata.type || metadata.mimeType || fileOrBlob.type || 'application/octet-stream',
-        extension: metadata.extension || '',
-        conversationId: metadata.conversationId || null,
-        createdAt: Date.now(),
-        blob: fileOrBlob
+      let resolved = false;
+      const finish = (success, err = null) => {
+        if (resolved) return;
+        resolved = true;
+        if (success) {
+          lastStorageError = null;
+          resolve(true);
+        } else {
+          lastStorageError = err || lastStorageError;
+          if (isQuotaExceededError(lastStorageError)) {
+            console.warn(
+              '[Attachment Storage] IndexedDB storage quota exceeded (QuotaExceededError). Attachment retained in memory.'
+            );
+          } else if (lastStorageError) {
+            console.warn('[Attachment Storage] Failed to store attachment in IndexedDB:', lastStorageError);
+          }
+          resolve(false);
+        }
       };
 
-      const putRequest = store.put(record);
+      try {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
 
-      putRequest.onsuccess = () => resolve(true);
-      putRequest.onerror = (err) => {
-        console.warn('[Attachment Storage] Failed to store attachment in IndexedDB:', err);
-        resolve(false);
-      };
+        const record = {
+          id,
+          name: metadata.name || metadata.originalName || fileOrBlob.name || 'document',
+          originalName: metadata.originalName || metadata.name || fileOrBlob.name || 'document',
+          size: metadata.size || fileOrBlob.size || 0,
+          formattedSize: metadata.formattedSize || '',
+          type: metadata.type || metadata.mimeType || fileOrBlob.type || 'application/octet-stream',
+          extension: metadata.extension || '',
+          conversationId: metadata.conversationId || null,
+          createdAt: Date.now(),
+          blob: fileOrBlob
+        };
+
+        const putRequest = store.put(record);
+
+        let requestSucceeded = false;
+        putRequest.onsuccess = () => {
+          requestSucceeded = true;
+          // In standard IndexedDB, transaction.oncomplete finalizes the write.
+          // For lightweight testing shims that do not emit transaction.oncomplete, fallback after microtask:
+          setTimeout(() => {
+            if (requestSucceeded) finish(true);
+          }, 0);
+        };
+
+        putRequest.onerror = (event) => {
+          event?.preventDefault?.();
+          const domErr = putRequest.error || event?.target?.error || event;
+          finish(false, domErr);
+        };
+
+        transaction.oncomplete = () => {
+          finish(true);
+        };
+
+        transaction.onerror = (event) => {
+          event?.preventDefault?.();
+          const domErr = transaction.error || putRequest.error || event?.target?.error || event;
+          finish(false, domErr);
+        };
+
+        transaction.onabort = (event) => {
+          const domErr = transaction.error || putRequest.error || event?.target?.error;
+          finish(false, domErr);
+        };
+      } catch (syncErr) {
+        finish(false, syncErr);
+      }
     });
   } catch (err) {
-    console.warn('[Attachment Storage] saveAttachmentBlob error:', err);
+    lastStorageError = err;
+    if (isQuotaExceededError(err)) {
+      console.warn(
+        '[Attachment Storage] IndexedDB storage quota exceeded (QuotaExceededError). Attachment retained in memory.'
+      );
+    } else {
+      console.warn('[Attachment Storage] saveAttachmentBlob error:', err);
+    }
+    return false;
+  }
+}
+
+/**
+ * Removes an attachment record from browser IndexedDB storage.
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
+export async function deleteAttachmentRecord(id) {
+  if (!id) return false;
+  try {
+    const db = await getDB();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      let resolved = false;
+      const finish = (val) => {
+        if (!resolved) {
+          resolved = true;
+          resolve(val);
+        }
+      };
+      try {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const req = store.delete(id);
+        req.onsuccess = () => {
+          setTimeout(() => finish(true), 0);
+        };
+        req.onerror = () => finish(false);
+        transaction.oncomplete = () => finish(true);
+        transaction.onerror = () => finish(false);
+        transaction.onabort = () => finish(false);
+      } catch (_) {
+        finish(false);
+      }
+    });
+  } catch (_) {
     return false;
   }
 }
@@ -1257,7 +1403,7 @@ export async function openOrPreviewAttachment(attachment) {
   // 0. Check in-memory File or Blob
   if (attachment.file instanceof Blob) {
     const blobUrl = URL.createObjectURL(attachment.file);
-    if (canPreview) {
+    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
       const win = window.open(blobUrl, '_blank');
       if (win) {
         setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
@@ -1277,7 +1423,7 @@ export async function openOrPreviewAttachment(attachment) {
   // Direct dataUrl or previewUrl
   const directDataUri = attachment.previewUrl || attachment.dataUrl;
   if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
-    if (canPreview) {
+    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
       const win = window.open(directDataUri, '_blank');
       if (win) return { success: true, action: 'preview' };
     }
@@ -1295,7 +1441,7 @@ export async function openOrPreviewAttachment(attachment) {
   if (localRecord && localRecord.blob) {
     const blobUrl = URL.createObjectURL(localRecord.blob);
 
-    if (canPreview) {
+    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
       const win = window.open(blobUrl, '_blank');
       if (win) {
         setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
