@@ -7398,10 +7398,21 @@ body.theme-light .listening-text,
   line-height: 1.2;
 }
 
-.dictation-lang-btn:hover {
+.dictation-lang-btn:hover:not(:disabled):not(.disabled) {
   background-color: var(--accent-subtle);
   border-color: var(--accent-primary);
   color: var(--accent-primary);
+}
+
+.dictation-lang-btn:disabled,
+.dictation-lang-btn.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.dictation-lang-wrapper.disabled {
+  cursor: not-allowed;
 }
 
 .dictation-lang-btn:focus-visible {

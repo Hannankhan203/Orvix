@@ -992,7 +992,8 @@ export default function ChatArea({
     retryTranscription
   } = useVoiceDictation({
     inputValue,
-    onInputChange
+    onInputChange,
+    disabled: isPublicSharedViewer
   });
 
   const activeLang =
@@ -1033,7 +1034,7 @@ export default function ChatArea({
     }
   }, [recordingState, dictationError]);
 
-  // Cleanly abort any active microphone dictation session when switching conversations
+  // Cleanly abort any active microphone dictation session when switching conversations or entering public shared viewer
   useEffect(() => {
     if (
       recordingState === 'listening' ||
@@ -1044,9 +1045,31 @@ export default function ChatArea({
     ) {
       cancelListening();
     }
-  }, [activeChatId, cancelListening]);
+  }, [activeChatId, isPublicSharedViewer, cancelListening]);
+
+  // Close language menu immediately if public shared viewer mode becomes active
+  useEffect(() => {
+    if (isPublicSharedViewer && langMenuOpen) {
+      setLangMenuOpen(false);
+    }
+  }, [isPublicSharedViewer, langMenuOpen]);
+
+  const handleToggleLangMenu = () => {
+    if (isPublicSharedViewer || isReadOnly) return;
+    setLangMenuOpen((prev) => !prev);
+  };
+
+  const handleSelectLanguage = (langCode) => {
+    if (isPublicSharedViewer || isReadOnly) return;
+    setSelectedLanguage(langCode);
+    setLangMenuOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
 
   const handleStopListening = async () => {
+    if (isPublicSharedViewer) return;
     await stopListening();
     requestAnimationFrame(() => {
       if (textareaRef.current) {
@@ -1060,6 +1083,7 @@ export default function ChatArea({
   };
 
   const handleCancelListening = () => {
+    if (isPublicSharedViewer && recordingState === 'idle') return;
     cancelListening();
     setSuggestedRefinement(null);
     requestAnimationFrame(() => {
@@ -1070,7 +1094,7 @@ export default function ChatArea({
   };
 
   const handleToggleListening = () => {
-    if (isReadOnly || isSharedView) return;
+    if (isPublicSharedViewer || isReadOnly || isSharedView) return;
     if (recordingState === 'listening') {
       void handleStopListening();
     } else if (recordingState === 'paused') {
@@ -1828,22 +1852,40 @@ Transcript:
                 </div>
 
                 {/* Recognition Language Selector Pill */}
-                <div className="dictation-lang-wrapper" ref={isRecordingActive ? langMenuRef : undefined}>
+                <div
+                  className={`dictation-lang-wrapper ${isPublicSharedViewer ? 'disabled' : ''}`}
+                  ref={isRecordingActive ? langMenuRef : undefined}
+                  title={
+                    isPublicSharedViewer
+                      ? 'Voice dictation language selection is disabled in public read-only mode'
+                      : undefined
+                  }
+                >
                   <button
                     type="button"
-                    className="dictation-lang-btn"
-                    onClick={() => setLangMenuOpen((prev) => !prev)}
-                    title={`Dictation language: ${activeLang.label}. Click to switch.`}
-                    aria-label={`Select dictation language, currently ${activeLang.label}`}
-                    aria-expanded={langMenuOpen}
+                    disabled={isPublicSharedViewer}
+                    className={`dictation-lang-btn ${isPublicSharedViewer ? 'disabled' : ''}`}
+                    onClick={handleToggleLangMenu}
+                    title={
+                      isPublicSharedViewer
+                        ? 'Voice dictation language selection is disabled in public read-only mode'
+                        : `Dictation language: ${activeLang.label}. Click to switch.`
+                    }
+                    aria-label={
+                      isPublicSharedViewer
+                        ? 'Voice dictation language selection is disabled in public read-only mode'
+                        : `Select dictation language, currently ${activeLang.label}`
+                    }
+                    aria-disabled={isPublicSharedViewer}
+                    aria-expanded={!isPublicSharedViewer && langMenuOpen}
                     aria-haspopup="menu"
                   >
                     <span className="lang-flag">{activeLang.flag}</span>
                     <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
-                    <ChevronDown size={11} className={`lang-chevron ${langMenuOpen ? 'open' : ''}`} />
+                    <ChevronDown size={11} className={`lang-chevron ${!isPublicSharedViewer && langMenuOpen ? 'open' : ''}`} />
                   </button>
 
-                  {langMenuOpen && (
+                  {!isPublicSharedViewer && langMenuOpen && (
                     <div className="dictation-lang-dropdown" role="menu" aria-label="Recognition Language">
                       <div className="lang-dropdown-header">Recognition Language</div>
                       {supportedLanguages.map((lang) => (
@@ -1852,10 +1894,7 @@ Transcript:
                           type="button"
                           role="menuitem"
                           className={`dictation-lang-option ${lang.code === selectedLanguage ? 'active' : ''}`}
-                          onClick={() => {
-                            setSelectedLanguage(lang.code);
-                            setLangMenuOpen(false);
-                          }}
+                          onClick={() => handleSelectLanguage(lang.code)}
                         >
                           <span className="lang-opt-flag">{lang.flag}</span>
                           <div className="lang-opt-info">
@@ -2290,22 +2329,40 @@ Transcript:
               <div className="composer-actions">
                 {/* Recognition Language Selector (pre-recording) */}
                 {isSupported && !isRecordingActive && (
-                  <div className="dictation-lang-wrapper composer-pre-lang" ref={!isRecordingActive ? langMenuRef : undefined}>
+                  <div
+                    className={`dictation-lang-wrapper composer-pre-lang ${isPublicSharedViewer ? 'disabled' : ''}`}
+                    ref={!isRecordingActive ? langMenuRef : undefined}
+                    title={
+                      isPublicSharedViewer
+                        ? 'Voice dictation language selection is disabled in public read-only mode'
+                        : undefined
+                    }
+                  >
                     <button
                       type="button"
-                      className="dictation-lang-btn composer-lang-btn"
-                      onClick={() => setLangMenuOpen((prev) => !prev)}
-                      title={`Dictation language: ${activeLang.label}. Click to change.`}
-                      aria-label={`Dictation language: ${activeLang.label}`}
-                      aria-expanded={langMenuOpen}
+                      disabled={isPublicSharedViewer}
+                      className={`dictation-lang-btn composer-lang-btn ${isPublicSharedViewer ? 'disabled' : ''}`}
+                      onClick={handleToggleLangMenu}
+                      title={
+                        isPublicSharedViewer
+                          ? 'Voice dictation language selection is disabled in public read-only mode'
+                          : `Dictation language: ${activeLang.label}. Click to change.`
+                      }
+                      aria-label={
+                        isPublicSharedViewer
+                          ? 'Voice dictation language selection is disabled in public read-only mode'
+                          : `Dictation language: ${activeLang.label}`
+                      }
+                      aria-disabled={isPublicSharedViewer}
+                      aria-expanded={!isPublicSharedViewer && langMenuOpen}
                       aria-haspopup="menu"
                     >
                       <span className="lang-flag">{activeLang.flag}</span>
                       <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
-                      <ChevronDown size={11} className={`lang-chevron ${langMenuOpen ? 'open' : ''}`} />
+                      <ChevronDown size={11} className={`lang-chevron ${!isPublicSharedViewer && langMenuOpen ? 'open' : ''}`} />
                     </button>
 
-                    {langMenuOpen && (
+                    {!isPublicSharedViewer && langMenuOpen && (
                       <div className="dictation-lang-dropdown" role="menu" aria-label="Dictation recognition language">
                         <div className="lang-dropdown-header">Dictation Language</div>
                         {supportedLanguages.map((lang) => (
@@ -2314,13 +2371,7 @@ Transcript:
                             type="button"
                             role="menuitem"
                             className={`dictation-lang-option ${lang.code === selectedLanguage ? 'active' : ''}`}
-                            onClick={() => {
-                              setSelectedLanguage(lang.code);
-                              setLangMenuOpen(false);
-                              if (textareaRef.current) {
-                                textareaRef.current.focus();
-                              }
-                            }}
+                            onClick={() => handleSelectLanguage(lang.code)}
                           >
                             <span className="lang-opt-flag">{lang.flag}</span>
                             <div className="lang-opt-info">
@@ -2341,10 +2392,12 @@ Transcript:
                     type="button"
                     variant={isListening ? 'primary' : (isRequesting || isTranscribing || recordingState === 'stopping') ? 'outline' : 'ghost'}
                     size="icon-round"
-                    disabled={isLoading || isTranscribing || isFinalizing || recordingState === 'stopping' || recordingState === 'success' || isReadOnly || isSharedView || isComposerDisabled}
+                    disabled={isPublicSharedViewer || isLoading || isTranscribing || isFinalizing || recordingState === 'stopping' || recordingState === 'success' || isReadOnly || isSharedView || isComposerDisabled}
                     onClick={handleToggleListening}
                     title={
-                      isSharedView
+                      isPublicSharedViewer
+                        ? 'Voice dictation is disabled in public read-only mode'
+                        : isSharedView
                         ? 'Voice dictation is disabled in shared preview mode'
                         : isReadOnly
                         ? 'Voice dictation is disabled in read-only shared mode'
@@ -2361,7 +2414,9 @@ Transcript:
                         : `Voice dictation (${activeLang.label})`
                     }
                     ariaLabel={
-                      isSharedView
+                      isPublicSharedViewer
+                        ? 'Voice dictation is disabled in public read-only mode'
+                        : isSharedView
                         ? 'Voice dictation is disabled in shared preview mode'
                         : isReadOnly
                         ? 'Voice dictation is disabled in read-only shared mode'
@@ -2377,7 +2432,7 @@ Transcript:
                         ? 'Resume dictation'
                         : 'Start voice dictation'
                     }
-                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing || recordingState === 'stopping' ? 'transcribing' : ''}`}
+                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing || recordingState === 'stopping' ? 'transcribing' : ''} ${isPublicSharedViewer ? 'disabled' : ''}`}
                     icon={
                       isListening ? (
                         <Square size={13} fill="currentColor" />

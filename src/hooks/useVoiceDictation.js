@@ -414,7 +414,10 @@ function selectBestAlternative(result) {
  * @param {(text: string) => void} options.onInputChange - Callback to update composer text
  * @returns {Object} Dictation states, controls, and audio metrics
  */
-export function useVoiceDictation({ inputValue = '', onInputChange }) {
+export function useVoiceDictation({ inputValue = '', onInputChange, disabled = false }) {
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+
   // Safe capability detection across browsers (Chrome, Edge, Safari, Firefox, iOS, Android)
   const [capabilities, setCapabilities] = useState(detectDictationCapabilities);
   const [isSupported, setIsSupported] = useState(() => capabilities.isSupported);
@@ -1327,7 +1330,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
   // Start a fresh dictation session with concurrency guards
   const startListening = useCallback(async () => {
-    if (isTransitioningRef.current) return;
+    if (disabledRef.current || isTransitioningRef.current) return;
     if (
       recordingStateRef.current === 'listening' ||
       recordingStateRef.current === 'requesting' ||
@@ -1412,7 +1415,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
   // Resume paused dictation session with automatic hardware stream recovery
   const resumeListening = useCallback(async () => {
-    if (isTransitioningRef.current) return;
+    if (disabledRef.current || isTransitioningRef.current) return;
     if (recordingStateRef.current !== 'paused') return;
     isTransitioningRef.current = true;
 
@@ -1865,7 +1868,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
 
   // Master toggle button with concurrency guard against rapid multi-tapping (Phase 5.4)
   const toggleListening = useCallback(async () => {
-    if (isTransitioningRef.current) return;
+    if (disabledRef.current || isTransitioningRef.current) return;
 
     if (recordingStateRef.current === 'listening') {
       await stopListening();
@@ -1889,6 +1892,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
   // Configurable language setter with instant live session restart
   const setSelectedLanguage = useCallback(
     (code) => {
+      if (disabledRef.current) return;
       setSelectedLanguageState(code);
       selectedLanguageRef.current = code;
       if (typeof window !== 'undefined') {
@@ -1903,6 +1907,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange }) {
     },
     [startRecognitionSession]
   );
+
+  // Auto-cancel active recording immediately if dictation becomes disabled
+  useEffect(() => {
+    if (disabled && recordingStateRef.current !== 'idle') {
+      cancelListening();
+    }
+  }, [disabled, cancelListening]);
 
   // PWA and Mobile Lifecycle (Phase 5.4):
   // Cleanly pause dictation and stop hardware tracks when app goes to background (visibilitychange & pagehide),
