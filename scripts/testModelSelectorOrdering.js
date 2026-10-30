@@ -1,5 +1,5 @@
 /**
- * Test Suite: AI Provider and Model Selector Ordering Verification (v0.3.2)
+ * Test Suite: AI Provider and Model Selector Ordering Verification (v0.2.9)
  *
  * Validates:
  * 1. Exact sequence of Cloud AI Providers:
@@ -61,7 +61,7 @@ function test(description, fn) {
   }
 }
 
-console.log('\n--- Running AI Provider and Model Selector Ordering Test Suite (v0.3.2) ---');
+console.log('\n--- Running AI Provider and Model Selector Ordering Test Suite (v0.2.9) ---');
 
 // 1. Cloud AI Providers Exact Sequence
 test('1. Cloud AI providers appear in exact sequence: Gemini -> Groq -> OpenRouter -> Cloudflare', () => {

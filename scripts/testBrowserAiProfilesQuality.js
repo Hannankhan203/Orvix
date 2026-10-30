@@ -3,7 +3,7 @@
 /**
  * testBrowserAiProfilesQuality.js
  *
- * Automated verification and evaluation suite for Orvix v0.3.0:
+ * Automated verification and evaluation suite for Orvix v0.2.9:
  * Deep Response Quality Fix for the Three Offline Browser AI Models:
  *   1. SmolLM2 135M
  *   2. SmolLM2 360M Instruct
@@ -64,7 +64,7 @@ function runTest(name, fn) {
   }
 }
 
-console.log('\n--- Orvix v0.3.0: Browser AI Response Profiles & Deep Quality Verification ---\n');
+console.log('\n--- Orvix v0.2.9: Browser AI Response Profiles & Deep Quality Verification ---\n');
 
 // 1. Model Classification & Isolation
 runTest('1. Target Model Isolation: Strictly identifies the 3 target models and rejects protected models', () => {
@@ -94,7 +94,7 @@ runTest('1. Target Model Isolation: Strictly identifies the 3 target models and 
   assert.strictEqual(getBrowserAiModelProfile(DEFAULT_WEBLLM_MODEL_ID), null);
 });
 
-// 2. Model-Specific Profile Distinctness (v0.3.0 Calibrated Hyperparameters)
+// 2. Model-Specific Profile Distinctness (v0.2.9 Calibrated Hyperparameters)
 runTest('2. Profile Distinctness: Calibrated parameters and extra_body enable_thinking: false for Qwen3', () => {
   const p135 = getBrowserAiModelProfile(SMOLLM2_135M_WEBLLM_MODEL_ID);
   const p360 = getBrowserAiModelProfile(SMOLLM2_360M_WEBLLM_MODEL_ID);
