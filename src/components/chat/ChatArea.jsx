@@ -29,7 +29,7 @@ import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/we
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
 
-function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
+export function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
   if (providerId === 'webllm') {
     const modelLabel =
       WEBLLM_MODEL_CATALOG[webllmModelId]?.shortLabel || 'Qwen 2.5 1.5B';
@@ -39,7 +39,11 @@ function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID
     return 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.';
   }
   if (providerId === 'openrouter') {
-    return 'Orvix is powered by OpenRouter (Llama 3.3 70B Free). Multi-model gateway — verify important facts independently.';
+    const openrouterOption = Array.isArray(PROVIDER_OPTIONS)
+      ? PROVIDER_OPTIONS.find((p) => p.id === 'openrouter')
+      : null;
+    const modelLabel = openrouterOption?.modelTag || 'Free Models Router';
+    return `Orvix is powered by OpenRouter (${modelLabel}), dynamically selecting from available free community models.`;
   }
   if (providerId === 'cloudflare') {
     return 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.';
