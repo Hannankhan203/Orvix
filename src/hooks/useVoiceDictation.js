@@ -396,6 +396,80 @@ function selectBestAlternative(result) {
 }
 
 /**
+ * Evaluates whether a recognized transcript appears complete or is suspected to be truncated,
+ * using multi-factor evidence: duration, word count, termination status, final vs interim results,
+ * and audio availability.
+ *
+ * @param {Object} params
+ * @param {string} [params.cleanSpeech=''] - Recognized speech text
+ * @param {number} [params.durationSec=0] - Total recording duration in seconds
+ * @param {boolean} [params.hasValidAudioBuffer=false] - Whether captured audio buffer is valid
+ * @param {boolean} [params.recognitionEndedNormally=true] - Whether recognition finished cleanly via onend
+ * @param {boolean} [params.hadFinalResults=false] - Whether engine produced any isFinal: true results
+ * @param {boolean} [params.hadSubstantialInterim=false] - Whether interim text was substantial
+ * @param {number} [params.remainingInterimLength=0] - Length of unfinalized interim text at stop time
+ * @returns {{ isPotentiallyIncomplete: boolean, reason: string }}
+ */
+export function evaluateTranscriptCompleteness({
+  cleanSpeech = '',
+  durationSec = 0,
+  hasValidAudioBuffer = false,
+  recognitionEndedNormally = true,
+  hadFinalResults = false,
+  hadSubstantialInterim = false,
+  remainingInterimLength = 0
+}) {
+  if (!hasValidAudioBuffer) {
+    return { isPotentiallyIncomplete: false, reason: 'no_audio_buffer' };
+  }
+
+  const trimmed = (cleanSpeech || '').trim();
+  const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
+
+  // 1. Completely empty transcript despite valid audio recording
+  if (!trimmed || wordCount === 0) {
+    return { isPotentiallyIncomplete: true, reason: 'empty_transcript_with_audio' };
+  }
+
+  // 2. Recognition did not end normally (e.g. network error, safety timeout, unhandled error)
+  if (!recognitionEndedNormally) {
+    return { isPotentiallyIncomplete: true, reason: 'abnormal_recognition_termination' };
+  }
+
+  // 3. Engine never produced any isFinal: true results (only raw interim text was gathered)
+  if (!hadFinalResults && wordCount <= 5) {
+    return { isPotentiallyIncomplete: true, reason: 'no_final_results_received' };
+  }
+
+  // 4. Substantial interim text was left unfinalized when stop was initiated
+  if (remainingInterimLength > 15 && wordCount <= 5) {
+    return { isPotentiallyIncomplete: true, reason: 'unfinalized_interim_text' };
+  }
+
+  // 5. Severe duration-to-wordCount mismatch:
+  // Normal conversational speech is 2.0 to 3.0 words per second.
+  // Slow / deliberate speech is ~1.5 words per second.
+  // An extended recording with very few words indicates speech was truncated before arriving:
+  // - >= 3s with <= 2 words
+  // - >= 6s with <= 4 words
+  // - >= 8s with <= 6 words
+  // - >= 10s with <= 8 words (covers 6-word 10s recording)
+  // - >= 15s with <= 12 words
+  const isDurationMismatch =
+    (durationSec >= 3 && wordCount <= 2) ||
+    (durationSec >= 6 && wordCount <= 4) ||
+    (durationSec >= 8 && wordCount <= 6) ||
+    (durationSec >= 10 && wordCount <= 8) ||
+    (durationSec >= 15 && wordCount <= 12);
+
+  if (isDurationMismatch) {
+    return { isPotentiallyIncomplete: true, reason: 'duration_word_count_mismatch' };
+  }
+
+  return { isPotentiallyIncomplete: false, reason: 'appears_complete' };
+}
+
+/**
  * Hook providing reliable, robust voice dictation using browser Web Speech API.
  *
  * Implements:
@@ -459,8 +533,14 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
   onInputChangeRef.current = onInputChange;
 
   const isExplicitStopRef = useRef(false);
+  const isStoppingRef = useRef(false);
   const isCancelledRef = useRef(false);
   const hasFatalErrorRef = useRef(false);
+  const hadFinalResultsRef = useRef(false);
+  const hadSubstantialInterimRef = useRef(false);
+  const hadPendingInterimLenRef = useRef(0);
+  const recognitionEndedNormallyRef = useRef(false);
+  const pendingRecognitionShutdownResolveRef = useRef(null);
   const recordingStateRef = useRef(recordingState);
   recordingStateRef.current = recordingState;
 
@@ -930,6 +1010,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         setInterimTranscript('');
         setLastSessionTranscript('');
         isExplicitStopRef.current = false;
+        isStoppingRef.current = false;
+        isCancelledRef.current = false;
+        hadFinalResultsRef.current = false;
+        hadSubstantialInterimRef.current = false;
+        hadPendingInterimLenRef.current = 0;
+        recognitionEndedNormallyRef.current = false;
+        pendingRecognitionShutdownResolveRef.current = null;
         hasFatalErrorRef.current = false;
         consecutiveErrorsRef.current = 0;
         consecutiveSilenceRestartsRef.current = 0;
@@ -1112,6 +1199,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
                 if (existing !== bestCandidate.trim()) {
                   currentInstanceFinalMapRef.current.set(i, bestCandidate.trim());
                   hasNewFinal = true;
+                  hadFinalResultsRef.current = true;
                 }
               }
             }
@@ -1157,6 +1245,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
           const currentInterim = unfinalizedParts.join(' ');
           interimTranscriptRef.current = currentInterim;
+          if (currentInterim && currentInterim.trim().length >= 10) {
+            hadSubstantialInterimRef.current = true;
+          }
+          if (isStoppingRef.current) {
+            hadPendingInterimLenRef.current = currentInterim.trim().length;
+          }
           setInterimTranscript(currentInterim);
         };
 
@@ -1165,9 +1259,19 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           isStartingRef.current = false;
           const errorType = event?.error;
 
-          // Ignore intentional user stops or aborts
-          if (errorType === 'aborted' || isExplicitStopRef.current) {
+          // If stop was in progress and recognition was stopped/aborted, resolve gracefully
+          if (isStoppingRef.current || isExplicitStopRef.current || errorType === 'aborted') {
+            if (pendingRecognitionShutdownResolveRef.current) {
+              pendingRecognitionShutdownResolveRef.current();
+              pendingRecognitionShutdownResolveRef.current = null;
+            }
             return;
+          }
+
+          recognitionEndedNormallyRef.current = false;
+          if (pendingRecognitionShutdownResolveRef.current) {
+            pendingRecognitionShutdownResolveRef.current();
+            pendingRecognitionShutdownResolveRef.current = null;
           }
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
@@ -1224,6 +1328,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           if (instanceCounterRef.current !== currentInstanceId) return;
           isStartingRef.current = false;
           recognitionRef.current = null;
+          recognitionEndedNormallyRef.current = true;
 
           // Fold any finalized or pending interim text into persistent session accumulation before instance teardown
           if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
@@ -1243,6 +1348,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           currentInstanceFinalMapRef.current.clear();
           currentInstanceFinalRef.current = '';
 
+          // Signal pending shutdown promise that onend has executed
+          if (pendingRecognitionShutdownResolveRef.current) {
+            pendingRecognitionShutdownResolveRef.current();
+            pendingRecognitionShutdownResolveRef.current = null;
+          }
+
           if (hasFatalErrorRef.current) {
             hasFatalErrorRef.current = false;
             stopAudioResources();
@@ -1254,6 +1365,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           // (such as standard browser 60s silence timeout or mobile sentence cutoff), recover cleanly.
           if (
             !isExplicitStopRef.current &&
+            !isStoppingRef.current &&
             recordingStateRef.current === 'listening'
           ) {
             const isIOS =
@@ -1281,16 +1393,15 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
             clearTimeout(restartTimeoutRef.current);
             restartTimeoutRef.current = setTimeout(() => {
-              if (recordingStateRef.current === 'listening' && !isExplicitStopRef.current) {
+              if (recordingStateRef.current === 'listening' && !isExplicitStopRef.current && !isStoppingRef.current) {
                 startRecognitionSession(false);
               }
             }, 50);
             return;
           }
 
-          stopAudioResources();
-
-          if (recordingStateRef.current !== 'paused') {
+          if (!isStoppingRef.current && recordingStateRef.current !== 'stopping' && recordingStateRef.current !== 'transcribing' && recordingStateRef.current !== 'paused') {
+            stopAudioResources();
             updateRecordingState('idle');
           }
         };
@@ -1504,6 +1615,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     const currentSessionId = transcriptionSessionCounterRef.current;
 
     // 1. Immediately transition to 'stopping' to signal that recording stopped and hardware is closing
+    isStoppingRef.current = true;
+    isExplicitStopRef.current = true;
     updateRecordingState('stopping');
 
     try {
@@ -1517,40 +1630,39 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         } catch (_) {}
       }
 
-      // 2. Gracefully signal the speech recognizer to finish and wait for final results to settle
+      // 2. Gracefully signal the speech recognizer to finish and wait for final results to settle via onend
       if (recognitionRef.current) {
         const rec = recognitionRef.current;
         await new Promise((resolve) => {
           let resolved = false;
-          const complete = () => {
+          let timeoutId = null;
+
+          const finishShutdown = () => {
             if (!resolved) {
               resolved = true;
+              if (timeoutId) clearTimeout(timeoutId);
+              pendingRecognitionShutdownResolveRef.current = null;
               resolve();
             }
           };
 
-          // 650ms window allows Chrome & Safari engines to finalize speech pipeline and fire onresult + onend
-          const timeoutId = setTimeout(complete, 650);
+          pendingRecognitionShutdownResolveRef.current = finishShutdown;
 
-          const prevOnEnd = rec.onend;
-          rec.onend = (e) => {
-            try {
-              prevOnEnd?.(e);
-            } catch (_) {}
-            clearTimeout(timeoutId);
-            complete();
-          };
+          // Bounded safety timeout (3500ms) prevents hanging if browser fails to trigger onend
+          timeoutId = setTimeout(() => {
+            console.warn('[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
+            recognitionEndedNormallyRef.current = false;
+            finishShutdown();
+          }, 3500);
 
           try {
             rec.stop();
-          } catch (_) {
-            clearTimeout(timeoutId);
-            complete();
+          } catch (stopErr) {
+            console.warn('[Dictation] rec.stop() threw:', stopErr);
+            finishShutdown();
           }
         });
       }
-
-      isExplicitStopRef.current = true;
 
       // 3. Stop audio tracks and Web Audio visualizer only after recognition has settled
       stopAudioResources();
@@ -1569,17 +1681,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         } catch (_) {}
       }
 
-      cleanupRecognitionInstance();
-
-      // 4. Stale session safeguard: If session was cancelled during the settle window, abort
-      if (transcriptionSessionCounterRef.current !== currentSessionId) {
-        return '';
-      }
-
-      // Transition to 'transcribing' to reflect text compilation & formatting phase
-      updateRecordingState('transcribing');
-
-      // 5. Gather all accumulated speech from memory buffers
+      // 4. Gather all accumulated speech from memory buffers, including unfinalized interim text
       if (currentInstanceFinalRef.current && currentInstanceFinalRef.current.trim()) {
         sessionAccumulatedTextRef.current = mergeTranscriptSegments(
           sessionAccumulatedTextRef.current,
@@ -1597,51 +1699,77 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
       interimTranscriptRef.current = '';
       setInterimTranscript('');
 
-      let cleanSpeech = (sessionAccumulatedTextRef.current || '').trim();
+      // Safely cleanup recognition instance now that all pending results have been handled
+      cleanupRecognitionInstance();
 
-      // 6. Truncation and empty speech recovery:
-      // If cleanSpeech is empty OR suspected truncated despite substantial recorded audio,
-      // invoke /api/transcribe using the captured audio Blob.
+      // 5. Stale session safeguard: If session was cancelled during the settle window, abort
+      if (transcriptionSessionCounterRef.current !== currentSessionId) {
+        return '';
+      }
+
+      // Transition to 'transcribing' to reflect text compilation & formatting phase
+      updateRecordingState('transcribing');
+
+      let cleanSpeech = (sessionAccumulatedTextRef.current || '').trim();
       const wordCount = cleanSpeech ? cleanSpeech.split(/\s+/).filter(Boolean).length : 0;
       const durationSec =
         recordingDuration ||
         (recordingStartTimeRef.current ? Math.round((Date.now() - recordingStartTimeRef.current) / 1000) : 0);
       const audioBlob = recordedAudioBlobRef.current;
-      const hasSubstantialAudio = Boolean(audioBlob && audioBlob.size > 2000);
+      const hasValidAudio = Boolean(audioBlob && audioBlob.size > 2000);
 
-      const isSuspectedTruncated =
-        hasSubstantialAudio &&
-        (!cleanSpeech || (durationSec >= 3 && wordCount <= 2) || (durationSec >= 6 && wordCount <= 4));
+      // 6. Truncation and empty speech recovery using multi-factor evidence
+      const completeness = evaluateTranscriptCompleteness({
+        cleanSpeech,
+        durationSec,
+        hasValidAudioBuffer: hasValidAudio,
+        recognitionEndedNormally: recognitionEndedNormallyRef.current,
+        hadFinalResults: hadFinalResultsRef.current,
+        hadSubstantialInterim: hadSubstantialInterimRef.current,
+        remainingInterimLength: hadPendingInterimLenRef.current
+      });
 
-      if (isSuspectedTruncated) {
+      if (completeness.isPotentiallyIncomplete && hasValidAudio) {
         try {
           const fallbackRes = await transcribeAudioBlob({
             audioBlob,
-            language: selectedLanguageRef.current,
-            prompt:
-              'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, Node.js, Python, palindrome, algorithms, data structures, async await, promises, functions, arrow functions, var, const, let, objects, arrays, callbacks, ECMAScript, code'
+            language: selectedLanguageRef.current
+            // Prompt kept empty for general dictation to prevent vocabulary hallucination
           });
-          if (fallbackRes?.text && fallbackRes.text.trim()) {
-            const serverText = fallbackRes.text.trim();
-            const serverWordCount = serverText.split(/\s+/).filter(Boolean).length;
-            if (!cleanSpeech || serverWordCount >= wordCount) {
-              cleanSpeech = serverText;
-              sessionAccumulatedTextRef.current = serverText;
-              setTranscriptionMeta({
-                provider: fallbackRes.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
-                model: fallbackRes.model,
-                highAccuracy: true,
-                timestamp: Date.now()
-              });
-              setTranscriptionNotice({
-                type: 'success',
-                message: `Transcribed with ${fallbackRes.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : fallbackRes.model}`
-              });
+
+          // Check stale session after async fallback
+          if (transcriptionSessionCounterRef.current === currentSessionId) {
+            if (fallbackRes?.text && fallbackRes.text.trim()) {
+              const serverText = fallbackRes.text.trim();
+              const serverWordCount = serverText.split(/\s+/).filter(Boolean).length;
+              const nativeWordCount = cleanSpeech ? cleanSpeech.split(/\s+/).filter(Boolean).length : 0;
+
+              // Only adopt fallback if it provides equal or better completeness than native speech
+              if (!cleanSpeech || serverWordCount >= nativeWordCount || serverText.length > cleanSpeech.length) {
+                cleanSpeech = serverText;
+                sessionAccumulatedTextRef.current = serverText;
+                setTranscriptionMeta({
+                  provider: fallbackRes.provider === 'groq' ? 'Groq Whisper' : 'Gemini AI',
+                  model: fallbackRes.model,
+                  highAccuracy: true,
+                  timestamp: Date.now()
+                });
+                setTranscriptionNotice({
+                  type: 'success',
+                  message: `Transcribed with ${fallbackRes.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : fallbackRes.model}`
+                });
+              }
             }
           }
         } catch (fErr) {
+          // Fallback failure MUST preserve existing valid native transcript text
           console.warn('[Dictation] Fallback audio transcription notice:', fErr);
         }
+      }
+
+      // Check stale session safeguard again
+      if (transcriptionSessionCounterRef.current !== currentSessionId) {
+        return '';
       }
 
       // Handle empty speech gracefully
@@ -1698,6 +1826,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
       }
       return '';
     } finally {
+      isStoppingRef.current = false;
       setTimeout(() => {
         isTransitioningRef.current = false;
       }, 100);
@@ -1715,6 +1844,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     isCancelledRef.current = true;
     isExplicitStopRef.current = true;
     clearTimeout(restartTimeoutRef.current);
+    if (pendingRecognitionShutdownResolveRef.current) {
+      try {
+        pendingRecognitionShutdownResolveRef.current();
+      } catch (_) {}
+      pendingRecognitionShutdownResolveRef.current = null;
+    }
     cleanupRecognitionInstance();
 
     // Invalidate any in-flight transcription session
@@ -1791,7 +1926,6 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
       const result = await transcribeAudioBlob({
         audioBlob,
         language: selectedLanguageRef.current,
-        prompt: 'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, palindrome, algorithms, async await, promises, functions, objects, arrays, code',
         signal: abortCtrl.signal
       });
 

@@ -3077,9 +3077,8 @@ function mapBcp47ToIso639(bcp47Tag?: string | null): string | undefined {
   return supported.includes(primary) ? primary : undefined;
 }
 
-// Default Whisper Context Prompt (Section 4: Technical vocabulary conditioning without hardcoded word replacements)
-const DEFAULT_WHISPER_CONTEXT_PROMPT =
-  'Orvix, AI conversation assistant. Technical vocabulary: JavaScript, TypeScript, React, Node.js, Python, palindrome, algorithms, data structures, async await, promises, functions, arrow functions, var, const, let, objects, arrays, callbacks, ECMAScript, CSS, HTML, API, JSON, programming terminology, code.';
+// Default Whisper Context Prompt: Kept neutral without hardcoded programming vocabulary
+const DEFAULT_WHISPER_CONTEXT_PROMPT = '';
 
 app.post(['/api/transcribe', '/transcribe'], (req, res) => {
   transcribeUploadMiddleware.any()(req as any, res as any, async (err: any) => {
@@ -3155,9 +3154,7 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
     const rawLang = req.body?.language ? String(req.body.language).trim() : null;
     const isoLang = mapBcp47ToIso639(rawLang);
     const customPrompt = req.body?.prompt ? String(req.body.prompt).trim() : '';
-    const effectivePrompt = customPrompt
-      ? `${DEFAULT_WHISPER_CONTEXT_PROMPT} Spoken context: ${customPrompt.slice(0, 180)}`
-      : DEFAULT_WHISPER_CONTEXT_PROMPT;
+    const effectivePrompt = customPrompt ? customPrompt.slice(0, 200) : DEFAULT_WHISPER_CONTEXT_PROMPT;
 
     const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
     const hasGroq = Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY');
@@ -3189,7 +3186,9 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
         if (isoLang) {
           formData.append('language', isoLang);
         }
-        formData.append('prompt', effectivePrompt);
+        if (effectivePrompt) {
+          formData.append('prompt', effectivePrompt);
+        }
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s max timeout
@@ -3342,7 +3341,7 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
 
         const geminiPrompt = `You are a high-accuracy speech transcription engine.
 Transcribe the speech in this audio recording verbatim.
-Preserve exact words, technical terminology (e.g. Orvix, JavaScript, TypeScript, React, palindrome, algorithms, data structures, async await, promises, functions, arrow functions, var, const, let, objects, arrays, callbacks, ECMAScript, code), and punctuation.
+Preserve exact words, natural phrasing, and punctuation.
 ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
