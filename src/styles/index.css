@@ -218,7 +218,7 @@ html, body {
 /* ==========================================================================
    Application Shell Container
    ========================================================================== */
-.chatora-app {
+.orvix-app {
   display: flex;
   width: 100%;
   max-width: 100%;
@@ -233,7 +233,7 @@ html, body {
 /* ==========================================================================
    Left Sidebar Navigation & Mobile Drawer
    ========================================================================== */
-.chatora-sidebar {
+.orvix-sidebar {
   width: var(--sidebar-width);
   height: 100%;
   height: 100dvh;
@@ -251,7 +251,7 @@ html, body {
   user-select: none;
 }
 
-.chatora-sidebar.collapsed {
+.orvix-sidebar.collapsed {
   margin-left: calc(-1 * var(--sidebar-width));
   visibility: hidden;
   pointer-events: none;
@@ -896,7 +896,7 @@ html, body {
 /* ==========================================================================
    Main Viewport
    ========================================================================== */
-.chatora-main {
+.orvix-main {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -911,7 +911,7 @@ html, body {
 /* ==========================================================================
    Header & Navigation (Desktop & Mobile)
    ========================================================================== */
-.chatora-header-wrapper {
+.orvix-header-wrapper {
   position: relative;
   z-index: 30;
   width: 100%;
@@ -9249,7 +9249,7 @@ body.theme-light .notice-retry-btn,
   }
 
   /* Slide-in Navigation Drawer */
-  .chatora-sidebar {
+  .orvix-sidebar {
     position: fixed;
     top: 0;
     left: 0;
@@ -9270,7 +9270,7 @@ body.theme-light .notice-retry-btn,
     transition: transform var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear 0s;
   }
 
-  .chatora-sidebar.collapsed {
+  .orvix-sidebar.collapsed {
     transform: translateX(-105%);
     visibility: hidden;
     pointer-events: none;
@@ -9278,7 +9278,7 @@ body.theme-light .notice-retry-btn,
     transition: transform var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear var(--sidebar-duration);
   }
 
-  .chatora-sidebar .sidebar-header {
+  .orvix-sidebar .sidebar-header {
     min-height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
     height: auto;
     padding: max(8px, env(safe-area-inset-top, 8px)) 14px 8px 14px;
@@ -9956,7 +9956,7 @@ body.theme-light .notice-retry-btn,
     min-height: 34px;
     padding: 2px 12px;
   }
-  .chatora-sidebar .sidebar-header {
+  .orvix-sidebar .sidebar-header {
     min-height: 44px;
     padding: 4px 12px;
   }
@@ -12442,7 +12442,7 @@ body.theme-light .notice-retry-btn,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chatora-sidebar,
+  .orvix-sidebar,
   .sidebar-backdrop,
   .composer-stop-btn,
   .speaking-badge-icon.pulse,

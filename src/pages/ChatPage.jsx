@@ -239,7 +239,6 @@ export default function ChatPage() {
 
     if (typeof window !== 'undefined') {
       localStorage.setItem('orvix_selected_provider', normalized);
-      localStorage.setItem('chatora_selected_provider', normalized);
     }
   };
 
@@ -424,10 +423,6 @@ export default function ChatPage() {
           'orvix_guest_pins',
           JSON.stringify(pinnedIds)
         );
-        localStorage.setItem(
-          'chatora_guest_pins',
-          JSON.stringify(pinnedIds)
-        );
       }
     } catch (error) {
       console.warn('Could not save guest pins:', error);
@@ -467,7 +462,6 @@ export default function ChatPage() {
         });
         const serialized = JSON.stringify(sanitizedChats);
         localStorage.setItem('orvix_guest_chats', serialized);
-        localStorage.setItem('chatora_guest_chats', serialized);
       }
     } catch (error) {
       console.warn('Could not save guest chats:', error);
@@ -599,7 +593,6 @@ export default function ChatPage() {
       skipNextChatLoadRef.current = null;
 
       sessionStorage.setItem('orvix_active_chat', activeChatId);
-      sessionStorage.setItem('chatora_active_chat', activeChatId);
 
       setMessagesLoading(false);
       return undefined;
@@ -615,7 +608,6 @@ export default function ChatPage() {
     }
 
     sessionStorage.setItem('orvix_active_chat', activeChatId);
-    sessionStorage.setItem('chatora_active_chat', activeChatId);
 
     // Sync active mode from chat metadata (default to 'general' for legacy chats)
     const matchingChat =
@@ -1686,10 +1678,6 @@ export default function ChatPage() {
           'orvix_active_chat',
           currentChatId
         );
-        sessionStorage.setItem(
-          'chatora_active_chat',
-          currentChatId
-        );
       }
 
       const currentMessagesSnapshot = messagesRef.current;
@@ -2429,7 +2417,6 @@ export default function ChatPage() {
         activeChatIdRef.current = currentChatId;
         setActiveChatId(currentChatId);
         sessionStorage.setItem('orvix_active_chat', currentChatId);
-        sessionStorage.setItem('chatora_active_chat', currentChatId);
       }
 
       if (!requestControllerRef.current.isRequestActive(editRequestId)) return;

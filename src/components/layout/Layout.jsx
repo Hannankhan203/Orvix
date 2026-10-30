@@ -188,7 +188,7 @@ export default function Layout({
     if (isMobile && prevSidebarOpenRef.current !== sidebarOpen) {
       if (sidebarOpen) {
         requestAnimationFrame(() => {
-          const sidebarEl = document.querySelector('.chatora-sidebar');
+          const sidebarEl = document.querySelector('.orvix-sidebar');
           const closeBtn = sidebarEl?.querySelector('.sidebar-collapse-btn');
           closeBtn?.focus({ preventScroll: true });
         });
@@ -293,7 +293,7 @@ export default function Layout({
       }
 
       // 2. Exclude Top Navigation Bar / Header controls
-      if (target.closest('header, .chatora-header-wrapper, .header-desktop-view, .header-mobile-view')) {
+      if (target.closest('header, .orvix-header-wrapper, .header-desktop-view, .header-mobile-view')) {
         return true;
       }
 
@@ -333,7 +333,7 @@ export default function Layout({
       } catch (_) {}
 
       // 7. Touch must be within the main viewport/chat container
-      if (!target.closest('.chat-scroll-viewport, .chat-area-container, .chatora-main')) {
+      if (!target.closest('.chat-scroll-viewport, .chat-area-container, .orvix-main')) {
         return true;
       }
 
@@ -352,7 +352,7 @@ export default function Layout({
       if (sidebarOpenRef.current) {
         // When drawer is open (mobile or touch tablet <= 1024px), allow swipe-left on sidebar or backdrop to close
         if (window.innerWidth > 1024) return;
-        if (!e.target?.closest?.('.chatora-sidebar, .sidebar-backdrop')) return;
+        if (!e.target?.closest?.('.orvix-sidebar, .sidebar-backdrop')) return;
         if (e.target?.closest?.('input, textarea, select')) return;
       } else {
         if (isExcludedSwipeTarget(e.target, clientX)) return;
@@ -596,7 +596,7 @@ export default function Layout({
   };
 
   return (
-    <div className={`chatora-app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`}>
+    <div className={`orvix-app ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`}>
       {/* Mobile/Tablet backdrop with smooth fade in and fade out */}
       <div
         className={`sidebar-backdrop ${sidebarOpen ? 'visible' : ''}`}
@@ -621,7 +621,7 @@ export default function Layout({
       />
 
       {/* Main Viewport */}
-      <div className="chatora-main">
+      <div className="orvix-main">
         <Header
           sidebarOpen={sidebarOpen}
           onToggleSidebar={toggleSidebar}

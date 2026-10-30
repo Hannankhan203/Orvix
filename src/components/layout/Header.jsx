@@ -157,7 +157,7 @@ export default function Header({
   const userDisplayEmail = currentUser?.email || (currentUser?.isAnonymous ? 'guest@orvix.ai' : '');
 
   return (
-    <header className={`chatora-header-wrapper ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`} ref={accountMenuRef}>
+    <header className={`orvix-header-wrapper ${sidebarOpen ? 'sidebar-is-open' : 'sidebar-is-collapsed'}`} ref={accountMenuRef}>
       {/* ====================================================================
           Desktop Header Layout (Visible on width >= 768px)
           ==================================================================== */}

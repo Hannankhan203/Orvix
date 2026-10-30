@@ -56,7 +56,7 @@ export default function Sidebar({
 
   return (
     <aside
-      className={`chatora-sidebar ${!isOpen ? 'collapsed' : ''}`}
+      className={`orvix-sidebar ${!isOpen ? 'collapsed' : ''}`}
       aria-label="Sidebar navigation"
       aria-hidden={!isOpen ? 'true' : undefined}
     >

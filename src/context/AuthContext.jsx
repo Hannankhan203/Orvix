@@ -174,7 +174,6 @@ export function AuthProvider({ children }) {
 
     try {
       const serialized = JSON.stringify(guestUser);
-      sessionStorage.setItem('chatora_guest_session', serialized);
       sessionStorage.setItem('orvix_guest_session', serialized);
       localStorage.setItem('orvix_guest_session', serialized);
     } catch (_) {}
@@ -273,7 +272,6 @@ export function AuthProvider({ children }) {
       });
       try {
         const serialized = JSON.stringify(updatedGuest);
-        sessionStorage.setItem('chatora_guest_session', serialized);
         sessionStorage.setItem('orvix_guest_session', serialized);
         localStorage.setItem('orvix_guest_session', serialized);
       } catch (_) {}
