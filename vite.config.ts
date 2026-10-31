@@ -4,11 +4,29 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+function safariLookbehindPlugin() {
+  return {
+    name: 'safari-lookbehind-sanitizer',
+    transform(code: string, id: string) {
+      if (id.includes('autolink') || id.includes('remark') || id.includes('mdast')) {
+        if (code.includes('(?<=^|\\s|\\p{P}|\\p{S})')) {
+          return {
+            code: code.replace(/\(\?<=[\^|\s\\p\{P\}\\p\{S\}]+\)/g, ''),
+            map: null
+          };
+        }
+      }
+      return null;
+    }
+  };
+}
+
 export default defineConfig(() => {
   return {
     plugins: [
       react(),
       tailwindcss(),
+      safariLookbehindPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
@@ -56,14 +74,19 @@ export default defineConfig(() => {
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV === 'production' || process.env.npm_lifecycle_event === 'build' ? 'production' : 'development'),
     },
     build: {
+      target: ['es2020', 'safari15'],
       rollupOptions: {
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
-              if (id.includes('firebase') || id.includes('@firebase')) {
+              if (id.includes('/node_modules/firebase/') || id.includes('/node_modules/@firebase/')) {
                 return 'vendor-firebase';
               }
-              if (/\/node_modules\/(react|react-dom|scheduler)\//.test(id)) {
+              if (
+                id.includes('/node_modules/react/') ||
+                id.includes('/node_modules/react-dom/') ||
+                id.includes('/node_modules/scheduler/')
+              ) {
                 return 'vendor-react';
               }
               if (
@@ -71,13 +94,14 @@ export default defineConfig(() => {
                 id.includes('remark-gfm') ||
                 id.includes('micromark') ||
                 id.includes('mdast') ||
+                id.includes('hast') ||
                 id.includes('unist') ||
                 id.includes('vfile') ||
                 id.includes('unified')
               ) {
                 return 'vendor-markdown';
               }
-              if (/\/node_modules\/lucide-react\//.test(id)) {
+              if (id.includes('/node_modules/lucide-react/')) {
                 return 'vendor-icons';
               }
             }

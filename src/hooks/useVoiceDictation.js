@@ -277,7 +277,16 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
   // Remove irregular spaces before punctuation
   text = text
     .replace(/\s+([.,!?:;۔،؟])/g, '$1')
-    .replace(/(?<!\b[A-Za-z0-9_])\.([a-zA-Z])/g, '. $1')
+    .replace(/(^|[\s\S])\.([a-zA-Z])/g, (match, prefix, letter, offset, fullStr) => {
+      if (!prefix) return '. ' + letter;
+      if (!/\w/.test(prefix)) return prefix + '. ' + letter;
+      const charBeforePrefix = offset > 0 ? fullStr[offset - 1] : '';
+      const isWordBoundary = !charBeforePrefix || !/\w/.test(charBeforePrefix);
+      if (isWordBoundary) {
+        return match;
+      }
+      return prefix + '. ' + letter;
+    })
     .replace(/([,!?:;۔،؟])([^\s\d\n])/g, '$1 $2')
     .replace(/[ \t]+/g, ' ');
 

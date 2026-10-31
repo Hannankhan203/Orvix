@@ -357,7 +357,10 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
 
   // B. Disambiguate "pedrandom" / "ped random" -> "palindrome" in programming context
   if (isProgrammingContext) {
-    text = text.replace(/(?<!math\s*\.?\s*)\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome');
+    text = text.replace(
+      /(math\s*\.?\s*)?\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi,
+      (match, prefix) => (prefix ? match : 'palindrome')
+    );
 
     // C. Disambiguate "sync await" / "sink await" -> "async/await" in async/programming context
     if (isAsyncContext) {
@@ -369,7 +372,16 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
   // 5. Punctuation spacing and sentence boundaries
   text = text
     .replace(/\s+([.,!?:;۔،؟])/g, '$1')
-    .replace(/(?<!\b[A-Za-z0-9_])\.([a-zA-Z])/g, '. $1')
+    .replace(/(^|[\s\S])\.([a-zA-Z])/g, (match, prefix, letter, offset, fullStr) => {
+      if (!prefix) return '. ' + letter;
+      if (!/\w/.test(prefix)) return prefix + '. ' + letter;
+      const charBeforePrefix = offset > 0 ? fullStr[offset - 1] : '';
+      const isWordBoundary = !charBeforePrefix || !/\w/.test(charBeforePrefix);
+      if (isWordBoundary) {
+        return match;
+      }
+      return prefix + '. ' + letter;
+    })
     .replace(/([,!?:;۔،؟])([^\s\d\n])/g, '$1 $2')
     .replace(/[ \t]+/g, ' ');
 
