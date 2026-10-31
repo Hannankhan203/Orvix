@@ -539,9 +539,9 @@ function isConfiguredCredential(value: string): boolean {
 }
 
 export function getServerProviderConfigStatus(serverlessRuntime = false) {
-  const geminiKey = (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
-  const groqKey = (process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '').trim();
-  const openrouterKey = (process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '').trim();
+  const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const groqKey = (process.env.GROQ_API_KEY || '').trim();
+  const openrouterKey = (process.env.OPENROUTER_API_KEY || '').trim();
   const cfAccountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
   const cfToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
 
@@ -2641,7 +2641,7 @@ app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, re
     if (inputSource) {
       if (isImg) {
         const isOfflineReq = req.query?.offline === 'true';
-        const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
+        const geminiKey = process.env.GEMINI_API_KEY || null;
         const imgExtraction = await extractImageText(
           inputSource,
           record.originalName,
@@ -2925,7 +2925,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
         if (isImg) {
           rec.isImage = true;
           const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
-          const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
+          const geminiKey = process.env.GEMINI_API_KEY || null;
           const imgExtraction = (await extractImageText(
             inputSource,
             rec.originalName,
@@ -2940,7 +2940,7 @@ app.post(['/api/upload', '/upload'], (req, res) => {
           rec.status = imgExtraction?.status === 'error' ? 'error' : 'ready';
         } else {
           const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
-          const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
+          const geminiKey = process.env.GEMINI_API_KEY || null;
           const extraction = (await extractDocumentContent(
             inputSource,
             rec.originalName,
@@ -3170,9 +3170,9 @@ app.post(['/api/transcribe', '/transcribe'], (req, res) => {
     const customPrompt = req.body?.prompt ? String(req.body.prompt).trim() : '';
     const effectivePrompt = customPrompt ? customPrompt.slice(0, 200) : DEFAULT_WHISPER_CONTEXT_PROMPT;
 
-    const groqKey = process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '';
+    const groqKey = process.env.GROQ_API_KEY || '';
     const hasGroq = Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY');
-    const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+    const geminiKey = process.env.GEMINI_API_KEY || '';
     const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
 
     // Primary Audio Transcription Path: When audio payload is present, execute genuine Groq Whisper transcription
@@ -3690,7 +3690,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
             const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
             if (inputSource) {
               const isOfflineChat = Boolean(req.body?.offline);
-              const geminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || null;
+              const geminiKey = process.env.GEMINI_API_KEY || null;
 
               if (isImg) {
                 record.extraction = (await extractImageText(
@@ -3930,7 +3930,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 1. Google Gemini Provider
     if (normalizedProvider === 'gemini') {
-      const apiKey = (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
+      const apiKey = (process.env.GEMINI_API_KEY || '').trim();
 
       if (!isConfiguredCredential(apiKey)) {
         if (!isDemoModeEnabled()) {
@@ -4560,7 +4560,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 2. Groq Provider
     if (normalizedProvider === 'groq') {
-      const apiKey = (process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY || '').trim();
+      const apiKey = (process.env.GROQ_API_KEY || '').trim();
       if (!isConfiguredCredential(apiKey)) {
         if (!isDemoModeEnabled()) {
           return sendProviderNotConfiguredError(res, 'groq', isServerless);
@@ -5280,7 +5280,7 @@ app.post(['/api/chat', '/chat', '/'], async (req, res) => {
 
     // 3. OpenRouter Provider
     if (normalizedProvider === 'openrouter') {
-      const apiKey = (process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY || '').trim();
+      const apiKey = (process.env.OPENROUTER_API_KEY || '').trim();
       if (!isConfiguredCredential(apiKey)) {
         if (!isDemoModeEnabled()) {
           return sendProviderNotConfiguredError(res, 'openrouter', isServerless);
