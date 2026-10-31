@@ -989,8 +989,7 @@ export default function ChatArea({
     transcriptionMeta,
     transcriptionNotice,
     clearTranscriptionNotice,
-    retryTranscription,
-    isDiagnosticsEnabled
+    retryTranscription
   } = useVoiceDictation({
     inputValue,
     onInputChange,
@@ -1851,17 +1850,6 @@ Transcript:
                     {formattedDuration}
                   </span>
                 </div>
-
-                {/* Voice Dictation Diagnostic Indicator Badge (privacy-conscious, dev observability) */}
-                {isDiagnosticsEnabled && !isPublicSharedViewer && (
-                  <span
-                    className="dictation-diag-pill"
-                    title="Voice dictation diagnostics are active. Session diagnostics are logged to browser console."
-                    aria-label="Voice dictation diagnostics active"
-                  >
-                    DIAG
-                  </span>
-                )}
 
                 {/* Recognition Language Selector Pill */}
                 <div
