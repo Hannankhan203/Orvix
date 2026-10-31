@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: V 0.3.0**
+**Version: V 0.3.1**
 
 An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
 
@@ -40,6 +40,7 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
    - [Interim Transcript Handling & Deduplication](#interim-transcript-handling--deduplication)
    - [Smart Punctuation & Typography Formatting](#smart-punctuation--typography-formatting)
    - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
+   - [iOS 15 & Mobile Device Compatibility](#ios-15--mobile-device-compatibility)
 10. [Chatbot Modes](#chatbot-modes)
     - [1. General Assistant Mode](#1-general-assistant-mode)
     - [2. Learning Mode](#2-learning-mode)
@@ -73,6 +74,7 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [Security and Data Isolation](#security-and-data-isolation)
     - [Persistence and Reliability](#persistence-and-reliability)
 16. [Architecture & Technology Stack](#architecture--technology-stack)
+    - [Verified Platform & Device Compatibility](#verified-platform--device-compatibility)
 17. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
 18. [Project Structure](#project-structure)
 19. [Environment Variables & Configuration](#environment-variables--configuration)
@@ -390,6 +392,11 @@ $$\text{Composer Text} = \text{Base Text} + \sum \text{Committed Segments} + \te
 
 Assistant messages include audio playback controls (Play, Pause, Stop) powered by the Web Speech Synthesis API. Text is cleaned of markdown syntax and split into ~140-character clauses to avoid Chromium speech synthesis timeouts.
 
+### iOS 15 & Mobile Device Compatibility
+
+- **Safari on iPhone 7 (iOS 15.8.8)**: Voice dictation works successfully in Safari on iOS 15.8.8. Long-form dictation has been manually tested and verified with real-time interim previews and server-side Whisper refinement. Safari is currently the recommended environment for voice dictation on iOS 15.
+- **Standalone PWA Microphone Platform Limitation**: On iOS 15, microphone access may remain unavailable inside the standalone Home Screen PWA even after the user grants microphone permission. This appears to be an iOS/WebKit standalone-PWA limitation rather than a core Orvix dictation failure. Safari should be used for voice dictation on iOS 15 when this occurs.
+
 ---
 
 ## Chatbot Modes
@@ -618,6 +625,21 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 - **Audio & Documents**: Web Speech API, MediaRecorder, Groq Whisper Large v3 Turbo, `unpdf`, `mammoth`, `jszip`, `tesseract.js`.
 - **Persistence & Sharing**: IndexedDB for local file blobs and offline queues, Firebase Auth, Cloud Firestore (`users/{uid}/chats` for private sync and `sharedChats/{shareId}` for immutable snapshots), and `localStorage` for Guest Mode.
 
+### Verified Platform & Device Compatibility
+
+Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, and standalone environments:
+
+- **Windows 11** — Chrome
+- **Windows 11** — Microsoft Edge
+- **Windows 11** — Brave
+- **Windows 11** — PWA
+- **Windows 7** — Chrome
+- **Android** — Chrome
+- **Android** — PWA
+- **iPhone 7** — iOS 15.8.8 Safari
+- **iPhone 7** — iOS 15.8.8 PWA
+- **Modern iPhones** — Safari
+
 ---
 
 ## Authentication & Persistence Architecture
@@ -779,10 +801,26 @@ Configured via `vercel.json` with handlers in `api/`:
 5. **Initial Online Requirement**: Browser AI requires one initial online visit to precache the PWA app shell and download model weights.
 6. **Online Snapshot Generation**: Creating a shared conversation snapshot requires active internet connectivity to contact Cloud Firestore; offline snapshot creation is disabled to prevent invalid or unreachable share links.
 7. **Shared Snapshot Size & Message Boundaries**: Individual shared snapshots are limited to 950 KB UTF-8 and a maximum of 500 messages to ensure single-document atomic storage limits.
+8. **iOS 15 Standalone PWA Microphone Limitation**: On iOS 15, microphone access may remain unavailable inside the standalone Home Screen PWA even after the user grants microphone permission. This appears to be an iOS/WebKit standalone-PWA limitation rather than a core Orvix dictation failure. Safari should be used for voice dictation on iOS 15 when this occurs.
 
 ---
 
 ## Version History & Release Changelog
+
+### V 0.3.1 — iOS 15 Compatibility & Production Reliability Release
+- **Fixed iPhone 7 / iOS 15.8.8 Safari Blank-Screen Issue**: Resolved the critical startup failure where Orvix consistently displayed a completely blank screen in Safari and the installed PWA on iPhone 7 running iOS 15.8.8.
+- **Removed Unsupported Regular-Expression Lookbehind Assertions**: Completely removed JavaScript regular-expression lookbehind assertions (`(?<=...)` and `(?<!...)`) from application bundles. WebKit versions prior to Safari 16.4 (such as WebKit 605.1.15 in iOS 15.8.8) do not support RegExp lookbehinds and threw a fatal compile-time `SyntaxError` during initial module evaluation.
+- **Safari-Compatible Speech-Text Cleaning & Dictation Formatting**: Updated speech-text cleaning in `src/utils/speechTextCleaner.js` and voice-dictation formatting in `src/hooks/useVoiceDictation.js` to use standard capturing groups and backward-compatible replacer functions, preserving "palindrome" phonetic correction, `Math.random` API protection, abbreviation spacing (`i.e.`, `e.g.`), and decimal number formats without lookbehinds.
+- **Safari-Compatible Markdown/GFM Autolinking Dependency**: Updated the Markdown/GFM autolinking dependency (`mdast-util-gfm-autolink-literal`) to a Safari-compatible version (`2.0.0`) via package overrides, combined with build-time regex sanitization, eliminating the un-transpiled positive lookbehind in `remark-gfm`.
+- **Safari 15 Production Build Targeting**: Added Safari 15 compatibility targeting (`target: ['es2020', 'safari15']`) to the production Vite build configuration in `vite.config.ts`.
+- **Automated iOS 15 Compatibility Regression Testing**: Added automated regression test suite (`scripts/testIos15Compatibility.js`) validating speech cleaning, punctuation formatting, ReactMarkdown GFM email autolinking, and verifying zero lookbehinds in production chunks.
+- **Zero Lookbehinds Verified**: Verified that the production JavaScript bundle contains zero `(?<=...)` and `(?<!...)` lookbehind assertions across all emitted JavaScript chunks.
+- **Preserved Markdown/GFM Autolinking Functionality**: Verified that Markdown/GFM email (`mailto:`) and URL autolinking functionality remains fully operational.
+- **Preserved Voice Dictation Functionality**: Verified that live voice dictation and Whisper audio refinement remain fully operational.
+- **Improved Production Vendor Chunk Separation**: Refined production vendor chunk separation so Markdown dependencies do not unnecessarily block initial application startup, isolating React runtime into `vendor-react`.
+- **Existing Regression Suites Passing**: Existing regression suites for voice dictation, message alignment/ordering, multi-tab synchronization, IndexedDB quota handling, and offline reliability remained 100% passing.
+- **Successfully Verified iPhone 7 Safari Launch**: Successfully verified Orvix launches in Safari on an iPhone 7 running iOS 15.8.8.
+- **Successfully Verified iPhone 7 PWA Launch**: Successfully verified the Orvix Home Screen PWA launches on an iPhone 7 running iOS 15.8.8.
 
 ### V 0.3.0 — Orvix Share Chat, Public Previews & Independent Fork Imports
 - **Orvix Share Chat Complete Lifecycle**: Implemented complete 8-stage conversation sharing architecture allowing authenticated users to create immutable snapshots of their conversations accessible via `/share/{shareId}`.
