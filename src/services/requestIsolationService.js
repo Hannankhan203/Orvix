@@ -878,7 +878,7 @@ export async function runIsolatedPromptStream({
       if (targetChatId && typeof onPersistMessage === 'function') {
         await onPersistMessage(targetChatId, completedMessage, true);
       }
-      return { status: 'completed_background', requestId };
+      return { status: 'completed_background', requestId, text: targetText };
     }
 
     if (!prefersReducedMotion && displayedText.length < targetText.length) {
@@ -907,7 +907,7 @@ export async function runIsolatedPromptStream({
       );
     }
 
-    return { status: 'completed', requestId };
+    return { status: 'completed', requestId, text: targetText };
   } catch (error) {
     isStreamDone = true;
     cancelCurrentAnimation();

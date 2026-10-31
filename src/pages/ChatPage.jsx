@@ -25,6 +25,7 @@ import {
   subscribeToChatMessages,
   loadConversationMessages,
   generateChatTitle,
+  generateMeaningfulChatTitle,
   updateChatMode,
   getCachedUserChats,
   saveCachedChatMessages,
@@ -950,7 +951,7 @@ export default function ChatPage({
   };
 
   // Rename a conversation.
-  const handleRenameChat = async (chatId, newTitle) => {
+  const handleRenameChat = async (chatId, newTitle, isManual = true) => {
     const sanitized = (newTitle || '').trim();
     if (!sanitized) return;
 
@@ -959,18 +960,21 @@ export default function ChatPage({
         await renameConversation(
           currentUser.uid,
           chatId,
-          sanitized
+          sanitized,
+          isManual
         );
         setUserChats((previous) =>
           previous.map((chat) =>
-            chat.id === chatId ? { ...chat, title: sanitized } : chat
+            chat.id === chatId
+              ? { ...chat, title: sanitized, ...(isManual ? { hasCustomTitle: true } : {}) }
+              : chat
           )
         );
       } else {
         setUserChats((previous) => {
           const next = previous.map((chat) =>
             chat.id === chatId
-              ? { ...chat, title: sanitized }
+              ? { ...chat, title: sanitized, ...(isManual ? { hasCustomTitle: true } : {}) }
               : chat
           );
 
@@ -2088,6 +2092,8 @@ export default function ChatPage({
           ? `[User attached ${processedAttachments.length} file${processedAttachments.length > 1 ? 's' : ''}: ${processedAttachments.map((a) => `${a.name || a.originalName} (${a.formattedSize})`).join(', ')}]`
           : '');
 
+      const isFirstConversationTurn = !initialChatId || validHistory.length === 0;
+
       if (isAuthenticatedSharedPreview) {
         setSharedPreviewSubmissionState('streaming');
       }
@@ -2104,6 +2110,28 @@ export default function ChatPage({
         null,
         preflightRequestId
       );
+
+      // Automatic chat title refinement using the completed AI response:
+      // Only refine for the initial turn of a conversation, and only if the user hasn't manually renamed it.
+      if (isFirstConversationTurn && currentChatId && !isAuthenticatedSharedPreview) {
+        try {
+          const currentChat = userChatsRef.current.find((c) => c.id === currentChatId);
+          if (!currentChat?.hasCustomTitle) {
+            const aiCompletedText =
+              promptResult?.text ||
+              messagesRef.current.find((m) => m.id === assistantMessageId)?.text ||
+              '';
+            if (aiCompletedText && promptText) {
+              const refinedTitle = generateMeaningfulChatTitle(promptText, aiCompletedText);
+              if (refinedTitle && refinedTitle !== currentChat?.title) {
+                void handleRenameChat(currentChatId, refinedTitle, false);
+              }
+            }
+          }
+        } catch (titleErr) {
+          console.warn('Could not auto-refine chat title:', titleErr);
+        }
+      }
 
       if (isAuthenticatedSharedPreview) {
         return await handleSharedPreviewImportTransition({
@@ -2887,14 +2915,17 @@ export default function ChatPage({
         });
       }
 
-      // 8. If editing the initial message of the conversation, update the conversation title
+      // 8. If editing the initial message of the conversation, update provisional title only if no custom title
       if (userMsgIndex === 0) {
-        const refreshedTitle = generateChatTitle(trimmed);
-        void handleRenameChat(currentChatId, refreshedTitle);
+        const currentChat = userChatsRef.current.find((c) => c.id === currentChatId);
+        if (!currentChat?.hasCustomTitle) {
+          const refreshedTitle = generateChatTitle(trimmed);
+          void handleRenameChat(currentChatId, refreshedTitle, false);
+        }
       }
 
       // 9. Execute AI stream with correct earlier history and edited prompt
-      await executePrompt(
+      const editResult = await executePrompt(
         trimmed,
         validHistory,
         currentChatId,
@@ -2912,6 +2943,27 @@ export default function ChatPage({
         null,
         editRequestId
       );
+
+      // Auto-refine title using AI response if first message was edited and user has not manually renamed
+      if (userMsgIndex === 0 && currentChatId) {
+        try {
+          const currentChat = userChatsRef.current.find((c) => c.id === currentChatId);
+          if (!currentChat?.hasCustomTitle) {
+            const aiCompletedText =
+              editResult?.text ||
+              messagesRef.current.find((m) => m.id === assistantMessageId)?.text ||
+              '';
+            if (aiCompletedText && trimmed) {
+              const refinedTitle = generateMeaningfulChatTitle(trimmed, aiCompletedText);
+              if (refinedTitle && refinedTitle !== currentChat?.title) {
+                void handleRenameChat(currentChatId, refinedTitle, false);
+              }
+            }
+          }
+        } catch (titleErr) {
+          console.warn('Could not auto-refine chat title on edit:', titleErr);
+        }
+      }
     } catch (error) {
       console.error('Edit-and-resend execution error:', error);
       if (requestControllerRef.current.isRequestActive(editRequestId)) {

@@ -349,6 +349,246 @@ export function generateChatTitle(promptText, maxLength = 36) {
   return truncated + '...';
 }
 
+function cleanTitleText(str) {
+  if (!str) return '';
+  return str
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^[\s#*`>"'\-–—:•]+/, '')
+    .replace(/[#*`>"'\r\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const PRESERVED_ACRONYMS = {
+  api: 'API',
+  apis: 'APIs',
+  sql: 'SQL',
+  pto: 'PTO',
+  json: 'JSON',
+  csv: 'CSV',
+  html: 'HTML',
+  css: 'CSS',
+  ui: 'UI',
+  ux: 'UX',
+  id: 'ID',
+  ids: 'IDs',
+  url: 'URL',
+  urls: 'URLs',
+  http: 'HTTP',
+  https: 'HTTPS',
+  rest: 'REST',
+  sdk: 'SDK',
+  ai: 'AI',
+  llm: 'LLM',
+  devops: 'DevOps',
+  react: 'React',
+  vue: 'Vue',
+  python: 'Python',
+  javascript: 'JavaScript',
+  typescript: 'TypeScript',
+  docker: 'Docker',
+  kubernetes: 'Kubernetes',
+  postgres: 'PostgreSQL',
+  postgresql: 'PostgreSQL',
+  mongodb: 'MongoDB',
+  sqlite: 'SQLite',
+  github: 'GitHub',
+  typeerror: 'TypeError',
+  beautifulsoup: 'BeautifulSoup'
+};
+
+function toTitleCase(str) {
+  const minorWords = new Set([
+    'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'in', 'nor', 'of', 'on', 'or', 'so', 'the', 'to', 'up', 'yet', 'with'
+  ]);
+
+  return str
+    .split(' ')
+    .filter(Boolean)
+    .map((rawWord, idx, arr) => {
+      const cleanWord = rawWord.replace(/^[^\w]+|[^\w]+$/g, '').toLowerCase();
+      if (PRESERVED_ACRONYMS[cleanWord]) {
+        const replacement = PRESERVED_ACRONYMS[cleanWord];
+        return rawWord.replace(new RegExp(cleanWord, 'i'), replacement);
+      }
+
+      if (/^[A-Z0-9_\-\.]+$/.test(rawWord) && rawWord.length > 1) {
+        return rawWord;
+      }
+
+      const lower = rawWord.toLowerCase();
+      if (idx > 0 && idx < arr.length - 1 && minorWords.has(lower)) {
+        return lower;
+      }
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ');
+}
+
+function truncateToWords(text, minWords = 3, maxWords = 6) {
+  const words = text
+    .replace(/[.,:;!?]+$/g, '')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (words.length <= maxWords) {
+    return words.join(' ');
+  }
+
+  let slice = words.slice(0, maxWords);
+  const trailingHanging = new Set([
+    'and', 'or', 'the', 'a', 'an', 'of', 'for', 'in', 'with', 'to', 'by', 'at', 'on', 'from', 'about', 'that', 'which', 'who'
+  ]);
+  while (slice.length > minWords && trailingHanging.has(slice[slice.length - 1].toLowerCase().replace(/[^\w]/g, ''))) {
+    slice.pop();
+  }
+  return slice.join(' ');
+}
+
+/**
+ * Generates a concise, descriptive conversation title (ideally 3–6 words)
+ * using the completed AI response and the initial user prompt.
+ * Operates purely locally and synchronously without any additional model call or network request.
+ *
+ * @param {string} promptText - User's first prompt text
+ * @param {string} [aiResponseText=''] - Completed AI response text
+ * @returns {string}
+ */
+export function generateMeaningfulChatTitle(promptText, aiResponseText = '') {
+  const cleanPrompt = cleanTitleText(promptText);
+  const cleanAi = cleanTitleText(aiResponseText);
+
+  // Conversational prompts
+  if (/^(?:hello|hi|hey|good (?:morning|afternoon|evening)|greetings|howdy)(?:\s+(?:there|friend|everyone|bot|assistant))?[\s!.]*$/i.test(cleanPrompt)) {
+    return 'New Conversation';
+  }
+
+  // 1. Check for email Subject: line in AI response
+  if (aiResponseText) {
+    const subjectMatch = aiResponseText.match(/^(?:Subject:\s*)([^\n\r]{3,60})/im);
+    if (subjectMatch) {
+      const subject = cleanTitleText(subjectMatch[1])
+        .replace(/^re:\s*/i, '')
+        .replace(/[–—\-]\s*/g, ' ')
+        .trim();
+      const words = subject.split(/\s+/).filter(Boolean);
+      if (words.length >= 2) {
+        return toTitleCase(truncateToWords(subject, 3, 6));
+      }
+    }
+
+    // 2. Check for markdown headings in AI response (e.g. # Title, ## Subtitle)
+    const headingMatch = aiResponseText.match(/^(?:#{1,3}\s+)([^\n\r#]{3,70})/m);
+    if (headingMatch) {
+      let heading = cleanTitleText(headingMatch[1]);
+      const lowerHeading = heading.toLowerCase();
+      const genericWords = ['introduction', 'summary', 'overview', 'solution', 'steps', 'step 1', 'guide', 'here is'];
+      const isGeneric = genericWords.some((g) => lowerHeading === g || lowerHeading.startsWith(`${g}:`));
+      if (!isGeneric) {
+        const words = heading.split(/\s+/).filter(Boolean);
+        if (words.length >= 2 && words.length <= 10) {
+          return toTitleCase(truncateToWords(heading, 3, 6));
+        }
+      }
+    }
+
+    // 3. Check for bold title header at the very beginning: **Title**
+    const boldHeaderMatch = aiResponseText.match(/^\*\*([A-Za-z0-9\s\-_:]{4,50})\*\*/m);
+    if (boldHeaderMatch) {
+      const boldCandidate = cleanTitleText(boldHeaderMatch[1]);
+      const lowerBold = boldCandidate.toLowerCase();
+      if (!lowerBold.includes('note:') && !lowerBold.includes('warning:') && !lowerBold.includes('tip:')) {
+        const words = boldCandidate.split(/\s+/).filter(Boolean);
+        if (words.length >= 2 && words.length <= 8) {
+          return toTitleCase(truncateToWords(boldCandidate, 3, 6));
+        }
+      }
+    }
+
+    // 4. Check for introductory list/idea phrasing:
+    // "Here are 5 catchy slogans for Aqualux..."
+    // "Here are three outstanding science fiction books..."
+    const listIntroMatch = aiResponseText.match(
+      /^(?:here (?:is|are)\s+(?:a\s+|an\s+|the\s+|some\s+|\d+\s+)?(?:catchy\s+|creative\s+|great\s+|top\s+|outstanding\s+|simple\s+|recommended\s+)?)([^:\n.?!]{4,60})/i
+    );
+    if (listIntroMatch) {
+      let topic = cleanTitleText(listIntroMatch[1])
+        .replace(/^(?:list of\s+)/i, '')
+        .replace(/\b(?:that explore|which explore|to read|to check out|you might like)\b.*$/i, '')
+        .trim();
+      const words = topic.split(/\s+/).filter(Boolean);
+      if (words.length >= 2 && words.length <= 8) {
+        return toTitleCase(truncateToWords(topic, 3, 6));
+      }
+    }
+
+    // 5. Check for definition/explanation pattern in AI response:
+    // "[Subject] is the process by which..." or "[Subject] are lightweight packages..."
+    const defMatch = aiResponseText.match(/^([A-Z][a-zA-Z0-9_\-\s]{2,35})\s+(?:is|are)\s+(?:a|an|the|lightweight|defined|designed|used|essentially|often|primarily)/i);
+    if (defMatch) {
+      const subject = cleanTitleText(defMatch[1]);
+      const words = subject.split(/\s+/).filter(Boolean);
+      if (words.length >= 1 && words.length <= 4) {
+        // Look for domain/context in prompt
+        if (/\bdevops\b/i.test(cleanPrompt)) {
+          return toTitleCase(`${subject} in DevOps`);
+        }
+        const plantOrBio = cleanPrompt.match(/\b(?:in|for)\s+(plants|biology|python|react|javascript|node)\b/i);
+        if (plantOrBio) {
+          return toTitleCase(`${subject} in ${toTitleCase(plantOrBio[1])}`);
+        }
+        if (/how|why|explain|work|understand/i.test(cleanPrompt)) {
+          return toTitleCase(`${subject} Explained`);
+        }
+        return toTitleCase(truncateToWords(`${subject} Overview`, 3, 5));
+      }
+    }
+  }
+
+  // 6. Synthesize topic from prompt intent
+  let promptSubject = cleanPrompt
+    // Strip conversational lead-ins
+    .replace(/^(?:can you (?:please )?(?:help me (?:with |to )?|explain (?:to me )?|write (?:me )?|show me |tell me |give me |suggest |recommend )?)/i, '')
+    .replace(/^(?:could you (?:please )?(?:help me |explain |write |show me |tell me )?)/i, '')
+    .replace(/^(?:how (?:do i|can i|does|to|would i)\s+)/i, '')
+    .replace(/^(?:what (?:is|are) (?:the |a )?)/i, '')
+    .replace(/^(?:i (?:need|want) (?:to )?(?:know |create |build |write |a |some )?)/i, '')
+    .replace(/^(?:please )/i, '')
+    .replace(/^(?:debug(?:ging)? (?:a |an |the )?)/i, 'Fixing ')
+    .replace(/[?!.]+$/g, '')
+    .trim();
+
+  // Handle programming/error patterns
+  if (/^Fixing\s+TypeError/i.test(promptSubject)) {
+    const errorProp = promptSubject.match(/reading\s+(\w+)/i);
+    const framework = promptSubject.match(/(?:in|with)\s+(\w+)/i);
+    if (errorProp && framework) {
+      return toTitleCase(`Fixing ${framework[1]} TypeError ${errorProp[1]}`);
+    }
+  }
+
+  // Handle email/letter prompts
+  const emailMatch = cleanPrompt.match(/(?:email|letter|message)\s+(?:to\s+[a-z\s]+?\s+)?(?:requesting|asking for|about)\s+([^.?!]+)/i);
+  if (emailMatch) {
+    return toTitleCase(truncateToWords(`Requesting ${emailMatch[1]}`, 3, 6));
+  }
+
+  if (promptSubject) {
+    const words = promptSubject.split(/\s+/).filter(Boolean);
+    if (words.length <= 2) {
+      if (/script|code|program/i.test(cleanPrompt)) {
+        promptSubject = `${promptSubject} Script`;
+      } else {
+        promptSubject = `${promptSubject} Overview`;
+      }
+    }
+    return toTitleCase(truncateToWords(promptSubject, 3, 6));
+  }
+
+  return 'New Conversation';
+}
+
 /**
  * Generates a valid chat ID without requiring network connectivity.
  * @param {string} [userId]
@@ -592,20 +832,24 @@ export async function saveChatMessage(userId, chatId, message) {
  * @param {string} userId
  * @param {string} chatId
  * @param {string} newTitle
+ * @param {boolean} [isManual=false] - Whether this rename was manually triggered by the user
  */
-export async function renameConversation(userId, chatId, newTitle) {
+export async function renameConversation(userId, chatId, newTitle, isManual = false) {
   const sanitized = (newTitle || '').trim();
   if (!sanitized) {
     throw new Error('Conversation title cannot be empty.');
   }
 
+  const metaUpdate = {
+    id: chatId,
+    title: sanitized,
+    rawUpdatedAt: Date.now(),
+    pendingMetaSync: !isBrowserOnline(),
+    ...(isManual ? { hasCustomTitle: true } : {})
+  };
+
   if (userId && chatId) {
-    upsertCachedUserChat(userId, {
-      id: chatId,
-      title: sanitized,
-      rawUpdatedAt: Date.now(),
-      pendingMetaSync: !isBrowserOnline()
-    });
+    upsertCachedUserChat(userId, metaUpdate);
   }
 
   if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
@@ -617,7 +861,8 @@ export async function renameConversation(userId, chatId, newTitle) {
     await withBoundedTimeout(
       updateDoc(chatDocRef, {
         title: sanitized,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        ...(isManual ? { hasCustomTitle: true } : {})
       }),
       FIRESTORE_OP_TIMEOUT_MS,
       'renameConversation'
@@ -853,6 +1098,7 @@ function mergeCloudAndLocalChats(userId, cloudChats) {
         mode: localMatch.pendingMetaSync ? localMatch.mode : (c.mode || localMatch.mode),
         isPinned: localMatch.pendingMetaSync ? Boolean(localMatch.isPinned) : Boolean(c.isPinned),
         pinnedAt: localMatch.pendingMetaSync ? localMatch.pinnedAt : c.pinnedAt,
+        hasCustomTitle: Boolean(localMatch.hasCustomTitle || c.hasCustomTitle),
         rawUpdatedAt: newerRawUpdated,
         timestamp: formatChatDateLabel(newerRawUpdated),
         pendingSync: Boolean(localMatch.pendingSync),
@@ -862,6 +1108,7 @@ function mergeCloudAndLocalChats(userId, cloudChats) {
     } else {
       mergedMap.set(c.id, {
         ...c,
+        hasCustomTitle: Boolean(c.hasCustomTitle),
         pendingSync: false,
         pendingMetaSync: false,
         createdOffline: false
@@ -961,6 +1208,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
                   updatedAt: serverTimestamp(),
                   isPinned: Boolean(localChat.isPinned),
                   pinnedAt: localChat.isPinned ? serverTimestamp() : null,
+                  ...(localChat.hasCustomTitle ? { hasCustomTitle: true } : {}),
                   ...(localChat.isImported ? { isImported: true } : {}),
                   ...(localChat.importedFromShareId ? { importedFromShareId: localChat.importedFromShareId } : {})
                 },
@@ -979,6 +1227,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
                 pinnedAt: localChat.isPinned
                   ? (existingSnap.data()?.pinnedAt || serverTimestamp())
                   : null,
+                ...(localChat.hasCustomTitle ? { hasCustomTitle: true } : {}),
                 updatedAt: serverTimestamp()
               }),
               FIRESTORE_OP_TIMEOUT_MS,
@@ -1094,6 +1343,7 @@ export function subscribeToUserChats(userId, onUpdate, onError) {
           rawUpdatedAt: data.updatedAt?.toMillis ? data.updatedAt.toMillis() : Date.now(),
           isPinned: Boolean(data.isPinned),
           pinnedAt: data.pinnedAt?.toMillis ? data.pinnedAt.toMillis() : (data.pinnedAt || null),
+          hasCustomTitle: Boolean(data.hasCustomTitle),
           isImported: Boolean(data.isImported),
           importedFromShareId: data.importedFromShareId || null
         });
