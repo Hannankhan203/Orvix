@@ -1303,15 +1303,19 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         recognition.maxAlternatives = 1;
         recognition.lang = selectedLanguageRef.current;
 
-        console.log(
-          `[Dictation] Initializing recognition (continuous: true, interimResults: true, lang: ${selectedLanguageRef.current})`
-        );
+        if (isDictationDiagnosticsEnabled()) {
+          console.log(
+            `[Dictation] Initializing recognition (continuous: true, interimResults: true, lang: ${selectedLanguageRef.current})`
+          );
+        }
 
         hasFatalErrorRef.current = false;
 
         recognition.onstart = () => {
           if (instanceCounterRef.current !== currentInstanceId) return;
-          console.log('[Dictation] Speech recognition service active');
+          if (isDictationDiagnosticsEnabled()) {
+            console.log('[Dictation] Speech recognition service active');
+          }
           isStartingRef.current = false;
           updateRecordingState('listening');
           setDictationError(null);
@@ -1436,9 +1440,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
             if (!isNewSession && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-              console.warn(
-                '[Dictation] SpeechRecognition auto-restart not allowed, maintaining active MediaRecorder session.'
-              );
+              if (isDictationDiagnosticsEnabled()) {
+                console.warn(
+                  '[Dictation] SpeechRecognition auto-restart not allowed, maintaining active MediaRecorder session.'
+                );
+              }
               return;
             }
             hasFatalErrorRef.current = true;
@@ -1449,9 +1455,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             updateRecordingState('error');
           } else if (errorType === 'audio-capture') {
             if (!isNewSession && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-              console.warn(
-                '[Dictation] SpeechRecognition auto-restart audio-capture error, maintaining active MediaRecorder session.'
-              );
+              if (isDictationDiagnosticsEnabled()) {
+                console.warn(
+                  '[Dictation] SpeechRecognition auto-restart audio-capture error, maintaining active MediaRecorder session.'
+                );
+              }
               return;
             }
             hasFatalErrorRef.current = true;
@@ -1467,7 +1475,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           } else if (errorType === 'network') {
             consecutiveErrorsRef.current += 1;
             if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-              console.warn('[Dictation] Speech recognition network error; MediaRecorder active.');
+              if (isDictationDiagnosticsEnabled()) {
+                console.warn('[Dictation] Speech recognition network error; MediaRecorder active.');
+              }
               return;
             }
             if (consecutiveErrorsRef.current > 2) {
@@ -1489,9 +1499,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             consecutiveErrorsRef.current += 1;
             if (consecutiveErrorsRef.current > 3) {
               if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-                console.warn(
-                  '[Dictation] SpeechRecognition error threshold reached, maintaining active MediaRecorder session.'
-                );
+                if (isDictationDiagnosticsEnabled()) {
+                  console.warn(
+                    '[Dictation] SpeechRecognition error threshold reached, maintaining active MediaRecorder session.'
+                  );
+                }
                 return;
               }
               hasFatalErrorRef.current = true;
@@ -1541,7 +1553,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           if (hasFatalErrorRef.current) {
             if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
               hasFatalErrorRef.current = false;
-              console.warn('[Dictation] SpeechRecognition fatal error flagged, but MediaRecorder is actively recording.');
+              if (isDictationDiagnosticsEnabled()) {
+                console.warn('[Dictation] SpeechRecognition fatal error flagged, but MediaRecorder is actively recording.');
+              }
               return;
             }
             hasFatalErrorRef.current = false;
@@ -1566,7 +1580,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
             if (isIOS) {
               if (isMediaRecorderHealthy) {
-                console.warn('[Dictation] SpeechRecognition ended on iOS; MediaRecorder continues recording.');
+                if (isDictationDiagnosticsEnabled()) {
+                  console.warn('[Dictation] SpeechRecognition ended on iOS; MediaRecorder continues recording.');
+                }
                 return;
               }
               // iOS Safari requires explicit user interaction to restart recognition.
@@ -1584,9 +1600,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             if (consecutiveSilenceRestartsRef.current > 4) {
               consecutiveSilenceRestartsRef.current = 0;
               if (isMediaRecorderHealthy) {
-                console.warn(
-                  '[Dictation] SpeechRecognition max silence restarts reached; MediaRecorder continues recording.'
-                );
+                if (isDictationDiagnosticsEnabled()) {
+                  console.warn(
+                    '[Dictation] SpeechRecognition max silence restarts reached; MediaRecorder continues recording.'
+                  );
+                }
                 return;
               }
               pauseListening();
@@ -1599,10 +1617,13 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
                 try {
                   startRecognitionSession(false);
                 } catch (restartErr) {
-                  console.warn('[Dictation] SpeechRecognition restart invocation threw:', restartErr);
                   if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+                    if (isDictationDiagnosticsEnabled()) {
+                      console.warn('[Dictation] SpeechRecognition restart invocation threw:', restartErr);
+                    }
                     return;
                   }
+                  console.warn('[Dictation] SpeechRecognition restart invocation threw:', restartErr);
                   pauseListening();
                 }
               }
@@ -1617,7 +1638,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             recordingStateRef.current !== 'paused'
           ) {
             if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-              console.warn('[Dictation] SpeechRecognition onend reached fallback, but MediaRecorder is recording.');
+              if (isDictationDiagnosticsEnabled()) {
+                console.warn('[Dictation] SpeechRecognition onend reached fallback, but MediaRecorder is recording.');
+              }
               return;
             }
             stopAudioResources();
@@ -1631,23 +1654,29 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         isStartingRef.current = false;
         if (!isNewSession) {
           // Auto-restart rejected by browser gesture restriction (expected on iOS Safari after silence)
-          console.warn('Auto-restart rejected by browser gesture restriction:', initErr);
           if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-            console.warn(
-              '[Dictation] SpeechRecognition auto-restart failed but MediaRecorder is active; maintaining recording session.'
-            );
+            if (isDictationDiagnosticsEnabled()) {
+              console.warn('Auto-restart rejected by browser gesture restriction:', initErr);
+              console.warn(
+                '[Dictation] SpeechRecognition auto-restart failed but MediaRecorder is active; maintaining recording session.'
+              );
+            }
             return;
           }
+          console.warn('Auto-restart rejected by browser gesture restriction:', initErr);
           pauseListening();
           return;
         }
-        console.warn('SpeechRecognition initialization error:', initErr);
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          console.warn(
-            '[Dictation] SpeechRecognition init failed but MediaRecorder is active; maintaining recording session.'
-          );
+          if (isDictationDiagnosticsEnabled()) {
+            console.warn('SpeechRecognition initialization error:', initErr);
+            console.warn(
+              '[Dictation] SpeechRecognition init failed but MediaRecorder is active; maintaining recording session.'
+            );
+          }
           return;
         }
+        console.warn('SpeechRecognition initialization error:', initErr);
         hasFatalErrorRef.current = true;
         stopAudioResources();
         setDictationError('Unable to activate microphone. Please verify device permissions.');
@@ -1863,7 +1892,9 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         try {
           await startRecognitionSession(false);
         } catch (recErr) {
-          console.warn('[Dictation] SpeechRecognition resume notice:', recErr);
+          if (isDictationDiagnosticsEnabled()) {
+            console.warn('[Dictation] SpeechRecognition resume notice:', recErr);
+          }
         }
 
         // State consistency check:

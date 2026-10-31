@@ -434,41 +434,55 @@ export function logGeminiLifecycleEvent(
     } catch (_) {}
   }
 
-  // Avoid noisy per-chunk console spam in automated test suites unless explicitly enabled,
-  // while always emitting key lifecycle transitions or when ORVIX_DEBUG_GEMINI_LOGS=1.
-  const isSilentTest = process.env.TESTING === '1' && process.env.ORVIX_DEBUG_GEMINI_LOGS !== '1';
-  if (isSilentTest && entry.event === 'chunk_received') {
+  // Gate verbose console logging:
+  // - chunk_received is gated behind ORVIX_DEBUG_GEMINI_LOGS === '1'
+  // - routine informational events are gated behind ORVIX_DEBUG_GEMINI_LOGS === '1' or DEBUG === 'true'
+  // - errors, timeouts, and client disconnects are preserved without requiring debug flags
+  const isDebugLogsEnabled = process.env.ORVIX_DEBUG_GEMINI_LOGS === '1';
+  const isDebugModeEnabled = isDebugLogsEnabled || process.env.DEBUG === 'true';
+
+  if (entry.event === 'chunk_received' && !isDebugLogsEnabled) {
     return safeEntry;
   }
-  if (!isSilentTest || process.env.ORVIX_DEBUG_GEMINI_LOGS === '1') {
-    const parts = [
-      `elapsedMs=${safeEntry.elapsedMs}`,
-      `httpStatus=${safeEntry.httpStatus ?? 'N/A'}`,
-      `model=${safeEntry.model}`,
-      `chunkCount=${safeEntry.chunkCount}`,
-      `streamState=${safeEntry.streamState}`
-    ];
-    if (safeEntry.attempt !== undefined && safeEntry.maxAttempts !== undefined) {
-      parts.push(`attempt=${safeEntry.attempt}/${safeEntry.maxAttempts}`);
-    }
-    if (safeEntry.timeoutStage) {
-      parts.push(`timeoutStage=${safeEntry.timeoutStage}`);
-    }
-    if (safeEntry.timeoutMs !== undefined) {
-      parts.push(`timeoutMs=${safeEntry.timeoutMs}`);
-    }
-    if (safeEntry.errorCode) {
-      parts.push(`errorCode=${safeEntry.errorCode}`);
-    }
-    if (safeEntry.willRetry !== undefined) {
-      parts.push(`willRetry=${safeEntry.willRetry}`);
-    }
-    if (safeEntry.finishReason) {
-      parts.push(`finishReason=${safeEntry.finishReason}`);
-    }
-    const logFn = entry.event === 'upstream_error' || entry.event === 'timeout' ? console.warn : console.info;
-    logFn(`[Gemini] ${entry.event} | ${parts.join(' | ')}`);
+
+  const isRoutineInformational =
+    entry.event === 'request_start' ||
+    entry.event === 'upstream_fetch_start' ||
+    entry.event === 'upstream_headers_received' ||
+    entry.event === 'first_chunk_received' ||
+    entry.event === 'upstream_complete';
+
+  if (isRoutineInformational && !isDebugModeEnabled) {
+    return safeEntry;
   }
+
+  const parts = [
+    `elapsedMs=${safeEntry.elapsedMs}`,
+    `httpStatus=${safeEntry.httpStatus ?? 'N/A'}`,
+    `model=${safeEntry.model}`,
+    `chunkCount=${safeEntry.chunkCount}`,
+    `streamState=${safeEntry.streamState}`
+  ];
+  if (safeEntry.attempt !== undefined && safeEntry.maxAttempts !== undefined) {
+    parts.push(`attempt=${safeEntry.attempt}/${safeEntry.maxAttempts}`);
+  }
+  if (safeEntry.timeoutStage) {
+    parts.push(`timeoutStage=${safeEntry.timeoutStage}`);
+  }
+  if (safeEntry.timeoutMs !== undefined) {
+    parts.push(`timeoutMs=${safeEntry.timeoutMs}`);
+  }
+  if (safeEntry.errorCode) {
+    parts.push(`errorCode=${safeEntry.errorCode}`);
+  }
+  if (safeEntry.willRetry !== undefined) {
+    parts.push(`willRetry=${safeEntry.willRetry}`);
+  }
+  if (safeEntry.finishReason) {
+    parts.push(`finishReason=${safeEntry.finishReason}`);
+  }
+  const logFn = entry.event === 'upstream_error' || entry.event === 'timeout' ? console.warn : console.info;
+  logFn(`[Gemini] ${entry.event} | ${parts.join(' | ')}`);
 
   return safeEntry;
 }
