@@ -1435,6 +1435,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           }
 
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
+            if (!isNewSession && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              console.warn(
+                '[Dictation] SpeechRecognition auto-restart not allowed, maintaining active MediaRecorder session.'
+              );
+              return;
+            }
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1442,6 +1448,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             );
             updateRecordingState('error');
           } else if (errorType === 'audio-capture') {
+            if (!isNewSession && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              console.warn(
+                '[Dictation] SpeechRecognition auto-restart audio-capture error, maintaining active MediaRecorder session.'
+              );
+              return;
+            }
             hasFatalErrorRef.current = true;
             stopAudioResources();
             setDictationError(
@@ -1476,6 +1488,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           } else {
             consecutiveErrorsRef.current += 1;
             if (consecutiveErrorsRef.current > 3) {
+              if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+                console.warn(
+                  '[Dictation] SpeechRecognition error threshold reached, maintaining active MediaRecorder session.'
+                );
+                return;
+              }
               hasFatalErrorRef.current = true;
               stopAudioResources();
               setDictationError('Dictation stopped unexpectedly. Please tap the microphone to continue.');
@@ -1521,6 +1539,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           }
 
           if (hasFatalErrorRef.current) {
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              hasFatalErrorRef.current = false;
+              console.warn('[Dictation] SpeechRecognition fatal error flagged, but MediaRecorder is actively recording.');
+              return;
+            }
             hasFatalErrorRef.current = false;
             stopAudioResources();
             updateRecordingState('error');
@@ -1534,11 +1557,18 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             !isStoppingRef.current &&
             recordingStateRef.current === 'listening'
           ) {
+            const isMediaRecorderHealthy =
+              mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording';
+
             const isIOS =
               /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
             if (isIOS) {
+              if (isMediaRecorderHealthy) {
+                console.warn('[Dictation] SpeechRecognition ended on iOS; MediaRecorder continues recording.');
+                return;
+              }
               // iOS Safari requires explicit user interaction to restart recognition.
               // Gracefully transition to paused state so the user can easily tap Resume.
               pauseListening();
@@ -1553,6 +1583,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             consecutiveSilenceRestartsRef.current += 1;
             if (consecutiveSilenceRestartsRef.current > 4) {
               consecutiveSilenceRestartsRef.current = 0;
+              if (isMediaRecorderHealthy) {
+                console.warn(
+                  '[Dictation] SpeechRecognition max silence restarts reached; MediaRecorder continues recording.'
+                );
+                return;
+              }
               pauseListening();
               return;
             }
@@ -1560,13 +1596,30 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
             clearTimeout(restartTimeoutRef.current);
             restartTimeoutRef.current = setTimeout(() => {
               if (recordingStateRef.current === 'listening' && !isExplicitStopRef.current && !isStoppingRef.current) {
-                startRecognitionSession(false);
+                try {
+                  startRecognitionSession(false);
+                } catch (restartErr) {
+                  console.warn('[Dictation] SpeechRecognition restart invocation threw:', restartErr);
+                  if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+                    return;
+                  }
+                  pauseListening();
+                }
               }
             }, 50);
             return;
           }
 
-          if (!isStoppingRef.current && recordingStateRef.current !== 'stopping' && recordingStateRef.current !== 'transcribing' && recordingStateRef.current !== 'paused') {
+          if (
+            !isStoppingRef.current &&
+            recordingStateRef.current !== 'stopping' &&
+            recordingStateRef.current !== 'transcribing' &&
+            recordingStateRef.current !== 'paused'
+          ) {
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              console.warn('[Dictation] SpeechRecognition onend reached fallback, but MediaRecorder is recording.');
+              return;
+            }
             stopAudioResources();
             updateRecordingState('idle');
           }
@@ -1579,6 +1632,12 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         if (!isNewSession) {
           // Auto-restart rejected by browser gesture restriction (expected on iOS Safari after silence)
           console.warn('Auto-restart rejected by browser gesture restriction:', initErr);
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            console.warn(
+              '[Dictation] SpeechRecognition auto-restart failed but MediaRecorder is active; maintaining recording session.'
+            );
+            return;
+          }
           pauseListening();
           return;
         }
@@ -1698,6 +1757,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
 
     try {
       isExplicitStopRef.current = false;
+      isStoppingRef.current = false;
       hasFatalErrorRef.current = false;
       setDictationError(null);
 
@@ -1706,8 +1766,15 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         pauseStartTimeRef.current = 0;
       }
 
-      // For modes utilizing MediaRecorder (hybrid or direct-audio), verify/resume hardware audio stream
-      if (engineMode === 'hybrid' || engineMode === 'direct-audio' || engineMode === 'native-live') {
+      if (engineMode === 'unsupported') {
+        stopAudioResources();
+        setDictationError('Voice dictation is not supported in this browser.');
+        updateRecordingState('error');
+        return;
+      }
+
+      // For applicable recording modes (browser-speech or audio-record), verify and restore hardware audio stream and MediaRecorder
+      if (engineMode === 'browser-speech' || engineMode === 'audio-record') {
         let stream = mediaStreamRef.current;
         const isStreamLive =
           stream?.active &&
@@ -1724,28 +1791,92 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           }
         }
 
+        // Restore / re-enable microphone tracks if they were disabled
+        if (stream) {
+          stream.getAudioTracks().forEach((track) => {
+            if (!track.enabled) {
+              track.enabled = true;
+            }
+          });
+        }
+
         // Resume or re-attach MediaRecorder
+        let recorderResumedOrStarted = false;
         if (mediaRecorderRef.current) {
           if (mediaRecorderRef.current.state === 'paused') {
             try {
               mediaRecorderRef.current.resume();
-            } catch (_) {
+              recorderResumedOrStarted = mediaRecorderRef.current.state === 'recording';
+            } catch (resumeErr) {
+              console.warn('[Dictation] MediaRecorder resume failed, re-initializing recorder:', resumeErr);
               startMediaRecorder(stream);
+              recorderResumedOrStarted = mediaRecorderRef.current?.state === 'recording';
             }
+          } else if (mediaRecorderRef.current.state === 'recording') {
+            recorderResumedOrStarted = true;
           } else if (mediaRecorderRef.current.state === 'inactive') {
             startMediaRecorder(stream);
+            recorderResumedOrStarted = mediaRecorderRef.current?.state === 'recording';
           }
         } else if (stream) {
           startMediaRecorder(stream);
+          recorderResumedOrStarted = mediaRecorderRef.current?.state === 'recording';
         }
 
-        // Resume visualizer
+        // Resume visualizer analyser
         if (stream) {
           attachAudioAnalyser(stream);
         }
-      }
 
-      await startRecognitionSession(false);
+        // State consistency check: verify MediaRecorder actually resumed/started
+        const caps = detectDictationCapabilities();
+        if (
+          caps.hasMediaRecorder &&
+          !recorderResumedOrStarted &&
+          (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording')
+        ) {
+          stopAudioResources();
+          setDictationError('Unable to resume audio recording. Please tap to start dictation again.');
+          updateRecordingState('error');
+          return;
+        }
+
+        // Ensure duration timer is running
+        if (!durationIntervalRef.current) {
+          durationIntervalRef.current = setInterval(() => {
+            if (recordingStateRef.current === 'listening') {
+              const now = Date.now();
+              const start = recordingStartTimeRef.current || now;
+              const elapsed = Math.max(0, Math.floor((now - start - pausedDurationRef.current) / 1000));
+              setRecordingDuration(elapsed);
+            }
+          }, 250);
+        }
+
+        if (engineMode === 'audio-record') {
+          // Native audio capture only (no SpeechRecognition instance)
+          updateRecordingState('listening');
+          return;
+        }
+
+        // For browser-speech mode, attempt to resume SpeechRecognition under the active user activation
+        try {
+          await startRecognitionSession(false);
+        } catch (recErr) {
+          console.warn('[Dictation] SpeechRecognition resume notice:', recErr);
+        }
+
+        // State consistency check:
+        // If MediaRecorder is actively recording, UI must reflect 'listening' even if
+        // SpeechRecognition failed to restart or hasn't fired onstart yet.
+        if (
+          mediaRecorderRef.current &&
+          mediaRecorderRef.current.state === 'recording' &&
+          recordingStateRef.current !== 'listening'
+        ) {
+          updateRecordingState('listening');
+        }
+      }
     } finally {
       setTimeout(() => {
         isTransitioningRef.current = false;
