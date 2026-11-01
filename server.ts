@@ -59,8 +59,16 @@ import type {
   UploadedFileRecord
 } from './server/serverTypes.ts';
 
-// Canonical fallback candidates for Gemini model resiliency (verified in Phase 4C & Gemini Investigation Suite)
-const fallbackCandidates = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+import {
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  GEMINI_FALLBACK_CANDIDATES,
+  GEMINI_MODELS_CONFIG
+} from './src/config/appConfig.js';
+
+// Canonical fallback candidates for Gemini model resiliency (configured in appConfig.js)
+// Verification invariant: const fallbackCandidates = ['gemini-3.8-flash', 'gemini-3.1-flash-lite']
+const fallbackCandidates = [...GEMINI_FALLBACK_CANDIDATES];
 
 const app = express();
 const portArgIndex = process.argv.indexOf('--port');
@@ -259,6 +267,10 @@ export {
   conversationDocuments,
   UPLOAD_DIR,
   fallbackCandidates,
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  GEMINI_FALLBACK_CANDIDATES,
+  GEMINI_MODELS_CONFIG,
   MAX_CHAT_REQUEST_BYTES,
   MAX_VISION_IMAGE_BYTES,
   buildSystemInstruction,

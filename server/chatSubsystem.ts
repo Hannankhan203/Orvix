@@ -84,7 +84,10 @@ import {
   validateServerModelForProvider,
   GROQ_FALLBACK_CHAT_MODELS,
   getProviderDisplayName,
-  PROVIDER_DEFAULT_MODELS
+  PROVIDER_DEFAULT_MODELS,
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  GEMINI_FALLBACK_CANDIDATES
 } from '../src/services/providerModelSanitizer.js';
 
 export function buildSystemInstruction(
@@ -891,7 +894,7 @@ export function registerChatRoutes(app: express.Express) {
           : availableDocs.length > 0
           ? generateSimulatedDocumentResponse(prompt, prepDoc)
           : generateSimulatedResponse(prompt, cleanUsername, preferences, mode);
-        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : 'gemini-3.8-flash (demo)';
+        const demoModel = availableDocs.length > 0 ? 'Document Analyzer (demo)' : `${GEMINI_PRIMARY_MODEL} (demo)`;
         if (!shouldStream) {
           return res.json({
             text,
@@ -946,8 +949,8 @@ export function registerChatRoutes(app: express.Express) {
 
       const imageParts: Array<{ mimeType: string; data: string }> = validatedGeminiImageParts;
       const contents = formatGeminiHistory(history, effectivePrompt, 12, imageParts);
-      const requestedGeminiModel = validatedClientModel || 'gemini-3.8-flash';
-      const fallbackCandidates = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+      const requestedGeminiModel = validatedClientModel || GEMINI_PRIMARY_MODEL;
+      const fallbackCandidates = GEMINI_FALLBACK_CANDIDATES;
       const uniquePlanModels = [requestedGeminiModel];
       for (const cand of fallbackCandidates) {
         if (!uniquePlanModels.includes(cand)) {

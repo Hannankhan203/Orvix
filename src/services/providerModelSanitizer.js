@@ -6,6 +6,20 @@
  * Pure JavaScript ESM module shared across browser UI, client router, and server.ts.
  */
 
+import {
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  GEMINI_FALLBACK_CANDIDATES,
+  GEMINI_MODELS_CONFIG
+} from '../config/appConfig.js';
+
+export {
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  GEMINI_FALLBACK_CANDIDATES,
+  GEMINI_MODELS_CONFIG
+};
+
 export const SUPPORTED_PROVIDER_IDS = Object.freeze([
   'gemini',
   'groq',
@@ -133,7 +147,7 @@ export function validateGroqTranscriptionModel(rawModel) {
 }
 
 export const PROVIDER_DEFAULT_MODELS = Object.freeze({
-  gemini: 'gemini-3.8-flash',
+  gemini: GEMINI_PRIMARY_MODEL,
   groq: 'openai/gpt-oss-120b',
   openrouter: 'openrouter/free',
   cloudflare: '@cf/meta/llama-3.1-8b-instruct',
