@@ -35,14 +35,6 @@
         { "key": "Content-Type", "value": "application/manifest+json; charset=utf-8" },
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
       ]
-    },
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS, DELETE" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization, Accept, X-Title" }
-      ]
     }
   ]
 }

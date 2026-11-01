@@ -167,14 +167,116 @@ const portArgIndex = process.argv.indexOf('--port');
 const portFromArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
 const PORT = Number(portFromArg) || Number(process.env.PORT) || 3000;
 
-// Permissive CORS middleware for cross-origin and Vercel preview environments
+/**
+ * Validates whether an incoming HTTP request origin is authorized.
+ * Protects server-side AI execution, file uploads, and speech transcription from unauthorized cross-origin abuse.
+ */
+export function isAllowedOrigin(origin: string | undefined, req: express.Request): boolean {
+  // Same-origin or non-browser server-to-server requests (curl, server jobs, mobile apps) have no Origin header
+  if (!origin) {
+    return true;
+  }
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch (_) {
+    return false;
+  }
+
+  const hostHeader = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
+
+  // 1. Direct same-origin match (Origin matches Host header)
+  if (hostHeader) {
+    const expectedHost = hostHeader.split(',')[0].trim().toLowerCase();
+    if (originUrl.host.toLowerCase() === expectedHost) {
+      return true;
+    }
+  }
+
+  // 2. Localhost and loopback origins for development and local testing
+  const hostname = originUrl.hostname.toLowerCase();
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '0.0.0.0'
+  ) {
+    return true;
+  }
+
+  // 3. Explicit allowlist from environment variables (comma-delimited)
+  const configuredOrigins = [
+    process.env.ALLOWED_ORIGINS,
+    process.env.CORS_ALLOWED_ORIGINS,
+    process.env.VITE_PUBLIC_APP_URL,
+    process.env.APP_URL
+  ]
+    .filter(Boolean)
+    .flatMap((val) => (val as string).split(',').map((s) => s.trim().replace(/\/+$/, '')))
+    .filter(Boolean);
+
+  const normalizedOrigin = `${originUrl.protocol}//${originUrl.host}`.toLowerCase();
+  for (const allowed of configuredOrigins) {
+    if (allowed.toLowerCase() === normalizedOrigin) {
+      return true;
+    }
+  }
+
+  // 4. Trusted cloud platform domains: Vercel (*.vercel.app) and Google Cloud Run / AI Studio (*.run.app)
+  if (
+    hostname.endsWith('.vercel.app') ||
+    hostname.endsWith('.run.app') ||
+    hostname.endsWith('.aistudio.google.com')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+// Controlled CORS middleware enforcing an explicit origin allowlist (ORVIX-003)
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+  const origin = req.headers.origin as string | undefined;
+
+  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
+    if (origin && !isAllowedOrigin(origin, req)) {
+      return res.status(403).json({
+        error: 'Cross-origin request blocked by CORS policy.',
+        code: 403,
+        status: 'FORBIDDEN'
+      });
+    }
+
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+    res.setHeader('Access-Control-Max-Age', '86400');
     return res.sendStatus(204);
   }
+
+  // Handle actual requests (GET, POST, DELETE, etc.)
+  if (origin) {
+    if (!isAllowedOrigin(origin, req)) {
+      if (req.path.startsWith('/api/') || req.path.startsWith('/upload') || req.path.startsWith('/chat') || req.path.startsWith('/transcribe')) {
+        return res.status(403).json({
+          error: 'Cross-origin request blocked by CORS policy.',
+          code: 403,
+          status: 'FORBIDDEN'
+        });
+      }
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+    }
+  }
+
   next();
 });
 
