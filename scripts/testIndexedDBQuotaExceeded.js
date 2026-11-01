@@ -19,7 +19,13 @@ import {
   getAttachmentRecord,
   getAttachmentBlob,
   deleteAttachmentRecord,
+  deleteAttachmentRecords,
+  deleteAttachmentsForConversation,
+  updateAttachmentConversationId,
   isQuotaExceededError,
+  isStorageQuotaExhausted,
+  subscribeStorageQuotaExceeded,
+  resetStorageQuotaState,
   getLastStorageError,
   clearLastStorageError,
   resetAttachmentDBForTesting,
@@ -95,10 +101,20 @@ class MockIDBDatabase {
 
     const dbRef = this;
 
+    let activeRequests = 0;
+    const notifyDone = () => {
+      activeRequests--;
+      if (activeRequests <= 0) {
+        tx.oncomplete?.();
+      }
+    };
+
     const objectStore = {
       put(val) {
+        activeRequests++;
         // Case 1: Synchronous throw at store.put
         if (dbRef.errorInjectionStage === 'put_sync' && dbRef.injectedError) {
+          activeRequests--;
           throw dbRef.injectedError;
         }
 
@@ -162,28 +178,46 @@ class MockIDBDatabase {
           storeMap.set(val.id, val);
           dbRef.usedBytes += serializedSize;
           req.onsuccess?.({ target: req });
-          tx.oncomplete?.();
+          notifyDone();
         }, 0);
 
         return req;
       },
 
       get(key) {
+        activeRequests++;
         const req = { result: null, error: null, onsuccess: null, onerror: null };
         setTimeout(() => {
           req.result = storeMap.get(key) || null;
           req.onsuccess?.({ target: req });
-          tx.oncomplete?.();
+          notifyDone();
+        }, 0);
+        return req;
+      },
+
+      getAll() {
+        activeRequests++;
+        const req = { result: null, error: null, onsuccess: null, onerror: null };
+        setTimeout(() => {
+          req.result = Array.from(storeMap.values());
+          req.onsuccess?.({ target: req });
+          notifyDone();
         }, 0);
         return req;
       },
 
       delete(key) {
+        activeRequests++;
         const req = { result: undefined, error: null, onsuccess: null, onerror: null };
         setTimeout(() => {
+          const item = storeMap.get(key);
+          if (item) {
+            const itemSize = JSON.stringify(item).length + (item.blob?.size || 0);
+            dbRef.usedBytes = Math.max(0, dbRef.usedBytes - itemSize);
+          }
           storeMap.delete(key);
           req.onsuccess?.({ target: req });
-          tx.oncomplete?.();
+          notifyDone();
         }, 0);
         return req;
       }
@@ -532,6 +566,116 @@ async function main() {
     // Allow event loop to process any asynchronous rejections
     await new Promise((r) => setTimeout(r, 50));
     assert.strictEqual(unhandledRejectionsCount, 0, 'Must have 0 unhandled promise rejections');
+  });
+
+  // =========================================================================
+  // SCENARIO D — Conversation Attachment Cleanup & Quota Recovery
+  // =========================================================================
+  console.log('\n[Scenario D]: Conversation Attachment Cleanup & Quota Recovery');
+
+  await runTest('D.1: Quota exhaustion event subscription and state tracking', async () => {
+    resetStorageQuotaState();
+    let notifiedError = null;
+    const unsubscribe = subscribeStorageQuotaExceeded((err) => {
+      notifiedError = err;
+    });
+
+    currentMockDB.errorInjectionStage = 'request_error';
+    currentMockDB.injectedError = new DOMException('QuotaExceededError', 'QuotaExceededError');
+
+    const result = await saveAttachmentBlob('quota-event-test', new Blob(['data']));
+    assert.strictEqual(result, false);
+    assert.ok(notifiedError, 'Subscriber must be notified on QuotaExceededError');
+    assert.strictEqual(isStorageQuotaExhausted(), true, 'isStorageQuotaExhausted() must return true');
+
+    unsubscribe();
+    currentMockDB.errorInjectionStage = null;
+    currentMockDB.injectedError = null;
+
+    // Normal successful write resets quota exhausted state
+    await saveAttachmentBlob('quota-event-test', new Blob(['data']));
+    assert.strictEqual(isStorageQuotaExhausted(), false, 'Successful write resets isStorageQuotaExhausted()');
+    await deleteAttachmentRecord('quota-event-test');
+  });
+
+  await runTest('D.2: updateAttachmentConversationId updates conversation reference', async () => {
+    const blob = new Blob(['attachment-for-conv'], { type: 'text/plain' });
+    await saveAttachmentBlob('conv-att-1', blob, { name: 'file1.txt', conversationId: null });
+
+    const updated = await updateAttachmentConversationId('conv-att-1', 'chat-xyz-123');
+    assert.strictEqual(updated, true, 'updateAttachmentConversationId must return true');
+
+    const record = await getAttachmentRecord('conv-att-1');
+    assert.strictEqual(record.conversationId, 'chat-xyz-123', 'Record conversationId must be updated');
+    await deleteAttachmentRecord('conv-att-1');
+  });
+
+  await runTest('D.3: deleteAttachmentsForConversation cleanly removes conversation attachments', async () => {
+    const b1 = new Blob(['conv-1-file-a'], { type: 'text/plain' });
+    const b2 = new Blob(['conv-1-file-b'], { type: 'text/plain' });
+    const b3 = new Blob(['conv-2-file-c'], { type: 'text/plain' });
+
+    await saveAttachmentBlob('chat1-att-a', b1, { name: 'a.txt', conversationId: 'chat-target-1' });
+    await saveAttachmentBlob('chat1-att-b', b2, { name: 'b.txt', conversationId: 'chat-target-1' });
+    await saveAttachmentBlob('chat2-att-c', b3, { name: 'c.txt', conversationId: 'chat-other-2' });
+
+    const deleted = await deleteAttachmentsForConversation('chat-target-1');
+    assert.strictEqual(deleted, 2, 'Must delete exactly the 2 attachments belonging to chat-target-1');
+
+    assert.strictEqual(await getAttachmentRecord('chat1-att-a'), null, 'chat1-att-a must be deleted');
+    assert.strictEqual(await getAttachmentRecord('chat1-att-b'), null, 'chat1-att-b must be deleted');
+    const preserved = await getAttachmentRecord('chat2-att-c');
+    assert.ok(preserved, 'chat2-att-c belonging to other conversation must be safely preserved');
+    await deleteAttachmentRecord('chat2-att-c');
+  });
+
+  await runTest('D.4: deleteAttachmentRecords deletes multiple attachments by ID', async () => {
+    await saveAttachmentBlob('bulk-1', new Blob(['bulk1']));
+    await saveAttachmentBlob('bulk-2', new Blob(['bulk2']));
+    await saveAttachmentBlob('bulk-3', new Blob(['bulk3']));
+
+    const count = await deleteAttachmentRecords(['bulk-1', 'bulk-2']);
+    assert.strictEqual(count, 2, 'Must delete 2 records');
+    assert.strictEqual(await getAttachmentRecord('bulk-1'), null);
+    assert.strictEqual(await getAttachmentRecord('bulk-2'), null);
+    assert.ok(await getAttachmentRecord('bulk-3'), 'bulk-3 must remain');
+    await deleteAttachmentRecord('bulk-3');
+  });
+
+  await runTest('D.5: Conversation deletion frees quota to allow new attachment writes', async () => {
+    // Calibrate quota limit relative to current baseline usage
+    currentMockDB.usedBytes = 0;
+    const store = currentMockDB.stores.get('attachments');
+    if (store) {
+      for (const item of store.values()) {
+        currentMockDB.usedBytes += JSON.stringify(item).length + (item.blob?.size || 0);
+      }
+    }
+    const baselineBytes = currentMockDB.usedBytes;
+    currentMockDB.quotaLimitBytes = baselineBytes + 400;
+    currentMockDB.errorInjectionStage = 'quota_limit';
+
+    // Store attachment for conversation 1 (~200 bytes)
+    const blob1 = new Blob(['data for conversation 1']);
+    const r1 = await saveAttachmentBlob('fill-conv-1', blob1, { name: 'f1.txt', conversationId: 'chat-fill-1' });
+    assert.strictEqual(r1, true, 'First write must fit within quota');
+
+    // Attempt to store attachment for conversation 2 (~300 bytes, would exceed baseline + 400 limit)
+    const blob2 = new Blob(['second data chunk for conversation 2 that pushes over limit when added to conversation 1']);
+    const r2 = await saveAttachmentBlob('fill-conv-2', blob2, { name: 'f2.txt', conversationId: 'chat-fill-2' });
+    assert.strictEqual(r2, false, 'Second write must fail due to quota limit');
+
+    // Deleting conversation 1 purges fill-conv-1 and frees quota!
+    await deleteAttachmentsForConversation('chat-fill-1');
+    assert.strictEqual(await getAttachmentRecord('fill-conv-1'), null);
+
+    // Now writing fill-conv-2 must succeed because quota was reclaimed!
+    const r3 = await saveAttachmentBlob('fill-conv-2', blob2, { name: 'f2.txt', conversationId: 'chat-fill-2' });
+    assert.strictEqual(r3, true, 'Write must succeed after quota was freed by conversation deletion');
+
+    currentMockDB.quotaLimitBytes = Infinity;
+    currentMockDB.errorInjectionStage = null;
+    await deleteAttachmentRecord('fill-conv-2');
   });
 
   // =========================================================================

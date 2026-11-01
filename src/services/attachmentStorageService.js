@@ -61,6 +61,47 @@ function getDB() {
 }
 
 let lastStorageError = null;
+const quotaListeners = new Set();
+let isQuotaExhaustedState = false;
+
+/**
+ * Returns whether browser IndexedDB storage quota is currently exhausted.
+ * @returns {boolean}
+ */
+export function isStorageQuotaExhausted() {
+  return isQuotaExhaustedState;
+}
+
+/**
+ * Subscribes to IndexedDB storage quota exhaustion events.
+ * @param {(err: any) => void} callback
+ * @returns {() => void} Unsubscribe function
+ */
+export function subscribeStorageQuotaExceeded(callback) {
+  if (typeof callback !== 'function') return () => {};
+  quotaListeners.add(callback);
+  return () => quotaListeners.delete(callback);
+}
+
+/**
+ * Notifies all subscribers that browser storage quota has been exhausted.
+ * @param {any} err
+ */
+export function notifyStorageQuotaExceeded(err) {
+  isQuotaExhaustedState = true;
+  quotaListeners.forEach((fn) => {
+    try {
+      fn(err);
+    } catch (_) {}
+  });
+}
+
+/**
+ * Resets the in-memory storage quota exhausted state.
+ */
+export function resetStorageQuotaState() {
+  isQuotaExhaustedState = false;
+}
 
 /**
  * Returns the most recent IndexedDB storage error, if any.
@@ -78,11 +119,12 @@ export function clearLastStorageError() {
 }
 
 /**
- * Resets the cached IndexedDB database promise for testing purposes.
+ * Resets the cached IndexedDB database promise and quota state for testing purposes.
  */
 export function resetAttachmentDBForTesting() {
   dbPromise = null;
   lastStorageError = null;
+  resetStorageQuotaState();
 }
 
 /**
@@ -133,10 +175,12 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
         resolved = true;
         if (success) {
           lastStorageError = null;
+          resetStorageQuotaState();
           resolve(true);
         } else {
           lastStorageError = err || lastStorageError;
           if (isQuotaExceededError(lastStorageError)) {
+            notifyStorageQuotaExceeded(lastStorageError);
             console.warn(
               '[Attachment Storage] IndexedDB storage quota exceeded (QuotaExceededError). Attachment retained in memory.'
             );
@@ -203,6 +247,7 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
   } catch (err) {
     lastStorageError = err;
     if (isQuotaExceededError(err)) {
+      notifyStorageQuotaExceeded(err);
       console.warn(
         '[Attachment Storage] IndexedDB storage quota exceeded (QuotaExceededError). Attachment retained in memory.'
       );
@@ -239,6 +284,235 @@ export async function deleteAttachmentRecord(id) {
           setTimeout(() => finish(true), 0);
         };
         req.onerror = () => finish(false);
+        transaction.oncomplete = () => finish(true);
+        transaction.onerror = () => finish(false);
+        transaction.onabort = () => finish(false);
+      } catch (_) {
+        finish(false);
+      }
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Deletes multiple attachment records from IndexedDB storage by their IDs.
+ * @param {string[]} ids
+ * @returns {Promise<number>} Number of deleted records
+ */
+export async function deleteAttachmentRecords(ids = []) {
+  if (!Array.isArray(ids) || ids.length === 0) return 0;
+  const validIds = ids.filter((id) => typeof id === 'string' && id.trim().length > 0);
+  if (validIds.length === 0) return 0;
+
+  try {
+    const db = await getDB();
+    if (!db) return 0;
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const finish = (count) => {
+        if (!resolved) {
+          resolved = true;
+          resolve(count);
+        }
+      };
+
+      try {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        let deletedCount = 0;
+        let completedOps = 0;
+
+        const checkDone = () => {
+          completedOps++;
+          if (completedOps >= validIds.length) {
+            finish(deletedCount);
+          }
+        };
+
+        for (const id of validIds) {
+          try {
+            const req = store.delete(id);
+            if (req) {
+              req.onsuccess = () => {
+                deletedCount++;
+                checkDone();
+              };
+              req.onerror = () => {
+                checkDone();
+              };
+            } else {
+              checkDone();
+            }
+          } catch (_) {
+            checkDone();
+          }
+        }
+
+        transaction.oncomplete = () => finish(deletedCount);
+        transaction.onerror = () => finish(deletedCount);
+        transaction.onabort = () => finish(deletedCount);
+
+        setTimeout(() => finish(deletedCount), 25);
+      } catch (_) {
+        finish(0);
+      }
+    });
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
+ * Removes all attachment records associated with a specific conversation ID.
+ * Called when a conversation is deleted to prevent orphan attachment blob accumulation.
+ * @param {string} conversationId
+ * @returns {Promise<number>} Number of records deleted
+ */
+export async function deleteAttachmentsForConversation(conversationId) {
+  if (!conversationId) return 0;
+
+  try {
+    const db = await getDB();
+    if (!db) return 0;
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const finish = (count) => {
+        if (!resolved) {
+          resolved = true;
+          resolve(count);
+        }
+      };
+
+      try {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        let deletedCount = 0;
+
+        let usedIndex = false;
+        try {
+          if (store.indexNames && typeof store.indexNames.contains === 'function' && store.indexNames.contains('conversationId')) {
+            const index = store.index('conversationId');
+            if (index) {
+              usedIndex = true;
+              const cursorReq = typeof index.openCursor === 'function'
+                ? index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(conversationId) : undefined)
+                : null;
+              if (cursorReq) {
+                cursorReq.onsuccess = (event) => {
+                  const cursor = event?.target?.result;
+                  if (cursor) {
+                    if (cursor.value?.conversationId === conversationId || cursor.key === conversationId) {
+                      try {
+                        store.delete(cursor.primaryKey || cursor.key);
+                        deletedCount++;
+                      } catch (_) {}
+                    }
+                    cursor.continue();
+                  }
+                };
+                cursorReq.onerror = () => finish(deletedCount);
+              }
+            }
+          }
+        } catch (_) {}
+
+        if (!usedIndex) {
+          if (typeof store.openCursor === 'function') {
+            const cursorReq = store.openCursor();
+            if (cursorReq) {
+              cursorReq.onsuccess = (event) => {
+                const cursor = event?.target?.result;
+                if (cursor) {
+                  if (cursor.value?.conversationId === conversationId) {
+                    try {
+                      store.delete(cursor.primaryKey || cursor.key);
+                      deletedCount++;
+                    } catch (_) {}
+                  }
+                  cursor.continue();
+                }
+              };
+              cursorReq.onerror = () => finish(deletedCount);
+            }
+          } else if (typeof store.getAll === 'function') {
+            const getReq = store.getAll();
+            if (getReq) {
+              getReq.onsuccess = (event) => {
+                const items = event?.target?.result || [];
+                for (const item of items) {
+                  if (item?.conversationId === conversationId && item?.id) {
+                    try {
+                      store.delete(item.id);
+                      deletedCount++;
+                    } catch (_) {}
+                  }
+                }
+              };
+              getReq.onerror = () => finish(deletedCount);
+            }
+          }
+        }
+
+        transaction.oncomplete = () => finish(deletedCount);
+        transaction.onerror = () => finish(deletedCount);
+        transaction.onabort = () => finish(deletedCount);
+
+        setTimeout(() => finish(deletedCount), 15);
+      } catch (_) {
+        finish(0);
+      }
+    });
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
+ * Updates an attachment record's conversationId in IndexedDB once a chat document is created.
+ * @param {string} attachmentId
+ * @param {string} conversationId
+ * @returns {Promise<boolean>}
+ */
+export async function updateAttachmentConversationId(attachmentId, conversationId) {
+  if (!attachmentId || !conversationId) return false;
+
+  try {
+    const db = await getDB();
+    if (!db) return false;
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const finish = (val) => {
+        if (!resolved) {
+          resolved = true;
+          resolve(val);
+        }
+      };
+
+      try {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const getReq = store.get(attachmentId);
+
+        getReq.onsuccess = () => {
+          const record = getReq.result;
+          if (!record) {
+            finish(false);
+            return;
+          }
+          record.conversationId = conversationId;
+          const putReq = store.put(record);
+          putReq.onsuccess = () => {
+            setTimeout(() => finish(true), 0);
+          };
+          putReq.onerror = () => finish(false);
+        };
+        getReq.onerror = () => finish(false);
+
         transaction.oncomplete = () => finish(true);
         transaction.onerror = () => finish(false);
         transaction.onabort = () => finish(false);

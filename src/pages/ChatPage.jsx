@@ -45,7 +45,13 @@ import { useSpeech } from '../context/SpeechContext.jsx';
 import {
   saveAttachmentBlob,
   hydrateAttachmentsWithImageBytes,
-  sanitizeAttachmentForNetwork
+  sanitizeAttachmentForNetwork,
+  deleteAttachmentsForConversation,
+  deleteAttachmentRecords,
+  updateAttachmentConversationId,
+  subscribeStorageQuotaExceeded,
+  isQuotaExceededError,
+  getLastStorageError
 } from '../services/attachmentStorageService.js';
 import { isVisionCapableProvider } from '../services/documentContextService.js';
 import {
@@ -393,6 +399,15 @@ export default function ChatPage({
   useEffect(() => {
     return subscribeAppShellState((state) => {
       setAppShellState(state);
+    });
+  }, []);
+
+  // Listen for IndexedDB storage quota exhaustion to notify user with actionable guidance
+  useEffect(() => {
+    return subscribeStorageQuotaExceeded(() => {
+      setPersistenceError(
+        'Browser storage quota exceeded. The attachment will be available in memory for this session, but cannot be saved locally across page refreshes. Deleting older conversations with attachments will free storage space.'
+      );
     });
   }, []);
 
@@ -991,6 +1006,24 @@ export default function ChatPage({
   // Delete a conversation.
   const handleDeleteChat = async (chatId) => {
     try {
+      // Clean up associated IndexedDB attachment blobs for this conversation
+      void deleteAttachmentsForConversation(chatId).catch(() => {});
+      const targetChat = userChats.find((c) => c.id === chatId);
+      if (Array.isArray(targetChat?.messages)) {
+        const attIds = [];
+        targetChat.messages.forEach((m) => {
+          if (Array.isArray(m?.attachments)) {
+            m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+          }
+          if (Array.isArray(m?.referencedAttachments)) {
+            m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+          }
+        });
+        if (attIds.length > 0) {
+          void deleteAttachmentRecords(attIds).catch(() => {});
+        }
+      }
+
       if (isCloudEnabled && currentUser?.uid) {
         await deleteConversation(currentUser.uid, chatId);
         setUserChats((previous) =>
@@ -1985,6 +2018,15 @@ export default function ChatPage({
             'orvix_active_chat',
             currentChatId
           );
+
+          // Associate newly saved attachments with the confirmed conversation ID
+          if (Array.isArray(processedAttachments)) {
+            for (const att of processedAttachments) {
+              if (att?.id) {
+                void updateAttachmentConversationId(att.id, currentChatId).catch(() => {});
+              }
+            }
+          }
         }
       }
 

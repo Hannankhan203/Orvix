@@ -46,6 +46,10 @@ import {
   ensureConversationAlternatives,
   orderConversationMessages
 } from './alternativeResponseService.js';
+import {
+  deleteAttachmentsForConversation,
+  deleteAttachmentRecords
+} from './attachmentStorageService.js';
 
 const FIRESTORE_OP_TIMEOUT_MS = 4500;
 const activeSyncPromises = new Map();
@@ -989,6 +993,24 @@ export async function deleteConversation(userId, chatId) {
     throw new Error('Valid userId and chatId are required.');
   }
 
+  // Purge associated attachment blobs from IndexedDB to prevent orphan buildup
+  void deleteAttachmentsForConversation(chatId).catch(() => {});
+  try {
+    const cachedMessages = getCachedChatMessages(userId, chatId);
+    const attIds = [];
+    cachedMessages.forEach((m) => {
+      if (Array.isArray(m?.attachments)) {
+        m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+      }
+      if (Array.isArray(m?.referencedAttachments)) {
+        m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+      }
+    });
+    if (attIds.length > 0) {
+      void deleteAttachmentRecords(attIds).catch(() => {});
+    }
+  } catch (_) {}
+
   const existingLocal = getCachedUserChats(userId);
   const targetLocal = existingLocal.find((c) => c.id === chatId);
   saveCachedUserChats(
@@ -1055,8 +1077,26 @@ export async function deleteChatMessages(userId, chatId, messageIds = []) {
   if (validIds.length === 0) return;
 
   const removeSet = new Set(validIds);
-  const remainingLocal = getCachedChatMessages(userId, chatId).filter((m) => !removeSet.has(m.id));
+  const cached = getCachedChatMessages(userId, chatId);
+  const remainingLocal = cached.filter((m) => !removeSet.has(m.id));
   saveCachedChatMessages(userId, chatId, remainingLocal);
+
+  // Clean up any attachment records for deleted messages
+  try {
+    const deletedMessages = cached.filter((m) => removeSet.has(m.id));
+    const attIds = [];
+    deletedMessages.forEach((m) => {
+      if (Array.isArray(m?.attachments)) {
+        m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+      }
+      if (Array.isArray(m?.referencedAttachments)) {
+        m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+      }
+    });
+    if (attIds.length > 0) {
+      void deleteAttachmentRecords(attIds).catch(() => {});
+    }
+  } catch (_) {}
 
   if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
     return;
