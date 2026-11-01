@@ -56,9 +56,12 @@ export function formatResponseTime(ms) {
  */
 export function formatLiveElapsed(startTime, now) {
   if (typeof startTime !== 'number' || startTime <= 0) return '00:00';
+  const isEpoch = startTime > 1e11;
   const currentTime =
     typeof now === 'number'
       ? now
+      : isEpoch
+      ? Date.now()
       : typeof performance !== 'undefined' && performance.now
       ? performance.now()
       : Date.now();
