@@ -9,7 +9,7 @@
     "build": "vite build",
     "start": "node server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test:idb-quota": "node scripts/testIndexedDBQuotaExceeded.js",
     "test:multitab-sync": "node scripts/testMultiTabConversationSync.js",
