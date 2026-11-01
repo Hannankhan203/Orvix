@@ -7,220 +7,43 @@ import {
   Square,
   AlertCircle,
   X,
-  Check,
-  Pause,
-  Play,
-  ChevronDown,
   Sparkles,
   Loader2,
-  Globe,
   Paperclip,
-  FileImage,
-  Eye
+  ChevronDown,
+  Check
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import BrowserAIStatusBar from './BrowserAIStatusBar.jsx';
 const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
 import Button from '../ui/Button.jsx';
-import { useVoiceDictation, combineComposerText } from '../../hooks/useVoiceDictation.js';
+import VoiceDictationDock from './VoiceDictationDock.jsx';
+import TranscriptPolishReview from './TranscriptPolishReview.jsx';
+import ComposerAttachmentTray from './ComposerAttachmentTray.jsx';
+import SharedConversationBanner from './SharedConversationBanner.jsx';
+import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { PROVIDER_DEFAULT_MODELS } from '../../services/providerModelSanitizer.js';
 import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
+import {
+  getProviderFootnote,
+  SUPPORTED_IMAGE_EXTENSIONS,
+  SUPPORTED_EXTENSIONS,
+  getExtensionFromMime,
+  resolvePastedFileName,
+  isFileDragEvent,
+  formatFileSize
+} from './chatAreaUtils.js';
 
-function formatGeminiModelDisplayName(modelId) {
-  if (typeof modelId !== 'string' || !modelId.trim()) return '';
-  return modelId
-    .trim()
-    .replace(/^models\//i, '')
-    .split('-')
-    .filter(Boolean)
-    .map((segment) =>
-      /^[a-z]/i.test(segment)
-        ? segment.charAt(0).toUpperCase() + segment.slice(1)
-        : segment
-    )
-    .join(' ');
-}
-
-function getGeminiFootnote() {
-  const geminiOption = Array.isArray(PROVIDER_OPTIONS)
-    ? PROVIDER_OPTIONS.find((p) => p.id === 'gemini')
-    : null;
-  const configuredModelId =
-    PROVIDER_DEFAULT_MODELS?.gemini || geminiOption?.defaultModel || '';
-  const modelLabel =
-    (geminiOption?.modelTag &&
-    (!configuredModelId || geminiOption.defaultModel === configuredModelId)
-      ? geminiOption.modelTag
-      : formatGeminiModelDisplayName(configuredModelId)) ||
-    geminiOption?.modelTag ||
-    'Gemini';
-  return `Orvix is powered by Google Gemini (${modelLabel}). Client integration — verify important facts independently.`;
-}
-
-export function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
-  if (providerId === 'webllm') {
-    const modelLabel =
-      WEBLLM_MODEL_CATALOG[webllmModelId]?.shortLabel || 'Qwen 2.5 1.5B';
-    return `Orvix is powered by Browser AI (WebLLM) (${modelLabel}). On-device WebGPU inference — verify important facts independently.`;
-  }
-  if (providerId === 'groq') {
-    return 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.';
-  }
-  if (providerId === 'openrouter') {
-    const openrouterOption = Array.isArray(PROVIDER_OPTIONS)
-      ? PROVIDER_OPTIONS.find((p) => p.id === 'openrouter')
-      : null;
-    const modelLabel = openrouterOption?.modelTag || 'Free Models Router';
-    return `Orvix is powered by OpenRouter (${modelLabel}), dynamically selecting from available free community models.`;
-  }
-  if (providerId === 'cloudflare') {
-    return 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.';
-  }
-  if (providerId === 'gemini') {
-    return getGeminiFootnote();
-  }
-  const config = Array.isArray(PROVIDER_OPTIONS) ? PROVIDER_OPTIONS.find((p) => p.id === providerId) : null;
-  if (config) {
-    const model = config.defaultModel || config.modelTag || 'AI Model';
-    return `Orvix is powered by ${config.name} (${model}). ${config.description || 'Inference'} — verify important facts independently.`;
-  }
-  return getGeminiFootnote();
-}
-
-// Whitelist of supported image extensions
-const SUPPORTED_IMAGE_EXTENSIONS = new Set([
-  'JPG',
-  'JPEG',
-  'PNG',
-  'WEBP',
-  'GIF',
-  'BMP',
-  'HEIC',
-  'HEIF'
-]);
-
-// Whitelist of all supported file extensions (consistent with server upload whitelists)
-const SUPPORTED_EXTENSIONS = new Set([
-  'PDF',
-  'DOCX',
-  'DOC',
-  'PPTX',
-  'PPT',
-  'XLSX',
-  'XLS',
-  'TXT',
-  'MD',
-  'MARKDOWN',
-  'CSV',
-  'TSV',
-  'JSON',
-  'XML',
-  'JPG',
-  'JPEG',
-  'PNG',
-  'WEBP',
-  'GIF',
-  'BMP',
-  'HEIC',
-  'HEIF'
-]);
-
-// Helper to determine the standard extension from MIME type
-function getExtensionFromMime(mimeType) {
-  if (!mimeType) return null;
-  const mime = mimeType.toLowerCase();
-  if (mime.includes('png')) return 'PNG';
-  if (mime.includes('jpeg') || mime.includes('jpg')) return 'JPG';
-  if (mime.includes('webp')) return 'WEBP';
-  if (mime.includes('gif')) return 'GIF';
-  if (mime.includes('bmp')) return 'BMP';
-  if (mime.includes('heic')) return 'HEIC';
-  if (mime.includes('heif')) return 'HEIF';
-  if (mime.includes('pdf')) return 'PDF';
-  if (mime.includes('wordprocessingml') || mime.includes('docx')) return 'DOCX';
-  if (mime.includes('msword')) return 'DOC';
-  if (mime.includes('presentationml') || mime.includes('pptx')) return 'PPTX';
-  if (mime.includes('ms-powerpoint')) return 'PPT';
-  if (mime.includes('spreadsheetml') || mime.includes('xlsx')) return 'XLSX';
-  if (mime.includes('ms-excel')) return 'XLS';
-  if (mime.includes('json')) return 'JSON';
-  if (mime.includes('csv')) return 'CSV';
-  if (mime.includes('markdown')) return 'MD';
-  if (mime.includes('plain')) return 'TXT';
-  if (mime.includes('xml')) return 'XML';
-  return null;
-}
-
-// Helper to resolve a sensible filename for clipboard pasted files where browser doesn't provide one
-function resolvePastedFileName(rawFile) {
-  const mimeType = (rawFile.type || '').toLowerCase();
-  const rawName = (rawFile.name || '').trim();
-
-  // If the browser provided a specific, non-generic filename with an extension, preserve it
-  const hasSpecificName =
-    rawName &&
-    rawName !== 'image.png' &&
-    rawName !== 'blob' &&
-    rawName !== 'file' &&
-    rawName.includes('.');
-
-  if (hasSpecificName) {
-    return rawName;
-  }
-
-  // Derive extension from mime type
-  const mimeExt = getExtensionFromMime(mimeType);
-  let ext = (mimeExt || 'png').toLowerCase();
-
-  const isImage = mimeType.startsWith('image/') || SUPPORTED_IMAGE_EXTENSIONS.has(ext.toUpperCase());
-  const prefix = isImage ? 'pasted-image' : 'pasted-file';
-  return `${prefix}.${ext}`;
-}
-
-// Helper to detect if a drag event involves external files (and not dragged text/elements)
-function isFileDragEvent(e) {
-  if (!e.dataTransfer || !e.dataTransfer.types) return false;
-  const types = e.dataTransfer.types;
-  for (let i = 0; i < types.length; i++) {
-    if (types[i] === 'Files') {
-      return true;
-    }
-  }
-  return false;
-}
-
-function formatFileSize(bytes) {
-  if (!bytes || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const size = (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1);
-  return `${size} ${units[i]}`;
-}
+export { getProviderFootnote };
 
 /**
  * ChatArea Component
  * Coordinates the scrollable message stream / welcome state,
  * error retries, and the fixed bottom message composer with professional voice dictation.
- *
- * @param {Object} props
- * @param {string|null} [props.activeChatId=null]
- * @param {Array} props.messages
- * @param {boolean} [props.isLoading=false]
- * @param {string} props.inputValue
- * @param {(val: string) => void} props.onInputChange
- * @param {() => void} props.onSubmit
- * @param {string|null} [props.activeTitle=null]
- * @param {(failedMessage: Object) => void} [props.onRetry]
- * @param {(promptText: string) => void} [props.onRestorePrompt]
- * @param {string} [props.selectedProvider='gemini']
- * @param {string} [props.activeMode='general']
- * @param {(mode: string) => void} [props.onSelectMode]
- * @param {string|null} [props.modeChangeNotice=null]
- * @param {() => void} [props.onDismissModeNotice]
  */
 export default function ChatArea({
   activeChatId = null,
@@ -311,9 +134,6 @@ export default function ChatArea({
     return () => clearTimeout(timer);
   }, [attachmentNotice]);
 
-  // Track unsubmitted attachments in a ref so object URLs are revoked only on component unmount
-  // (individual removal is handled in handleRemoveAttachment; revoking on every attachments array change
-  // would prematurely revoke previewUrl when attachments are cleared upon message submission)
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
 
@@ -348,7 +168,6 @@ export default function ChatArea({
     if (isSharedView) return;
     if (!rawFile) return;
 
-    // Strict Rule 1: One-attachment limit check
     if (attachments.length > 0) {
       const notice = isDrop
         ? 'Only one attachment can be added per message. Remove the current attachment before adding another file.'
@@ -362,10 +181,8 @@ export default function ChatArea({
       return;
     }
 
-    // Determine final filename (preserving original where available, generating sensible name for pasted data)
     const resolvedName = (isPaste || isDrop) ? resolvePastedFileName(rawFile) : rawFile.name;
 
-    // Enforce 25MB maximum size limit
     const MAX_FILE_SIZE = 25 * 1024 * 1024;
     if (rawFile.size > MAX_FILE_SIZE) {
       setAttachmentNotice(`File '${resolvedName}' exceeds the maximum allowed size of 25MB.`);
@@ -375,7 +192,6 @@ export default function ChatArea({
       return;
     }
 
-    // Determine extension
     let ext = resolvedName.includes('.')
       ? resolvedName.split('.').pop().toUpperCase()
       : (getExtensionFromMime(rawFile.type) || 'FILE');
@@ -384,7 +200,6 @@ export default function ChatArea({
       SUPPORTED_IMAGE_EXTENSIONS.has(ext) ||
       Boolean(rawFile.type && rawFile.type.startsWith('image/'));
 
-    // Validate against supported formats
     const isSupported =
       SUPPORTED_EXTENSIONS.has(ext) ||
       (isImage && SUPPORTED_IMAGE_EXTENSIONS.has(ext)) ||
@@ -400,7 +215,6 @@ export default function ChatArea({
       return;
     }
 
-    // Reconstruct File object if filename or type needs normalization (e.g. pasted screenshots)
     let file = rawFile;
     if ((isPaste || isDrop) && rawFile.name !== resolvedName) {
       try {
@@ -446,7 +260,6 @@ export default function ChatArea({
       fileInputRef.current.value = '';
     }
 
-    // Keep textarea focused so user can type prompt immediately after attaching
     if ((isPaste || isDrop) && textareaRef.current) {
       textareaRef.current.focus();
     }
@@ -475,11 +288,6 @@ export default function ChatArea({
     processAttachment(files[0], { isPaste: false, isDrop: false });
   };
 
-  /**
-   * Clipboard paste handler for the chat composer.
-   * Detects copied images or supported files pasted via Ctrl + V and converts them
-   * into attachments, while allowing normal text paste to proceed unhindered.
-   */
   const handlePaste = (e) => {
     if (isComposerDisabled) {
       e.preventDefault();
@@ -491,7 +299,6 @@ export default function ChatArea({
     const items = clipboardData.items;
     const files = clipboardData.files;
 
-    // Detect if clipboard has any file/image items
     const candidateFiles = [];
 
     if (files && files.length > 0) {
@@ -510,23 +317,18 @@ export default function ChatArea({
       }
     }
 
-    // CRITICAL: If no file/image data is in clipboard (plain text, URL, code, etc.),
-    // DO NOT prevent default! Allow normal text paste into textarea.
     if (candidateFiles.length === 0) {
       return;
     }
 
-    // In shared view, file attachments are disabled; let plain text proceed, do not attach files
     if (isSharedView) {
       e.preventDefault();
       setAttachmentNotice('Attachments are disabled in shared conversation preview.');
       return;
     }
 
-    // An image or file was pasted: intercept the paste event so raw paths/data aren't typed
     e.preventDefault();
 
-    // Enforce one-attachment limit
     if (attachments.length > 0) {
       setAttachmentNotice(
         'Only one attachment can be added per message. Remove the current attachment before pasting another file.'
@@ -534,7 +336,6 @@ export default function ChatArea({
       return;
     }
 
-    // Reject multiple files pasted at once
     if (candidateFiles.length > 1) {
       setAttachmentNotice(
         'Only one attachment can be added per message. Please paste a single file or image.'
@@ -545,10 +346,6 @@ export default function ChatArea({
     processAttachment(candidateFiles[0], { isPaste: true, isDrop: false });
   };
 
-  /**
-   * Drag & Drop event handlers.
-   * Allows dragging and dropping an image or supported file directly into the chatbot.
-   */
   const handleDragEnter = (e) => {
     if (isReadOnly || isSharedView || !isFileDragEvent(e)) return;
     e.preventDefault();
@@ -611,7 +408,6 @@ export default function ChatArea({
       return;
     }
 
-    // Strict Rule 1: One-attachment limit check for drop
     if (attachments.length > 0) {
       setAttachmentNotice(
         'Only one attachment can be added per message. Remove the current attachment before adding another file.'
@@ -619,7 +415,6 @@ export default function ChatArea({
       return;
     }
 
-    // Strict Rule 2: Multi-file drop rejection
     if (candidateFiles.length > 1) {
       setAttachmentNotice(
         'Only one attachment can be added per message. Please drop one file at a time.'
@@ -630,7 +425,6 @@ export default function ChatArea({
     processAttachment(candidateFiles[0], { isPaste: false, isDrop: true });
   };
 
-  // Prevent browser default file open behavior when dragged or dropped anywhere on window
   useEffect(() => {
     const handleWindowDragOver = (e) => {
       if (isFileDragEvent(e)) {
@@ -672,10 +466,8 @@ export default function ChatArea({
     });
   };
 
-  // Floating scroll-to-bottom button visibility
   const [showScrollBottom, setShowScrollBottom] = useState(false);
 
-  // References to track scroll position and conversation switching lifecycle
   const pendingTopScrollChatIdRef = useRef(activeChatId || null);
   const prevActiveChatIdRef = useRef(activeChatId || null);
   const prevMessagesCountRef = useRef(messages.length);
@@ -684,14 +476,11 @@ export default function ChatArea({
   const isAutoScrollingRef = useRef(false);
   const isTouchScrollingRef = useRef(false);
 
-  // Language dropdown toggle state
   const [langMenuOpen, setLangMenuOpen] = useState(false);
 
-  // AI Transcript Refinement (Phase 4) state
   const [isCleaningTranscript, setIsCleaningTranscript] = useState(false);
   const [suggestedRefinement, setSuggestedRefinement] = useState(null);
 
-  // Dismiss transcript refinement review dialog on Escape
   useEffect(() => {
     if (!suggestedRefinement) return;
     const handleRefinementEsc = (e) => {
@@ -704,8 +493,6 @@ export default function ChatArea({
     return () => window.removeEventListener('keydown', handleRefinementEsc);
   }, [suggestedRefinement]);
 
-  // Stabilize message action callbacks passed to MessageList and ChatMessage so typing in
-  // the composer or streaming tokens does not force full-thread re-renders
   const messageCallbacksRef = useRef({
     onRetry,
     onSwitchProvider,
@@ -748,7 +535,6 @@ export default function ChatArea({
   const messagesLengthRef = useRef(messages.length);
   messagesLengthRef.current = messages.length;
 
-  // Check if the most recent message ended with an invitation to continue a partitioned response
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
   const canContinueLastMessage =
     !isLoading &&
@@ -758,7 +544,6 @@ export default function ChatArea({
     !lastMessage.isStopped &&
     responseHasContinuationNotice(lastMessage.content);
 
-  // Computes distance from bottom and updates floating button visibility
   const updateScrollButtonVisibility = useCallback(() => {
     const scrollContainer = scrollViewportRef.current;
     if (!scrollContainer) return;
@@ -766,12 +551,10 @@ export default function ChatArea({
     const distanceFromBottom =
       scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
 
-    // Show button only if there are messages and user is sufficiently far (> 110px) from bottom
     const shouldShow = messagesLengthRef.current > 0 && distanceFromBottom > 110;
     setShowScrollBottom((prev) => (prev === shouldShow ? prev : shouldShow));
   }, []);
 
-  // Smoothly scrolls viewport to bottom
   const handleScrollToBottom = () => {
     const scrollContainer = scrollViewportRef.current;
     if (!scrollContainer) return;
@@ -791,7 +574,6 @@ export default function ChatArea({
     }, 320);
   };
 
-  // Passive scroll event handler that respects user upward scroll intent during streaming
   const handleScroll = () => {
     const scrollContainer = scrollViewportRef.current;
     if (!scrollContainer) return;
@@ -801,11 +583,9 @@ export default function ChatArea({
       scrollContainer.scrollHeight - currentScrollTop - scrollContainer.clientHeight;
 
     if (!isAutoScrollingRef.current) {
-      // If user scrolled upward by more than 5px, immediately stop forcing auto-scroll
       if (currentScrollTop < lastScrollTopRef.current - 5) {
         isUserFollowingBottomRef.current = false;
       } else if (distanceFromBottom <= 56) {
-        // User scrolled back to the bottom
         isUserFollowingBottomRef.current = true;
       }
     }
@@ -822,7 +602,6 @@ export default function ChatArea({
     isTouchScrollingRef.current = false;
   };
 
-  // Window & visualViewport resize listener to keep button visibility updated and anchor bottom when mobile keyboard opens
   useEffect(() => {
     const handleResize = () => {
       setIsCompactViewport(window.innerWidth < 768);
@@ -854,8 +633,6 @@ export default function ChatArea({
     };
   }, [updateScrollButtonVisibility]);
 
-  // Handle conversation switching / opening:
-  // Starts each opened conversation at the top (scrollTop = 0)
   useEffect(() => {
     if (activeChatId !== prevActiveChatIdRef.current) {
       prevActiveChatIdRef.current = activeChatId;
@@ -863,13 +640,11 @@ export default function ChatArea({
       lastScrollTopRef.current = 0;
 
       if (activeChatId) {
-        // An existing conversation was opened or switched to
         pendingTopScrollChatIdRef.current = activeChatId;
         if (scrollViewportRef.current) {
           scrollViewportRef.current.scrollTop = 0;
         }
       } else {
-        // Switched to empty New Chat
         pendingTopScrollChatIdRef.current = null;
         if (scrollViewportRef.current) {
           scrollViewportRef.current.scrollTop = 0;
@@ -879,13 +654,10 @@ export default function ChatArea({
     }
   }, [activeChatId]);
 
-  // Handle scroll positioning on message rendering and response streaming
   useEffect(() => {
     const scrollContainer = scrollViewportRef.current;
     if (!scrollContainer) return;
 
-    // 1. Initial positioning for opened conversation:
-    // When messages finish loading and are rendered, ensure scroll starts at the top
     if (pendingTopScrollChatIdRef.current && activeChatId === pendingTopScrollChatIdRef.current) {
       if (!messagesLoading && messages.length > 0) {
         requestAnimationFrame(() => {
@@ -907,13 +679,12 @@ export default function ChatArea({
       }
     }
 
-    // 2. Newly submitted user message or started assistant response
     const isNewMessage = messages.length > prevMessagesCountRef.current;
-    const lastMessage = messages[messages.length - 1];
+    const lastMsg = messages[messages.length - 1];
     prevMessagesCountRef.current = messages.length;
 
     if (isNewMessage) {
-      if (lastMessage?.sender === 'user' || lastMessage?.isStreaming) {
+      if (lastMsg?.sender === 'user' || lastMsg?.isStreaming) {
         isUserFollowingBottomRef.current = true;
         isAutoScrollingRef.current = true;
         requestAnimationFrame(() => {
@@ -933,9 +704,7 @@ export default function ChatArea({
       }
     }
 
-    // 3. AI response streaming: follow bottom ONLY if user is actively following bottom
-    // and not currently dragging upward on a touch screen
-    if (lastMessage?.isStreaming) {
+    if (lastMsg?.isStreaming) {
       if (isUserFollowingBottomRef.current && !isTouchScrollingRef.current) {
         isAutoScrollingRef.current = true;
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
@@ -948,11 +717,9 @@ export default function ChatArea({
       return;
     }
 
-    // Normal re-renders: update button state without changing scroll position
     updateScrollButtonVisibility();
   }, [messages, messagesLoading, activeChatId, updateScrollButtonVisibility]);
 
-  // Hook into upgraded speech recognition engine (Phase 5.2 audio capture, Phase 5.3 Whisper transcription, Phase 5.4 cross-browser & mobile reliability)
   const {
     recordingState,
     engineMode,
@@ -999,7 +766,6 @@ export default function ChatArea({
   const activeLang =
     supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
 
-  // Screen reader announcements for dictation state changes
   const [srAnnouncement, setSrAnnouncement] = useState('');
 
   useEffect(() => {
@@ -1034,7 +800,6 @@ export default function ChatArea({
     }
   }, [recordingState, dictationError]);
 
-  // Cleanly abort any active microphone dictation session when switching conversations or entering public shared viewer
   useEffect(() => {
     if (
       recordingState === 'listening' ||
@@ -1047,7 +812,6 @@ export default function ChatArea({
     }
   }, [activeChatId, isPublicSharedViewer, cancelListening]);
 
-  // Close language menu immediately if public shared viewer mode becomes active
   useEffect(() => {
     if (isPublicSharedViewer && langMenuOpen) {
       setLangMenuOpen(false);
@@ -1107,14 +871,12 @@ export default function ChatArea({
       recordingState === 'transcribing' ||
       recordingState === 'success'
     ) {
-      // Safe guard: ignore multi-tap while actively stopping, transcribing, or finalizing
       return;
     } else {
       startListening();
     }
   };
 
-  // Close language menu when clicking/tapping outside or pressing Escape
   useEffect(() => {
     if (!langMenuOpen) return;
     const handleClickOutside = (e) => {
@@ -1138,7 +900,6 @@ export default function ChatArea({
     };
   }, [langMenuOpen]);
 
-  // Deterministic multiline expansion hysteresis on mobile viewports so typing doesn't oscillate layout
   useEffect(() => {
     if (!inputValue) {
       setIsExpandedInput(false);
@@ -1153,7 +914,6 @@ export default function ChatArea({
     });
   }, [inputValue]);
 
-  // Auto-resize textarea according to text length and follow speech stream
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -1174,7 +934,7 @@ export default function ChatArea({
       el.scrollTop = el.scrollHeight;
     }
   }, [inputValue, recordingState, isExpandedInput, isCompactViewport]);
-  // Keep refs to avoid stale closures in global keydown listener
+
   const inputValueRef = useRef(inputValue);
   useEffect(() => {
     inputValueRef.current = inputValue;
@@ -1185,37 +945,16 @@ export default function ChatArea({
     onInputChangeRef.current = onInputChange;
   }, [onInputChange]);
 
-  // Automatic input focus when the user starts typing on the keyboard
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleGlobalKeyDown = (e) => {
-      // 0. Do not capture keystrokes in read-only mode
-      if (isReadOnly) {
-        return;
-      }
+      if (isReadOnly) return;
+      if (!textareaRef.current || document.activeElement === textareaRef.current) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!e.key || e.key.length !== 1 || e.key === ' ') return;
+      if (e.isComposing || e.keyCode === 229) return;
 
-      // 1. If textarea does not exist or is already focused, do nothing
-      if (!textareaRef.current || document.activeElement === textareaRef.current) {
-        return;
-      }
-
-      // 2. Ignore modifier shortcuts (Ctrl, Cmd, Alt) to preserve browser shortcuts & OS commands (Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+Z, Ctrl+F, etc.)
-      if (e.ctrlKey || e.metaKey || e.altKey) {
-        return;
-      }
-
-      // 3. Ignore non-printable keys (Enter, Tab, Escape, Backspace, Delete, Arrows, F1-F12, etc.) and Space
-      if (!e.key || e.key.length !== 1 || e.key === ' ') {
-        return;
-      }
-
-      // 4. Ignore if user is composing with an IME (Chinese, Japanese, etc.)
-      if (e.isComposing || e.keyCode === 229) {
-        return;
-      }
-
-      // 5. Check if another editable element or input currently has focus
       const activeEl = document.activeElement;
       if (activeEl) {
         const tagName = activeEl.tagName?.toLowerCase();
@@ -1229,8 +968,6 @@ export default function ChatArea({
           return;
         }
 
-        // If a button or link is focused, let it retain focus for standard accessibility navigation
-        // unless it's an ordinary character key (letters, numbers, symbols)
         const role = activeEl.getAttribute?.('role');
         const isInteractive =
           tagName === 'button' ||
@@ -1248,7 +985,6 @@ export default function ChatArea({
         }
       }
 
-      // 6. Check if any modal or dialog is currently open
       if (
         document.querySelector(
           '[role="dialog"], [role="alertdialog"], .modal-backdrop, .settings-modal-backdrop, .document-preview-overlay, .auth-modal-backdrop'
@@ -1257,8 +993,6 @@ export default function ChatArea({
         return;
       }
 
-      // 7. Legitimate typing detected while chat textarea was not focused!
-      // Prevent browser default action for this key to prevent scroll or conflict
       e.preventDefault();
 
       const currentVal = inputValueRef.current || '';
@@ -1269,20 +1003,17 @@ export default function ChatArea({
       const newVal = before + e.key + after;
       const newCursorPos = before.length + e.key.length;
 
-      // Update state and textarea value synchronously
       if (onInputChangeRef.current) {
         onInputChangeRef.current(newVal);
       }
       textareaRef.current.value = newVal;
 
-      // Auto-adjust textarea height immediately
       try {
         textareaRef.current.style.height = 'auto';
         const newHeight = Math.min(textareaRef.current.scrollHeight, 180);
         textareaRef.current.style.height = `${Math.max(newHeight, 36)}px`;
       } catch (_) {}
 
-      // Focus the textarea and set cursor directly after the inserted character
       textareaRef.current.focus();
       try {
         textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
@@ -1291,7 +1022,8 @@ export default function ChatArea({
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, []);
+  }, [isReadOnly]);
+
   const submitComposerMessage = async (textToSend) => {
     if (isComposerDisabled || !onSubmit || (!textToSend.trim() && attachments.length === 0) || isLoading) {
       return;
@@ -1312,9 +1044,7 @@ export default function ChatArea({
   };
 
   const handleKeyDown = async (e) => {
-    if (isComposerDisabled) {
-      return;
-    }
+    if (isComposerDisabled) return;
 
     if (e.key === 'Escape' && langMenuOpen) {
       e.preventDefault();
@@ -1334,10 +1064,7 @@ export default function ChatArea({
       return;
     }
 
-    // Ignore Enter if user is actively composing with an IME (Chinese, Japanese, etc.)
-    if (e.nativeEvent?.isComposing) {
-      return;
-    }
+    if (e.nativeEvent?.isComposing) return;
 
     const isModifierEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter';
     const isPlainEnter = e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey;
@@ -1376,7 +1103,6 @@ export default function ChatArea({
     void submitComposerMessage(textToSend);
   };
 
-  // Optional AI Transcript Refinement Handler (Phase 4 & Phase 6.2)
   const handleImproveTranscript = async () => {
     if (!lastSessionTranscript || isCleaningTranscript) return;
     setIsCleaningTranscript(true);
@@ -1431,16 +1157,12 @@ Transcript:
 
         if (res && res.text) {
           let text = res.text.trim();
-          // Strip markdown code fences if present
           if (text.startsWith('```')) {
             text = text.replace(/^```[a-zA-Z0-9_-]*\n?/i, '').replace(/\n?```$/i, '').trim();
           }
-          // Strip common AI conversational prefixes if any leaked
           text = text.replace(/^(?:here(?:'s| is) (?:the )?(?:polished|refined|corrected) transcript:?\s*)/i, '').trim();
-          // Strip wrapping quotes
           text = text.replace(/^["'«»“](.*)["'«»”]$/s, '$1').trim();
 
-          // Reject if the response is an unintended code block or simulated chatbot response
           if (
             text &&
             !text.includes('function handleUserMessage') &&
@@ -1455,7 +1177,6 @@ Transcript:
         console.warn('Network transcript refinement failed, falling back to local polisher:', networkErr);
       }
 
-      // If remote AI returned empty, failed, or was rejected, apply deterministic contextual polisher
       if (!polished) {
         polished = polishSpokenTranscript(lastSessionTranscript, inputValue);
       }
@@ -1485,7 +1206,6 @@ Transcript:
 
   const hasContent = inputValue.trim().length > 0 || attachments.length > 0;
   const hasMessages = messages.length > 0;
-  // Dictation dock is active when actively requesting, listening, paused, stopping, finalizing, transcribing, success, or cancelled
   const isRecordingActive =
     recordingState === 'listening' ||
     recordingState === 'paused' ||
@@ -1512,7 +1232,6 @@ Transcript:
     ? 'Ask to explain a concept, break down a topic, or quiz you...'
     : 'Message Orvix...';
 
-  // Single source of truth for composer placeholder:
   const composerPlaceholder = isPublicSharedViewer
     ? 'This is a read-only shared conversation.'
     : isAuthenticatedSharedPreview
@@ -1599,38 +1318,12 @@ Transcript:
             </div>
           ) : (
             <>
-              {isSharedView && sharedSnapshot && (
-                <div
-                  className={`shared-chat-indicator-banner ${isAuthenticatedSharedPreview ? 'is-authenticated-preview' : 'is-public-viewer'}`}
-                  role="region"
-                  aria-label="Shared conversation banner"
-                >
-                  <div className="shared-banner-left">
-                    <div className="shared-banner-badge">
-                      <span className={`shared-badge-dot ${isAuthenticatedSharedPreview ? 'is-preview-dot' : ''}`} aria-hidden="true" />
-                      <span className="shared-badge-title">
-                        {isAuthenticatedSharedPreview ? 'Shared Conversation · Preview' : 'Shared Conversation · Read Only'}
-                      </span>
-                    </div>
-                    <p className="shared-banner-description">
-                      {isAuthenticatedSharedPreview
-                        ? 'You are viewing a shared conversation preview. Type and send a message to continue this conversation.'
-                        : 'You are viewing a published snapshot of this conversation. Messaging and edits are disabled in read-only mode.'}
-                    </p>
-                  </div>
-                  {!isAuthenticatedSharedPreview && onSignInClick && (
-                    <div className="shared-banner-right">
-                      <button
-                        type="button"
-                        className="shared-banner-signin-btn"
-                        onClick={onSignInClick}
-                      >
-                        Sign In
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
+              <SharedConversationBanner
+                isSharedView={isSharedView}
+                sharedSnapshot={sharedSnapshot}
+                isAuthenticatedSharedPreview={isAuthenticatedSharedPreview}
+                onSignInClick={onSignInClick}
+              />
               <MessageList
                 messages={messages}
                 isLoading={isLoading}
@@ -1663,7 +1356,6 @@ Transcript:
       {/* Message Composer Dock */}
       <div className={`chat-composer-dock ${isRecordingActive ? 'is-recording-active' : ''}`}>
         <div className="chat-composer-inner">
-          {/* ChatGPT-style Floating Scroll-to-Bottom Button */}
           {showScrollBottom && (
             <div className="scroll-to-bottom-dock">
               <button
@@ -1681,7 +1373,6 @@ Transcript:
             </div>
           )}
 
-          {/* Quick Continue Prompt Chip if previous response was partitioned */}
           {!isReadOnly && canContinueLastMessage && (
             <div className="continuation-prompt-chip-container">
               <button
@@ -1701,7 +1392,6 @@ Transcript:
             </div>
           )}
 
-          {/* Voice Dictation Error Notification */}
           {dictationError && (
             <div className="composer-dictation-error" role="alert">
               <div className="dictation-error-content">
@@ -1719,7 +1409,6 @@ Transcript:
             </div>
           )}
 
-          {/* One Attachment Maximum Validation / Error Notification */}
           {attachmentNotice && (
             <div className="composer-dictation-error composer-attachment-alert" role="alert">
               <div className="dictation-error-content">
@@ -1737,7 +1426,6 @@ Transcript:
             </div>
           )}
 
-          {/* Share Chat Error Notification */}
           {shareErrorNotice && (
             <div className="composer-dictation-error share-chat-error-alert" role="alert">
               <div className="dictation-error-content">
@@ -1757,7 +1445,6 @@ Transcript:
             </div>
           )}
 
-          {/* Voice Dictation High-Accuracy / Fallback Notification (Phase 5.3) */}
           {transcriptionNotice && !isRecordingActive && (
             <div
               className={`composer-dictation-notice notice-${transcriptionNotice.type} ${transcriptionNotice.type}`}
@@ -1794,7 +1481,6 @@ Transcript:
             </div>
           )}
 
-          {/* Visually-hidden live region for screen-reader dictation announcements */}
           <div
             className="sr-only"
             role="status"
@@ -1804,298 +1490,40 @@ Transcript:
             {srAnnouncement}
           </div>
 
-          {/* Modern Recording & Waveform Dictation Bar */}
           {isRecordingActive && (
-            <div
-              className={`composer-listening-bar state-${recordingState}`}
-              role="region"
-              aria-label="Voice dictation controls"
-            >
-              <div className="listening-left-group">
-                <div className="listening-indicator-content">
-                  <div className={`listening-mic-badge ${recordingState}`} aria-hidden="true">
-                    {recordingState === 'requesting' ||
-                    recordingState === 'stopping' ||
-                    recordingState === 'transcribing' ||
-                    recordingState === 'finalizing' ? (
-                      <Loader2 size={13} className="spin-icon" />
-                    ) : recordingState === 'listening' ? (
-                      <span className="recording-dot-pulse" />
-                    ) : recordingState === 'success' ? (
-                      <Check size={13} strokeWidth={2.5} className="badge-icon success" />
-                    ) : recordingState === 'cancelled' ? (
-                      <X size={13} className="badge-icon cancelled" />
-                    ) : (
-                      <Mic size={13} />
-                    )}
-                  </div>
-                  <span className="listening-text">
-                    {recordingState === 'requesting'
-                      ? 'Connecting...'
-                      : recordingState === 'paused'
-                      ? 'Paused'
-                      : recordingState === 'stopping'
-                      ? 'Stopping...'
-                      : recordingState === 'transcribing'
-                      ? 'Transcribing...'
-                      : recordingState === 'finalizing'
-                      ? 'Finishing...'
-                      : recordingState === 'success'
-                      ? 'Transcript ready'
-                      : recordingState === 'cancelled'
-                      ? 'Cancelled'
-                      : 'Recording'}
-                  </span>
-                  <span className="listening-timer" aria-label={`Recording duration: ${formattedDuration}`}>
-                    {formattedDuration}
-                  </span>
-                </div>
-
-                {/* Recognition Language Selector Pill */}
-                <div
-                  className={`dictation-lang-wrapper ${isPublicSharedViewer ? 'disabled' : ''}`}
-                  ref={isRecordingActive ? langMenuRef : undefined}
-                  title={
-                    isPublicSharedViewer
-                      ? 'Voice dictation language selection is disabled in public read-only mode'
-                      : undefined
-                  }
-                >
-                  <button
-                    type="button"
-                    disabled={isPublicSharedViewer}
-                    className={`dictation-lang-btn ${isPublicSharedViewer ? 'disabled' : ''}`}
-                    onClick={handleToggleLangMenu}
-                    title={
-                      isPublicSharedViewer
-                        ? 'Voice dictation language selection is disabled in public read-only mode'
-                        : `Dictation language: ${activeLang.label}. Click to switch.`
-                    }
-                    aria-label={
-                      isPublicSharedViewer
-                        ? 'Voice dictation language selection is disabled in public read-only mode'
-                        : `Select dictation language, currently ${activeLang.label}`
-                    }
-                    aria-disabled={isPublicSharedViewer}
-                    aria-expanded={!isPublicSharedViewer && langMenuOpen}
-                    aria-haspopup="menu"
-                  >
-                    <span className="lang-flag">{activeLang.flag}</span>
-                    <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
-                    <ChevronDown size={11} className={`lang-chevron ${!isPublicSharedViewer && langMenuOpen ? 'open' : ''}`} />
-                  </button>
-
-                  {!isPublicSharedViewer && langMenuOpen && (
-                    <div className="dictation-lang-dropdown" role="menu" aria-label="Recognition Language">
-                      <div className="lang-dropdown-header">Recognition Language</div>
-                      {supportedLanguages.map((lang) => (
-                        <button
-                          key={lang.code}
-                          type="button"
-                          role="menuitem"
-                          className={`dictation-lang-option ${lang.code === selectedLanguage ? 'active' : ''}`}
-                          onClick={() => handleSelectLanguage(lang.code)}
-                        >
-                          <span className="lang-opt-flag">{lang.flag}</span>
-                          <div className="lang-opt-info">
-                            <span className="lang-opt-label">{lang.label}</span>
-                            <span className="lang-opt-native">{lang.native}</span>
-                          </div>
-                          {lang.code === selectedLanguage && <Check size={14} className="lang-check" />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Real Waveform Visualizer (driven by Web Audio API frequency spectrum) */}
-              <div
-                className="listening-waveform-area"
-                aria-hidden="true"
-                title={isListening ? `Microphone audio level: ${audioLevel}%` : 'Microphone audio visualizer'}
-              >
-                <div className="waveform-visualizer">
-                  {waveformBars.map((barVal, idx) => (
-                    <span
-                      key={idx}
-                      className={`waveform-bar ${isListening ? 'active' : ''}`}
-                      style={{
-                        height: isListening ? `${Math.max(4, Math.round(barVal * 24))}px` : '4px',
-                        opacity: isListening ? Math.max(0.35, Math.min(1, barVal * 1.5)) : 0.25
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Action Buttons: Pause/Resume, Stop, Cancel */}
-              <div className="listening-actions-group">
-                {recordingState === 'stopping' || recordingState === 'transcribing' || recordingState === 'finalizing' ? (
-                  <button
-                    type="button"
-                    className="dictation-strip-btn cancel-btn"
-                    onClick={handleCancelListening}
-                    title="Cancel transcription and discard audio"
-                    aria-label="Cancel transcription and discard audio"
-                  >
-                    <X size={13} className="btn-icon" aria-hidden="true" />
-                    <span className="btn-label">Cancel</span>
-                  </button>
-                ) : recordingState === 'success' ? (
-                  <div className="dictation-status-pill success" aria-hidden="true">
-                    <Check size={12} strokeWidth={2.5} className="btn-icon" />
-                    <span className="btn-label">Inserted</span>
-                  </div>
-                ) : recordingState === 'cancelled' ? (
-                  <div className="dictation-status-pill cancelled" aria-hidden="true">
-                    <X size={12} className="btn-icon" />
-                    <span className="btn-label">Discarded</span>
-                  </div>
-                ) : (
-                  <>
-                    {recordingState === 'listening' ? (
-                      <button
-                        type="button"
-                        className="dictation-strip-btn pause-btn"
-                        onClick={pauseListening}
-                        title="Pause recording"
-                        aria-label="Pause recording"
-                      >
-                        <Pause size={12} className="btn-icon" aria-hidden="true" />
-                        <span className="btn-label">Pause</span>
-                      </button>
-                    ) : recordingState === 'paused' ? (
-                      <button
-                        type="button"
-                        className="dictation-strip-btn resume-btn"
-                        onClick={resumeListening}
-                        title="Resume recording"
-                        aria-label="Resume recording"
-                      >
-                        <Play size={12} fill="currentColor" className="btn-icon" aria-hidden="true" />
-                        <span className="btn-label">Resume</span>
-                      </button>
-                    ) : null}
-
-                    <button
-                      type="button"
-                      className="dictation-strip-btn stop-btn"
-                      onClick={handleStopListening}
-                      title="Stop recording and insert transcript into composer"
-                      aria-label="Stop recording and insert transcript into composer"
-                    >
-                      <Square size={11} fill="currentColor" className="btn-icon" aria-hidden="true" />
-                      <span className="btn-label">Stop</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      className="dictation-strip-btn cancel-btn"
-                      onClick={handleCancelListening}
-                      title="Cancel recording (discard audio and keep existing text)"
-                      aria-label="Cancel recording and discard audio"
-                    >
-                      <X size={13} className="btn-icon" aria-hidden="true" />
-                      <span className="btn-label">Cancel</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
+            <VoiceDictationDock
+              recordingState={recordingState}
+              isListening={isListening}
+              isPaused={isPaused}
+              isRequesting={isRequesting}
+              formattedDuration={formattedDuration}
+              audioLevel={audioLevel}
+              waveformBars={waveformBars}
+              activeLang={activeLang}
+              supportedLanguages={supportedLanguages}
+              selectedLanguage={selectedLanguage}
+              langMenuOpen={langMenuOpen}
+              langMenuRef={langMenuRef}
+              isPublicSharedViewer={isPublicSharedViewer}
+              onToggleLangMenu={handleToggleLangMenu}
+              onSelectLanguage={handleSelectLanguage}
+              onPauseListening={pauseListening}
+              onResumeListening={resumeListening}
+              onStopListening={handleStopListening}
+              onCancelListening={handleCancelListening}
+            />
           )}
 
-          {/* Optional AI Transcript Refinement Notification (Phase 4) */}
-          {lastSessionTranscript && !isRecordingActive && !suggestedRefinement && (
-            <div className="transcript-cleanup-banner" role="region" aria-label="Transcript helper">
-              <div className="cleanup-banner-left">
-                <Sparkles size={13} className="cleanup-icon" />
-                <span className="cleanup-hint">Dictated speech:</span>
-                <span className="cleanup-snippet">
-                  "{lastSessionTranscript.length > 52 ? lastSessionTranscript.slice(0, 52) + '...' : lastSessionTranscript}"
-                </span>
-              </div>
-              <div className="cleanup-banner-actions">
-                <button
-                  type="button"
-                  className="cleanup-action-trigger"
-                  onClick={handleImproveTranscript}
-                  disabled={isCleaningTranscript}
-                  title="Polish punctuation and capitalization without changing words"
-                >
-                  {isCleaningTranscript ? (
-                    <Loader2 size={12} className="spin-icon" />
-                  ) : (
-                    <Sparkles size={12} />
-                  )}
-                  <span>{isCleaningTranscript ? 'Polishing...' : 'Polish text'}</span>
-                </button>
-                <button
-                  type="button"
-                  className="cleanup-dismiss-btn"
-                  onClick={clearLastSessionTranscript}
-                  title="Dismiss helper"
-                  aria-label="Dismiss transcript helper"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            </div>
-          )}
+          <TranscriptPolishReview
+            lastSessionTranscript={lastSessionTranscript}
+            suggestedRefinement={suggestedRefinement}
+            isCleaningTranscript={isCleaningTranscript}
+            onImproveTranscript={handleImproveTranscript}
+            onApplyRefinement={handleApplyRefinement}
+            onDismissReview={() => setSuggestedRefinement(null)}
+            onDismissTranscript={clearLastSessionTranscript}
+          />
 
-          {/* AI Refinement Comparison Card (Phase 4) */}
-          {suggestedRefinement && (
-            <div className="transcript-review-card" role="dialog" aria-labelledby="review-card-title">
-              <div className="review-card-header">
-                <div className="review-header-left">
-                  <Sparkles size={14} className="review-icon" />
-                  <span id="review-card-title" className="review-title">Review Transcript Polish</span>
-                </div>
-                <button
-                  type="button"
-                  className="review-close-btn"
-                  onClick={() => setSuggestedRefinement(null)}
-                  aria-label="Close review"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-
-              <div className="review-card-body">
-                <div className="review-field">
-                  <span className="field-label">Original:</span>
-                  <p className="field-content original-text">{lastSessionTranscript}</p>
-                </div>
-                <div className="review-field">
-                  <span className="field-label">Suggested Polish:</span>
-                  <p className="field-content suggested-text">{suggestedRefinement}</p>
-                </div>
-              </div>
-
-              <div className="review-card-actions">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setSuggestedRefinement(null);
-                    clearLastSessionTranscript();
-                  }}
-                >
-                  Keep original
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleApplyRefinement}
-                  icon={<Check size={13} />}
-                >
-                  Apply Polish
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Mode Change Feedback Notification Banner */}
           {modeChangeNotice && (
             <div className="mode-change-notification-banner" role="status">
               <Sparkles size={13} className="mode-notice-icon" aria-hidden="true" />
@@ -2114,7 +1542,6 @@ Transcript:
             </div>
           )}
 
-          {/* Non-blocking Browser AI (WebLLM) Status & Progress Strip */}
           <BrowserAIStatusBar
             visible={
               selectedProvider === 'webllm' ||
@@ -2132,7 +1559,6 @@ Transcript:
             isOffline={isOffline}
           />
 
-          {/* Drag and Drop Visual Feedback Indicator */}
           {isDraggingOver && (
             <div className="composer-drop-banner" role="status" aria-live="polite">
               <div className="composer-drop-content">
@@ -2148,7 +1574,6 @@ Transcript:
             className={`composer-form ${isDraggingOver ? 'is-drag-over' : ''} ${isRecordingActive && !isCompactViewport ? 'is-recording' : ''} ${isExpandedInput ? 'is-expanded' : ''}`}
             aria-label="Message composer"
           >
-            {/* Native file input strictly supporting one document or image at a time */}
             <input
               type="file"
               ref={fileInputRef}
@@ -2160,122 +1585,13 @@ Transcript:
               aria-hidden="true"
             />
 
-            {/* Selected attachment preview strip */}
-            {attachments.length > 0 && (
-              <div className="composer-attachments-preview" role="region" aria-label="Selected attachment">
-                {attachments.map((att) =>
-                  att.isImage ? (
-                    <div
-                      key={att.id}
-                      className="composer-attachment-chip composer-image-chip is-previewable"
-                      title={`Click to preview ${att.name} (${att.extension || 'IMG'} • ${att.formattedSize})`}
-                      onClick={() => setPreviewingComposerAttachment(att)}
-                    >
-                      <div className="composer-image-thumb-wrap">
-                        {att.previewUrl ? (
-                          <img
-                            src={att.previewUrl}
-                            alt={att.name}
-                            className="composer-image-thumb"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                              const fallback = e.currentTarget.parentElement?.querySelector(
-                                '.composer-image-fallback-icon'
-                              );
-                              if (fallback) fallback.style.display = 'flex';
-                            }}
-                          />
-                        ) : null}
-                        <div
-                          className="composer-image-fallback-icon"
-                          style={{ display: att.previewUrl ? 'none' : 'flex' }}
-                          aria-hidden="true"
-                        >
-                          <FileImage size={16} />
-                        </div>
-                      </div>
-                      <div className="composer-image-meta">
-                        <span className="attachment-chip-name" title={att.name}>
-                          {att.name}
-                        </span>
-                        <div className="attachment-chip-submeta">
-                          <span className="attachment-chip-badge">{att.extension || 'IMG'}</span>
-                          <span className="attachment-chip-size">{att.formattedSize}</span>
-                        </div>
-                      </div>
-                      <div className="composer-chip-actions">
-                        <button
-                          type="button"
-                          className="attachment-chip-preview"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPreviewingComposerAttachment(att);
-                          }}
-                          title={`Preview ${att.name}`}
-                          aria-label={`Preview attachment ${att.name}`}
-                        >
-                          <Eye size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className="attachment-chip-remove"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemoveAttachment(att.id);
-                          }}
-                          title={`Remove ${att.name}`}
-                          aria-label={`Remove attachment ${att.name}`}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      key={att.id}
-                      className="composer-attachment-chip is-previewable"
-                      title={`Click to preview ${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
-                      onClick={() => setPreviewingComposerAttachment(att)}
-                    >
-                      <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
-                      <span className="attachment-chip-name" title={att.name}>
-                        {att.name}
-                      </span>
-                      <span className="attachment-chip-size">{att.formattedSize}</span>
-                      <div className="composer-chip-actions">
-                        <button
-                          type="button"
-                          className="attachment-chip-preview"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPreviewingComposerAttachment(att);
-                          }}
-                          title={`Preview ${att.name}`}
-                          aria-label={`Preview attachment ${att.name}`}
-                        >
-                          <Eye size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className="attachment-chip-remove"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemoveAttachment(att.id);
-                          }}
-                          title={`Remove ${att.name}`}
-                          aria-label={`Remove attachment ${att.name}`}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  )
-                )}
-              </div>
-            )}
+            <ComposerAttachmentTray
+              attachments={attachments}
+              onPreview={(att) => setPreviewingComposerAttachment(att)}
+              onRemove={handleRemoveAttachment}
+            />
 
             <div className="composer-input-row">
-              {/* Attachment Button */}
               <Button
                 type="button"
                 variant="ghost"
@@ -2327,7 +1643,6 @@ Transcript:
               />
 
               <div className="composer-actions">
-                {/* Recognition Language Selector (pre-recording) */}
                 {isSupported && !isRecordingActive && (
                   <div
                     className={`dictation-lang-wrapper composer-pre-lang ${isPublicSharedViewer ? 'disabled' : ''}`}
@@ -2386,7 +1701,6 @@ Transcript:
                   </div>
                 )}
 
-                {/* Voice Dictation Microphone Button (on mobile, suppressed during active recording to prevent duplicate controls) */}
                 {(!isRecordingActive || !isCompactViewport) && (
                   <Button
                     type="button"
@@ -2447,7 +1761,6 @@ Transcript:
                   />
                 )}
 
-                {/* Message Submission or Stop Generating Button */}
                 {isLoading ? (
                   <Button
                     type="button"
@@ -2504,7 +1817,6 @@ Transcript:
         </div>
       </div>
 
-      {/* Pre-Send Composer Attachment Preview Modal */}
       {previewingComposerAttachment && (
         <React.Suspense fallback={null}>
           <DocumentPreviewModal
