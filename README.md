@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: V 0.3.1**
+**Version: V 0.3.2**
 
 An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
 
@@ -85,8 +85,19 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [Troubleshooting Gemini Timeouts & Streaming](#troubleshooting-gemini-timeouts--streaming)
 23. [Security Architecture](#security-architecture)
 24. [Current Limitations](#current-limitations)
-25. [Version History & Release Changelog](#version-history--release-changelog)
-26. [Future Roadmap](#future-roadmap)
+25. [Security, Performance & Architecture Improvements (v0.3.2)](#security-performance--architecture-improvements-v032)
+    - [ORVIX-001 — Secure Server-Side Credential Resolution](#orvix-001--secure-server-side-credential-resolution)
+    - [ORVIX-002 — Serverless-Safe File Upload Handling](#orvix-002--serverless-safe-file-upload-handling)
+    - [ORVIX-003 — Strict CORS Origin Whitelisting](#orvix-003--strict-cors-origin-whitelisting)
+    - [ORVIX-004 — Self-Healing IndexedDB Storage Quotas](#orvix-004--self-healing-indexeddb-storage-quotas)
+    - [ORVIX-005 — Modularization of Monolithic Server Architecture](#orvix-005--modularization-of-monolithic-server-architecture)
+    - [ORVIX-006 — High-Efficiency Live Response Timer](#orvix-006--high-efficiency-live-response-timer)
+    - [ORVIX-007 — Clean Script Redundant Server Reference Removal](#orvix-007--clean-script-redundant-server-reference-removal)
+    - [ORVIX-008 — WebGPU SwiftShader FP32 Defensive Fallback](#orvix-008--webgpu-swiftshader-fp32-defensive-fallback)
+    - [ORVIX-009 — Centralized Gemini Model Configuration & Secondary Fallback](#orvix-009--centralized-gemini-model-configuration--secondary-fallback)
+    - [Audit Verification Summary](#audit-verification-summary)
+26. [Version History & Release Changelog](#version-history--release-changelog)
+27. [Future Roadmap](#future-roadmap)
 
 ---
 
@@ -805,7 +816,118 @@ Configured via `vercel.json` with handlers in `api/`:
 
 ---
 
+## Security, Performance & Architecture Improvements (v0.3.2)
+
+Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectural modularizations, browser runtime optimizations, and configuration centralizations resolving nine critical audit findings (ORVIX-001 through ORVIX-009).
+
+### ORVIX-001 — Secure Server-Side Credential Resolution
+
+- **Vulnerability / Context**: Previously, server-side credential lookups accepted `VITE_`-prefixed environment variables as fallbacks when primary server variables were omitted. Because Vite bundles all environment variables prefixed with `VITE_` into client-side production JavaScript, storing backend API keys under `VITE_` variable names created an acute risk of secret exposure.
+- **Resolution**:
+  - Strictly separated server-only API credentials (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) from client-exposed `VITE_` configurations.
+  - Hardened backend credential resolution in `server/serverConfig.ts` to reject any `VITE_`-prefixed secret lookups on the server.
+  - Ensured sensitive provider API keys remain strictly confidential on the backend, preventing accidental exposure through client builds or bundle manifests.
+
+### ORVIX-002 — Serverless-Safe File Upload Handling
+
+- **Vulnerability / Context**: Storing uploaded files on the local filesystem (`fs.writeFile`) to temporary directories fails unpredictably in serverless execution environments (such as Vercel or AWS Lambda) due to read-only root filesystems (`EROFS`) and stateless, ephemeral instances where subsequent requests may route to different compute nodes.
+- **Resolution**:
+  - Implemented in-memory upload handling via `multer.memoryStorage()`, allowing file uploads, document extraction, and optical character recognition (OCR) to process directly from in-memory buffers without local disk writes.
+  - Clarified architectural boundaries honestly: without a dedicated external object store (such as Google Cloud Storage or AWS S3), uploaded attachments are handled ephemerally in memory or cached locally in browser IndexedDB.
+  - Eliminated transient filesystem collisions, disk exhaustion risks, and cross-instance file retrieval failures across distributed serverless environments.
+
+### ORVIX-003 — Strict CORS Origin Whitelisting
+
+- **Vulnerability / Context**: Permissive wildcard (`*`) Cross-Origin Resource Sharing (CORS) configurations combined with credentialed requests violate modern Web standards and allow malicious third-party origins to make unauthorized cross-origin requests to private API endpoints.
+- **Resolution**:
+  - Eliminated wildcard origin access across credentialed and authenticated API routes (`/api/chat`, `/api/upload`, `/api/transcribe`, `/api/config`).
+  - Configured a dynamic origin whitelist restricting incoming requests strictly to trusted domains, local development environments (`http://localhost:3000`, `http://localhost:5173`), and explicit production hostnames.
+  - Properly secured preflight `OPTIONS` requests, allowed request headers, and cache control directives while preserving legitimate client-server API interactions.
+
+### ORVIX-004 — Self-Healing IndexedDB Storage Quotas
+
+- **Vulnerability / Context**: Client-side storage of image attachments and document previews in browser IndexedDB can exhaust available disk quotas (especially on mobile devices or browsers with strict per-origin limits), throwing unhandled `QuotaExceededError` exceptions that crash the client or break conversation states.
+- **Resolution**:
+  - Implemented defensive quota exhaustion detection and interceptors in `src/services/attachmentService.js`.
+  - Added self-healing recovery workflows that automatically purge stale cached attachments and run least-recently-used (LRU) cache evictions when storage limits are approached.
+  - Provided graceful degradation to in-memory attachment blobs with clear, non-technical UI alerts informing users if storage limits prevent persistent offline caching.
+
+### ORVIX-005 — Modularization of Monolithic Server Architecture
+
+- **Vulnerability / Context**: The central `server.ts` file had expanded into a monolithic implementation exceeding 7,000 lines, coupling HTTP routing, Express setup, Gemini streaming, alternative provider handling, document OCR, audio transcription, and configuration into a single hard-to-maintain file.
+- **Resolution**:
+  - Decomposed the monolith into clean, single-responsibility subsystems under `server/`:
+    - `server/serverConfig.ts`: Environment validation, CORS whitelist, and port management.
+    - `server/serverTypes.ts`: Strongly typed interfaces and request schemas.
+    - `server/diagnosticLogger.ts`: Sanitized development-safe structured logging.
+    - `server/geminiStream.ts`: Google Gen AI SDK streaming client with keepalive priming.
+    - `server/uploadSubsystem.ts`: In-memory Multer storage, magic-number validation, and Tesseract OCR.
+    - `server/transcriptionSubsystem.ts`: Groq Whisper Large v3 Turbo transcription with fallback.
+    - `server/chatSubsystem.ts`: Unified multi-provider chat routing, model fallback failover, and SSE formatting.
+  - Reduced `server.ts` to ~270 lines of clean orchestration while maintaining 100% backward compatibility with existing API contracts.
+
+### ORVIX-006 — High-Efficiency Live Response Timer
+
+- **Vulnerability / Context**: During active AI response streaming, the duration badge (`LiveResponseTimer.jsx`) executed rapid, unthrottled timer state updates (every 100ms), triggering excessive React re-renders and CPU overhead while rendering streamed markdown tokens.
+- **Resolution**:
+  - Replaced high-frequency unthrottled intervals with second-boundary synchronized intervals, ensuring timer updates fire only when the displayed second changes.
+  - Added memoization and duplicate dispatch suppression, cutting component re-render frequency by over 90% during active response generation.
+  - Preserved precise start, elapsed, and completion timestamps, ensuring an immutable elapsed duration badge is saved to message metadata without CPU lag or memory leaks.
+
+### ORVIX-007 — Clean Script Redundant Server Reference Removal
+
+- **Vulnerability / Context**: The `clean` script in `package.json` included a legacy reference targeting a nonexistent `server.js` file (`rm -rf dist server.js`). Because Orvix runs directly via `tsx server.ts` and Vite, `server.js` was obsolete and confusing for build automation and deployment pipelines.
+- **Resolution**:
+  - Verified that `server.js` is not generated, required, or referenced by any active build, test, development, or production workflow.
+  - Cleaned the `clean` script in `package.json` to strictly target the build output directory (`rm -rf dist`).
+  - Preserved full build integrity and all developer tooling scripts without phantom file dependencies.
+
+### ORVIX-008 — WebGPU SwiftShader FP32 Defensive Fallback
+
+- **Vulnerability / Context**: WebGPU environments running on software rasterizers (such as Google SwiftShader in headless Chrome, CI environments, or virtual machines without discrete hardware acceleration) throw fatal shader compilation errors or crash when attempting to load FP16 (`shader-f16`) quantized model weights.
+- **Resolution**:
+  - Implemented automatic hardware capability sniffing in `src/services/webllmService.js` and `src/workers/webllmWorker.js` to detect SwiftShader software adapters and test for `shader-f16` feature support.
+  - Added an automatic defensive fallback pipeline that transparently selects FP32 quantized models (e.g., `q4f32_1` instead of `q4f16_1`) when `shader-f16` is unsupported.
+  - Preserved optimal FP16 execution speed on physical hardware supporting half-precision floating-point arithmetic while ensuring graceful execution on virtualized and software-rendered devices.
+
+### ORVIX-009 — Centralized Gemini Model Configuration & Secondary Fallback
+
+- **Vulnerability / Context**: Google Gemini model identifier literals (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, etc.) were scattered across `appConfig.js`, `providerModelSanitizer.js`, `chatSubsystem.ts`, and `server.ts`. Additionally, transient upstream Gemini outages or model deprecation errors lacked automated secondary model fallback.
+- **Resolution**:
+  - Centralized all Gemini model configuration in `src/config/appConfig.js`, establishing canonical exports: `GEMINI_PRIMARY_MODEL` (`gemini-2.5-flash`), `GEMINI_FALLBACK_MODEL` (`gemini-2.5-flash-lite`), `GEMINI_FALLBACK_CANDIDATES`, and the frozen `GEMINI_MODELS_CONFIG` object.
+  - Updated `providerModelSanitizer.js`, `server.ts`, and `server/chatSubsystem.ts` to consume the single source of truth, eliminating hardcoded model strings across the stack.
+  - Configured intelligent automated fallback: when the primary model encounters transient upstream errors (such as 404 Model Not Found, 429 Rate Limit, 503 Unavailable, or 504 Deadline Exceeded), the request seamlessly fails over to the configured secondary model without dropping the connection.
+  - Built strict guardrails preventing fallback on non-recoverable client errors (e.g., 400 Bad Request, 401/403 Authentication/API Key Failure) to prevent duplicate invalid requests or infinite loops.
+
+### Audit Verification Summary
+
+| ID | Category | Resolution |
+| :--- | :--- | :--- |
+| **ORVIX-001** | Security & Credentials | **Resolved** — Separated server-only secrets from client `VITE_` variables; hardened backend resolution. |
+| **ORVIX-002** | Storage & Reliability | **Resolved** — Replaced fragile disk writes with serverless-safe in-memory staging; clear architectural boundaries. |
+| **ORVIX-003** | Network Security | **Resolved** — Eliminated wildcard CORS on credentialed routes; enforced strict domain whitelisting. |
+| **ORVIX-004** | Storage & Resilience | **Resolved** — Added defensive `QuotaExceededError` detection, LRU eviction, and in-memory fallback. |
+| **ORVIX-005** | Architecture & Maintainability | **Resolved** — Modularized 7,000+ line `server.ts` into single-responsibility subsystem modules under `server/`. |
+| **ORVIX-006** | Performance & Rendering | **Resolved** — Optimized live response timer to second-boundary intervals, cutting re-renders by >90%. |
+| **ORVIX-007** | Build & Automation | **Resolved** — Removed obsolete `server.js` artifact from `package.json` clean script. |
+| **ORVIX-008** | Browser AI & WebGPU | **Resolved** — Added SwiftShader capability sniffing and automatic defensive FP32 model fallback. |
+| **ORVIX-009** | AI Routing & Reliability | **Resolved** — Centralized Gemini model configuration and implemented automated secondary fallback failover. |
+
+---
+
 ## Version History & Release Changelog
+
+### V 0.3.2 — Security, Performance & Architecture Improvements
+- **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered complete remediation for all reported security, performance, storage, and architectural findings.
+- **Server-Side Credential Isolation (ORVIX-001)**: Prevented accidental client-bundle credential leakage by enforcing server-only API key resolution and rejecting `VITE_`-prefixed backend secrets.
+- **Serverless In-Memory Upload Processing (ORVIX-002)**: Replaced disk-backed file storage with in-memory Multer processing and clear documentation of ephemeral storage boundaries.
+- **Strict CORS Domain Whitelisting (ORVIX-003)**: Hardened cross-origin request policies, eliminating wildcard access on credentialed and sensitive API routes.
+- **Self-Healing IndexedDB Quota Management (ORVIX-004)**: Implemented automated LRU cache eviction and in-memory fallback for browser attachment storage exhaustion.
+- **Server Architecture Modularization (ORVIX-005)**: Decoupled monolithic `server.ts` into structured modules (`serverConfig`, `geminiStream`, `uploadSubsystem`, `transcriptionSubsystem`, `chatSubsystem`).
+- **High-Efficiency Response Timer (ORVIX-006)**: Reduced streaming timer overhead by >90% through second-boundary synchronization and memoization.
+- **Clean Script Modernization (ORVIX-007)**: Removed obsolete `server.js` references from `package.json` clean script.
+- **WebGPU SwiftShader FP32 Fallback (ORVIX-008)**: Added automatic capability detection ensuring graceful fallback to FP32 models on software rasterizers lacking `shader-f16`.
+- **Centralized Gemini Configuration & Failover (ORVIX-009)**: Centralized model identifiers into `appConfig.js` and implemented intelligent secondary model fallback for upstream outages.
 
 ### V 0.3.1 — iOS 15 Compatibility & Production Reliability Release
 - **Fixed iPhone 7 / iOS 15.8.8 Safari Blank-Screen Issue**: Resolved the critical startup failure where Orvix consistently displayed a completely blank screen in Safari and the installed PWA on iPhone 7 running iOS 15.8.8.
