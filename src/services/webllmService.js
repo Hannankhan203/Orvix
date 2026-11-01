@@ -814,6 +814,28 @@ function isAbortError(err) {
 // ============================================================================
 
 /**
+ * Detects whether an adapter is SwiftShader or a software CPU fallback rasterizer.
+ * @param {{ vendor?: string, architecture?: string, device?: string, description?: string } | null} adapterInfo
+ * @param {boolean} [isFallbackAdapter=false]
+ * @returns {boolean}
+ */
+export function isSwiftShaderAdapter(adapterInfo, isFallbackAdapter = false) {
+  if (isFallbackAdapter) return true;
+  if (!adapterInfo) return false;
+  const combined = `${adapterInfo.vendor || ''} ${adapterInfo.architecture || ''} ${adapterInfo.device || ''} ${adapterInfo.description || ''}`
+    .trim()
+    .toLowerCase();
+  return (
+    combined.includes('swiftshader') ||
+    combined.includes('llvmpipe') ||
+    combined.includes('lavapipe') ||
+    combined.includes('microsoft basic render') ||
+    combined.includes('software rasterizer') ||
+    /\bwarp\b/.test(combined)
+  );
+}
+
+/**
  * Checks whether the current browser, context, and GPU hardware support WebGPU for WebLLM.
  * Does not load @mlc-ai/web-llm or download any model files.
  *
@@ -822,6 +844,8 @@ function isAbortError(err) {
  *   reasonCode: string | null,
  *   message: string | null,
  *   hasShaderF16: boolean,
+ *   isFallbackAdapter: boolean,
+ *   isSwiftShader: boolean,
  *   maxStorageBufferBindingSize: number | null,
  *   maxBufferSize: number | null,
  *   adapterInfo: { vendor?: string, architecture?: string, description?: string } | null
@@ -837,6 +861,7 @@ export async function checkWebGPUSupport(options = {}) {
       message: 'Browser AI requires a web browser environment with WebGPU support.',
       hasShaderF16: false,
       isFallbackAdapter: false,
+      isSwiftShader: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
       adapterInfo: null
@@ -851,6 +876,7 @@ export async function checkWebGPUSupport(options = {}) {
         'Browser AI requires a secure context (HTTPS or localhost) to access WebGPU and browser model caching.',
       hasShaderF16: false,
       isFallbackAdapter: false,
+      isSwiftShader: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
       adapterInfo: null
@@ -865,6 +891,7 @@ export async function checkWebGPUSupport(options = {}) {
         'WebGPU is not available in this browser. Please use a recent version of Chrome (113+), Edge (113+), or Safari (18+) on a compatible device.',
       hasShaderF16: false,
       isFallbackAdapter: false,
+      isSwiftShader: false,
       maxStorageBufferBindingSize: null,
       maxBufferSize: null,
       adapterInfo: null
@@ -923,6 +950,7 @@ export async function checkWebGPUSupport(options = {}) {
             'No compatible WebGPU graphics adapter was found. Please ensure hardware acceleration is enabled in your browser settings and your GPU drivers are up to date.',
           hasShaderF16: false,
           isFallbackAdapter: false,
+          isSwiftShader: false,
           maxStorageBufferBindingSize: null,
           maxBufferSize: null,
           adapterInfo: null
@@ -951,7 +979,22 @@ export async function checkWebGPUSupport(options = {}) {
           description: adapter.info.description || '',
           isFallbackAdapter: Boolean(adapter.info.isFallbackAdapter || isFallbackAdapter)
         };
+      } else if (typeof adapter.requestAdapterInfo === 'function') {
+        try {
+          const reqInfo = await adapter.requestAdapterInfo();
+          if (reqInfo) {
+            adapterInfo = {
+              vendor: reqInfo.vendor || '',
+              architecture: reqInfo.architecture || '',
+              device: reqInfo.device || '',
+              description: reqInfo.description || '',
+              isFallbackAdapter: Boolean(reqInfo.isFallbackAdapter || isFallbackAdapter)
+            };
+          }
+        } catch (_) {}
       }
+
+      const isSwiftShader = isSwiftShaderAdapter(adapterInfo, isFallbackAdapter);
 
       const positiveResult = {
         supported: true,
@@ -959,6 +1002,7 @@ export async function checkWebGPUSupport(options = {}) {
         message: null,
         hasShaderF16,
         isFallbackAdapter,
+        isSwiftShader,
         maxStorageBufferBindingSize,
         maxBufferSize,
         adapterInfo
@@ -988,6 +1032,7 @@ export async function checkWebGPUSupport(options = {}) {
           : 'Failed to access the WebGPU graphics adapter. Please check that hardware acceleration is enabled in your browser.',
         hasShaderF16: false,
         isFallbackAdapter: false,
+        isSwiftShader: false,
         maxStorageBufferBindingSize: null,
         maxBufferSize: null,
         adapterInfo: null
@@ -1022,25 +1067,12 @@ export function evaluateWebGPUWarmupSuitability(gpuSupport, modelId = DEFAULT_WE
   }
 
   const info = gpuSupport.adapterInfo;
-  if (gpuSupport.isFallbackAdapter === true || info?.isFallbackAdapter === true) {
+  if (gpuSupport.isFallbackAdapter === true || info?.isFallbackAdapter === true || gpuSupport.isSwiftShader === true) {
     return { shouldWarmup: false, reason: 'software_adapter' };
   }
 
-  if (info && typeof info === 'object') {
-    const combinedAdapterText = `${info.vendor || ''} ${info.architecture || ''} ${info.device || ''} ${info.description || ''}`
-      .trim()
-      .toLowerCase();
-    if (
-      combinedAdapterText &&
-      (combinedAdapterText.includes('swiftshader') ||
-        combinedAdapterText.includes('llvmpipe') ||
-        combinedAdapterText.includes('lavapipe') ||
-        combinedAdapterText.includes('microsoft basic render') ||
-        combinedAdapterText.includes('software rasterizer') ||
-        /\bwarp\b/.test(combinedAdapterText))
-    ) {
-      return { shouldWarmup: false, reason: 'software_adapter' };
-    }
+  if (isSwiftShaderAdapter(info, Boolean(gpuSupport.isFallbackAdapter || gpuSupport.isSwiftShader))) {
+    return { shouldWarmup: false, reason: 'software_adapter' };
   }
 
   const catalogEntry = WEBLLM_MODEL_CATALOG[modelId] || null;
@@ -1077,10 +1109,16 @@ export function evaluateWebGPUWarmupSuitability(gpuSupport, modelId = DEFAULT_WE
 /**
  * Resolves the optimal verified model ID for the visitor's WebGPU capabilities.
  * Defaults to Qwen2.5-1.5B-Instruct-q4f16_1-MLC and automatically falls back to
- * Qwen2.5-1.5B-Instruct-q4f32_1-MLC when the GPU adapter lacks `shader-f16`.
+ * Qwen2.5-1.5B-Instruct-q4f32_1-MLC when the GPU adapter lacks `shader-f16` or when
+ * SwiftShader is active without shader-f16 support.
  *
  * @param {string|null|undefined} requestedModelId
- * @param {{ hasShaderF16?: boolean, allowF32Fallback?: boolean }} [options]
+ * @param {{
+ *   hasShaderF16?: boolean,
+ *   isSwiftShader?: boolean,
+ *   gpuSupport?: any,
+ *   allowF32Fallback?: boolean
+ * }} [options]
  * @returns {string}
  */
 export function resolveWebLLMModelId(requestedModelId, options = {}) {
@@ -1107,10 +1145,40 @@ export function resolveWebLLMModelId(requestedModelId, options = {}) {
   );
   const baseId = catalogKey || (isObsolete05B ? QWEN3_06B_WEBLLM_MODEL_ID : DEFAULT_WEBLLM_MODEL_ID);
 
-  const { hasShaderF16 = true, allowF32Fallback = true } = options;
+  const {
+    allowF32Fallback = true,
+    isSwiftShader: explicitIsSwiftShader
+  } = options;
+
+  let effectiveHasShaderF16;
+  if (typeof options.hasShaderF16 === 'boolean') {
+    effectiveHasShaderF16 = options.hasShaderF16;
+  } else if (typeof options.gpuSupport?.hasShaderF16 === 'boolean') {
+    effectiveHasShaderF16 = options.gpuSupport.hasShaderF16;
+  } else if (typeof engineState.hasShaderF16 === 'boolean') {
+    effectiveHasShaderF16 = engineState.hasShaderF16;
+  } else if (cachedGpuSupportEntry?.result && typeof cachedGpuSupportEntry.result.hasShaderF16 === 'boolean') {
+    effectiveHasShaderF16 = cachedGpuSupportEntry.result.hasShaderF16;
+  } else {
+    effectiveHasShaderF16 = true;
+  }
+
+  const isSwiftShader = Boolean(
+    explicitIsSwiftShader ??
+    options.gpuSupport?.isSwiftShader ??
+    (options.gpuSupport?.adapterInfo && isSwiftShaderAdapter(options.gpuSupport.adapterInfo, options.gpuSupport.isFallbackAdapter)) ??
+    (cachedGpuSupportEntry?.result?.isSwiftShader) ??
+    (cachedGpuSupportEntry?.result?.adapterInfo && isSwiftShaderAdapter(cachedGpuSupportEntry.result.adapterInfo, cachedGpuSupportEntry.result.isFallbackAdapter))
+  );
+
+  // When SwiftShader is being used and shader-f16 is unavailable, enforce false
+  if (isSwiftShader && !effectiveHasShaderF16) {
+    effectiveHasShaderF16 = false;
+  }
+
   const catalogEntry = WEBLLM_MODEL_CATALOG[baseId];
 
-  if (catalogEntry && catalogEntry.prefersShaderF16 && !hasShaderF16 && allowF32Fallback && catalogEntry.f32FallbackModelId) {
+  if (catalogEntry && catalogEntry.prefersShaderF16 && !effectiveHasShaderF16 && allowF32Fallback && catalogEntry.f32FallbackModelId) {
     return catalogEntry.f32FallbackModelId;
   }
 
@@ -1292,6 +1360,8 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
   const gpuSupport = await checkWebGPUSupport();
   const resolvedId = resolveWebLLMModelId(preferredModelId, {
     hasShaderF16: gpuSupport.hasShaderF16,
+    isSwiftShader: gpuSupport.isSwiftShader,
+    gpuSupport,
     allowF32Fallback: true
   });
 
@@ -2564,14 +2634,22 @@ function isFatalEngineError(rawErr) {
   );
 }
 
-function isShaderF16ErrorText(lowerMsg) {
+export function isShaderF16ErrorText(lowerMsg) {
   if (!lowerMsg) return false;
   return (
     lowerMsg.includes('shaderf16') ||
     lowerMsg.includes('shader-f16') ||
     lowerMsg.includes("extension 'f16'") ||
     lowerMsg.includes('extension "f16"') ||
-    lowerMsg.includes('enable f16')
+    lowerMsg.includes('enable f16') ||
+    (lowerMsg.includes('f16') && (
+      lowerMsg.includes('shader') ||
+      lowerMsg.includes('extension') ||
+      lowerMsg.includes('feature') ||
+      lowerMsg.includes('not supported') ||
+      lowerMsg.includes('unsupported') ||
+      lowerMsg.includes('disabled')
+    ))
   );
 }
 
@@ -3369,6 +3447,8 @@ export async function ensureWebLLMEngine(options = {}) {
 
   const resolvedModelId = resolveWebLLMModelId(requestedModelId, {
     hasShaderF16: gpuSupport.hasShaderF16,
+    isSwiftShader: gpuSupport.isSwiftShader,
+    gpuSupport,
     allowF32Fallback
   });
 
