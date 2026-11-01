@@ -156,7 +156,7 @@
     },
     "UserSettings": {
       "title": "UserSettings",
-      "description": "User personalization preferences including theme, response style, composer settings, and display flags.",
+      "description": "User personalization preferences including theme, response style, default mode, composer settings, voice synthesis, and display flags.",
       "type": "object",
       "properties": {
         "theme": {
@@ -169,6 +169,11 @@
           "enum": ["concise", "balanced", "detailed"],
           "description": "AI response length preference."
         },
+        "defaultMode": {
+          "type": "string",
+          "enum": ["general", "coding", "writing", "learning"],
+          "description": "Default conversation mode for new chats."
+        },
         "beginnerFriendly": {
           "type": "boolean",
           "description": "Preference for simpler, beginner-friendly explanations."
@@ -180,6 +185,15 @@
         "showTimestamps": {
           "type": "boolean",
           "description": "Whether to display timestamps on chat messages."
+        },
+        "speechRate": {
+          "type": "number",
+          "description": "Playback speech rate for text-to-speech reading between 0.5 and 2.5."
+        },
+        "speechVoiceURI": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Synthesizer voice URI identifier or empty string for system default."
         },
         "updatedAt": {
           "type": "string",

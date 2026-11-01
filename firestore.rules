@@ -99,12 +99,15 @@ service cloud.firestore {
         allow read, delete: if isOwner(userId);
 
         allow create, update: if isOwner(userId)
-                              && request.resource.data.keys().hasOnly(['theme', 'responseLength', 'beginnerFriendly', 'enterToSend', 'showTimestamps', 'updatedAt'])
+                              && request.resource.data.keys().hasOnly(['theme', 'responseLength', 'defaultMode', 'beginnerFriendly', 'enterToSend', 'showTimestamps', 'speechRate', 'speechVoiceURI', 'updatedAt'])
                               && (!('theme' in request.resource.data) || request.resource.data.theme in ['light', 'dark', 'system'])
                               && (!('responseLength' in request.resource.data) || request.resource.data.responseLength in ['concise', 'balanced', 'detailed'])
+                              && (!('defaultMode' in request.resource.data) || isValidChatMode(request.resource.data.defaultMode))
                               && (!('beginnerFriendly' in request.resource.data) || request.resource.data.beginnerFriendly is bool)
                               && (!('enterToSend' in request.resource.data) || request.resource.data.enterToSend is bool)
-                              && (!('showTimestamps' in request.resource.data) || request.resource.data.showTimestamps is bool);
+                              && (!('showTimestamps' in request.resource.data) || request.resource.data.showTimestamps is bool)
+                              && (!('speechRate' in request.resource.data) || (request.resource.data.speechRate is number && request.resource.data.speechRate >= 0.5 && request.resource.data.speechRate <= 2.5))
+                              && (!('speechVoiceURI' in request.resource.data) || (request.resource.data.speechVoiceURI is string && request.resource.data.speechVoiceURI.size() <= 256));
       }
 
       // User chats collection
