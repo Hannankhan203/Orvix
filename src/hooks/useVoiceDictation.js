@@ -187,7 +187,11 @@ export function getInitialLanguage() {
  * NOTE: As per project guidelines, no arbitrary word-replacement dictionaries are used.
  */
 const COMMON_TECH_ACRONYMS = [
+  [/\b(?:or\s*vix|our\s*vix|or\s*fix)\s*['’]s\b/gi, "Orvix's"],
+  [/\borvix\s*['’]s\b/gi, "Orvix's"],
   [/\b(?:or\s*vix|our\s*vix|or\s*fix)\b/gi, 'Orvix'],
+  [/\b(?:read\s*me\s*\.?\s*(?:m\s*d|md)|readme\s*\.?\s*(?:m\s*d|md))\b/gi, 'README.md'],
+  [/\bfire\s*base\b/gi, 'Firebase'],
   [/\b(?:chat\s*gpt|chat\s*g\s*p\s*t)\b/gi, 'ChatGPT'],
   [/\bopen\s*ai\b/gi, 'OpenAI'],
   [/\bjava\s*script\b/gi, 'JavaScript'],
@@ -270,9 +274,32 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
       text = text.replace(pattern, replacement);
     }
 
+    // Context-aware grammar disambiguation:
+    // Relative pronoun "which" vs homophone "witch" before relative verbs
+    text = text.replace(
+      /\b(?:witch|wich)\s+(is|was|were|are|means|can|could|will|would|has|have|had|contains|allows|provides|requires|represents|refers)\b/gi,
+      'which $1'
+    );
+    // Relative clauses with preceding comma
+    text = text.replace(/,\s*(?:witch|wich)\b/gi, ', which');
+
+    // Phonetic slip "file, with is" -> "file, which is"
+    text = text.replace(
+      /\b(file|module|function|component|document|library|service|server|database|endpoint|tool|app|application|script|repo|repository)\s*,\s*with\s+(is|was)\b/gi,
+      '$1, which $2'
+    );
+
     // Natural greeting punctuation: "Hello, Orvix"
     text = text.replace(/\b(hello|hi|hey)\s+orvix\b/gi, (_, g) => `${g.charAt(0).toUpperCase() + g.slice(1).toLowerCase()}, Orvix`);
   }
+
+  // Protect technical filenames, extensions, and dot notation from sentence-splitting
+  const technicalIdentifiers = /\b([a-zA-Z0-9_-]+)\.(md|ts|js|jsx|tsx|json|html|css|py|txt|csv|pdf|png|jpg|svg|xml|yaml|yml|env|lock|random|log)\b/gi;
+  const techPlaceholders = [];
+  text = text.replace(technicalIdentifiers, (m) => {
+    techPlaceholders.push(m);
+    return `__TECH_ID_${techPlaceholders.length - 1}__`;
+  });
 
   // Remove irregular spaces before punctuation
   text = text
@@ -303,6 +330,9 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
     text = text.replace(/([.!?\n]\s+)([a-z])/g, (_, sep, letter) => `${sep}${letter.toUpperCase()}`);
     text = text.replace(/\bMath\.\s*random\b/gi, 'Math.random');
   }
+
+  // Restore protected technical filenames and identifiers
+  text = text.replace(/__TECH_ID_(\d+)__/g, (_, idx) => techPlaceholders[Number(idx)]);
 
   return text;
 }
@@ -540,8 +570,24 @@ export function selectFinalTranscript({
   // 1. If valid audio was captured and server transcription succeeded with non-empty text:
   // Recorded audio transcription is the preferred primary result.
   if (hasValidAudio && providerSuccess && cleanProvider.length > 0) {
+    let resolvedText = cleanProvider;
+
+    // Proper-noun possessive reconciliation:
+    // If native live speech recognized a possessive on proper brand "Orvix" (or "our vix's" / "or fix's")
+    // before a following technical noun, and provider transcript dropped the possessive, reconcile it.
+    if (
+      /\b(?:or\s*vix|our\s*vix|or\s*fix|orvix)\s*['’]s\b/i.test(cleanNative) &&
+      /\bOrvix\s+(README(?:\.md)?|file|documentation|code|repo|repository|app|application|config|project)\b/i.test(resolvedText) &&
+      !/\bOrvix['’]s\b/i.test(resolvedText)
+    ) {
+      resolvedText = resolvedText.replace(
+        /\bOrvix\s+(README(?:\.md)?|file|documentation|code|repo|repository|app|application|config|project)\b/gi,
+        "Orvix's $1"
+      );
+    }
+
     return {
-      finalText: cleanProvider,
+      finalText: resolvedText,
       source: 'provider',
       reason: cleanNative.length > 0 ? 'provider_preferred_over_native' : 'provider_recovered_empty_native'
     };
@@ -2116,6 +2162,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
         try {
           const providerRes = await transcribeAudioBlob({
             audioBlob,
+            transcript: cleanSpeech,
+            prompt: 'Orvix, Orvix\'s, README.md, Firebase, which',
             language: selectedLanguageRef.current
           });
 
@@ -2423,6 +2471,8 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     try {
       const result = await transcribeAudioBlob({
         audioBlob,
+        transcript: targetNative,
+        prompt: 'Orvix, Orvix\'s, README.md, Firebase, which',
         language: selectedLanguageRef.current,
         signal: abortCtrl.signal
       });

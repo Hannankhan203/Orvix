@@ -317,7 +317,11 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
 
   // 3. Technical Acronyms and Proper Names
   const techReplacements = [
+    [/\b(?:or\s*vix|our\s*vix|or\s*fix)\s*['’]s\b/gi, "Orvix's"],
+    [/\borvix\s*['’]s\b/gi, "Orvix's"],
     [/\b(?:or\s*vix|our\s*vix|or\s*fix)\b/gi, 'Orvix'],
+    [/\b(?:read\s*me\s*\.?\s*(?:m\s*d|md)|readme\s*\.?\s*(?:m\s*d|md))\b/gi, 'README.md'],
+    [/\bfire\s*base\b/gi, 'Firebase'],
     [/\b(?:chat\s*gpt|chat\s*g\s*p\s*t)\b/gi, 'ChatGPT'],
     [/\bopen\s*ai\b/gi, 'OpenAI'],
     [/\bjava\s*script\b/gi, 'JavaScript'],
@@ -349,25 +353,49 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
     text = text.replace(pattern, replacement);
   }
 
-  // 4. Context-aware technical disambiguation
+  // 4. Context-aware grammar and technical disambiguation
   // A. Protect Math.random API calls so they are never converted to palindrome
   text = text.replace(/\bmath\s*\.\s*random\b/gi, 'Math.random');
   text = text.replace(/\busing\s+math\s+random\b/gi, 'using Math.random');
   text = text.replace(/\bwith\s+math\s+random\b/gi, 'with Math.random');
 
-  // B. Disambiguate "pedrandom" / "ped random" -> "palindrome" in programming context
+  // B. Disambiguate relative pronoun "which" vs homophone "witch" in syntactic relative clauses
+  // Grammatical context: "which" followed by verbs (is/was/were/are/means/can/could/will/would/has/have/had/contains/provides/allows)
+  // Preserves genuine folklore words (witchcraft, wicked witch, witch hunt, the witch).
+  text = text.replace(
+    /\b(?:witch|wich)\s+(is|was|were|are|means|can|could|will|would|has|have|had|contains|allows|provides|requires|represents|refers)\b/gi,
+    'which $1'
+  );
+  // Comma-separated relative clauses: ", witch" -> ", which"
+  text = text.replace(/,\s*(?:witch|wich)\b/gi, ', which');
+
+  // C. Disambiguate phonetic slip "file, with is" -> "file, which is"
+  text = text.replace(
+    /\b(file|module|function|component|document|library|service|server|database|endpoint|tool|app|application|script|repo|repository)\s*,\s*with\s+(is|was)\b/gi,
+    '$1, which $2'
+  );
+
+  // D. Disambiguate "pedrandom" / "ped random" -> "palindrome" in programming context
   if (isProgrammingContext) {
     text = text.replace(
       /(math\s*\.?\s*)?\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi,
       (match, prefix) => (prefix ? match : 'palindrome')
     );
 
-    // C. Disambiguate "sync await" / "sink await" -> "async/await" in async/programming context
+    // E. Disambiguate "sync await" / "sink await" -> "async/await" in async/programming context
     if (isAsyncContext) {
       text = text.replace(/\b(?:sync\s+await|sink\s+await)\b/gi, 'async/await');
       text = text.replace(/\basync\s+await\b/gi, 'async/await');
     }
   }
+
+  // Protect technical filenames, extensions, and dot notation from sentence-splitting
+  const technicalIdentifiers = /\b([a-zA-Z0-9_-]+)\.(md|ts|js|jsx|tsx|json|html|css|py|txt|csv|pdf|png|jpg|svg|xml|yaml|yml|env|lock|random|log)\b/gi;
+  const techPlaceholders = [];
+  text = text.replace(technicalIdentifiers, (m) => {
+    techPlaceholders.push(m);
+    return `__TECH_ID_${techPlaceholders.length - 1}__`;
+  });
 
   // 5. Punctuation spacing and sentence boundaries
   text = text
@@ -396,6 +424,9 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
 
   // Natural greeting punctuation: "Hello, Orvix"
   text = text.replace(/\b(hello|hi|hey)\s+orvix\b/gi, (_, g) => `${g.charAt(0).toUpperCase() + g.slice(1).toLowerCase()}, Orvix`);
+
+  // Restore protected technical filenames and identifiers
+  text = text.replace(/__TECH_ID_(\d+)__/g, (_, idx) => techPlaceholders[Number(idx)]);
 
   return text.trim();
 }

@@ -40,6 +40,8 @@ export default defineConfig(() => {
         ],
         manifest: false,
         workbox: {
+          clientsClaim: true,
+          skipWaiting: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest,wasm}'],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
           navigateFallback: '/index.html',

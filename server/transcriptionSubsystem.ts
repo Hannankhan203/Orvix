@@ -76,7 +76,8 @@ export function mapBcp47ToIso639(bcp47Tag?: string | null): string | undefined {
   return supported.includes(primary) ? primary : undefined;
 }
 
-export const DEFAULT_WHISPER_CONTEXT_PROMPT = '';
+export const DEFAULT_WHISPER_CONTEXT_PROMPT =
+  'Orvix, Orvix\'s, README.md, Firebase, which, API, JavaScript, TypeScript';
 
 export function registerTranscriptionRoutes(app: express.Express) {
   app.post(['/api/transcribe', '/transcribe'], (req, res) => {
@@ -203,7 +204,8 @@ export function registerTranscriptionRoutes(app: express.Express) {
 
           if (groqRes.ok) {
             const result: any = await groqRes.json();
-            const transcriptText = (result.text || '').trim();
+            const rawTranscript = (result.text || '').trim();
+            const transcriptText = polishSpokenTranscript(rawTranscript) || rawTranscript;
 
             return res.status(200).json({
               success: true,
@@ -338,10 +340,15 @@ export function registerTranscriptionRoutes(app: express.Express) {
           }
           const base64Data = audioFile.buffer.toString('base64');
 
+          const vocabHints = [effectivePrompt, incomingTranscript ? `Live speech reference: "${incomingTranscript}"` : '']
+            .filter(Boolean)
+            .join('. ');
+
           const geminiPrompt = `You are a high-accuracy speech transcription engine.
 Transcribe the speech in this audio recording verbatim.
-Preserve exact words, natural phrasing, and punctuation.
+Preserve exact words, natural phrasing, possessive forms, and punctuation.
 ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
+${vocabHints ? `Vocabulary & context hints: ${vocabHints}` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
           const transcriptionCandidates = ['gemini-3.5-transcribe', 'gemini-3.8-flash'];
@@ -383,7 +390,8 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
             throw lastGeminiErr || new Error('Gemini audio transcription failed');
           }
 
-          const text = (geminiRes?.text || '').trim();
+          const rawText = (geminiRes?.text || '').trim();
+          const text = polishSpokenTranscript(rawText) || rawText;
           return res.status(200).json({
             success: true,
             text,

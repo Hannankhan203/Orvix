@@ -178,6 +178,46 @@ registerUploadRoutes(app);
 registerTranscriptionRoutes(app);
 registerChatRoutes(app);
 
+// Service worker and web app manifest must NEVER be cached by browsers, proxies, or CDNs
+app.use((req, res, next) => {
+  if (
+    req.path === '/sw.js' ||
+    req.path === '/manifest.webmanifest' ||
+    req.path === '/registerSW.js'
+  ) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
+app.get('/sw.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  const distSw = path.resolve(__dirname, 'dist', 'sw.js');
+  if (fs.existsSync(distSw)) {
+    return res.sendFile(distSw);
+  }
+  return res.type('application/javascript').send('// Orvix service worker');
+});
+
+app.get('/manifest.webmanifest', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  const distManifest = path.resolve(__dirname, 'dist', 'manifest.webmanifest');
+  const publicManifest = path.resolve(__dirname, 'public', 'manifest.webmanifest');
+  if (fs.existsSync(distManifest)) {
+    return res.sendFile(distManifest);
+  }
+  if (fs.existsSync(publicManifest)) {
+    return res.sendFile(publicManifest);
+  }
+  return res.json({ name: 'Orvix' });
+});
+
 // Explicitly catch all unmatched /api routes and return JSON 404 so API requests never fall through to SPA HTML
 app.use('/api', (_req, res) => {
   res.status(404).json({
@@ -194,7 +234,22 @@ async function startServer() {
 
   const distPath = path.resolve(__dirname, 'dist');
   if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
+    // Service worker and web app manifest must NEVER be cached by browsers or CDNs
+    app.get(['/sw.js', '/manifest.webmanifest'], (_req, res, next) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      next();
+    });
+
+    // Immutable caching for hashed JS/CSS assets
+    const assetsPath = path.resolve(distPath, 'assets');
+    if (fs.existsSync(assetsPath)) {
+      app.use('/assets', express.static(assetsPath, { maxAge: '1y', immutable: true }));
+    }
+
     app.use(express.static(distPath));
+
     app.get('*', (req, res) => {
       if (req.path.startsWith('/api/')) {
         return res.status(404).json({
@@ -203,6 +258,9 @@ async function startServer() {
           status: 'NOT_FOUND'
         });
       }
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
