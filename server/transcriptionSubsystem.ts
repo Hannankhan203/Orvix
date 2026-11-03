@@ -3,7 +3,12 @@ import path from 'path';
 import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
 
-import { getGroqApiBaseUrl } from './serverConfig.ts';
+import {
+  getGroqApiBaseUrl,
+  getGroqApiKey,
+  getGeminiApiKey,
+  isConfiguredCredential
+} from './serverConfig.ts';
 import { logAIDiagnostic } from './diagnosticLogger.ts';
 import { parseGeminiError } from './geminiStreamHandler.ts';
 // @ts-ignore - Context-aware spoken transcript polisher
@@ -156,10 +161,10 @@ export function registerTranscriptionRoutes(app: express.Express) {
       const customPrompt = req.body?.prompt ? String(req.body.prompt).trim() : '';
       const effectivePrompt = customPrompt ? customPrompt.slice(0, 200) : DEFAULT_WHISPER_CONTEXT_PROMPT;
 
-      const groqKey = process.env.GROQ_API_KEY || '';
-      const hasGroq = Boolean(groqKey && groqKey !== 'YOUR_GROQ_API_KEY');
-      const geminiKey = process.env.GEMINI_API_KEY || '';
-      const hasGemini = Boolean(geminiKey && geminiKey !== 'MY_GEMINI_API_KEY');
+      const groqKey = getGroqApiKey();
+      const hasGroq = isConfiguredCredential(groqKey);
+      const geminiKey = getGeminiApiKey();
+      const hasGemini = isConfiguredCredential(geminiKey);
 
       // Primary Audio Transcription Path: When audio payload is present, execute genuine Groq Whisper transcription
       if (hasAudioPayload && hasGroq) {

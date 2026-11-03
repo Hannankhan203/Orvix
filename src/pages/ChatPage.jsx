@@ -414,31 +414,41 @@ export default function ChatPage({
   // Load server provider configuration safely without exposing secrets or failing noisy when offline
   useEffect(() => {
     let cancelled = false;
-    if (!isBrowserOnline()) {
-      setProviderConfig((prev) =>
-        prev.status === 'ready' ? prev : { status: 'unavailable', data: null }
-      );
-      return () => {
-        cancelled = true;
-      };
-    }
+    const syncProviderConfig = (forceRefresh = false) => {
+      if (!isBrowserOnline()) {
+        setProviderConfig((prev) =>
+          prev.status === 'ready' ? prev : { status: 'unavailable', data: null }
+        );
+        return;
+      }
 
-    fetchProviderConfig()
-      .then((snapshot) => {
-        if (!cancelled && snapshot) {
-          setProviderConfig(snapshot);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setProviderConfig((prev) =>
-            prev.status === 'ready' ? prev : { status: 'unavailable', data: null }
-          );
-        }
-      });
+      fetchProviderConfig({ forceRefresh })
+        .then((snapshot) => {
+          if (!cancelled && snapshot) {
+            setProviderConfig(snapshot);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setProviderConfig((prev) =>
+              prev.status === 'ready' ? prev : { status: 'unavailable', data: null }
+            );
+          }
+        });
+    };
+
+    syncProviderConfig(false);
+
+    const handleOnline = () => syncProviderConfig(true);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline);
+    }
 
     return () => {
       cancelled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+      }
     };
   }, []);
 

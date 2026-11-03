@@ -144,6 +144,7 @@ export async function fetchProviderConfig({ signal, forceRefresh = false } = {})
       const res = await fetch('/api/config', {
         method: 'GET',
         headers: { Accept: 'application/json' },
+        cache: 'no-store',
         signal
       });
 

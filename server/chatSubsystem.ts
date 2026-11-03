@@ -20,6 +20,10 @@ import {
   getGroqApiBaseUrl,
   getOpenRouterApiBaseUrl,
   getCloudflareApiBaseUrl,
+  getGroqApiKey,
+  getOpenRouterApiKey,
+  getGeminiApiKey,
+  getCloudflareCredentials,
   isServerless,
   getUpstreamHeadersTimeoutMs,
   getGeminiHeaderTimeoutMs,
@@ -642,7 +646,7 @@ export function registerChatRoutes(app: express.Express) {
             const inputSource = record.buffer || (fs.existsSync(fullDiskPath) ? fullDiskPath : null);
             if (inputSource) {
               const isOfflineChat = Boolean(req.body?.offline);
-              const geminiKey = process.env.GEMINI_API_KEY || null;
+              const geminiKey = getGeminiApiKey() || null;
 
               if (isImg) {
                 record.extraction = (await extractImageText(
@@ -874,7 +878,7 @@ export function registerChatRoutes(app: express.Express) {
 
     // 1. Google Gemini Provider
     if (normalizedProvider === 'gemini') {
-      const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+      const apiKey = getGeminiApiKey();
 
       if (!isConfiguredCredential(apiKey)) {
         if (!isDemoModeEnabled()) {
@@ -1477,7 +1481,7 @@ export function registerChatRoutes(app: express.Express) {
 
     // 2. Groq Provider
     if (normalizedProvider === 'groq') {
-      const apiKey = (process.env.GROQ_API_KEY || '').trim();
+      const apiKey = getGroqApiKey();
       if (!isConfiguredCredential(apiKey)) {
         if (!isDemoModeEnabled()) {
           return sendProviderNotConfiguredError(res, 'groq', isServerless);
@@ -2192,7 +2196,7 @@ export function registerChatRoutes(app: express.Express) {
 
     // 3. OpenRouter Provider
     if (normalizedProvider === 'openrouter') {
-      const apiKey = (process.env.OPENROUTER_API_KEY || '').trim();
+      const apiKey = getOpenRouterApiKey();
       if (!isConfiguredCredential(apiKey)) {
         if (!isDemoModeEnabled()) {
           return sendProviderNotConfiguredError(res, 'openrouter', isServerless);
@@ -2938,8 +2942,7 @@ export function registerChatRoutes(app: express.Express) {
 
     // 4. Cloudflare Workers AI Provider (@cf/meta/llama-3.1-8b-instruct)
     if (normalizedProvider === 'cloudflare') {
-      const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
-      const apiToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
+      const { accountId, apiToken } = getCloudflareCredentials();
       const modelId = validatedClientModel || '@cf/meta/llama-3.1-8b-instruct';
 
       if (!isConfiguredCredential(accountId) || !isConfiguredCredential(apiToken)) {

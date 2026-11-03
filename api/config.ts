@@ -9,6 +9,10 @@ import { APP_CONFIG } from '../src/config/appConfig.js';
  */
 export default function handler(req: Request, res: Response) {
   try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     if (req.url === '/' || !req.url) {
       req.url = '/api/config';
     } else if (!req.url.startsWith('/api/config') && !req.url.startsWith('/config')) {

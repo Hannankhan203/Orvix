@@ -1,4 +1,5 @@
 import type express from 'express';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import type { GeminiTimeoutStage } from './serverTypes.ts';
@@ -140,6 +141,172 @@ export function isDemoModeEnabled(): boolean {
   return String(process.env.ORVIX_ENABLE_DEMO_MODE || '').trim().toLowerCase() === 'true';
 }
 
+let serverEnvLoaded = false;
+
+/**
+ * Ensures local/production .env files are loaded into process.env before credential inspection,
+ * even if serverConfig.ts is imported directly before server.ts in serverless or test runtimes.
+ */
+export function ensureServerEnvLoaded(): void {
+  if (serverEnvLoaded) return;
+  serverEnvLoaded = true;
+  try {
+    const envFiles = ['.env', '.env.local', '.env.production', '.env.production.local'];
+    const roots = Array.from(
+      new Set([
+        typeof process !== 'undefined' && process.cwd ? process.cwd() : '',
+        __dirname,
+        path.resolve(__dirname, '..')
+      ].filter(Boolean))
+    );
+
+    for (const rootDir of roots) {
+      for (const file of envFiles) {
+        const fullPath = path.resolve(rootDir, file);
+        if (!fs.existsSync(fullPath)) continue;
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        for (const rawLine of content.split(/\r?\n/)) {
+          const line = rawLine.trim();
+          if (!line || line.startsWith('#')) continue;
+          const normalizedLine = line.startsWith('export ') ? line.slice(7).trim() : line;
+          const eqIdx = normalizedLine.indexOf('=');
+          if (eqIdx <= 0) continue;
+          const key = normalizedLine.slice(0, eqIdx).trim();
+          let val = normalizedLine.slice(eqIdx + 1).trim();
+          if (
+            (val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))
+          ) {
+            val = val.slice(1, -1).trim();
+          }
+          if (key && (!process.env[key] || !process.env[key]?.trim())) {
+            process.env[key] = val;
+          }
+        }
+      }
+    }
+  } catch (_) {
+    // Non-fatal in read-only or restricted serverless environments
+  }
+}
+
+/**
+ * Strips surrounding quotes, zero-width characters, accidental "Bearer " prefixes, and whitespace.
+ */
+export function sanitizeCredentialValue(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const cleaned = value
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/^[\s"'\u201C\u201D\u2018\u2019`]+|[\s"'\u201C\u201D\u2018\u2019`]+$/g, '')
+    .trim();
+  return cleaned.replace(/^Bearer\s+/i, '').trim();
+}
+
+export function isConfiguredCredential(value: string): boolean {
+  const sanitized = sanitizeCredentialValue(value);
+  if (!sanitized) return false;
+  if (/^(?:undefined|null|none|false|true|todo|changeme|na|n\/a)$/i.test(sanitized)) return false;
+  if (/^(?:your|my|replace|insert|placeholder|enter)_[a-z0-9_-]+$/i.test(sanitized)) {
+    return false;
+  }
+  if (/^<[^>]+>$/.test(sanitized) || /^x{4,}$/i.test(sanitized)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Resolves a credential string from a list of candidate environment variable names.
+ * Inspects process.env sequentially (skipping empty or placeholder values so valid fallback aliases win),
+ * and falls back to a trimmed case-insensitive key scan for hosting dashboards with accidental key whitespace.
+ */
+export function resolveEnvCredential(...candidateNames: string[]): string {
+  ensureServerEnvLoaded();
+
+  // 1. Direct lookup across candidate names in priority order
+  for (const name of candidateNames) {
+    const raw = process.env[name];
+    if (typeof raw === 'string') {
+      const sanitized = sanitizeCredentialValue(raw);
+      if (isConfiguredCredential(sanitized)) {
+        return sanitized;
+      }
+    }
+  }
+
+  // 2. Fallback: trimmed case-insensitive key match in process.env
+  const envEntries = Object.entries(process.env);
+  for (const name of candidateNames) {
+    const targetUpper = name.trim().toUpperCase();
+    for (const [envKey, rawVal] of envEntries) {
+      if (typeof rawVal === 'string' && envKey.trim().toUpperCase() === targetUpper) {
+        const sanitized = sanitizeCredentialValue(rawVal);
+        if (isConfiguredCredential(sanitized)) {
+          return sanitized;
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
+export function getGroqApiKey(): string {
+  return resolveEnvCredential(
+    'GROQ_API_KEY',
+    'ORVIX_GROQ_API_KEY',
+    'VITE_GROQ_API_KEY',
+    'GROQ_KEY',
+    'GROQ_API_TOKEN',
+    'GROQ_API_SECRET',
+    'NEXT_PUBLIC_GROQ_API_KEY',
+    'REACT_APP_GROQ_API_KEY'
+  );
+}
+
+export function getOpenRouterApiKey(): string {
+  return resolveEnvCredential(
+    'OPENROUTER_API_KEY',
+    'ORVIX_OPENROUTER_API_KEY',
+    'VITE_OPENROUTER_API_KEY',
+    'OPEN_ROUTER_API_KEY',
+    'OPENROUTER_KEY',
+    'OPENROUTER_API_TOKEN',
+    'OPENROUTER_API_SECRET',
+    'NEXT_PUBLIC_OPENROUTER_API_KEY',
+    'REACT_APP_OPENROUTER_API_KEY'
+  );
+}
+
+export function getGeminiApiKey(): string {
+  return resolveEnvCredential(
+    'GEMINI_API_KEY',
+    'ORVIX_GEMINI_API_KEY',
+    'VITE_GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'NEXT_PUBLIC_GEMINI_API_KEY',
+    'REACT_APP_GEMINI_API_KEY'
+  );
+}
+
+export function getCloudflareCredentials(): { accountId: string; apiToken: string } {
+  const accountId = resolveEnvCredential(
+    'CLOUDFLARE_ACCOUNT_ID',
+    'ORVIX_CLOUDFLARE_ACCOUNT_ID',
+    'VITE_CLOUDFLARE_ACCOUNT_ID',
+    'NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID'
+  );
+  const apiToken = resolveEnvCredential(
+    'CLOUDFLARE_API_TOKEN',
+    'ORVIX_CLOUDFLARE_API_TOKEN',
+    'VITE_CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_TOKEN',
+    'CLOUDFLARE_API_KEY',
+    'NEXT_PUBLIC_CLOUDFLARE_API_TOKEN'
+  );
+  return { accountId, apiToken };
+}
+
 export const PROVIDER_ENV_REQUIREMENTS: Record<string, string> = {
   gemini: 'GEMINI_API_KEY',
   groq: 'GROQ_API_KEY',
@@ -147,21 +314,11 @@ export const PROVIDER_ENV_REQUIREMENTS: Record<string, string> = {
   cloudflare: 'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN'
 };
 
-export function isConfiguredCredential(value: string): boolean {
-  const trimmed = (value || '').trim();
-  if (!trimmed) return false;
-  if (/^(?:your|my|replace|insert|placeholder|enter)_[a-z0-9_]+$/i.test(trimmed)) {
-    return false;
-  }
-  return true;
-}
-
 export function getServerProviderConfigStatus(serverlessRuntime = false) {
-  const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
-  const groqKey = (process.env.GROQ_API_KEY || '').trim();
-  const openrouterKey = (process.env.OPENROUTER_API_KEY || '').trim();
-  const cfAccountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
-  const cfToken = (process.env.CLOUDFLARE_API_TOKEN || '').trim();
+  const geminiKey = getGeminiApiKey();
+  const groqKey = getGroqApiKey();
+  const openrouterKey = getOpenRouterApiKey();
+  const { accountId: cfAccountId, apiToken: cfToken } = getCloudflareCredentials();
 
   const geminiConfigured = isConfiguredCredential(geminiKey);
   const groqConfigured = isConfiguredCredential(groqKey);

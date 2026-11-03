@@ -10,10 +10,32 @@ try {
   dns.setDefaultResultOrder('ipv4first');
 } catch (_) {}
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Multi-source environment file loader (dev, production, and container deployments)
+const envCandidateFiles = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), '.env.local'),
+  path.resolve(process.cwd(), '.env.production'),
+  path.resolve(process.cwd(), '.env.production.local'),
+  path.resolve(__dirname, '.env'),
+  path.resolve(__dirname, '.env.local'),
+  path.resolve(__dirname, '.env.production'),
+  path.resolve(__dirname, '.env.production.local'),
+  path.resolve(__dirname, '..', '.env'),
+  path.resolve(__dirname, '..', '.env.production')
+];
+
+const loadedEnvFiles = new Set<string>();
+for (const envPath of envCandidateFiles) {
+  try {
+    if (!loadedEnvFiles.has(envPath) && fs.existsSync(envPath)) {
+      loadedEnvFiles.add(envPath);
+      dotenv.config({ path: envPath, override: false });
+    }
+  } catch (_) {}
+}
 
 // Import modular subsystems
 import {
@@ -156,6 +178,11 @@ app.get(['/api/health', '/health'], (_req, res) => {
 
 // API Config Check (indicates configured providers without leaking keys or secrets)
 app.get(['/api/config', '/config'], (_req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('CDN-Cache-Control', 'no-store');
+  res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   try {
     return res.json(getServerProviderConfigStatus(isServerless));
   } catch (err) {
