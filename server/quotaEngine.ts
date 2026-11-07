@@ -9,6 +9,7 @@ import type {
   QuotaInfrastructureStatus
 } from './serverTypes.ts';
 import { resolveUploadDirectory } from './uploadSubsystem.ts';
+import { getAdminFirestore, isFirebaseAdminConfigured } from './firebaseAdmin.ts';
 
 export const DAILY_LIMIT_ATTACHMENTS = 5;
 export const DAILY_LIMIT_ERROR_CODE = 'DAILY_LIMIT_EXCEEDED';
@@ -468,6 +469,11 @@ export class FirestoreDistributedDriver implements QuotaStorageDriver {
     if (this.firestoreInstance) {
       return this.firestoreInstance;
     }
+    const adminDb = getAdminFirestore();
+    if (adminDb) {
+      this.firestoreInstance = adminDb;
+      return this.firestoreInstance;
+    }
     throw new Error(
       'FirestoreDistributedDriver requires an initialized Firebase Admin Firestore instance. ' +
       'Missing FIREBASE_SERVICE_ACCOUNT_KEY or GOOGLE_APPLICATION_CREDENTIALS.'
@@ -528,7 +534,7 @@ export class FirestoreDistributedDriver implements QuotaStorageDriver {
       };
       data.updatedAt = now;
 
-      transaction.set(docRef, data, { merge: true });
+      transaction.set(docRef, data);
 
       const newActive = totalActive + 1;
       return {
@@ -576,7 +582,8 @@ export class FirestoreDistributedDriver implements QuotaStorageDriver {
       data.committedCount = (data.committedCount || 0) + 1;
       data.updatedAt = Date.now();
 
-      transaction.set(docRef, data, { merge: true });
+      // Complete document overwrite cleanly deletes reservationId from Firestore
+      transaction.set(docRef, data);
       reservation._status = 'committed';
 
       return {
@@ -618,7 +625,8 @@ export class FirestoreDistributedDriver implements QuotaStorageDriver {
       delete data.reservations[reservationId];
       data.updatedAt = Date.now();
 
-      transaction.set(docRef, data, { merge: true });
+      // Complete document overwrite cleanly deletes reservationId from Firestore
+      transaction.set(docRef, data);
       reservation._status = 'released';
 
       return {
@@ -935,11 +943,44 @@ export function getQuotaStorageDriver(): QuotaStorageDriver {
 }
 
 /**
+ * Automatically inspects the environment and registers FirestoreDistributedDriver
+ * if Firebase Admin credentials or Application Default Credentials are valid.
+ * In development or testing without credentials, falls back to LocalFilesystemAtomicDriver.
+ */
+export function initializeActiveQuotaDriver(forceDriver?: QuotaStorageDriver): QuotaStorageDriver {
+  if (forceDriver) {
+    setQuotaStorageDriver(forceDriver);
+    return forceDriver;
+  }
+
+  if (isFirebaseAdminConfigured()) {
+    try {
+      const db = getAdminFirestore();
+      if (db) {
+        const driver = new FirestoreDistributedDriver(db);
+        setQuotaStorageDriver(driver);
+        return driver;
+      }
+    } catch (err: any) {
+      console.warn('[Quota] Could not initialize Firestore distributed storage driver:', err?.message || err);
+    }
+  }
+
+  const localDriver = new LocalFilesystemAtomicDriver();
+  setQuotaStorageDriver(localDriver);
+  return localDriver;
+}
+
+// Automatically bootstrap driver based on available environment credentials
+initializeActiveQuotaDriver();
+
+/**
  * Inspects system environment and determines whether distributed infrastructure is available.
  * Reports exact blocker details and prevents silent false assumptions.
  */
 export function getQuotaInfrastructureStatus(): QuotaInfrastructureStatus {
   const hasFirebaseAdminKey = Boolean(
+    isFirebaseAdminConfigured() ||
     process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
     process.env.GOOGLE_APPLICATION_CREDENTIALS ||
     process.env.FIREBASE_CONFIG_ADMIN
@@ -960,10 +1001,15 @@ export function getQuotaInfrastructureStatus(): QuotaInfrastructureStatus {
       'nor a distributed Redis endpoint (UPSTASH_REDIS_REST_URL) are configured on the server. ' +
       'The active driver (local-filesystem) uses POSIX file locking, which operates across processes ' +
       'on a shared filesystem, but CANNOT enforce atomic quotas across isolated serverless instances.';
+  } else if (!activeStorageDriver.isDistributed()) {
+    blocker = 'DISTRIBUTED_DRIVER_INACTIVE';
+    blockerDetails =
+      'Distributed quota storage credentials are configured, but the active driver is not distributed. ' +
+      'Production requires an operational distributed storage driver to prevent race conditions across serverless instances.';
   }
 
   return {
-    distributedReady: hasFirebaseAdminKey || hasRedis,
+    distributedReady: Boolean((hasFirebaseAdminKey || hasRedis) && activeStorageDriver.isDistributed()),
     activeDriver: activeStorageDriver.getDriverName(),
     isDistributed: activeStorageDriver.isDistributed(),
     blocker,

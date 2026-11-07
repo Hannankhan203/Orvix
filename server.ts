@@ -111,7 +111,8 @@ import {
   getQuotaStorageDriver,
   LocalFilesystemAtomicDriver,
   FirestoreDistributedDriver,
-  SimulatedDistributedClusterDriver
+  SimulatedDistributedClusterDriver,
+  initializeActiveQuotaDriver
 } from './server/quotaEngine.ts';
 
 
@@ -334,8 +335,10 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
+  const activeDriver = initializeActiveQuotaDriver();
   const httpServer = app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Orvix server running on http://0.0.0.0:${PORT}`);
+    console.log(`[Quota] Active storage driver: ${activeDriver.getDriverName()} (distributed: ${activeDriver.isDistributed()})`);
   });
 
   // Eliminate artificial HTTP timeouts to allow long-running streams (60s, 90s, 5m+)
@@ -420,7 +423,8 @@ export {
   getQuotaStorageDriver,
   LocalFilesystemAtomicDriver,
   FirestoreDistributedDriver,
-  SimulatedDistributedClusterDriver
+  SimulatedDistributedClusterDriver,
+  initializeActiveQuotaDriver
 };
 
 export type {

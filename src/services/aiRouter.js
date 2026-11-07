@@ -735,8 +735,8 @@ export async function streamAIMessage(params = {}) {
                 localStorage.getItem('orvix_guest_session');
               if (saved) {
                 const parsed = JSON.parse(saved);
-                if (parsed?.uid && String(parsed.uid).startsWith('guest-')) {
-                  chatHeaders['X-Orvix-Guest-Id'] = parsed.uid;
+                if (parsed?.uid && /^guest-[a-z0-9_-]{4,64}$/i.test(String(parsed.uid))) {
+                  chatHeaders['X-Orvix-Guest-Id'] = String(parsed.uid);
                 }
               }
             }

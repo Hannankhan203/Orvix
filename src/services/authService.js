@@ -107,3 +107,79 @@ export function onAuthChange(callback) {
   }
   return onAuthStateChanged(auth, callback);
 }
+
+/**
+ * Retrieves a fresh, verified Firebase ID token for an authenticated user.
+ * Throws a descriptive error if token acquisition fails or token is empty.
+ * Never downgrades an authenticated user to guest identity.
+ *
+ * @param {import('firebase/auth').User|null} user
+ * @param {boolean} [forceRefresh=false]
+ * @returns {Promise<string>}
+ */
+export async function getFreshIdToken(user, forceRefresh = false) {
+  if (!user || typeof user.getIdToken !== 'function') {
+    throw new Error('Authentication required. Please sign in to continue.');
+  }
+
+  try {
+    const token = await user.getIdToken(forceRefresh);
+    if (!token || typeof token !== 'string' || !token.trim()) {
+      throw new Error('Authentication token could not be retrieved.');
+    }
+    return token.trim();
+  } catch (err) {
+    const message = err?.message || 'Failed to acquire authentication token';
+    console.error('[AuthService] Fresh ID token retrieval failed:', err);
+    throw new Error(`Your session has expired or authentication failed. Please sign in again. (${message})`);
+  }
+}
+
+/**
+ * Validates and retrieves the persistent guest identity from storage.
+ * If absent or malformed, generates and persists a valid guest ID.
+ * Guarantees that guest ID matches the server requirement (/^guest-[a-z0-9_-]{4,64}$/i).
+ *
+ * @returns {string}
+ */
+export function getOrCreatePersistentGuestId() {
+  const GUEST_ID_REGEX = /^guest-[a-z0-9_-]{4,64}$/i;
+
+  if (typeof window === 'undefined') {
+    return 'guest-server-session';
+  }
+
+  try {
+    const candidateJson =
+      sessionStorage.getItem('orvix_guest_session') ||
+      localStorage.getItem('orvix_guest_session');
+
+    if (candidateJson) {
+      const parsed = JSON.parse(candidateJson);
+      if (parsed?.uid && GUEST_ID_REGEX.test(parsed.uid)) {
+        return parsed.uid;
+      }
+    }
+  } catch (_) {}
+
+  // Generate new persistent, validated guest identifier
+  const randomSuffix =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+      : Math.random().toString(36).substring(2, 12);
+  const newGuestId = `guest-${randomSuffix}`;
+
+  try {
+    const sessionObj = {
+      uid: newGuestId,
+      username: 'Guest Explorer',
+      email: 'guest@orvix.ai',
+      isAnonymous: true
+    };
+    const serialized = JSON.stringify(sessionObj);
+    sessionStorage.setItem('orvix_guest_session', serialized);
+    localStorage.setItem('orvix_guest_session', serialized);
+  } catch (_) {}
+
+  return newGuestId;
+}

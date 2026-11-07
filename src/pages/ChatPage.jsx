@@ -40,6 +40,7 @@ import {
 } from '../config/firebaseConfig.js';
 import { getChatMode } from '../config/chatModes.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { getOrCreatePersistentGuestId } from '../services/authService.js';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
 import {
@@ -1352,11 +1353,23 @@ export default function ChatPage({
       },
       streamRequest: async ({ signal, isRequestActive, attachments: reqAttachments, onStart, onChunk }) => {
         let authHeaders = {};
-        if (currentUser && typeof currentUser.getIdToken === 'function') {
+        if (!isGuestUser) {
+          if (!currentUser || typeof currentUser.getIdToken !== 'function') {
+            throw new Error('Your session has expired or authentication failed. Please sign in again.');
+          }
+          let token = null;
           try {
-            const token = await currentUser.getIdToken();
-            if (token) authHeaders['Authorization'] = `Bearer ${token}`;
-          } catch (_) {}
+            token = await currentUser.getIdToken();
+          } catch (tokenErr) {
+            console.error('Failed to retrieve fresh Firebase ID token for chat request:', tokenErr);
+          }
+          if (!token || typeof token !== 'string' || !token.trim()) {
+            throw new Error('Your session has expired or authentication failed. Please sign in again.');
+          }
+          authHeaders['Authorization'] = `Bearer ${token.trim()}`;
+        } else {
+          const guestId = getOrCreatePersistentGuestId();
+          authHeaders['X-Orvix-Guest-Id'] = guestId;
         }
         return streamAIMessage({
           provider: providerToUse,
@@ -1710,36 +1723,24 @@ export default function ChatPage({
 
             // Phase 2A: Propagate authenticated Firebase ID token or stable guest session ID
             const uploadHeaders = {};
-            if (!isGuestUser && currentUser && typeof currentUser.getIdToken === 'function') {
+            if (!isGuestUser) {
+              if (!currentUser || typeof currentUser.getIdToken !== 'function') {
+                return failPreflightIfActive('Your session has expired or authentication failed. Please sign in again to attach files.');
+              }
+              let token = null;
               try {
-                const token = await currentUser.getIdToken();
-                if (token) {
-                  uploadHeaders['Authorization'] = `Bearer ${token}`;
-                }
+                token = await currentUser.getIdToken();
               } catch (tokenErr) {
                 console.warn('Could not acquire Firebase ID token for upload:', tokenErr);
               }
-            } else {
-              const guestId =
-                (currentUser?.uid && String(currentUser.uid).startsWith('guest-') ? currentUser.uid : null) ||
-                (() => {
-                  try {
-                    const saved =
-                      sessionStorage.getItem('orvix_guest_session') ||
-                      localStorage.getItem('orvix_guest_session');
-                    if (saved) {
-                      const parsed = JSON.parse(saved);
-                      if (parsed?.uid && String(parsed.uid).startsWith('guest-')) {
-                        return parsed.uid;
-                      }
-                    }
-                  } catch (_) {}
-                  return null;
-                })();
-
-              if (guestId) {
-                uploadHeaders['X-Orvix-Guest-Id'] = guestId;
+              if (!token || typeof token !== 'string' || !token.trim()) {
+                return failPreflightIfActive('Your session has expired or authentication failed. Please sign in again to attach files.');
               }
+              uploadHeaders['Authorization'] = `Bearer ${token}`;
+            } else {
+              // Strictly guest identity — NEVER downgrade an authenticated user to guest
+              const guestId = getOrCreatePersistentGuestId();
+              uploadHeaders['X-Orvix-Guest-Id'] = guestId;
             }
 
             let uploadRes;
