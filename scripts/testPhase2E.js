@@ -37,10 +37,15 @@ import {
   rawImageDataToBmp,
   discardOcrWorker
 } from '../src/services/imageOcrService.js';
+import { resetQuotaForTesting } from '../server/quotaEngine.ts';
+
+const GUEST_ID = 'guest-test-phase2e';
+const guestIdentity = { type: 'guest', uid: GUEST_ID, isGuest: true };
 
 console.log('=== Starting Phase 2E End-to-End Integration Tests ===\n');
 
 const BASE_URL = 'http://127.0.0.1:3000';
+await resetQuotaForTesting(guestIdentity);
 let passedCount = 0;
 let failedCount = 0;
 
@@ -314,7 +319,8 @@ async function uploadFileViaHttp(filename, mimeType, buffer) {
     method: 'POST',
     headers: {
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      'Content-Length': String(body.length)
+      'Content-Length': String(body.length),
+      'X-Orvix-Guest-Id': 'guest-test-phase2e'
     },
     body
   });
@@ -456,6 +462,8 @@ await runTest('Live POST /api/upload: Empty (0 bytes) and corrupted files are ex
 // Test Group 2: End-to-End Live Context Preparation & Provider Dispatch
 // ----------------------------------------------------------------------------
 
+await resetQuotaForTesting(guestIdentity);
+
 await runTest('Live POST /api/chat with Photo (No Text): Gemini multimodal path receives raw image without rejection', async () => {
   // Upload a plain photo
   const w = 60;
@@ -470,7 +478,10 @@ await runTest('Live POST /api/chat with Photo (No Text): Gemini multimodal path 
   // Send request to /api/chat with Gemini provider
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Orvix-Guest-Id': GUEST_ID
+    },
     body: JSON.stringify({
       prompt: 'Describe the visual color of this image in one word.',
       provider: 'gemini',
@@ -501,7 +512,10 @@ await runTest('Live POST /api/chat with Photo (No Text): Text-only provider (Gro
 
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Orvix-Guest-Id': GUEST_ID
+    },
     body: JSON.stringify({
       prompt: 'What does this image say?',
       provider: 'groq',
@@ -532,7 +546,10 @@ await runTest('Live POST /api/chat with Image Text: OCR text is grounded and del
 
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Orvix-Guest-Id': GUEST_ID
+    },
     body: JSON.stringify({
       prompt: 'What text was recognized in greeting.png? Reply with just the words.',
       provider: 'gemini',
@@ -564,7 +581,10 @@ await runTest('Live POST /api/chat with Scanned PDF: OCR text is delivered in co
 
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Orvix-Guest-Id': GUEST_ID
+    },
     body: JSON.stringify({
       prompt: 'What text is in scanned_doc.pdf?',
       provider: 'gemini',
@@ -587,7 +607,10 @@ await runTest('Live POST /api/chat with DOCX: Headings, tables, and notes reach 
 
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Orvix-Guest-Id': GUEST_ID
+    },
     body: JSON.stringify({
       prompt: 'What services are listed in the table in spec_live.docx?',
       provider: 'gemini',
