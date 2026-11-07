@@ -176,6 +176,15 @@ export interface UserPreferences {
   [key: string]: any;
 }
 
+export interface VerifiedUserIdentity {
+  type: 'authenticated' | 'guest';
+  uid: string;
+  isGuest: boolean;
+  email?: string;
+  projectId?: string;
+  ip?: string;
+}
+
 export interface UploadedFileRecord {
   id: string;
   originalName: string;
@@ -192,5 +201,65 @@ export interface UploadedFileRecord {
   dimensions?: { width: number; height: number };
   extraction?: any;
   buffer?: Buffer;
+  userId?: string;
+  userType?: 'authenticated' | 'guest';
 }
+
+export interface QuotaReservation {
+  allowed: boolean;
+  quotaTracked: boolean;
+  reservationId?: string | null;
+  userKey?: string;
+  utcDate?: string;
+  currentCount?: number;
+  remaining?: number;
+  error?: string;
+  code?: string;
+  status?: number;
+  _status?: 'reserved' | 'committed' | 'released';
+}
+
+export interface QuotaStatus {
+  userKey: string;
+  utcDate: string;
+  committedCount: number;
+  reservedCount: number;
+  activeCount: number;
+  remaining: number;
+  limit: number;
+}
+
+export interface QuotaStorageDriver {
+  getDriverName(): string;
+  isDistributed(): boolean;
+  reserve(identity: VerifiedUserIdentity, file: any, utcDate: string): Promise<QuotaReservation>;
+  commit(reservation: QuotaReservation): Promise<{
+    success: boolean;
+    committed: boolean;
+    alreadyFinalized?: boolean;
+    committedCount?: number;
+  }>;
+  release(reservation: QuotaReservation): Promise<{
+    success: boolean;
+    released: boolean;
+    alreadyFinalized?: boolean;
+  }>;
+  getStatus(identity: VerifiedUserIdentity, utcDate: string): Promise<QuotaStatus>;
+  reset(identity: VerifiedUserIdentity, utcDate: string): Promise<void>;
+}
+
+export interface QuotaInfrastructureStatus {
+  distributedReady: boolean;
+  activeDriver: string;
+  isDistributed: boolean;
+  blocker: string | null;
+  blockerDetails?: string;
+  availableDrivers: string[];
+  supportedBackends: {
+    firestoreAdmin: { available: boolean; reason: string };
+    redis: { available: boolean; reason: string };
+    localFilesystem: { available: boolean; reason: string };
+  };
+}
+
 

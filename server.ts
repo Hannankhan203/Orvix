@@ -62,7 +62,12 @@ import {
   buildGeminiImageParts,
   fileRegistry,
   conversationDocuments,
-  UPLOAD_DIR
+  UPLOAD_DIR,
+  authenticateUploadRequest,
+  verifyFirebaseIdToken,
+  resolveClientIp,
+  fetchGooglePublicCerts,
+  _setGoogleCertCacheForTesting
 } from './server/uploadSubsystem.ts';
 import { registerTranscriptionRoutes } from './server/transcriptionSubsystem.ts';
 import {
@@ -78,8 +83,37 @@ import type {
   DocumentData,
   PreparedDocumentContext,
   DocumentExtractionResult,
-  UploadedFileRecord
+  UploadedFileRecord,
+  VerifiedUserIdentity,
+  QuotaReservation,
+  QuotaStatus,
+  QuotaStorageDriver,
+  QuotaInfrastructureStatus
 } from './server/serverTypes.ts';
+import {
+  DAILY_LIMIT_ATTACHMENTS,
+  DAILY_LIMIT_ERROR_CODE,
+  DAILY_LIMIT_EXCEEDED_MESSAGE,
+  DAILY_LIMIT_ERROR_RESPONSE,
+  QUOTA_TRACKED_EXTENSIONS,
+  QUOTA_TRACKED_MIMES,
+  isQuotaTrackedAttachment,
+  getUtcDateKey,
+  resolveUserQuotaKey,
+  reserveAttachmentQuota,
+  commitAttachmentQuota,
+  releaseAttachmentQuota,
+  getQuotaStatus,
+  resetQuotaForTesting,
+  _setQuotaStorageDirForTesting,
+  getQuotaInfrastructureStatus,
+  setQuotaStorageDriver,
+  getQuotaStorageDriver,
+  LocalFilesystemAtomicDriver,
+  FirestoreDistributedDriver,
+  SimulatedDistributedClusterDriver
+} from './server/quotaEngine.ts';
+
 
 import {
   GEMINI_PRIMARY_MODEL,
@@ -93,6 +127,7 @@ import {
 const fallbackCandidates = [...GEMINI_FALLBACK_CANDIDATES];
 
 const app = express();
+app.set('trust proxy', 1);
 const portArgIndex = process.argv.indexOf('--port');
 const portFromArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
 const PORT = Number(portFromArg) || Number(process.env.PORT) || 3000;
@@ -116,7 +151,7 @@ app.use((req, res, next) => {
       res.setHeader('Vary', 'Origin');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title, X-Orvix-Guest-Id');
     res.setHeader('Access-Control-Max-Age', '86400');
     return res.sendStatus(204);
   }
@@ -135,7 +170,7 @@ app.use((req, res, next) => {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title, X-Orvix-Guest-Id');
     }
   }
 
@@ -359,12 +394,43 @@ export {
   MAX_CHAT_REQUEST_BYTES,
   MAX_VISION_IMAGE_BYTES,
   buildSystemInstruction,
-  generateSimulatedResponse
+  generateSimulatedResponse,
+  authenticateUploadRequest,
+  verifyFirebaseIdToken,
+  resolveClientIp,
+  fetchGooglePublicCerts,
+  _setGoogleCertCacheForTesting,
+  DAILY_LIMIT_ATTACHMENTS,
+  DAILY_LIMIT_ERROR_CODE,
+  DAILY_LIMIT_EXCEEDED_MESSAGE,
+  DAILY_LIMIT_ERROR_RESPONSE,
+  QUOTA_TRACKED_EXTENSIONS,
+  QUOTA_TRACKED_MIMES,
+  isQuotaTrackedAttachment,
+  getUtcDateKey,
+  resolveUserQuotaKey,
+  reserveAttachmentQuota,
+  commitAttachmentQuota,
+  releaseAttachmentQuota,
+  getQuotaStatus,
+  resetQuotaForTesting,
+  _setQuotaStorageDirForTesting,
+  getQuotaInfrastructureStatus,
+  setQuotaStorageDriver,
+  getQuotaStorageDriver,
+  LocalFilesystemAtomicDriver,
+  FirestoreDistributedDriver,
+  SimulatedDistributedClusterDriver
 };
 
 export type {
   DocumentData,
   PreparedDocumentContext,
   DocumentExtractionResult,
-  UploadedFileRecord
+  UploadedFileRecord,
+  VerifiedUserIdentity,
+  QuotaReservation,
+  QuotaStatus,
+  QuotaStorageDriver,
+  QuotaInfrastructureStatus
 };

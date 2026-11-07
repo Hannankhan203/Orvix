@@ -1699,10 +1699,45 @@ export default function ChatPage({
               formData.append('files', att.file, att.name);
             });
 
+            // Phase 2A: Propagate authenticated Firebase ID token or stable guest session ID
+            const uploadHeaders = {};
+            if (!isGuestUser && currentUser && typeof currentUser.getIdToken === 'function') {
+              try {
+                const token = await currentUser.getIdToken();
+                if (token) {
+                  uploadHeaders['Authorization'] = `Bearer ${token}`;
+                }
+              } catch (tokenErr) {
+                console.warn('Could not acquire Firebase ID token for upload:', tokenErr);
+              }
+            } else {
+              const guestId =
+                (currentUser?.uid && String(currentUser.uid).startsWith('guest-') ? currentUser.uid : null) ||
+                (() => {
+                  try {
+                    const saved =
+                      sessionStorage.getItem('orvix_guest_session') ||
+                      localStorage.getItem('orvix_guest_session');
+                    if (saved) {
+                      const parsed = JSON.parse(saved);
+                      if (parsed?.uid && String(parsed.uid).startsWith('guest-')) {
+                        return parsed.uid;
+                      }
+                    }
+                  } catch (_) {}
+                  return null;
+                })();
+
+              if (guestId) {
+                uploadHeaders['X-Orvix-Guest-Id'] = guestId;
+              }
+            }
+
             let uploadRes;
             try {
               uploadRes = await fetch('/api/upload', {
                 method: 'POST',
+                headers: uploadHeaders,
                 body: formData,
                 signal: uploadController.signal
               });

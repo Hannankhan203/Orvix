@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 
 import { isServerless } from './serverConfig.ts';
-import type { UploadedFileRecord, DocumentExtractionResult } from './serverTypes.ts';
+import type { UploadedFileRecord, DocumentExtractionResult, VerifiedUserIdentity } from './serverTypes.ts';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
 // @ts-ignore - Image OCR extraction JavaScript service
@@ -454,6 +454,285 @@ export const uploadMiddleware = multer({
   fileFilter: uploadFilter as any
 });
 
+export interface GoogleCertCache {
+  certs: Record<string, string>;
+  expiresAt: number;
+}
+
+let googleCertCache: GoogleCertCache | null = null;
+
+export function _setGoogleCertCacheForTesting(cache: GoogleCertCache | null): void {
+  googleCertCache = cache;
+}
+
+export async function fetchGooglePublicCerts(): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (googleCertCache && now < googleCertCache.expiresAt && Object.keys(googleCertCache.certs).length > 0) {
+    return googleCertCache.certs;
+  }
+
+  const response = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Google public certificates: HTTP ${response.status}`);
+  }
+
+  let maxAgeMs = 6 * 60 * 60 * 1000;
+  const cacheControl = response.headers.get('cache-control');
+  if (cacheControl) {
+    const match = cacheControl.match(/max-age=(\d+)/i);
+    if (match && match[1]) {
+      const parsedSeconds = parseInt(match[1], 10);
+      if (Number.isFinite(parsedSeconds) && parsedSeconds > 0) {
+        maxAgeMs = parsedSeconds * 1000;
+      }
+    }
+  }
+
+  const certs = (await response.json()) as Record<string, string>;
+  googleCertCache = {
+    certs,
+    expiresAt: now + maxAgeMs
+  };
+  return certs;
+}
+
+export function resolveClientIp(req: express.Request): string {
+  const isTrustedProxy = Boolean(isServerless || req.app?.get('trust proxy'));
+  if (isTrustedProxy) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded.trim()) {
+      const candidate = forwarded.split(',')[0].trim();
+      if (/^[0-9a-fA-F:.]+$/.test(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return req.ip || req.socket?.remoteAddress || '127.0.0.1';
+}
+
+export interface TokenVerificationResult {
+  valid: boolean;
+  uid?: string;
+  email?: string;
+  projectId?: string;
+  code?: string;
+  error?: string;
+}
+
+export async function verifyFirebaseIdToken(token: string): Promise<TokenVerificationResult> {
+  if (!token || typeof token !== 'string' || token.trim().length === 0) {
+    return { valid: false, code: 'MISSING_TOKEN', error: 'Authentication token is required.' };
+  }
+
+  const parts = token.trim().split('.');
+  if (parts.length !== 3) {
+    return { valid: false, code: 'INVALID_TOKEN_FORMAT', error: 'Invalid authentication token format.' };
+  }
+
+  let header: { alg?: string; kid?: string };
+  let payload: {
+    exp?: number;
+    iat?: number;
+    auth_time?: number;
+    aud?: string;
+    iss?: string;
+    sub?: string;
+    user_id?: string;
+    email?: string;
+  };
+
+  try {
+    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch (_) {
+    return { valid: false, code: 'INVALID_TOKEN_ENCODING', error: 'Could not decode authentication token segments.' };
+  }
+
+  if (header.alg !== 'RS256') {
+    return { valid: false, code: 'INVALID_ALGORITHM', error: `Unsupported token algorithm '${header.alg}'. Expected RS256.` };
+  }
+
+  if (!header.kid || typeof header.kid !== 'string') {
+    return { valid: false, code: 'MISSING_KEY_ID', error: 'Token header missing key identifier (kid).' };
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  // Expiration check (RFC 7519)
+  if (typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
+    return { valid: false, code: 'TOKEN_EXPIRED', error: 'Authentication token has expired. Please sign in again.' };
+  }
+
+  // Issued at / Auth time check with 5 min clock skew tolerance
+  if (typeof payload.iat !== 'number' || payload.iat > nowSeconds + 300) {
+    return { valid: false, code: 'TOKEN_NOT_YET_VALID', error: 'Token issued-at timestamp is in the future.' };
+  }
+
+  if (typeof payload.auth_time === 'number' && payload.auth_time > nowSeconds + 300) {
+    return { valid: false, code: 'INVALID_AUTH_TIME', error: 'Token authentication timestamp is in the future.' };
+  }
+
+  // Audience & Issuer checks
+  const expectedProjectId = (
+    process.env.VITE_FIREBASE_PROJECT_ID ||
+    process.env.FIREBASE_PROJECT_ID ||
+    process.env.GCLOUD_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    ''
+  ).trim();
+
+  if (expectedProjectId) {
+    if (payload.aud !== expectedProjectId) {
+      return {
+        valid: false,
+        code: 'INVALID_AUDIENCE',
+        error: 'Token audience does not match configured Firebase project.'
+      };
+    }
+  } else {
+    // Basic GCP project ID format check if no env var is set
+    if (!payload.aud || typeof payload.aud !== 'string' || !/^[a-z0-9][a-z0-9-]{3,62}[a-z0-9]$/i.test(payload.aud)) {
+      return { valid: false, code: 'INVALID_AUDIENCE', error: 'Token contains invalid audience project identifier.' };
+    }
+  }
+
+  const expectedIssuer = `https://securetoken.google.com/${payload.aud}`;
+  if (payload.iss !== expectedIssuer) {
+    return { valid: false, code: 'INVALID_ISSUER', error: 'Token issuer does not match securetoken.google.com domain.' };
+  }
+
+  // Subject / UID check
+  const uid = payload.sub;
+  if (!uid || typeof uid !== 'string' || uid.trim().length === 0 || uid.length > 128) {
+    return { valid: false, code: 'INVALID_SUBJECT', error: 'Token subject (uid) is invalid or missing.' };
+  }
+
+  if (payload.user_id && payload.user_id !== uid) {
+    return { valid: false, code: 'UID_MISMATCH', error: 'Token subject does not match user_id claim.' };
+  }
+
+  // Cryptographic signature verification using Google's public certificates
+  let certs: Record<string, string>;
+  try {
+    certs = await fetchGooglePublicCerts();
+  } catch (err: any) {
+    return { valid: false, code: 'CERT_FETCH_FAILED', error: 'Unable to retrieve public certificates for verification.' };
+  }
+
+  let certPem = certs[header.kid];
+  if (!certPem) {
+    // Cache bust and retry once in case key was just rotated by Google
+    googleCertCache = null;
+    try {
+      certs = await fetchGooglePublicCerts();
+      certPem = certs[header.kid];
+    } catch (_) {}
+  }
+
+  if (!certPem) {
+    return { valid: false, code: 'UNKNOWN_KEY_ID', error: 'Token signed by unrecognized public key.' };
+  }
+
+  try {
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(`${parts[0]}.${parts[1]}`);
+    const signatureBytes = Buffer.from(parts[2], 'base64url');
+    const isSignatureValid = verifier.verify(certPem, signatureBytes);
+
+    if (!isSignatureValid) {
+      return { valid: false, code: 'INVALID_SIGNATURE', error: 'Token signature verification failed.' };
+    }
+  } catch (sigErr: any) {
+    return { valid: false, code: 'SIGNATURE_VERIFY_ERROR', error: 'Error during signature verification.' };
+  }
+
+  return {
+    valid: true,
+    uid,
+    email: payload.email,
+    projectId: payload.aud
+  };
+}
+
+export async function authenticateUploadRequest(
+  req: express.Request
+): Promise<
+  | { success: true; identity: VerifiedUserIdentity }
+  | { success: false; status: number; code: string; error: string }
+> {
+  const authHeader = req.headers.authorization;
+  const guestHeader = req.headers['x-orvix-guest-id'];
+
+  // Case 1: Bearer token provided in Authorization header
+  if (authHeader && typeof authHeader === 'string' && authHeader.trim().toLowerCase().startsWith('bearer ')) {
+    const token = authHeader.trim().slice(7).trim();
+    if (!token) {
+      return {
+        success: false,
+        status: 401,
+        code: 'MISSING_BEARER_TOKEN',
+        error: 'Authorization header provided without a token.'
+      };
+    }
+
+    const verification = await verifyFirebaseIdToken(token);
+    if (!verification.valid || !verification.uid) {
+      return {
+        success: false,
+        status: 401,
+        code: verification.code || 'INVALID_TOKEN',
+        error: verification.error || 'Invalid or expired authentication token.'
+      };
+    }
+
+    return {
+      success: true,
+      identity: {
+        type: 'authenticated',
+        uid: verification.uid,
+        isGuest: false,
+        email: verification.email,
+        projectId: verification.projectId
+      }
+    };
+  }
+
+  // Case 2: Guest Session identifier provided in X-Orvix-Guest-Id header
+  if (guestHeader && typeof guestHeader === 'string') {
+    const rawGuestId = guestHeader.trim();
+    if (!/^guest-[a-z0-9_-]{4,64}$/i.test(rawGuestId)) {
+      return {
+        success: false,
+        status: 400,
+        code: 'INVALID_GUEST_IDENTIFIER',
+        error: 'Invalid guest identifier format. Guest IDs must start with "guest-".'
+      };
+    }
+
+    const clientIp = resolveClientIp(req);
+
+    return {
+      success: true,
+      identity: {
+        type: 'guest',
+        uid: rawGuestId,
+        isGuest: true,
+        ip: clientIp
+      }
+    };
+  }
+
+  // Case 3: Missing identity
+  return {
+    success: false,
+    status: 401,
+    code: 'AUTHENTICATION_REQUIRED',
+    error: 'Authentication required. Please provide a valid Firebase authorization token or guest identity.'
+  };
+}
+
 // In-memory registry tracking uploaded temporary files and their lifecycle
 export const fileRegistry = new Map<string, UploadedFileRecord>();
 // Conversation to file IDs association mapping (strictly isolates documents per conversation)
@@ -760,7 +1039,19 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Dedicated Multipart File Upload Endpoint
-  app.post(['/api/upload', '/upload'], (req, res) => {
+  app.post(['/api/upload', '/upload'], async (req, res) => {
+    // Phase 2A: Cryptographic Authentication & Secure Guest Identity Verification
+    const authResult = await authenticateUploadRequest(req);
+    if (!authResult.success) {
+      return res.status(authResult.status).json({
+        error: authResult.error,
+        code: authResult.code,
+        status: authResult.status === 401 ? 'UNAUTHORIZED' : 'BAD_REQUEST'
+      });
+    }
+
+    const identity = authResult.identity;
+
     uploadMiddleware.array('files', MAX_ATTACHMENTS_PER_UPLOAD)(req as any, res as any, async (err: any) => {
       if (err) {
         if (err instanceof multer.MulterError) {
@@ -858,7 +1149,9 @@ export function registerUploadRoutes(app: express.Express) {
           conversationId,
           isImage: isImg,
           dimensions: sigResult.dimensions,
-          buffer: fileBuffer
+          buffer: fileBuffer,
+          userId: identity.uid,
+          userType: identity.type
         };
 
         fileRegistry.set(fileId, record);
@@ -955,6 +1248,8 @@ export function registerUploadRoutes(app: express.Express) {
             status: r.status,
             isImage: isImg,
             dimensions: r.dimensions,
+            userId: r.userId,
+            userType: r.userType,
             url: `/api/upload/${r.id}/file`,
             uploadedAt: r.uploadedAt,
             extraction: r.extraction
