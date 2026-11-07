@@ -7,7 +7,16 @@ import crypto from 'crypto';
 import multer from 'multer';
 
 import { isServerless } from './serverConfig.ts';
-import type { UploadedFileRecord, DocumentExtractionResult, VerifiedUserIdentity } from './serverTypes.ts';
+import type { UploadedFileRecord, DocumentExtractionResult, VerifiedUserIdentity, QuotaReservation } from './serverTypes.ts';
+import {
+  isQuotaTrackedAttachment,
+  reserveAttachmentQuota,
+  commitAttachmentQuota,
+  releaseAttachmentQuota,
+  getQuotaInfrastructureStatus,
+  DAILY_LIMIT_ERROR_CODE,
+  DAILY_LIMIT_EXCEEDED_MESSAGE
+} from './quotaEngine.ts';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
 // @ts-ignore - Image OCR extraction JavaScript service
@@ -1095,21 +1104,69 @@ export function registerUploadRoutes(app: express.Express) {
         });
       }
 
+      const file = files[0];
+      const isQuotaTracked = isQuotaTrackedAttachment(file);
+
+      // Section 3: Production Storage Safety check
+      // Before accepting quota-tracked uploads, inspect getQuotaInfrastructureStatus().
+      // In development, the local filesystem driver may be used.
+      // In production, require a genuinely configured and operational distributed storage driver.
+      // If distributed storage is unavailable, reject quota-tracked uploads with HTTP 503 and code: QUOTA_STORAGE_UNAVAILABLE.
+      // Exempt file types (non-PDF and non-image) are NOT blocked.
+      if (isQuotaTracked) {
+        const isProductionMode = process.env.NODE_ENV === 'production';
+        if (isProductionMode) {
+          const infraStatus = getQuotaInfrastructureStatus();
+          if (!infraStatus.isDistributed) {
+            return res.status(503).json({
+              error:
+                infraStatus.blockerDetails ||
+                'Distributed quota storage is unavailable in production. Quota-tracked attachments (PDF and images) cannot be processed.',
+              code: 'QUOTA_STORAGE_UNAVAILABLE',
+              status: 503
+            });
+          }
+        }
+      }
+
+      // Section 2: Quota slot reservation before processing
+      let quotaReservation: QuotaReservation | null = null;
+      if (isQuotaTracked) {
+        try {
+          quotaReservation = await reserveAttachmentQuota(identity, file);
+        } catch (resErr: any) {
+          return res.status(500).json({
+            error: resErr?.message || 'Error checking upload quota.',
+            code: 'QUOTA_ERROR'
+          });
+        }
+
+        if (!quotaReservation.allowed) {
+          return res.status(429).json({
+            error: quotaReservation.error || DAILY_LIMIT_EXCEEDED_MESSAGE,
+            code: quotaReservation.code || DAILY_LIMIT_ERROR_CODE,
+            currentCount: quotaReservation.currentCount,
+            remaining: quotaReservation.remaining ?? 0,
+            status: 429
+          });
+        }
+      }
+
       const conversationId = req.body?.conversationId ? String(req.body.conversationId).trim() : undefined;
       const uploadedResults: UploadedFileRecord[] = [];
       const validationErrors: string[] = [];
 
-      for (const file of files) {
-        const ext = path.extname(file.originalname).toLowerCase();
-        const rawBase = path.basename(file.originalname || 'attachment');
+      for (const f of files) {
+        const ext = path.extname(f.originalname).toLowerCase();
+        const rawBase = path.basename(f.originalname || 'attachment');
         const safeBaseName = rawBase
           .replace(/[\0\r\n\t]/g, '')
           .replace(/[/\\?%*:|"<>]/g, '_')
           .trim()
           .slice(0, 150) || 'attachment';
 
-        const fileBuffer = file.buffer;
-        const fileSize = fileBuffer ? fileBuffer.length : file.size;
+        const fileBuffer = f.buffer;
+        const fileSize = fileBuffer ? fileBuffer.length : f.size;
 
         if (!fileBuffer || fileSize === 0) {
           validationErrors.push(`File '${safeBaseName}' is empty (0 bytes).`);
@@ -1124,7 +1181,7 @@ export function registerUploadRoutes(app: express.Express) {
 
         const isImg =
           ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
-          (file.mimetype || '').toLowerCase().startsWith('image/');
+          (f.mimetype || '').toLowerCase().startsWith('image/');
 
         const fileId = crypto.randomUUID();
         const diskFilename = `${fileId}${ext}`;
@@ -1139,7 +1196,7 @@ export function registerUploadRoutes(app: express.Express) {
           id: fileId,
           originalName: safeBaseName,
           diskFilename,
-          mimeType: file.mimetype || (isImg ? `image/${ext.replace('.', '')}` : 'application/octet-stream'),
+          mimeType: f.mimetype || (isImg ? `image/${ext.replace('.', '')}` : 'application/octet-stream'),
           extension: ext.replace('.', '').toUpperCase(),
           size: fileSize,
           formattedSize: formatBytes(fileSize),
@@ -1167,6 +1224,11 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       if (validationErrors.length > 0) {
+        if (quotaReservation) {
+          try {
+            await releaseAttachmentQuota(quotaReservation);
+          } catch (_) {}
+        }
         for (const rec of uploadedResults) {
           fileRegistry.delete(rec.id);
           if (conversationId && conversationDocuments.has(conversationId)) {
@@ -1182,8 +1244,8 @@ export function registerUploadRoutes(app: express.Express) {
         });
       }
 
-      for (const rec of uploadedResults) {
-        try {
+      try {
+        for (const rec of uploadedResults) {
           const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
           const ext = path.extname(rec.diskFilename).toLowerCase();
           const isImg =
@@ -1222,8 +1284,35 @@ export function registerUploadRoutes(app: express.Express) {
             rec.extraction = extraction;
             rec.status = extraction.success || extraction.status === 'scanned_or_image_only' || extraction.status === 'NO_TEXT_DETECTED' ? 'ready' : 'uploaded';
           }
-        } catch (err: any) {
-          console.warn(`[Document Extraction] Extraction error for ${rec.originalName}:`, err);
+        }
+      } catch (err: any) {
+        console.warn(`[Document Extraction] Extraction error:`, err);
+        if (quotaReservation) {
+          try {
+            await releaseAttachmentQuota(quotaReservation);
+          } catch (_) {}
+        }
+        for (const rec of uploadedResults) {
+          fileRegistry.delete(rec.id);
+          if (conversationId && conversationDocuments.has(conversationId)) {
+            conversationDocuments.get(conversationId)!.delete(rec.id);
+          }
+          try {
+            await fs.promises.unlink(path.join(UPLOAD_DIR, rec.diskFilename));
+          } catch (_) {}
+        }
+        return res.status(500).json({
+          error: 'An error occurred while processing the attachment.',
+          code: 'PROCESSING_ERROR'
+        });
+      }
+
+      // Step 5: Commit reservation only after successful validation, processing, and acceptance.
+      if (quotaReservation) {
+        try {
+          await commitAttachmentQuota(quotaReservation);
+        } catch (commitErr: any) {
+          console.warn('[Quota] Warning: failed to commit quota reservation:', commitErr);
         }
       }
 

@@ -708,12 +708,30 @@ export async function streamAIMessage(params = {}) {
 
       let res;
       try {
+        const chatHeaders = {
+          'Content-Type': 'application/json',
+          ...(shouldStream ? { Accept: 'text/event-stream' } : {}),
+          ...(params?.headers || {})
+        };
+        if (!chatHeaders['Authorization'] && !chatHeaders['X-Orvix-Guest-Id']) {
+          try {
+            if (typeof window !== 'undefined') {
+              const saved =
+                sessionStorage.getItem('orvix_guest_session') ||
+                localStorage.getItem('orvix_guest_session');
+              if (saved) {
+                const parsed = JSON.parse(saved);
+                if (parsed?.uid && String(parsed.uid).startsWith('guest-')) {
+                  chatHeaders['X-Orvix-Guest-Id'] = parsed.uid;
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
         res = await fetch(chatEndpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(shouldStream ? { Accept: 'text/event-stream' } : {})
-          },
+          headers: chatHeaders,
           body: requestBody,
           signal: fetchController.signal
         });

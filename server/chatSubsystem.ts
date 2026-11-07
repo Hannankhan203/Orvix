@@ -7,7 +7,8 @@ import type {
   DocumentData,
   PreparedDocumentContext,
   UserPreferences,
-  AIDiagnosticCategory
+  AIDiagnosticCategory,
+  VerifiedUserIdentity
 } from './serverTypes.ts';
 
 import {
@@ -50,7 +51,8 @@ import {
   fileRegistry,
   conversationDocuments,
   UPLOAD_DIR,
-  buildGeminiImageParts
+  buildGeminiImageParts,
+  authenticateUploadRequest
 } from './uploadSubsystem.ts';
 
 // @ts-ignore - Document extraction JavaScript service
@@ -528,6 +530,58 @@ export function registerChatRoutes(app: express.Express) {
     res.once('finish', () => upstreamGuard.cleanup());
     res.once('close', () => upstreamGuard.cleanup());
 
+    // Phase 2C Secondary Bypass Protection:
+    // If request contains attachments, verify authentication and server registry ownership.
+    const authResult = await authenticateUploadRequest(req);
+    const chatUserIdentity: VerifiedUserIdentity | null = authResult.success ? authResult.identity : null;
+
+    if (Array.isArray(attachments) && attachments.length > 0) {
+      if (!authResult.success) {
+        upstreamGuard.cleanup();
+        logAIDiagnostic({
+          category: 'request validation error',
+          provider: String(req.body?.provider || 'unknown'),
+          model: String(req.body?.model || 'unknown'),
+          phase: 'validation',
+          upstreamStatus: authResult.status,
+          upstreamErrorCode: authResult.code,
+          sanitizedMessage: 'Authentication required to submit attachments to chat.'
+        });
+        return res.status(authResult.status).json({
+          error: authResult.error || 'Authentication required to use attachments in chat.',
+          code: authResult.code || 'AUTHENTICATION_REQUIRED',
+          status: authResult.status === 401 ? 'UNAUTHORIZED' : 'BAD_REQUEST'
+        });
+      }
+
+      // Verify that every submitted attachment exists in fileRegistry and belongs to the verified user.
+      for (const att of attachments) {
+        const attId = att?.id || att?.fileId;
+        if (!attId) {
+          upstreamGuard.cleanup();
+          return res.status(400).json({
+            error: 'Attachment missing valid identifier.',
+            code: 'INVALID_ATTACHMENT'
+          });
+        }
+        const record = fileRegistry.get(attId);
+        if (!record) {
+          upstreamGuard.cleanup();
+          return res.status(400).json({
+            error: `Attachment '${attId}' was not found in the server registry. All attachments must be uploaded through the upload endpoint.`,
+            code: 'UNVERIFIED_ATTACHMENT'
+          });
+        }
+        if (record.userId && chatUserIdentity && record.userId !== chatUserIdentity.uid) {
+          upstreamGuard.cleanup();
+          return res.status(403).json({
+            error: 'Access denied: attachment does not belong to the verified user.',
+            code: 'ATTACHMENT_FORBIDDEN'
+          });
+        }
+      }
+    }
+
     // Validate target server provider & incoming model identifier
     let normalizedProvider = String(provider || 'gemini').trim().toLowerCase();
     if (normalizedProvider === 'ollama') {
@@ -591,26 +645,12 @@ export function registerChatRoutes(app: express.Express) {
         conversationDocuments.set(conversationId, docSet);
       }
       for (const att of attachments) {
-        if (att?.id) {
-          docSet.add(att.id);
-          const existing = fileRegistry.get(att.id);
+        const attId = att?.id || att?.fileId;
+        if (attId) {
+          docSet.add(attId);
+          const existing = fileRegistry.get(attId);
           if (existing) {
             existing.conversationId = conversationId;
-          } else if (att.extraction) {
-            fileRegistry.set(att.id, {
-              id: att.id,
-              originalName: att.originalName || att.name || 'document',
-              diskFilename: att.id,
-              mimeType: att.type || att.mimeType || 'application/octet-stream',
-              extension: att.extension || '',
-              size: att.size || 0,
-              formattedSize: att.formattedSize || '',
-              status: att.status || 'ready',
-              uploadedAt: att.uploadedAt || new Date().toISOString(),
-              expiresAt: Date.now() + 2 * 60 * 60 * 1000,
-              conversationId,
-              extraction: att.extraction
-            });
           }
         }
       }
@@ -630,13 +670,17 @@ export function registerChatRoutes(app: express.Express) {
       }
     };
 
-    // 1. Current turn attachments
+    // 1. Current turn attachments (strictly server-registered records belonging to verified user)
     const currentTurnAttachmentId = Array.isArray(attachments) && attachments[0]?.id ? String(attachments[0].id) : undefined;
     if (Array.isArray(attachments)) {
       for (const att of attachments) {
-        if (!att?.id) continue;
-        const record = fileRegistry.get(att.id);
-        if (record && !record.extraction) {
+        const attId = att?.id || att?.fileId;
+        if (!attId) continue;
+        const record = fileRegistry.get(attId);
+        if (!record) continue;
+        if (record.userId && chatUserIdentity && record.userId !== chatUserIdentity.uid) continue;
+
+        if (!record.extraction) {
           try {
             const ext = path.extname(record.diskFilename).toLowerCase();
             const isImg =
@@ -683,60 +727,46 @@ export function registerChatRoutes(app: express.Express) {
           }
         }
 
-        const rawExtraction = record?.extraction || att.extraction;
+        const rawExtraction = record.extraction;
         if (rawExtraction) {
-          const originalName = record?.originalName || att.originalName || att.name || (rawExtraction as any).originalName || 'document';
+          const originalName = record.originalName;
           const extName = path.extname(originalName).toLowerCase();
           const detectedFormat =
             (rawExtraction as any).format ||
-            record?.extension ||
-            att.format ||
-            att.extension ||
+            record.extension ||
             (extName === '.pdf' ? 'PDF' : extName === '.docx' ? 'DOCX' : extName === '.pptx' ? 'PPTX' : extName === '.txt' ? 'TXT' : undefined);
 
           const docData: DocumentData = {
             ...(rawExtraction as DocumentData),
-            id: att.id,
-            fileId: att.id,
+            id: record.id,
+            fileId: record.id,
             originalName,
-            filename: record?.diskFilename || att.name || att.originalName || (rawExtraction as any).filename || originalName,
+            filename: record.diskFilename || originalName,
             format: detectedFormat || (rawExtraction as any).format,
-            mimeType: record?.mimeType || att.mimeType || att.type || (rawExtraction as any).mimeType,
-            type: record?.mimeType || att.type || att.mimeType || (rawExtraction as any).mimeType,
-            sizeBytes: Number(record?.size || att.size || (rawExtraction as any).sizeBytes || 0),
-            pages: (rawExtraction as any).pages || record?.extraction?.pages,
-            isImage: Boolean((rawExtraction as any).isImage || record?.isImage || att.isImage)
+            mimeType: record.mimeType,
+            type: record.mimeType,
+            sizeBytes: Number(record.size || 0),
+            pages: (rawExtraction as any).pages || record.extraction?.pages,
+            isImage: Boolean((rawExtraction as any).isImage || record.isImage)
           };
-          addDocIfValid(docData, record?.conversationId || conversationId || undefined);
+          addDocIfValid(docData, record.conversationId || conversationId || undefined);
         }
       }
     }
 
-    // 2. Attachments in history of this conversation
+    // 2. Attachments in history of this conversation (strictly server-registered records belonging to verified user)
     if (Array.isArray(history)) {
       for (let i = history.length - 1; i >= 0; i--) {
         const hMsg = history[i];
         if (Array.isArray(hMsg?.attachments)) {
           for (const hAtt of hMsg.attachments) {
-            if (!hAtt?.id) continue;
-            const record = fileRegistry.get(hAtt.id);
-            if (record?.extraction) {
-              addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
-            } else if (hAtt.extraction) {
-              const docData: any = {
-                ...(hAtt.extraction as DocumentData),
-                id: hAtt.id,
-                fileId: hAtt.id,
-                originalName: hAtt.originalName || hAtt.name,
-                filename: hAtt.filename || hAtt.name || hAtt.originalName,
-                mimeType: hAtt.mimeType || hAtt.type || (hAtt.extraction as any)?.mimeType,
-                type: hAtt.type || hAtt.mimeType || (hAtt.extraction as any)?.mimeType,
-                extension: hAtt.extension,
-                sizeBytes: Number(hAtt.size || (hAtt.extraction as any)?.sizeBytes || 0),
-                isImage: Boolean(hAtt.isImage || (hAtt.extraction as any)?.isImage),
-                base64: hAtt.base64 || hAtt.dataUrl
-              };
-              addDocIfValid(docData, conversationId || undefined);
+            const hId = hAtt?.id || hAtt?.fileId;
+            if (!hId) continue;
+            const record = fileRegistry.get(hId);
+            if (record && (!chatUserIdentity || !record.userId || record.userId === chatUserIdentity.uid)) {
+              if (record.extraction) {
+                addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+              }
             }
           }
         }
@@ -748,8 +778,10 @@ export function registerChatRoutes(app: express.Express) {
       const convSet = Array.from(conversationDocuments.get(conversationId)!).reverse();
       for (const fileId of convSet) {
         const record = fileRegistry.get(fileId);
-        if (record?.extraction) {
-          addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId);
+        if (record && (!chatUserIdentity || !record.userId || record.userId === chatUserIdentity.uid)) {
+          if (record.extraction) {
+            addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId);
+          }
         }
       }
     }
@@ -757,12 +789,13 @@ export function registerChatRoutes(app: express.Express) {
     // 4. Attachments referenced in the multi-part sequence
     if (isContinuation && Array.isArray(multiPartCtx.referencedAttachments)) {
       for (const rAtt of multiPartCtx.referencedAttachments) {
-        if (!rAtt?.id) continue;
-        const record = fileRegistry.get(rAtt.id);
-        if (record?.extraction) {
-          addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
-        } else if (rAtt.extraction) {
-          addDocIfValid(rAtt.extraction as DocumentData, conversationId || undefined);
+        const rId = rAtt?.id || rAtt?.fileId;
+        if (!rId) continue;
+        const record = fileRegistry.get(rId);
+        if (record && (!chatUserIdentity || !record.userId || record.userId === chatUserIdentity.uid)) {
+          if (record.extraction) {
+            addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+          }
         }
       }
     }

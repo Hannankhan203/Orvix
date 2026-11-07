@@ -1350,8 +1350,15 @@ export default function ChatPage({
           sanitizeAttachmentForNetwork(att, { includeImageBytes: false })
         );
       },
-      streamRequest: ({ signal, isRequestActive, attachments: reqAttachments, onStart, onChunk }) =>
-        streamAIMessage({
+      streamRequest: async ({ signal, isRequestActive, attachments: reqAttachments, onStart, onChunk }) => {
+        let authHeaders = {};
+        if (currentUser && typeof currentUser.getIdToken === 'function') {
+          try {
+            const token = await currentUser.getIdToken();
+            if (token) authHeaders['Authorization'] = `Bearer ${token}`;
+          } catch (_) {}
+        }
+        return streamAIMessage({
           provider: providerToUse,
           model: effectiveModelOverride,
           mode: activeMode,
@@ -1366,13 +1373,15 @@ export default function ChatPage({
           isRequestActive,
           conversationId: targetChatId,
           attachments: reqAttachments,
+          headers: authHeaders,
           isContinuation: multiPartParams.isContinuation,
           partNumber: multiPartParams.partNumber,
           originalPrompt: multiPartParams.originalPrompt,
           previousContentSummary: multiPartParams.previousContentSummary,
           onStart,
           onChunk
-        }),
+        });
+      },
       classifyError: classifyPromptError
     });
   };
