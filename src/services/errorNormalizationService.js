@@ -47,6 +47,8 @@ export const STANDARD_ERROR_CODES = Object.freeze({
   RATE_LIMITED: 'RATE_LIMITED',
   RESOURCE_EXHAUSTED: 'RESOURCE_EXHAUSTED',
   QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
+  DAILY_LIMIT_EXCEEDED: 'DAILY_LIMIT_EXCEEDED',
+  QUOTA_STORAGE_UNAVAILABLE: 'QUOTA_STORAGE_UNAVAILABLE',
   PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
   OUT_OF_MEMORY: 'OUT_OF_MEMORY',
   DEVICE_LOST: 'DEVICE_LOST',
@@ -413,6 +415,7 @@ export function normalizeAIError(rawError, context = {}) {
     Number(context.httpStatus) ||
     Number(rawError?.httpStatus) ||
     Number(rawError?.statusCode) ||
+    Number(rawError?.status) ||
     Number(rawError?.code) ||
     Number(parsedData?.code) ||
     Number(parsedData?.error?.code) ||
@@ -744,6 +747,34 @@ export function normalizeAIError(rawError, context = {}) {
     canFallback = !isLocalProvider;
     userMessage =
       "The response was blocked by the AI provider's safety filters. Please rephrase your request.";
+  }
+  // 8.5. DAILY ATTACHMENT LIMIT EXCEEDED
+  else if (
+    upperStatus === 'DAILY_LIMIT_EXCEEDED' ||
+    lowerMsg.includes('daily attachment limit') ||
+    lowerMsg.includes('maximum of 5 pdfs and images')
+  ) {
+    code = STANDARD_ERROR_CODES.DAILY_LIMIT_EXCEEDED;
+    category = ERROR_CATEGORIES.TIMEOUTS_AND_RESOURCE_LIMITS;
+    httpStatus = 429;
+    retryable = false;
+    canFallback = false;
+    userMessage =
+      'Daily attachment limit reached. You can upload a maximum of 5 PDFs and images per UTC day. Non-PDF and non-image files (such as text or Word documents) can still be attached, or you can try again tomorrow (00:00 UTC).';
+  }
+  // 8.6. QUOTA STORAGE MAINTENANCE / UNAVAILABLE
+  else if (
+    upperStatus === 'QUOTA_STORAGE_UNAVAILABLE' ||
+    lowerMsg.includes('quota_storage_unavailable') ||
+    lowerMsg.includes('distributed quota storage is unavailable')
+  ) {
+    code = STANDARD_ERROR_CODES.QUOTA_STORAGE_UNAVAILABLE;
+    category = ERROR_CATEGORIES.TIMEOUTS_AND_RESOURCE_LIMITS;
+    httpStatus = 503;
+    retryable = false;
+    canFallback = false;
+    userMessage =
+      'Attachment processing is temporarily unavailable due to server storage maintenance. Please try again in a few moments, or continue chatting without attachments.';
   }
   // 9. RATE LIMITING & QUOTA EXHAUSTION
   else if (

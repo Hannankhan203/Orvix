@@ -1032,14 +1032,11 @@ export default function ChatArea({
     setPreviewingComposerAttachment(null);
     setAttachments([]);
     try {
-      const result = await onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
-      if (result === false && currentAttachments.length > 0) {
-        setAttachments((prev) => (prev.length === 0 ? currentAttachments : prev));
-      }
+      await onSubmit(currentAttachments, textToSend !== inputValue ? textToSend : null);
+      // Phase 2D: If upload/submission fails (returns false or errors), do not restore rejected
+      // attachments to composer tray. This prevents automatic or duplicate retry loops.
     } catch (_) {
-      if (currentAttachments.length > 0) {
-        setAttachments((prev) => (prev.length === 0 ? currentAttachments : prev));
-      }
+      // Keep rejected attachments removed from tray without locking the composer.
     }
   };
 

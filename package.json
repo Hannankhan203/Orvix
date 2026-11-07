@@ -16,6 +16,7 @@
     "test:webgpu-fallback": "node scripts/testWebGPUFallbackBrowser.js",
     "test:timer-optimization": "node scripts/testLiveResponseTimerOptimization.js",
     "test:phase2c": "node scripts/testPhase2C.js",
+    "test:phase2d": "node scripts/testPhase2D.js",
     "test": "npm run lint && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMultiTabConversationSync.js && node scripts/testMessageAlignmentOrdering.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js && node scripts/testLiveResponseTimerOptimization.js"
   },
   "dependencies": {

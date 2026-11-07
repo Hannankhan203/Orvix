@@ -1759,8 +1759,10 @@ export default function ChatPage({
 
             if (!uploadRes.ok) {
               let errorMsg = `Upload failed (${uploadRes.status})`;
+              let errorCode = null;
               try {
                 const errData = await uploadRes.json();
+                errorCode = errData?.code;
                 if (errData?.error) {
                   errorMsg = errData.error;
                 }
@@ -1768,8 +1770,22 @@ export default function ChatPage({
 
               if (!isPreflightActive()) return false;
 
+              // Phase 2D: Structured user-facing error messages for quota and auth errors
+              const isDailyLimit = errorCode === 'DAILY_LIMIT_EXCEEDED' || uploadRes.status === 429;
+              const isQuotaUnavailable = errorCode === 'QUOTA_STORAGE_UNAVAILABLE' || uploadRes.status === 503;
+              const isAuthError = errorCode === 'AUTHENTICATION_REQUIRED' || errorCode === 'INVALID_TOKEN' || uploadRes.status === 401;
+
+              if (isDailyLimit) {
+                errorMsg = errorMsg || 'Daily attachment limit reached. You can upload a maximum of 5 PDFs and images per UTC day. Non-PDF and non-image files (such as text or Word documents) can still be attached, or you can try again tomorrow (00:00 UTC).';
+              } else if (isQuotaUnavailable) {
+                errorMsg = errorMsg || 'Attachment processing is temporarily unavailable due to server storage maintenance. Please try again in a few moments, or continue chatting without attachments.';
+              } else if (isAuthError) {
+                errorMsg = errorMsg || 'Authentication error while uploading attachment. Please sign in again or refresh the page to continue.';
+              }
+
               // If Browser AI is selected and upload returned an error, attempt browser extraction fallback!
-              if (isWebLLM) {
+              // Quota limits (429) and quota storage unavailability (503) are never bypassed via local fallback.
+              if (isWebLLM && !isDailyLimit && !isQuotaUnavailable) {
                 console.warn('Server upload endpoint failed for Browser AI, attempting local browser extraction fallback...');
                 const fallbackLocalAttachments = [];
                 for (const att of filesToUpload) {

@@ -460,13 +460,27 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
     err.retryable = false;
   } else if (typeof explicitRetryable === 'boolean') {
     err.retryable = explicitRetryable;
+  } else if (
+    status === 'DAILY_LIMIT_EXCEEDED' ||
+    err.errorCode === 'DAILY_LIMIT_EXCEEDED' ||
+    status === 'QUOTA_STORAGE_UNAVAILABLE' ||
+    err.errorCode === 'QUOTA_STORAGE_UNAVAILABLE'
+  ) {
+    err.retryable = false;
   } else {
     err.retryable = Boolean(retryable ?? (code === 502 || code === 503 || code === 504 || code === 429));
   }
 
-  if (isWebLLMContext) {
-    err.provider = AI_PROVIDERS.WEBLLM;
+  const isQuotaConstrained =
+    status === 'DAILY_LIMIT_EXCEEDED' ||
+    err.errorCode === 'DAILY_LIMIT_EXCEEDED' ||
+    status === 'QUOTA_STORAGE_UNAVAILABLE' ||
+    err.errorCode === 'QUOTA_STORAGE_UNAVAILABLE';
+
+  if (isWebLLMContext || isQuotaConstrained) {
+    if (isWebLLMContext) err.provider = AI_PROVIDERS.WEBLLM;
     err.canFallback = false;
+    if (isQuotaConstrained) err.retryable = false;
   } else if (code === 413 || status === 'PAYLOAD_TOO_LARGE') {
     if (normalizedHint) err.provider = normalizedHint;
     err.canFallback = false;
