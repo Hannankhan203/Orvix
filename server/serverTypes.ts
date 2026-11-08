@@ -192,5 +192,10 @@ export interface UploadedFileRecord {
   dimensions?: { width: number; height: number };
   extraction?: any;
   buffer?: Buffer;
+  storageProvider?: 'local' | 'supabase';
+  storagePath?: string;
+  storageBucket?: string;
+  userId?: string;
 }
+
 

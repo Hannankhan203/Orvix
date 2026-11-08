@@ -18,6 +18,35 @@ import {
   MAX_VISION_IMAGE_BYTES,
   MAX_CHAT_REQUEST_BYTES
 } from '../src/services/attachmentStorageService.js';
+import {
+  uploadAttachmentToStorage,
+  isValidPathSegment
+} from './supabaseStorageService.ts';
+import { isSupabaseConfigured } from './supabaseClient.ts';
+import {
+  verifyFirebaseIdToken,
+  resolveVerifiedUserId,
+  authenticateRequest
+} from './firebaseAuthHelper.ts';
+
+export {
+  verifyFirebaseIdToken,
+  resolveVerifiedUserId,
+  authenticateRequest
+};
+
+/**
+ * Resolves the authenticated user ID exclusively from verified Firebase identity.
+ *
+ * Security Requirements Enforced:
+ * 1. Never authorizes users by merely decoding Firebase JWT payloads.
+ * 2. Derives userId exclusively from verified cryptographic Firebase identity.
+ * 3. Never trusts req.body.userId or x-user-id for authorization.
+ * 4. Returns null for guests or invalid/unverified requests.
+ */
+export async function resolveRequestUserId(req: express.Request): Promise<string | null> {
+  return resolveVerifiedUserId(req);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -583,7 +612,10 @@ export function registerUploadRoutes(app: express.Express) {
         dimensions: record.dimensions,
         uploadedAt: record.uploadedAt,
         expiresAt: record.expiresAt,
-        extraction: record.extraction
+        extraction: record.extraction,
+        storageProvider: record.storageProvider || 'local',
+        storagePath: record.storagePath || null,
+        bucket: record.storageBucket || null
       });
     }
 
@@ -805,6 +837,15 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       const conversationId = req.body?.conversationId ? String(req.body.conversationId).trim() : undefined;
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status === 'invalid') {
+        return res.status(401).json({
+          error: `Authentication failed: ${authStatus.error}`,
+          code: authStatus.code || 'INVALID_TOKEN'
+        });
+      }
+      const authenticatedUserId = authStatus.userId;
+      const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
       const uploadedResults: UploadedFileRecord[] = [];
       const validationErrors: string[] = [];
 
@@ -856,6 +897,8 @@ export function registerUploadRoutes(app: express.Express) {
           uploadedAt: nowIso,
           expiresAt: Date.now() + TEMP_FILE_TTL_MS,
           conversationId,
+          userId: authenticatedUserId || undefined,
+          storageProvider: 'local',
           isImage: isImg,
           dimensions: sigResult.dimensions,
           buffer: fileBuffer
@@ -934,6 +977,46 @@ export function registerUploadRoutes(app: express.Express) {
         }
       }
 
+      // Upload authenticated users' files to private Supabase Storage if configured and online
+      if (authenticatedUserId && isSupabaseConfigured() && !isOfflineUpload) {
+        const cleanChatId =
+          conversationId && isValidPathSegment(conversationId)
+            ? conversationId
+            : 'staging';
+
+        for (const rec of uploadedResults) {
+          if (rec.buffer && rec.buffer.length > 0) {
+            const rawExt = path.extname(rec.diskFilename).replace(/^\.+/, '').toLowerCase();
+            try {
+              const supaRes = await uploadAttachmentToStorage({
+                userId: authenticatedUserId,
+                chatId: cleanChatId,
+                attachmentId: rec.id,
+                extension: rawExt,
+                buffer: rec.buffer,
+                mimeType: rec.mimeType
+              });
+
+              if (supaRes.success) {
+                rec.storageProvider = 'supabase';
+                rec.storagePath = supaRes.path;
+                rec.storageBucket = supaRes.bucket;
+                rec.userId = authenticatedUserId;
+              } else {
+                console.warn(
+                  `[Upload] Supabase upload failed for attachment ${rec.id}, maintaining local file:`,
+                  supaRes.error
+                );
+                rec.storageProvider = 'local';
+              }
+            } catch (supaErr: any) {
+              console.warn(`[Upload] Supabase exception for attachment ${rec.id}:`, supaErr?.message || supaErr);
+              rec.storageProvider = 'local';
+            }
+          }
+        }
+      }
+
       return res.status(200).json({
         success: true,
         count: uploadedResults.length,
@@ -957,6 +1040,9 @@ export function registerUploadRoutes(app: express.Express) {
             dimensions: r.dimensions,
             url: `/api/upload/${r.id}/file`,
             uploadedAt: r.uploadedAt,
+            storageProvider: r.storageProvider || 'local',
+            storagePath: r.storagePath || null,
+            bucket: r.storageBucket || null,
             extraction: r.extraction
               ? {
                   id: r.id,

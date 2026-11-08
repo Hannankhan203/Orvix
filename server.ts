@@ -62,7 +62,8 @@ import {
   buildGeminiImageParts,
   fileRegistry,
   conversationDocuments,
-  UPLOAD_DIR
+  UPLOAD_DIR,
+  resolveRequestUserId
 } from './server/uploadSubsystem.ts';
 import { registerTranscriptionRoutes } from './server/transcriptionSubsystem.ts';
 import {
@@ -352,6 +353,7 @@ export {
   fileRegistry,
   conversationDocuments,
   UPLOAD_DIR,
+  resolveRequestUserId,
   fallbackCandidates,
   GEMINI_PRIMARY_MODEL,
   GEMINI_FALLBACK_MODEL,
