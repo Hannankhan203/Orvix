@@ -20,6 +20,8 @@ import {
 } from '../src/services/attachmentStorageService.js';
 import {
   uploadAttachmentToStorage,
+  downloadAttachmentFromStorage,
+  createAttachmentSignedUrl,
   isValidPathSegment
 } from './supabaseStorageService.ts';
 import { isSupabaseConfigured } from './supabaseClient.ts';
@@ -585,133 +587,253 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Upload Attachment Metadata Endpoint
-  app.get(['/api/upload/:id', '/upload/:id'], (req, res) => {
+  app.get(['/api/upload/:id', '/upload/:id'], async (req, res) => {
     const fileId = req.params.id;
     if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
-      return res.status(400).json({ error: 'Invalid attachment ID format.' });
+      return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
     }
 
     const record = fileRegistry.get(fileId);
-    if (record) {
-      const ext = path.extname(record.diskFilename).toLowerCase();
-      const isImg =
-        ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
-        record.mimeType.startsWith('image/');
+    if (!record) {
+      if (isServerless) {
+        return res.json({
+          id: fileId,
+          status: 'ready',
+          serverless: true,
+          message: 'Attachment active in client session.'
+        });
+      }
+      return res.status(404).json({ error: 'Attachment not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
+    }
 
-      return res.json({
-        id: record.id,
-        name: record.originalName,
-        originalName: record.originalName,
-        extension: record.extension,
-        mimeType: record.mimeType,
-        type: record.mimeType,
-        size: record.size,
-        formattedSize: record.formattedSize,
-        status: record.status,
-        isImage: isImg,
-        dimensions: record.dimensions,
-        uploadedAt: record.uploadedAt,
-        expiresAt: record.expiresAt,
-        extraction: record.extraction,
-        storageProvider: record.storageProvider || 'local',
-        storagePath: record.storagePath || null,
-        bucket: record.storageBucket || null
+    // For every Supabase-backed attachment, require a non-empty record.userId and successful Firebase authentication.
+    if (record.storageProvider === 'supabase' && !record.userId) {
+      return res.status(403).json({
+        error: 'Access denied: Attachment is missing required ownership metadata.',
+        code: 'STORAGE_ACCESS_DENIED'
       });
     }
 
-    if (isServerless) {
-      return res.json({
-        id: fileId,
-        status: 'ready',
-        serverless: true,
-        message: 'Attachment active in client session.'
-      });
+    if (record.storageProvider === 'supabase' || record.userId) {
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status === 'invalid') {
+        return res.status(401).json({
+          error: `Authentication failed: ${authStatus.error}`,
+          code: authStatus.code || 'INVALID_TOKEN'
+        });
+      }
+      if (authStatus.status === 'guest') {
+        return res.status(401).json({
+          error: 'Authentication required to access this attachment.',
+          code: 'AUTH_REQUIRED'
+        });
+      }
+      if (authStatus.userId !== record.userId) {
+        return res.status(403).json({
+          error: 'Access denied: You do not have permission to access attachments belonging to another user.',
+          code: 'STORAGE_ACCESS_DENIED'
+        });
+      }
     }
 
-    return res.status(404).json({ error: 'Attachment not found or has expired.' });
+    const ext = path.extname(record.diskFilename).toLowerCase();
+    const isImg =
+      ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+      record.mimeType.startsWith('image/');
+
+    return res.json({
+      id: record.id,
+      name: record.originalName,
+      originalName: record.originalName,
+      extension: record.extension,
+      mimeType: record.mimeType,
+      type: record.mimeType,
+      size: record.size,
+      formattedSize: record.formattedSize,
+      status: record.status,
+      isImage: isImg,
+      dimensions: record.dimensions,
+      uploadedAt: record.uploadedAt,
+      expiresAt: record.expiresAt,
+      extraction: record.extraction,
+      storageProvider: record.storageProvider || 'local'
+    });
   });
 
   // Dedicated Document Extraction Detail Endpoint
   app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, res) => {
     const fileId = req.params.id;
     if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
-      return res.status(400).json({ error: 'Invalid attachment ID format.' });
+      return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
     }
 
     const record = fileRegistry.get(fileId);
-    if (record?.extraction) {
+    if (!record) {
+      if (isServerless) {
+        return res.json({
+          id: fileId,
+          fileId,
+          status: 'ready',
+          success: true,
+          hasText: false,
+          text: '',
+          message: 'Extraction metadata stored in client session.'
+        });
+      }
+      return res.status(404).json({ error: 'Attachment not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
+    }
+
+    // For every Supabase-backed attachment, require a non-empty record.userId and successful Firebase authentication.
+    if (record.storageProvider === 'supabase' && !record.userId) {
+      return res.status(403).json({
+        error: 'Access denied: Attachment is missing required ownership metadata.',
+        code: 'STORAGE_ACCESS_DENIED'
+      });
+    }
+
+    let authenticatedUserId: string | null = null;
+    if (record.storageProvider === 'supabase' || record.userId) {
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status === 'invalid') {
+        return res.status(401).json({
+          error: `Authentication failed: ${authStatus.error}`,
+          code: authStatus.code || 'INVALID_TOKEN'
+        });
+      }
+      if (authStatus.status === 'guest') {
+        return res.status(401).json({
+          error: 'Authentication required to access this attachment.',
+          code: 'AUTH_REQUIRED'
+        });
+      }
+      if (authStatus.userId !== record.userId) {
+        return res.status(403).json({
+          error: 'Access denied: You do not have permission to access attachments belonging to another user.',
+          code: 'STORAGE_ACCESS_DENIED'
+        });
+      }
+      authenticatedUserId = authStatus.userId;
+    }
+
+    if (record.extraction) {
       return res.json(record.extraction);
     }
 
-    if (record) {
-      const ext = path.extname(record.diskFilename).toLowerCase();
-      const isImg =
-        ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
-        record.mimeType.startsWith('image/');
+    const ext = path.extname(record.diskFilename).toLowerCase();
+    const isImg =
+      ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+      record.mimeType.startsWith('image/');
 
-      const filePath = path.join(UPLOAD_DIR, path.basename(record.diskFilename));
-      const inputSource = record.buffer || (fs.existsSync(filePath) ? filePath : null);
+    const filePath = path.join(UPLOAD_DIR, path.basename(record.diskFilename));
+    let inputSource: Buffer | string | null = record.buffer || (fs.existsSync(filePath) ? filePath : null);
 
-      if (inputSource) {
-        if (isImg) {
-          const isOfflineReq = req.query?.offline === 'true';
-          const geminiKey = process.env.GEMINI_API_KEY || null;
-          const imgExtraction = await extractImageText(
-            inputSource,
-            record.originalName,
-            ext,
-            record.mimeType,
-            record.id,
-            record.dimensions,
-            geminiKey,
-            { offline: isOfflineReq }
-          );
-          record.extraction = imgExtraction;
-          return res.json(imgExtraction);
+    // If local source is absent but stored in Supabase, retrieve file from private bucket for on-demand extraction
+    if (!inputSource && record.storageProvider === 'supabase' && record.storagePath) {
+      try {
+        const downloadResult = await downloadAttachmentFromStorage(record.storagePath, {
+          requestingUserId: authenticatedUserId || undefined,
+          bucket: record.storageBucket
+        });
+        if (downloadResult.success && downloadResult.data) {
+          inputSource = downloadResult.data;
+          record.buffer = downloadResult.data;
         }
+      } catch (err: any) {
+        console.warn(`[Extraction] Failed to retrieve file from Supabase for ${record.id}:`, err?.message || err);
+      }
+    }
 
-        const extraction = (await extractDocumentContent(
+    if (inputSource) {
+      if (isImg) {
+        const isOfflineReq = req.query?.offline === 'true';
+        const geminiKey = process.env.GEMINI_API_KEY || null;
+        const imgExtraction = await extractImageText(
           inputSource,
           record.originalName,
           ext,
           record.mimeType,
-          record.id
-        )) as DocumentExtractionResult;
-        record.extraction = extraction;
-        return res.json(extraction);
+          record.id,
+          record.dimensions,
+          geminiKey,
+          { offline: isOfflineReq }
+        );
+        record.extraction = imgExtraction;
+        return res.json(imgExtraction);
       }
+
+      const extraction = (await extractDocumentContent(
+        inputSource,
+        record.originalName,
+        ext,
+        record.mimeType,
+        record.id
+      )) as DocumentExtractionResult;
+      record.extraction = extraction;
+      return res.json(extraction);
     }
 
-    if (isServerless) {
-      return res.json({
-        id: fileId,
-        fileId,
-        status: 'ready',
-        success: true,
-        hasText: false,
-        text: '',
-        message: 'Extraction metadata stored in client session.'
-      });
-    }
-
-    return res.status(404).json({ error: 'Attachment not found or has expired.' });
+    return res.status(404).json({ error: 'Attachment file not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
   });
 
-  // Dedicated Attachment File Serving & Download Endpoint
+  // Dedicated Attachment File Serving, Preview & Download Endpoint
   app.get(
-    ['/api/upload/:id/file', '/upload/:id/file', '/api/upload/:id/download', '/upload/:id/download'],
+    [
+      '/api/upload/:id/file',
+      '/upload/:id/file',
+      '/api/upload/:id/download',
+      '/upload/:id/download',
+      '/api/upload/:id/preview',
+      '/upload/:id/preview'
+    ],
     async (req, res) => {
       const fileId = req.params.id;
       if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
-        return res.status(400).json({ error: 'Invalid attachment ID format.' });
+        return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
       }
 
       const record = fileRegistry.get(fileId);
+
+      // For every Supabase-backed attachment, require a non-empty record.userId and successful Firebase authentication.
+      if (record?.storageProvider === 'supabase' && !record?.userId) {
+        return res.status(403).json({
+          error: 'Access denied: Attachment is missing required ownership metadata.',
+          code: 'STORAGE_ACCESS_DENIED'
+        });
+      }
+
+      let authenticatedUserId: string | null = null;
+      if (record?.storageProvider === 'supabase' || record?.userId) {
+        const authStatus = await authenticateRequest(req);
+        if (authStatus.status === 'invalid') {
+          return res.status(401).json({
+            error: `Authentication failed: ${authStatus.error}`,
+            code: authStatus.code || 'INVALID_TOKEN'
+          });
+        }
+        if (authStatus.status === 'guest') {
+          return res.status(401).json({
+            error: 'Authentication required to access this attachment.',
+            code: 'AUTH_REQUIRED'
+          });
+        }
+        if (authStatus.userId !== record.userId) {
+          return res.status(403).json({
+            error: 'Access denied: You do not have permission to access attachments belonging to another user.',
+            code: 'STORAGE_ACCESS_DENIED'
+          });
+        }
+        authenticatedUserId = authStatus.userId;
+      }
+
       let diskFilename = record?.diskFilename;
       let originalName = record?.originalName || 'document';
       let mimeType = record?.mimeType || 'application/octet-stream';
 
-      const forceDownload = req.query.download === 'true' || req.path.includes('/download');
+      const forceDownload =
+        req.query.download === 'true' ||
+        req.path.includes('/download') ||
+        req.query.action === 'download';
+
       const isInline =
         !forceDownload &&
         (mimeType === 'application/pdf' ||
@@ -725,12 +847,40 @@ export function registerUploadRoutes(app: express.Express) {
         `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
       );
 
-      // 1. Direct in-memory buffer serving
+      // 1. Retrieve authenticated users' files from private Supabase Storage if configured and stored in cloud
+      if (record?.storageProvider === 'supabase' && record.storagePath) {
+        try {
+          const downloadResult = await downloadAttachmentFromStorage(record.storagePath, {
+            requestingUserId: authenticatedUserId || undefined,
+            bucket: record.storageBucket
+          });
+
+          if (downloadResult.success && downloadResult.data) {
+            if (downloadResult.mimeType && downloadResult.mimeType !== 'application/octet-stream') {
+              res.setHeader('Content-Type', downloadResult.mimeType);
+            }
+            return res.send(downloadResult.data);
+          }
+
+          if (downloadResult.status === 403 || downloadResult.code === 'STORAGE_ACCESS_DENIED') {
+            return res.status(403).json({
+              error: 'Access denied: You do not have permission to access attachments belonging to another user.',
+              code: 'STORAGE_ACCESS_DENIED'
+            });
+          }
+
+          console.warn(`[Storage] Supabase download unsuccessful for ${record.id}:`, downloadResult.error);
+        } catch (storageErr: any) {
+          console.warn(`[Storage] Exception downloading attachment from Supabase (${record.id}):`, storageErr?.message || storageErr);
+        }
+      }
+
+      // 2. Direct in-memory buffer serving (guest/offline or local fallback)
       if (record?.buffer) {
         return res.send(record.buffer);
       }
 
-      // 2. Disk-based fallback
+      // 3. Disk-based fallback
       if (!diskFilename) {
         try {
           const files = await fs.promises.readdir(UPLOAD_DIR);
@@ -738,31 +888,102 @@ export function registerUploadRoutes(app: express.Express) {
           if (match) {
             diskFilename = match;
             const ext = path.extname(match).toLowerCase();
-            mimeType = (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) || 'application/octet-stream';
+            mimeType = (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) || mimeType;
             res.setHeader('Content-Type', mimeType);
           }
         } catch (_) {}
       }
 
       if (!diskFilename) {
-        return res.status(404).json({ error: 'Attachment file not found or has expired.' });
+        return res.status(404).json({ error: 'Attachment file not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
       }
 
       // Path traversal containment check
       const resolvedUploadDir = path.resolve(UPLOAD_DIR);
       const resolvedFilePath = path.resolve(UPLOAD_DIR, path.basename(diskFilename));
       if (!resolvedFilePath.startsWith(resolvedUploadDir + path.sep)) {
-        return res.status(403).json({ error: 'Access denied: invalid file path.' });
+        return res.status(403).json({ error: 'Access denied: invalid file path.', code: 'INVALID_PATH' });
       }
 
       if (!fs.existsSync(resolvedFilePath)) {
-        return res.status(404).json({ error: 'Attachment file not found or has expired.' });
+        return res.status(404).json({ error: 'Attachment file not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
       }
 
       return res.sendFile(resolvedFilePath);
     }
   );
 
+  // Dedicated Pre-Signed URL Generation Endpoint (Short-lived, max 120s)
+  app.get(['/api/upload/:id/signed-url', '/upload/:id/signed-url'], async (req, res) => {
+    const fileId = req.params.id;
+    if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+      return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
+    }
+
+    const record = fileRegistry.get(fileId);
+    if (!record) {
+      return res.status(404).json({ error: 'Attachment not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
+    }
+
+    if (record.storageProvider !== 'supabase' || !record.storagePath) {
+      return res.status(400).json({
+        error: 'Pre-signed URLs are only available for attachments stored in Supabase cloud storage.',
+        code: 'NOT_CLOUD_STORAGE'
+      });
+    }
+
+    // For every Supabase-backed attachment, require a non-empty record.userId and successful Firebase authentication.
+    if (!record.userId) {
+      return res.status(403).json({
+        error: 'Access denied: Attachment is missing required ownership metadata.',
+        code: 'STORAGE_ACCESS_DENIED'
+      });
+    }
+
+    const authStatus = await authenticateRequest(req);
+    if (authStatus.status === 'invalid') {
+      return res.status(401).json({
+        error: `Authentication failed: ${authStatus.error}`,
+        code: authStatus.code || 'INVALID_TOKEN'
+      });
+    }
+    if (authStatus.status === 'guest') {
+      return res.status(401).json({
+        error: 'Authentication required to generate signed URL.',
+        code: 'AUTH_REQUIRED'
+      });
+    }
+    if (authStatus.userId !== record.userId) {
+      return res.status(403).json({
+        error: 'Access denied: You do not have permission to access attachments belonging to another user.',
+        code: 'STORAGE_ACCESS_DENIED'
+      });
+    }
+    const authenticatedUserId = authStatus.userId;
+
+    const forceDownload = req.query.download === 'true' || req.query.action === 'download';
+    const signedResult = await createAttachmentSignedUrl(record.storagePath, {
+      requestingUserId: authenticatedUserId || undefined,
+      expiresInSeconds: 120,
+      download: forceDownload ? record.originalName : undefined,
+      bucket: record.storageBucket
+    });
+
+    if (!signedResult.success || !signedResult.signedUrl) {
+      return res.status(signedResult.status || 500).json({
+        error: 'Failed to generate pre-signed URL for attachment.',
+        code: signedResult.code || 'SIGNED_URL_FAILED'
+      });
+    }
+
+    return res.json({
+      success: true,
+      signedUrl: signedResult.signedUrl,
+      expiresInSeconds: 120
+    });
+  });
+
+  
   // Upload Deletion Endpoint
   app.delete(['/api/upload/:id', '/upload/:id'], async (req, res) => {
     const fileId = req.params.id;
@@ -772,6 +993,7 @@ export function registerUploadRoutes(app: express.Express) {
 
     const record = fileRegistry.get(fileId);
     fileRegistry.delete(fileId);
+
     if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
       conversationDocuments.get(record.conversationId)!.delete(fileId);
     }
@@ -790,6 +1012,7 @@ export function registerUploadRoutes(app: express.Express) {
 
     return res.json({ success: true, id: fileId });
   });
+
 
   // Dedicated Multipart File Upload Endpoint
   app.post(['/api/upload', '/upload'], (req, res) => {

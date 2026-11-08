@@ -25,6 +25,7 @@ export interface SupabaseClientStatus {
 let cachedClient: SupabaseClient | null = null;
 let lastUrl: string | null = null;
 let lastKey: string | null = null;
+let isMockClient = false;
 
 /**
  * Validates Supabase configuration without throwing exceptions.
@@ -34,6 +35,15 @@ let lastKey: string | null = null;
  * NOTE: The secret key is never included in the validation output.
  */
 export function validateSupabaseConfig(): SupabaseConfigValidation {
+  if (isMockClient && cachedClient) {
+    return {
+      valid: true,
+      error: null,
+      bucket: getSupabaseStorageBucket() || DEFAULT_SUPABASE_STORAGE_BUCKET,
+      url: lastUrl || 'https://test-mock-url.supabase.co'
+    };
+  }
+
   const rawUrl = (process.env.SUPABASE_URL || process.env.ORVIX_SUPABASE_URL || '').trim();
   const rawKey = (
     process.env.SUPABASE_SECRET_KEY ||
@@ -141,6 +151,10 @@ export function getSupabaseBucket(): string {
  * Returns null safely without throwing if configuration is missing or invalid.
  */
 export function getSupabaseServerClient(): SupabaseClient | null {
+  if (isMockClient && cachedClient) {
+    return cachedClient;
+  }
+
   const validation = validateSupabaseConfig();
   if (!validation.valid) {
     return null;
@@ -179,6 +193,17 @@ export function resetSupabaseClientForTesting(): void {
   cachedClient = null;
   lastUrl = null;
   lastKey = null;
+  isMockClient = false;
+}
+
+/**
+ * Sets a mock or explicit Supabase client for unit and integration testing.
+ */
+export function setSupabaseServerClientForTesting(client: any, url = 'https://test-mock-url.supabase.co', key = 'test-mock-key'): void {
+  cachedClient = client;
+  lastUrl = url;
+  lastKey = key;
+  isMockClient = true;
 }
 
 // Re-export storage operations and types for unified developer access
