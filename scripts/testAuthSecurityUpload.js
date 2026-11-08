@@ -20,7 +20,11 @@ import {
   setTestPublicKey,
   clearTestPublicKeys,
   resetFirebaseAuthForTesting,
-  extractBearerToken
+  extractBearerToken,
+  setTestFirebaseProjectId,
+  setCachedCertificatesForTesting,
+  getCachedCertificatesStatusForTesting,
+  getGooglePublicCertificates
 } from '../server/firebaseAuthHelper.ts';
 import { resolveRequestUserId } from '../server/uploadSubsystem.ts';
 
@@ -58,10 +62,16 @@ const { publicKey: otherPublicKey, privateKey: otherPrivateKey } = crypto.genera
 });
 
 const TEST_KID = 'test-firebase-auth-kid-001';
+const TEST_PROJECT_ID = 'orvix-test-project';
 
 function createSignedJwt(headerObj, payloadObj, signingKey = privateKey) {
+  const fullPayload = {
+    aud: TEST_PROJECT_ID,
+    iss: `https://securetoken.google.com/${TEST_PROJECT_ID}`,
+    ...payloadObj
+  };
   const headerB64 = Buffer.from(JSON.stringify(headerObj)).toString('base64url');
-  const payloadB64 = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+  const payloadB64 = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
   const data = Buffer.from(`${headerB64}.${payloadB64}`);
   const signature = crypto.sign('RSA-SHA256', data, signingKey).toString('base64url');
   return `${headerB64}.${payloadB64}.${signature}`;
@@ -69,6 +79,7 @@ function createSignedJwt(headerObj, payloadObj, signingKey = privateKey) {
 
 async function runAllTests() {
   resetFirebaseAuthForTesting();
+  process.env.FIREBASE_PROJECT_ID = TEST_PROJECT_ID;
   setTestPublicKey(TEST_KID, publicKey);
 
   // -------------------------------------------------------------------------
@@ -126,6 +137,8 @@ async function runAllTests() {
     const headerB64 = Buffer.from(JSON.stringify({ alg: 'RS256', kid: TEST_KID })).toString('base64url');
     const payloadB64 = Buffer.from(
       JSON.stringify({
+        aud: TEST_PROJECT_ID,
+        iss: `https://securetoken.google.com/${TEST_PROJECT_ID}`,
         sub: 'forged_target_victim_uid',
         exp: Math.floor(Date.now() / 1000) + 3600,
         iat: Math.floor(Date.now() / 1000)
@@ -378,6 +391,201 @@ async function runAllTests() {
     const result = await verifyFirebaseIdToken(traversalToken);
     assert.equal(result.success, false);
     assert.equal(result.code, 'INVALID_USER_ID');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 16: Missing Firebase Project ID strictly rejects authentication
+  // -------------------------------------------------------------------------
+  await test('Rejects token when Firebase Project ID is unconfigured (MISSING_PROJECT_ID)', async () => {
+    delete process.env.FIREBASE_PROJECT_ID;
+    delete process.env.VITE_FIREBASE_PROJECT_ID;
+    setTestFirebaseProjectId(null);
+
+    const validToken = createSignedJwt(
+      { alg: 'RS256', kid: TEST_KID },
+      {
+        sub: 'some_user_uid',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iat: Math.floor(Date.now() / 1000)
+      }
+    );
+
+    const result = await verifyFirebaseIdToken(validToken);
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'MISSING_PROJECT_ID');
+
+    const req = { headers: { authorization: `Bearer ${validToken}` } };
+    assert.equal(await resolveRequestUserId(req), null, 'Must not authorize user when project ID is missing');
+
+    const authStatus = await authenticateRequest(req);
+    assert.equal(authStatus.status, 'invalid');
+    assert.equal(authStatus.code, 'MISSING_PROJECT_ID');
+
+    // Restore test project ID
+    process.env.FIREBASE_PROJECT_ID = TEST_PROJECT_ID;
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 17: Placeholder Firebase Project ID is rejected
+  // -------------------------------------------------------------------------
+  await test('Rejects token when Firebase Project ID is a placeholder value', async () => {
+    process.env.FIREBASE_PROJECT_ID = 'your-project-id';
+
+    const validToken = createSignedJwt(
+      { alg: 'RS256', kid: TEST_KID },
+      {
+        aud: 'your-project-id',
+        iss: 'https://securetoken.google.com/your-project-id',
+        sub: 'some_user_uid',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iat: Math.floor(Date.now() / 1000)
+      }
+    );
+
+    const result = await verifyFirebaseIdToken(validToken);
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'MISSING_PROJECT_ID');
+
+    // Restore test project ID
+    process.env.FIREBASE_PROJECT_ID = TEST_PROJECT_ID;
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 18: Mismatched audience (aud) claim is strictly rejected
+  // -------------------------------------------------------------------------
+  await test('Rejects token with mismatched audience claim (AUDIENCE_MISMATCH)', async () => {
+    process.env.FIREBASE_PROJECT_ID = TEST_PROJECT_ID;
+
+    const mismatchedAudToken = createSignedJwt(
+      { alg: 'RS256', kid: TEST_KID },
+      {
+        aud: 'different-unauthorized-project',
+        iss: `https://securetoken.google.com/${TEST_PROJECT_ID}`,
+        sub: 'legitimate_user_wrong_aud',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iat: Math.floor(Date.now() / 1000)
+      }
+    );
+
+    const result = await verifyFirebaseIdToken(mismatchedAudToken);
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'AUDIENCE_MISMATCH');
+
+    const req = { headers: { authorization: `Bearer ${mismatchedAudToken}` } };
+    assert.equal(await resolveRequestUserId(req), null);
+    const authStatus = await authenticateRequest(req);
+    assert.equal(authStatus.status, 'invalid');
+    assert.equal(authStatus.code, 'AUDIENCE_MISMATCH');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 19: Mismatched issuer (iss) claim is strictly rejected
+  // -------------------------------------------------------------------------
+  await test('Rejects token with mismatched issuer claim (ISSUER_MISMATCH)', async () => {
+    process.env.FIREBASE_PROJECT_ID = TEST_PROJECT_ID;
+
+    const mismatchedIssToken = createSignedJwt(
+      { alg: 'RS256', kid: TEST_KID },
+      {
+        aud: TEST_PROJECT_ID,
+        iss: 'https://securetoken.google.com/attacker-project-id',
+        sub: 'legitimate_user_wrong_iss',
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        iat: Math.floor(Date.now() / 1000)
+      }
+    );
+
+    const result = await verifyFirebaseIdToken(mismatchedIssToken);
+    assert.equal(result.success, false);
+    assert.equal(result.code, 'ISSUER_MISMATCH');
+
+    const req = { headers: { authorization: `Bearer ${mismatchedIssToken}` } };
+    assert.equal(await resolveRequestUserId(req), null);
+    const authStatus = await authenticateRequest(req);
+    assert.equal(authStatus.status, 'invalid');
+    assert.equal(authStatus.code, 'ISSUER_MISMATCH');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 20: Expired Google certificate cache is NEVER used on retrieval failure
+  // -------------------------------------------------------------------------
+  await test('Never uses expired Google certificate cache after fetch failure (fails safely)', async () => {
+    process.env.FIREBASE_PROJECT_ID = TEST_PROJECT_ID;
+
+    // Clear test public keys so token verification must query the Google cert cache
+    clearTestPublicKeys();
+
+    // Populate the cache with an EXPIRED certificate (expired 10 seconds ago)
+    const expiredTimestamp = Date.now() - 10000;
+    setCachedCertificatesForTesting({ [TEST_KID]: publicKey }, expiredTimestamp);
+
+    // Mock global fetch to simulate Google endpoint failure (network down / 503)
+    const originalFetch = globalThis.fetch;
+    let fetchAttempted = false;
+    globalThis.fetch = async () => {
+      fetchAttempted = true;
+      throw new Error('Upstream network unreachable (simulated outage)');
+    };
+
+    try {
+      const token = createSignedJwt(
+        { alg: 'RS256', kid: TEST_KID },
+        {
+          sub: 'test_user_during_outage',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+          iat: Math.floor(Date.now() / 1000)
+        }
+      );
+
+      const result = await verifyFirebaseIdToken(token);
+
+      assert.equal(fetchAttempted, true, 'Must attempt to refresh certificates after cache expiry');
+      assert.equal(result.success, false, 'Must fail authentication when cache is expired and fetch fails');
+      assert.equal(result.code, 'CERTIFICATE_FETCH_ERROR');
+
+      // Verify that expired cache was wiped and not retained
+      const { cachedCertificates } = getCachedCertificatesStatusForTesting();
+      assert.equal(cachedCertificates, null, 'Expired certificate cache must be invalidated/cleared');
+
+      const req = { headers: { authorization: `Bearer ${token}` } };
+      assert.equal(await resolveRequestUserId(req), null, 'Must fail closed to null userId');
+    } finally {
+      globalThis.fetch = originalFetch;
+      // Re-register test public key for subsequent tests
+      setTestPublicKey(TEST_KID, publicKey);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 21: getGooglePublicCertificates() directly rejects expired cache on failure
+  // -------------------------------------------------------------------------
+  await test('getGooglePublicCertificates throws error and clears cache on fetch failure when cache is expired', async () => {
+    // Populate cache with expired timestamp
+    setCachedCertificatesForTesting({ 'some-kid': publicKey }, Date.now() - 60000);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return {
+        ok: false,
+        status: 503,
+        json: async () => ({})
+      };
+    };
+
+    try {
+      await assert.rejects(
+        async () => {
+          await getGooglePublicCertificates();
+        },
+        /Google certificates endpoint returned HTTP 503|Failed to retrieve Google public certificates/,
+        'Must reject with error instead of returning expired certificates'
+      );
+
+      const status = getCachedCertificatesStatusForTesting();
+      assert.equal(status.cachedCertificates, null, 'Expired cache must be nullified');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   clearTestPublicKeys();

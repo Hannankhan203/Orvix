@@ -36,11 +36,15 @@ function clearEnv() {
   delete process.env.SUPABASE_URL;
   delete process.env.SUPABASE_SECRET_KEY;
   delete process.env.SUPABASE_STORAGE_BUCKET;
+  delete process.env.FIREBASE_PROJECT_ID;
 }
 
 try {
   // Test 1: resolveRequestUserId - strict verified Firebase identity only
   console.log('[Test 1] resolveRequestUserId cryptographic authentication resolution...');
+
+  const supaTestProjectId = 'supa-test-project';
+  process.env.FIREBASE_PROJECT_ID = supaTestProjectId;
 
   // Set up test key pair for verified token test
   const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
@@ -59,6 +63,8 @@ try {
 
   // 2. Forged JWT without cryptographic verification must return null
   const fakeTokenPayload = Buffer.from(JSON.stringify({
+    aud: supaTestProjectId,
+    iss: `https://securetoken.google.com/${supaTestProjectId}`,
     user_id: 'firebase_jwt_uid_789',
     sub: 'firebase_jwt_uid_789',
     exp: Math.floor(Date.now() / 1000) + 3600
@@ -72,6 +78,8 @@ try {
   // 3. Valid cryptographically signed Firebase ID token resolves properly
   const validHeaderB64 = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'supa-test-kid' })).toString('base64url');
   const validPayloadB64 = Buffer.from(JSON.stringify({
+    aud: supaTestProjectId,
+    iss: `https://securetoken.google.com/${supaTestProjectId}`,
     sub: 'firebase_jwt_uid_789',
     exp: Math.floor(Date.now() / 1000) + 3600,
     iat: Math.floor(Date.now() / 1000)

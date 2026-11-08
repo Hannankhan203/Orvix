@@ -36,6 +36,9 @@ const testPublicKeys = new Map<string, string>();
 // Optional test verifier hook
 let testCustomVerifier: ((token: string) => Promise<AuthVerificationResult | null>) | null = null;
 
+// Optional test Firebase Project ID hook
+let testFirebaseProjectId: string | null = null;
+
 /**
  * Registers an in-memory public key / cert for a specific kid (used in automated test suites).
  */
@@ -60,6 +63,36 @@ export function setCustomTokenVerifierForTesting(
 }
 
 /**
+ * Sets a test Firebase Project ID for testing purposes.
+ */
+export function setTestFirebaseProjectId(projectId: string | null): void {
+  testFirebaseProjectId = projectId;
+}
+
+export const setTestFirebaseProjectIdForTesting = setTestFirebaseProjectId;
+
+/**
+ * Sets mock certificates in cache with a custom expiration timestamp (for unit testing).
+ */
+export function setCachedCertificatesForTesting(
+  certs: Record<string, string> | null,
+  expiresAtMs: number
+): void {
+  cachedCertificates = certs;
+  cacheExpiresAtMs = expiresAtMs;
+}
+
+/**
+ * Gets the current cached certificates and expiration timestamp (for test assertions).
+ */
+export function getCachedCertificatesStatusForTesting(): {
+  cachedCertificates: Record<string, string> | null;
+  cacheExpiresAtMs: number;
+} {
+  return { cachedCertificates, cacheExpiresAtMs };
+}
+
+/**
  * Resets cached certificates and test hooks.
  */
 export function resetFirebaseAuthForTesting(): void {
@@ -67,12 +100,30 @@ export function resetFirebaseAuthForTesting(): void {
   cacheExpiresAtMs = 0;
   testPublicKeys.clear();
   testCustomVerifier = null;
+  testFirebaseProjectId = null;
 }
 
 /**
- * Resolves the configured Firebase Project ID from environment variables.
+ * Validates whether a given Firebase Project ID is non-empty, well-formed, and not a placeholder.
+ */
+export function isValidFirebaseProjectId(projectId: unknown): projectId is string {
+  if (typeof projectId !== 'string') return false;
+  const trimmed = projectId.trim();
+  if (!trimmed) return false;
+  if (/^(?:undefined|null|none|false|true|todo|changeme|na|n\/a)$/i.test(trimmed)) return false;
+  if (/^(?:your|my|replace|insert|placeholder|enter)[-_][a-z0-9_-]+$/i.test(trimmed)) return false;
+  if (/^<[^>]+>$/.test(trimmed) || /^x{4,}$/i.test(trimmed)) return false;
+  if (/[\s/:?#]/.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Resolves the configured Firebase Project ID from test hooks or environment variables.
  */
 export function getConfiguredFirebaseProjectId(): string {
+  if (testFirebaseProjectId !== null) {
+    return testFirebaseProjectId.trim();
+  }
   return (
     process.env.FIREBASE_PROJECT_ID ||
     process.env.VITE_FIREBASE_PROJECT_ID ||
@@ -97,9 +148,14 @@ function parseMaxAge(cacheControlHeader: string | null): number {
 
 /**
  * Fetches and caches Google's public x509 certificates.
+ *
+ * Security Requirement:
+ * Never use expired Google certificate caches after certificate retrieval fails.
+ * If the cache is expired and fresh certificates cannot be fetched, fail authentication safely.
  */
 export async function getGooglePublicCertificates(): Promise<Record<string, string>> {
   const now = Date.now();
+  // Return cached certificates only if the cache has not expired
   if (cachedCertificates && now < cacheExpiresAtMs) {
     return cachedCertificates;
   }
@@ -117,7 +173,7 @@ export async function getGooglePublicCertificates(): Promise<Record<string, stri
     }
 
     const data = (await res.json()) as Record<string, string>;
-    if (data && typeof data === 'object') {
+    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
       const maxAgeSec = parseMaxAge(res.headers.get('cache-control'));
       cachedCertificates = data;
       cacheExpiresAtMs = now + maxAgeSec * 1000;
@@ -125,10 +181,10 @@ export async function getGooglePublicCertificates(): Promise<Record<string, stri
     }
     throw new Error('Invalid certificate payload received from Google.');
   } catch (err: any) {
-    if (cachedCertificates) {
-      // Use stale cache if upstream is temporarily unreachable
-      return cachedCertificates;
-    }
+    // SECURITY: NEVER return stale or expired certificates when retrieval fails.
+    // Expired signing keys could allow forged or revoked tokens to pass verification.
+    cachedCertificates = null;
+    cacheExpiresAtMs = 0;
     throw new Error(`Failed to retrieve Google public certificates: ${err?.message || err}`);
   }
 }
@@ -280,32 +336,34 @@ export async function verifyFirebaseIdToken(
     };
   }
 
-  // Validate audience (aud) & issuer (iss)
-  const expectedProject = options.expectedProjectId || getConfiguredFirebaseProjectId();
-  if (expectedProject) {
-    if (payload.aud !== expectedProject) {
-      return {
-        success: false,
-        error: `Token audience '${payload.aud}' does not match expected project '${expectedProject}'.`,
-        code: 'AUDIENCE_MISMATCH'
-      };
-    }
-    if (payload.iss !== `https://securetoken.google.com/${expectedProject}`) {
-      return {
-        success: false,
-        error: `Token issuer '${payload.iss}' does not match expected project issuer.`,
-        code: 'ISSUER_MISMATCH'
-      };
-    }
-  } else if (payload.aud && typeof payload.aud === 'string') {
-    // When no specific project ID is configured in server env, enforce issuer matches audience
-    if (payload.iss !== `https://securetoken.google.com/${payload.aud}`) {
-      return {
-        success: false,
-        error: `Token issuer '${payload.iss}' does not match project audience '${payload.aud}'.`,
-        code: 'ISSUER_MISMATCH'
-      };
-    }
+  // 3. Require a valid configured Firebase Project ID. Reject authentication if missing.
+  const rawExpectedProject = options.expectedProjectId ?? getConfiguredFirebaseProjectId();
+  const expectedProject = typeof rawExpectedProject === 'string' ? rawExpectedProject.trim() : '';
+
+  if (!isValidFirebaseProjectId(expectedProject)) {
+    return {
+      success: false,
+      error: 'Firebase authentication is unavailable: Firebase Project ID is not configured.',
+      code: 'MISSING_PROJECT_ID'
+    };
+  }
+
+  // Always enforce exact aud and iss matches
+  if (payload.aud !== expectedProject) {
+    return {
+      success: false,
+      error: `Token audience '${payload.aud}' does not match expected project '${expectedProject}'.`,
+      code: 'AUDIENCE_MISMATCH'
+    };
+  }
+
+  const expectedIssuer = `https://securetoken.google.com/${expectedProject}`;
+  if (payload.iss !== expectedIssuer) {
+    return {
+      success: false,
+      error: `Token issuer '${payload.iss}' does not match expected project issuer.`,
+      code: 'ISSUER_MISMATCH'
+    };
   }
 
   // 3. Cryptographic signature verification
