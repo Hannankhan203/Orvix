@@ -180,3 +180,32 @@ export function resetSupabaseClientForTesting(): void {
   lastUrl = null;
   lastKey = null;
 }
+
+// Re-export storage operations and types for unified developer access
+export {
+  SupabaseStorageError,
+  isValidPathSegment,
+  normalizeExtension,
+  buildAttachmentStoragePath,
+  parseStoragePath,
+  assertUserOwnsStoragePath,
+  uploadAttachmentToStorage,
+  downloadAttachmentFromStorage,
+  createAttachmentSignedUrl,
+  deleteAttachmentFromStorage,
+  deleteAttachmentsForChatInStorage
+} from './supabaseStorageService.ts';
+
+export type {
+  ParsedStoragePath,
+  UploadAttachmentOptions,
+  UploadAttachmentResult,
+  DownloadAttachmentOptions,
+  DownloadAttachmentResult,
+  CreateSignedUrlOptions,
+  CreateSignedUrlResult,
+  DeleteAttachmentOptions,
+  DeleteAttachmentResult,
+  DeleteChatAttachmentsResult
+} from './supabaseStorageService.ts';
+
