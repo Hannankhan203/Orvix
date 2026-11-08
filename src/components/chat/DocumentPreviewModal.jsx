@@ -16,7 +16,9 @@ import {
 import {
   getAttachmentRecord,
   downloadAttachmentFile,
-  isFormatPreviewable
+  isFormatPreviewable,
+  fetchWithAuth,
+  isAttachmentOwnedByCurrentUser
 } from '../../services/attachmentStorageService.js';
 import { extractBrowserDocument } from '../../services/browserDocumentExtractor.js';
 
@@ -164,7 +166,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             }
           } else if (!isUnsubmittedComposerFile) {
             setOcrLoading(true);
-            fetch(`/api/upload/${attachment.id}/extraction`)
+            fetchWithAuth(`/api/upload/${attachment.id}/extraction`)
               .then((r) => (r.ok ? r.json() : null))
               .then((d) => {
                 if (active && d) {
@@ -222,7 +224,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
 
         // 1. Try local IndexedDB
         const localRecord = await getAttachmentRecord(attachment.id);
-        if (localRecord?.blob) {
+        if (localRecord?.blob && isAttachmentOwnedByCurrentUser(attachment, localRecord)) {
           if (!active) return;
           const url = URL.createObjectURL(localRecord.blob);
           registerCreatedUrl(url);
@@ -239,8 +241,8 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
           return;
         }
 
-        // 2. Fetch from backend server
-        const fileRes = await fetch(`/api/upload/${attachment.id}/file`);
+        // 2. Fetch from backend server with authentication
+        const fileRes = await fetchWithAuth(`/api/upload/${attachment.id}/file`);
         if (!fileRes.ok) {
           if (attachment.extraction?.text) {
             // If binary file is expired but extraction is available in metadata
@@ -250,7 +252,13 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             }
             return;
           }
-          throw new Error('This attachment is no longer available on the server.');
+          let customMsg = 'This attachment is no longer available on the server.';
+          if (fileRes.status === 401) {
+            customMsg = 'Authentication required to preview this attachment. Please sign in.';
+          } else if (fileRes.status === 403) {
+            customMsg = 'You do not have permission to preview this attachment.';
+          }
+          throw new Error(customMsg);
         }
 
         const blob = await fileRes.blob();

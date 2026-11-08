@@ -9,7 +9,9 @@ import {
 } from 'lucide-react';
 import {
   getAttachmentRecord,
-  downloadAttachmentFile
+  downloadAttachmentFile,
+  fetchAttachmentBlob,
+  isAttachmentOwnedByCurrentUser
 } from '../../services/attachmentStorageService.js';
 const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
 
@@ -99,7 +101,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
       if (attachment.id) {
         try {
           const record = await getAttachmentRecord(attachment.id);
-          if (record?.blob && active) {
+          if (record?.blob && isAttachmentOwnedByCurrentUser(attachment, record) && active) {
             createdBlobUrl = URL.createObjectURL(record.blob);
             setImageSrc(createdBlobUrl);
             setLoading(false);
@@ -107,7 +109,23 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
           }
         } catch (_) {}
 
-        // 5. Fallback to backend serving endpoint
+        // 5. Fallback to backend serving endpoint (with authenticated Supabase retrieval and guest fallback)
+        try {
+          const fetchResult = await fetchAttachmentBlob(attachment);
+          if (active) {
+            if (fetchResult.success && fetchResult.blob) {
+              createdBlobUrl = URL.createObjectURL(fetchResult.blob);
+              setImageSrc(createdBlobUrl);
+              setLoading(false);
+              return;
+            } else if (fetchResult.status === 401 || fetchResult.status === 403 || fetchResult.status === 404) {
+              setHasError(true);
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (_) {}
+
         if (active) {
           setImageSrc(`/api/upload/${attachment.id}/file`);
           setLoading(false);

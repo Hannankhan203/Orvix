@@ -40,6 +40,7 @@ import {
 } from '../config/firebaseConfig.js';
 import { getChatMode } from '../config/chatModes.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { getAuthHeaders } from '../services/authService.js';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
 import {
@@ -1701,8 +1702,10 @@ export default function ChatPage({
 
             let uploadRes;
             try {
+              const headers = await getAuthHeaders();
               uploadRes = await fetch('/api/upload', {
                 method: 'POST',
+                headers,
                 body: formData,
                 signal: uploadController.signal
               });

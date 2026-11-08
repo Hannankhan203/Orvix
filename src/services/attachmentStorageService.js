@@ -5,6 +5,7 @@
  */
 
 import { isVisionCapableProvider } from './documentContextService.js';
+import { getAuthHeaders, getAuthUserId } from './authService.js';
 
 const DB_NAME = 'orvix_attachments_db';
 const DB_VERSION = 1;
@@ -194,6 +195,15 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const store = transaction.objectStore(STORE_NAME);
+        const currentAuthUserId = getAuthUserId();
+        const recordUserId =
+          metadata.userId !== undefined
+            ? metadata.userId
+            : (metadata.storageProvider === 'supabase' || metadata.isCloud ? currentAuthUserId : (currentAuthUserId || null));
+
+        const recordStorageProvider =
+          metadata.storageProvider ||
+          (metadata.isCloud ? 'supabase' : (recordUserId ? 'supabase' : 'local'));
 
         const record = {
           id,
@@ -205,7 +215,9 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
           extension: metadata.extension || '',
           conversationId: metadata.conversationId || null,
           createdAt: Date.now(),
-          blob: fileOrBlob
+          blob: fileOrBlob,
+          userId: recordUserId || null,
+          storageProvider: recordStorageProvider
         };
 
         const putRequest = store.put(record);
@@ -557,6 +569,62 @@ export async function getAttachmentRecord(id) {
 }
 
 /**
+ * Determines whether an attachment or its cached IndexedDB record represents
+ * a cloud-persisted (e.g. Supabase-backed) resource scoped to an authenticated user.
+ * @param {Object|null} [attachment]
+ * @param {Object|null} [record]
+ * @returns {boolean}
+ */
+export function isCloudAttachmentRecord(attachment = null, record = null) {
+  if (record) {
+    if (record.storageProvider === 'supabase') return true;
+    if (record.isCloud === true) return true;
+    if (record.userId) return true;
+  }
+  if (attachment) {
+    if (attachment.storageProvider === 'supabase') return true;
+    if (attachment.isCloud === true) return true;
+    if (attachment.userId) return true;
+  }
+  return false;
+}
+
+/**
+ * Validates whether the currently authenticated user owns the attachment record.
+ * - For local / guest attachments (storageProvider !== 'supabase' and no userId),
+ *   returns true to preserve offline & local guest caching.
+ * - For cloud / Supabase attachments:
+ *   - If current user is not authenticated (null), returns false.
+ *   - If record or attachment has a userId, current user must match that userId.
+ *   - If record is marked cloud/supabase but has no record.userId:
+ *     - If attachment.userId is present, must match current user.
+ *     - If neither has userId specified, returns false to prevent cross-account cache leakage.
+ * @param {Object|null} [attachment]
+ * @param {Object|null} [record]
+ * @returns {boolean}
+ */
+export function isAttachmentOwnedByCurrentUser(attachment = null, record = null) {
+  const isCloud = isCloudAttachmentRecord(attachment, record);
+  if (!isCloud) {
+    // Purely local or guest attachment: accessible locally / offline
+    return true;
+  }
+
+  const currentUserId = getAuthUserId();
+  if (!currentUserId) {
+    // Unauthenticated guest cannot access cached cloud attachments
+    return false;
+  }
+
+  const ownerUserId = record?.userId || attachment?.userId;
+  if (ownerUserId) {
+    return ownerUserId === currentUserId;
+  }
+
+  return false;
+}
+
+/**
  * Retrieves a stored attachment's binary Blob from IndexedDB
  * @param {string} id
  * @returns {Promise<Blob|null>}
@@ -564,7 +632,11 @@ export async function getAttachmentRecord(id) {
 export async function getAttachmentBlob(id) {
   if (!id) return null;
   const record = await getAttachmentRecord(id);
-  return record?.blob || null;
+  if (!record || !record.blob) return null;
+  if (!isAttachmentOwnedByCurrentUser(null, record)) {
+    return null;
+  }
+  return record.blob;
 }
 
 /**
@@ -1238,6 +1310,9 @@ export async function hydrateAttachmentsWithImageBytes(attachments, options = {}
       let record = null;
       try {
         record = await getAttachmentRecord(attId);
+        if (record && !isAttachmentOwnedByCurrentUser(att, record)) {
+          record = null;
+        }
       } catch (err) {
         console.warn('[Attachment Storage] Graceful hydration fallback:', err);
       }
@@ -1596,9 +1671,150 @@ export function buildVisionImageParts({
 }
 
 /**
+ * Executes a fetch request with Firebase ID token Authorization headers when authenticated.
+ * On 401 TOKEN_EXPIRED, attempts a token refresh and retries once.
+ * @param {string} url
+ * @param {RequestInit} [options={}]
+ * @returns {Promise<Response>}
+ */
+export async function fetchWithAuth(url, options = {}) {
+  let headers = await getAuthHeaders(options.headers || {});
+  let res = await fetch(url, { ...options, headers });
+
+  if (res.status === 401) {
+    try {
+      const clone = res.clone();
+      const data = await clone.json().catch(() => null);
+      if (data?.code === 'TOKEN_EXPIRED') {
+        headers = await getAuthHeaders(options.headers || {}, true);
+        res = await fetch(url, { ...options, headers });
+      }
+    } catch (_) {}
+  }
+
+  return res;
+}
+
+/**
+ * Retrieves the binary Blob of an attachment from in-memory, IndexedDB, or the backend API.
+ * Supports Supabase-backed attachments for authenticated users, guest/local attachments, and offline caching.
+ * @param {Object} attachment
+ * @returns {Promise<{ success: boolean, blob?: Blob, source?: 'memory' | 'data-url' | 'indexeddb' | 'server', error?: string, status?: number, code?: string }>}
+ */
+export async function fetchAttachmentBlob(attachment) {
+  if (!attachment || !attachment.id) {
+    return { success: false, error: 'Invalid attachment data.' };
+  }
+
+  // 0. Direct in-memory Blob
+  if (attachment.file instanceof Blob) {
+    return { success: true, blob: attachment.file, source: 'memory' };
+  }
+
+  // Direct dataUrl or previewUrl
+  const directDataUri = attachment.previewUrl || attachment.dataUrl;
+  if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
+    try {
+      const response = await fetch(directDataUri);
+      const blob = await response.blob();
+      return { success: true, blob, source: 'data-url' };
+    } catch (_) {}
+  }
+
+  // 1. Check local IndexedDB first
+  try {
+    const localRecord = await getAttachmentRecord(attachment.id);
+    if (localRecord && localRecord.blob && isAttachmentOwnedByCurrentUser(attachment, localRecord)) {
+      return { success: true, blob: localRecord.blob, source: 'indexeddb' };
+    }
+  } catch (_) {}
+
+  // 2. Fetch from backend API endpoint
+  try {
+    const res = await fetchWithAuth(`/api/upload/${attachment.id}/file`);
+    if (res.ok) {
+      const blob = await res.blob();
+      // Cache in IndexedDB asynchronously for faster subsequent loads and offline retrieval
+      try {
+        const currentUid = getAuthUserId();
+        await saveAttachmentBlob(attachment.id, blob, {
+          name: attachment.name || attachment.originalName,
+          type: blob.type || attachment.type || attachment.mimeType,
+          userId: currentUid,
+          storageProvider: 'supabase',
+          isCloud: true
+        }).catch(() => {});
+      } catch (_) {}
+      return { success: true, blob, source: 'server' };
+    }
+
+    let errCode = 'FETCH_FAILED';
+    let errMsg = 'Failed to retrieve attachment.';
+    try {
+      const errData = await res.json();
+      errCode = errData?.code || errCode;
+      errMsg = errData?.error || errMsg;
+    } catch (_) {}
+
+    if (res.status === 401) {
+      return {
+        success: false,
+        status: 401,
+        code: errCode,
+        error: 'Authentication required to access this attachment. Please sign in.'
+      };
+    }
+    if (res.status === 403) {
+      return {
+        success: false,
+        status: 403,
+        code: errCode,
+        error: 'You do not have permission to access this attachment.'
+      };
+    }
+    if (res.status === 404) {
+      return {
+        success: false,
+        status: 404,
+        code: errCode,
+        error: 'This attachment has expired or is no longer stored on the server.'
+      };
+    }
+
+    return { success: false, status: res.status, code: errCode, error: errMsg };
+  } catch (netErr) {
+    return {
+      success: false,
+      status: 0,
+      code: 'NETWORK_ERROR',
+      error: 'Unable to retrieve attachment due to a network error.'
+    };
+  }
+}
+
+/**
+ * Requests a short-lived pre-signed URL from the backend for Supabase-backed attachments.
+ * @param {string} attachmentId
+ * @returns {Promise<string|null>}
+ */
+export async function getAttachmentSignedUrl(attachmentId) {
+  if (!attachmentId) return null;
+  try {
+    const res = await fetchWithAuth(`/api/upload/${attachmentId}/signed-url`);
+    if (res.ok) {
+      const data = await res.json();
+      return data?.signedUrl || null;
+    }
+  } catch (err) {
+    console.warn('[Attachment Storage] Failed to generate signed URL:', err);
+  }
+  return null;
+}
+
+/**
  * Checks whether an attachment is available either in browser IndexedDB or on the backend server.
  * @param {Object} attachment
- * @returns {Promise<{ available: boolean, source?: 'indexeddb' | 'server', reason?: string }>}
+ * @returns {Promise<{ available: boolean, source?: 'indexeddb' | 'server' | 'memory', reason?: string }>}
  */
 export async function checkAttachmentStatus(attachment) {
   if (!attachment || !attachment.id) {
@@ -1612,15 +1828,21 @@ export async function checkAttachmentStatus(attachment) {
 
   // 1. Check local IndexedDB first (near-instantaneous)
   const localRecord = await getAttachmentRecord(attachment.id);
-  if (localRecord && localRecord.blob) {
+  if (localRecord && localRecord.blob && isAttachmentOwnedByCurrentUser(attachment, localRecord)) {
     return { available: true, source: 'indexeddb', record: localRecord };
   }
 
-  // 2. Check server upload registry
+  // 2. Check server upload registry with auth
   try {
-    const res = await fetch(`/api/upload/${attachment.id}`, { method: 'GET' });
+    const res = await fetchWithAuth(`/api/upload/${attachment.id}`, { method: 'GET' });
     if (res.ok) {
       return { available: true, source: 'server' };
+    }
+    if (res.status === 401) {
+      return { available: false, reason: 'auth_required' };
+    }
+    if (res.status === 403) {
+      return { available: false, reason: 'access_denied' };
     }
     if (res.status === 404) {
       return { available: false, reason: 'expired' };
@@ -1712,7 +1934,7 @@ export async function openOrPreviewAttachment(attachment) {
 
   // 1. Check IndexedDB
   const localRecord = await getAttachmentRecord(attachment.id);
-  if (localRecord && localRecord.blob) {
+  if (localRecord && localRecord.blob && isAttachmentOwnedByCurrentUser(attachment, localRecord)) {
     const blobUrl = URL.createObjectURL(localRecord.blob);
 
     if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
@@ -1734,36 +1956,36 @@ export async function openOrPreviewAttachment(attachment) {
     return { success: true, action: 'download' };
   }
 
-  // 2. Fetch from backend server
+  // 2. Fetch authenticated blob from backend server (Supabase or local disk)
   try {
-    const endpoint = canPreview
-      ? `/api/upload/${attachment.id}/file`
-      : `/api/upload/${attachment.id}/download`;
-
-    // Test availability first
-    const checkRes = await fetch(`/api/upload/${attachment.id}`, { method: 'GET' });
-    if (!checkRes.ok) {
+    const result = await fetchAttachmentBlob(attachment);
+    if (!result.success || !result.blob) {
       return {
         success: false,
         action: 'unavailable',
-        error: 'This attachment has expired or is no longer stored on the server.'
+        error: result.error || 'This attachment has expired or is no longer stored on the server.'
       };
     }
 
-    if (canPreview) {
+    const blobUrl = URL.createObjectURL(result.blob);
+
+    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
       try {
-        const win = window.open(endpoint, '_blank');
+        const win = window.open(blobUrl, '_blank');
         if (win) {
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
           return { success: true, action: 'preview' };
         }
       } catch (_) {}
     }
+
     const link = document.createElement('a');
-    link.href = endpoint;
+    link.href = blobUrl;
     link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
     return { success: true, action: 'download' };
   } catch (err) {
     console.warn('[Attachment Storage] openOrPreviewAttachment error:', err);
@@ -1814,7 +2036,7 @@ export async function downloadAttachmentFile(attachment) {
 
   // 1. Check IndexedDB
   const localRecord = await getAttachmentRecord(attachment.id);
-  if (localRecord && localRecord.blob) {
+  if (localRecord && localRecord.blob && isAttachmentOwnedByCurrentUser(attachment, localRecord)) {
     const blobUrl = URL.createObjectURL(localRecord.blob);
     const link = document.createElement('a');
     link.href = blobUrl;
@@ -1826,12 +2048,11 @@ export async function downloadAttachmentFile(attachment) {
     return { success: true };
   }
 
-  // 2. Use server download endpoint
+  // 2. Fetch authenticated blob from server (Supabase or local)
   try {
-    const endpoint = `/api/upload/${attachment.id}/download`;
-    const checkRes = await fetch(`/api/upload/${attachment.id}`, { method: 'GET' });
-    if (!checkRes.ok) {
-      // If server does not have the binary but extraction text is available for textual document
+    const result = await fetchAttachmentBlob(attachment);
+    if (!result.success || !result.blob) {
+      // If server does not have binary but extraction text is available for textual document
       if (attachment.extraction?.text) {
         const textBlob = new Blob([attachment.extraction.text], { type: 'text/plain;charset=utf-8' });
         const textUrl = URL.createObjectURL(textBlob);
@@ -1847,16 +2068,18 @@ export async function downloadAttachmentFile(attachment) {
 
       return {
         success: false,
-        error: 'This attachment has expired or is no longer stored on the server.'
+        error: result.error || 'This attachment has expired or is no longer stored on the server.'
       };
     }
 
+    const blobUrl = URL.createObjectURL(result.blob);
     const link = document.createElement('a');
-    link.href = endpoint;
+    link.href = blobUrl;
     link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
     return { success: true };
   } catch (err) {
     return {
@@ -1865,3 +2088,4 @@ export async function downloadAttachmentFile(attachment) {
     };
   }
 }
+

@@ -107,3 +107,61 @@ export function onAuthChange(callback) {
   }
   return onAuthStateChanged(auth, callback);
 }
+
+let testAuthOverride = null;
+
+/**
+ * Allows setting a test auth instance during automated verification.
+ * @param {import('firebase/auth').Auth | null} mockAuth
+ */
+export function setAuthInstanceForTesting(mockAuth) {
+  testAuthOverride = mockAuth;
+}
+
+/**
+ * Retrieves a valid Firebase ID token for the currently authenticated user.
+ * Automatically refreshes the token if expired or about to expire.
+ * Returns null if the user is not authenticated or Firebase is not configured.
+ * @param {boolean} [forceRefresh=false]
+ * @returns {Promise<string|null>}
+ */
+export async function getIdToken(forceRefresh = false) {
+  const effectiveAuth = testAuthOverride !== null ? testAuthOverride : auth;
+  if (!effectiveAuth || !effectiveAuth.currentUser) {
+    return null;
+  }
+  try {
+    if (typeof effectiveAuth.currentUser.getIdToken === 'function') {
+      return await effectiveAuth.currentUser.getIdToken(forceRefresh);
+    }
+  } catch (err) {
+    console.warn('[Auth Service] Failed to retrieve Firebase ID token:', err?.message || err);
+  }
+  return null;
+}
+
+/**
+ * Retrieves the currently authenticated Firebase user's unique ID (uid).
+ * Returns null if the user is unauthenticated or in a guest session without a Firebase uid.
+ * @returns {string|null}
+ */
+export function getAuthUserId() {
+  const effectiveAuth = testAuthOverride !== null ? testAuthOverride : auth;
+  return effectiveAuth?.currentUser?.uid || null;
+}
+
+/**
+ * Helper to construct request headers including Authorization: Bearer <token> if available.
+ * @param {HeadersInit|Record<string, string>} [headers={}]
+ * @param {boolean} [forceRefresh=false]
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function getAuthHeaders(headers = {}, forceRefresh = false) {
+  const resolved = { ...(headers instanceof Headers ? Object.fromEntries(headers.entries()) : headers) };
+  const token = await getIdToken(forceRefresh);
+  if (token) {
+    resolved['Authorization'] = `Bearer ${token}`;
+  }
+  return resolved;
+}
+
