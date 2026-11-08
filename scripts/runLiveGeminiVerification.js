@@ -1,5 +1,5 @@
 import dns from 'dns';
-try {
+try { 
   dns.setDefaultResultOrder('ipv4first');
 } catch (_) {}
 
