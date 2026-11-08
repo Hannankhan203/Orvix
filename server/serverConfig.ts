@@ -289,6 +289,51 @@ export function getGeminiApiKey(): string {
   );
 }
 
+export function getSupabaseUrl(): string {
+  const url = resolveEnvCredential(
+    'SUPABASE_URL',
+    'ORVIX_SUPABASE_URL',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'VITE_SUPABASE_URL'
+  );
+  return url.trim().replace(/\/+$/, '');
+}
+
+export function getSupabaseSecretKey(): string {
+  return resolveEnvCredential(
+    'SUPABASE_SECRET_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'ORVIX_SUPABASE_SECRET_KEY',
+    'ORVIX_SUPABASE_SERVICE_ROLE_KEY'
+  );
+}
+
+export const DEFAULT_SUPABASE_STORAGE_BUCKET = 'orvix-attachments';
+
+export function getSupabaseStorageBucket(): string {
+  const customBucket = resolveEnvCredential(
+    'SUPABASE_STORAGE_BUCKET',
+    'ORVIX_SUPABASE_STORAGE_BUCKET'
+  );
+  return customBucket.trim() || DEFAULT_SUPABASE_STORAGE_BUCKET;
+}
+
+export function isValidSupabaseUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
+export function isSupabaseStorageConfigured(): boolean {
+  const url = getSupabaseUrl();
+  const secretKey = getSupabaseSecretKey();
+  return isConfiguredCredential(url) && isValidSupabaseUrl(url) && isConfiguredCredential(secretKey);
+}
+
 export function getCloudflareCredentials(): { accountId: string; apiToken: string } {
   const accountId = resolveEnvCredential(
     'CLOUDFLARE_ACCOUNT_ID',
@@ -319,6 +364,7 @@ export function getServerProviderConfigStatus(serverlessRuntime = false) {
   const groqKey = getGroqApiKey();
   const openrouterKey = getOpenRouterApiKey();
   const { accountId: cfAccountId, apiToken: cfToken } = getCloudflareCredentials();
+  const supabaseConfigured = isSupabaseStorageConfigured();
 
   const geminiConfigured = isConfiguredCredential(geminiKey);
   const groqConfigured = isConfiguredCredential(groqKey);
@@ -331,6 +377,7 @@ export function getServerProviderConfigStatus(serverlessRuntime = false) {
     groqConfigured,
     openrouterConfigured,
     cloudflareConfigured,
+    supabaseConfigured,
     webllmSupported: true,
     demoModeEnabled: isDemoModeEnabled(),
     whisperConfigured: groqConfigured || geminiConfigured,

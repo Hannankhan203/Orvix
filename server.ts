@@ -192,6 +192,7 @@ app.get(['/api/config', '/config'], (_req, res) => {
       groqConfigured: false,
       openrouterConfigured: false,
       cloudflareConfigured: false,
+      supabaseConfigured: false,
       webllmSupported: true,
       demoModeEnabled: false,
       whisperConfigured: false,
