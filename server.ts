@@ -73,6 +73,11 @@ import {
   generateSimulatedResponse
 } from './server/chatSubsystem.ts';
 import {
+  registerImageGenerationRoutes,
+  setCustomImageGeneratorForTesting,
+  resetImageGenerationForTesting
+} from './server/imageGenerationSubsystem.ts';
+import {
   MAX_CHAT_REQUEST_BYTES,
   MAX_VISION_IMAGE_BYTES
 } from './src/services/attachmentStorageService.js';
@@ -209,6 +214,7 @@ app.get(['/api/config', '/config'], (_req, res) => {
 registerUploadRoutes(app);
 registerTranscriptionRoutes(app);
 registerChatRoutes(app);
+registerImageGenerationRoutes(app);
 
 // Service worker and web app manifest must NEVER be cached by browsers, proxies, or CDNs
 app.use((req, res, next) => {
@@ -369,7 +375,9 @@ export {
   MAX_VISION_IMAGE_BYTES,
   buildSystemInstruction,
   generateSimulatedResponse,
-  setupVoiceWebSocketServer
+  setupVoiceWebSocketServer,
+  setCustomImageGeneratorForTesting,
+  resetImageGenerationForTesting
 };
 
 export type {

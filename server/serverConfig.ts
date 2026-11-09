@@ -405,7 +405,13 @@ export function getServerProviderConfigStatus(serverlessRuntime = false) {
     whisperConfigured: groqConfigured || geminiConfigured,
     whisperProvider: groqConfigured ? 'groq' : geminiConfigured ? 'gemini' : null,
     websocketStreamingSupported: !serverlessRuntime && !isServerless,
-    websocketStreamingEndpoint: !serverlessRuntime && !isServerless ? '/api/voice-stream' : null
+    websocketStreamingEndpoint: !serverlessRuntime && !isServerless ? '/api/voice-stream' : null,
+    imageGenerationSupported: Boolean(geminiConfigured || cloudflareConfigured),
+    imageGenerationProviders: [
+      ...(geminiConfigured ? ['gemini'] : []),
+      ...(cloudflareConfigured ? ['cloudflare'] : [])
+    ],
+    imageGenerationDefaultProvider: geminiConfigured ? 'gemini' : cloudflareConfigured ? 'cloudflare' : null
   };
 }
 

@@ -26,6 +26,7 @@ import MarkdownContent from './MarkdownContent.jsx';
 import MessageErrorBox from './MessageErrorBox.jsx';
 import UserInlineEditor from './UserInlineEditor.jsx';
 import AlternativeResponseNav from './AlternativeResponseNav.jsx';
+import GeneratedImageCard from './GeneratedImageCard.jsx';
 import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
@@ -393,7 +394,19 @@ function ChatMessage({
                 </div>
               )}
 
-              {isStreaming && !hasContent ? (
+              {message.isImageGeneration || message.imageResult ? (
+                <GeneratedImageCard
+                  imageResult={message.imageResult}
+                  prompt={message.prompt || message.imagePrompt || message.content}
+                  status={message.imageStatus || (message.isError ? 'error' : (message.isGenerating || isStreaming) ? 'generating' : 'ready')}
+                  error={message.error || message.errorMessage}
+                  provider={message.provider}
+                  model={message.modelUsed || message.model}
+                  aspectRatio={message.aspectRatio}
+                  elapsedSec={message.elapsedSec || 0}
+                  onRetry={onRetry ? () => onRetry(message) : null}
+                />
+              ) : isStreaming && !hasContent ? (
                 <div className="streaming-thinking-state" role="status" aria-label="Thinking">
                   <span className="typing-dot dot-1" />
                   <span className="typing-dot dot-2" />
