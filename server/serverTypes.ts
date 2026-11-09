@@ -191,6 +191,7 @@ export interface UploadedFileRecord {
   isImage?: boolean;
   dimensions?: { width: number; height: number };
   extraction?: any;
+  extractionsByLang?: Record<string, any>;
   buffer?: Buffer;
   storageProvider?: 'local' | 'supabase';
   storagePath?: string;

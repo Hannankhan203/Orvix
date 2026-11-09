@@ -600,6 +600,73 @@ export function buildGeminiImageParts({
  * Registers all file upload and attachment serving routes onto the Express app.
  */
 export function registerUploadRoutes(app: express.Express) {
+  // Multilingual OCR Language Pack Proxy & Local Cache Endpoint
+  app.get(['/api/ocr/packs/:file', '/ocr/packs/:file'], async (req, res) => {
+    const rawFile = req.params.file || '';
+    if (!/^[a-z]{3}\.traineddata(\.gz)?$/i.test(rawFile)) {
+      return res.status(400).json({ error: 'Invalid OCR language pack filename.', code: 'INVALID_PACK_NAME' });
+    }
+
+    const langCode = rawFile.split('.')[0].toLowerCase();
+    const validLangs = ['eng', 'spa', 'fra', 'deu', 'ara', 'urd'];
+    if (!validLangs.includes(langCode)) {
+      return res.status(404).json({ error: `Language pack for '${langCode}' is not supported.`, code: 'UNSUPPORTED_LANGUAGE' });
+    }
+
+    if (langCode === 'eng' && (rawFile === 'eng.traineddata' || rawFile === 'eng.traineddata.gz')) {
+      const rootEngPath = path.resolve(process.cwd(), 'eng.traineddata');
+      if (fs.existsSync(rootEngPath)) {
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.sendFile(rootEngPath);
+      }
+    }
+
+    const ocrPacksDir = path.join(UPLOAD_DIR, 'ocr-packs');
+    const localPackPath = path.join(ocrPacksDir, rawFile);
+    if (fs.existsSync(localPackPath)) {
+      try {
+        const stats = await fs.promises.stat(localPackPath);
+        if (stats.size >= 50 * 1024) {
+          res.setHeader('Content-Type', rawFile.endsWith('.gz') ? 'application/gzip' : 'application/octet-stream');
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          return res.sendFile(localPackPath);
+        }
+      } catch (_) {}
+    }
+
+    const primaryUrl = `https://tessdata.projectnaptha.com/4.0.0_fast/${rawFile}`;
+    const fallbackUrl = `https://raw.githubusercontent.com/naptha/tessdata/gh-pages/4.0.0_fast/${rawFile}`;
+    const candidateUrls = [primaryUrl, fallbackUrl];
+
+    for (const url of candidateUrls) {
+      try {
+        const upstream = await fetch(url);
+        if (upstream.ok) {
+          const arrayBuf = await upstream.arrayBuffer();
+          const buffer = Buffer.from(arrayBuf);
+          if (buffer.length >= 50 * 1024) {
+            try {
+              if (!fs.existsSync(ocrPacksDir)) {
+                fs.mkdirSync(ocrPacksDir, { recursive: true });
+              }
+              fs.writeFile(localPackPath, buffer, () => {});
+            } catch (_) {}
+
+            res.setHeader('Content-Type', rawFile.endsWith('.gz') ? 'application/gzip' : 'application/octet-stream');
+            res.setHeader('Content-Length', String(buffer.length));
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            return res.send(buffer);
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[OCR Pack Proxy] Error fetching ${rawFile} from ${url}:`, err?.message || err);
+      }
+    }
+
+    return res.status(502).json({ error: `Could not retrieve language pack for '${langCode}' from CDN.`, code: 'PACK_DOWNLOAD_FAILED' });
+  });
+
   // Upload Configuration Endpoint (returns limits, supported formats, and active storage strategy)
   app.get(['/api/upload/config', '/upload/config'], (_req, res) => {
     res.json({
@@ -760,7 +827,16 @@ export function registerUploadRoutes(app: express.Express) {
         authenticatedUserId = authStatus.userId;
       }
 
-      if (record.extraction) {
+      const rawLang = String(req.query.lang || req.query.language || 'eng').toLowerCase().trim();
+      const validLangs = ['eng', 'spa', 'fra', 'deu', 'ara', 'urd'];
+      const lang = validLangs.includes(rawLang) ? rawLang : 'eng';
+
+      record.extractionsByLang = record.extractionsByLang || {};
+      if (record.extractionsByLang[lang]) {
+        return res.json(record.extractionsByLang[lang]);
+      }
+      if (lang === 'eng' && record.extraction) {
+        record.extractionsByLang['eng'] = record.extraction;
         return res.json(record.extraction);
       }
 
@@ -800,9 +876,12 @@ export function registerUploadRoutes(app: express.Express) {
             record.id,
             record.dimensions,
             geminiKey,
-            { offline: isOfflineReq }
+            { offline: isOfflineReq, language: lang }
           );
-          record.extraction = imgExtraction;
+          record.extractionsByLang[lang] = imgExtraction;
+          if (lang === 'eng' || !record.extraction) {
+            record.extraction = imgExtraction;
+          }
           return res.json(imgExtraction);
         }
 
@@ -814,6 +893,7 @@ export function registerUploadRoutes(app: express.Express) {
           record.id
         )) as DocumentExtractionResult;
         record.extraction = extraction;
+        record.extractionsByLang[lang] = extraction;
         return res.json(extraction);
       }
 
@@ -914,6 +994,10 @@ export function registerUploadRoutes(app: express.Express) {
     const isOfflineReq = req.query?.offline === 'true';
     const geminiKey = process.env.GEMINI_API_KEY || null;
 
+    const rawLang = String(req.query.lang || req.query.language || 'eng').toLowerCase().trim();
+    const validLangs = ['eng', 'spa', 'fra', 'deu', 'ara', 'urd'];
+    const lang = validLangs.includes(rawLang) ? rawLang : 'eng';
+
     if (isImg) {
       const imgExtraction = await extractImageText(
         downloadResult.data,
@@ -923,7 +1007,7 @@ export function registerUploadRoutes(app: express.Express) {
         fileId,
         undefined,
         geminiKey,
-        { offline: isOfflineReq }
+        { offline: isOfflineReq, language: lang }
       );
       return res.json(imgExtraction);
     }

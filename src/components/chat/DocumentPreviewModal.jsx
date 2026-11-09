@@ -11,7 +11,9 @@ import {
   ExternalLink,
   AlertTriangle,
   Loader2,
-  File
+  File,
+  Globe,
+  RefreshCw
 } from 'lucide-react';
 import {
   getAttachmentRecord,
@@ -21,6 +23,12 @@ import {
   isAttachmentOwnedByCurrentUser
 } from '../../services/attachmentStorageService.js';
 import { extractBrowserDocument } from '../../services/browserDocumentExtractor.js';
+import {
+  SUPPORTED_OCR_LANGUAGES,
+  isLanguagePackCached,
+  downloadLanguagePack,
+  getLanguageDetails
+} from '../../services/ocrLanguagePackService.js';
 
 function getModalFormatIcon(ext = '') {
   const cleanExt = (ext || '').replace('.', '').toLowerCase();
@@ -113,6 +121,18 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [ocrLoading, setOcrLoading] = useState(false);
   const createdObjectUrlRef = useRef(null);
 
+  // Multilingual OCR Language Pack State
+  const initialLang = attachment?.extraction?.language || 'eng';
+  const [selectedOcrLang, setSelectedOcrLang] = useState(initialLang);
+  const [cachedLangs, setCachedLangs] = useState(['eng']);
+  const [extractionsByLang, setExtractionsByLang] = useState(
+    attachment?.extraction ? { [initialLang]: attachment.extraction } : {}
+  );
+  const [packDownloading, setPackDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState({ loaded: 0, total: 0, percent: 0 });
+  const [downloadError, setDownloadError] = useState(null);
+  const downloadAbortCtrlRef = useRef(null);
+
   const filename = attachment?.name || attachment?.originalName || attachment?.filename || 'Document';
   const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() : '';
   const ext = (filenameExt || attachment?.extension || attachment?.format || '').replace('.', '').toLowerCase();
@@ -132,6 +152,145 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const isOffice = ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls'].includes(ext);
   const isUnsubmittedComposerFile =
     attachment?.file instanceof Blob && String(attachment?.id || '').startsWith('att-') && !attachment?.extraction;
+
+  // Track cached language packs for offline readiness
+  useEffect(() => {
+    if (!isOpen || !isImage) return;
+    let active = true;
+
+    async function checkPacks() {
+      const cached = ['eng'];
+      for (const lang of SUPPORTED_OCR_LANGUAGES) {
+        if (lang.code !== 'eng') {
+          try {
+            const isCached = await isLanguagePackCached(lang.code);
+            if (isCached && active) {
+              cached.push(lang.code);
+            }
+          } catch (_) {}
+        }
+      }
+      if (active) setCachedLangs(cached);
+    }
+
+    checkPacks();
+    return () => {
+      active = false;
+      if (downloadAbortCtrlRef.current) {
+        try {
+          downloadAbortCtrlRef.current.abort();
+        } catch (_) {}
+        downloadAbortCtrlRef.current = null;
+      }
+    };
+  }, [isOpen, isImage]);
+
+  const currentLangDetails = getLanguageDetails(selectedOcrLang) || {
+    code: selectedOcrLang,
+    name: selectedOcrLang.toUpperCase(),
+    nativeName: selectedOcrLang.toUpperCase(),
+    isRtl: ['ara', 'urd'].includes(selectedOcrLang),
+    fileSizeEstimate: '~1.5 MB'
+  };
+  const isCurrentLangCached = selectedOcrLang === 'eng' || cachedLangs.includes(selectedOcrLang);
+
+  const fetchOcrExtraction = async (langCode) => {
+    if (!attachment?.id || isUnsubmittedComposerFile) return;
+
+    if (extractionsByLang[langCode]) {
+      const cachedResult = extractionsByLang[langCode];
+      setOcrData(cachedResult);
+      if (cachedResult?.text) {
+        setTextContent(cachedResult.text);
+      }
+      return;
+    }
+
+    setOcrLoading(true);
+    setDownloadError(null);
+    try {
+      const effectiveChatId = attachment.chatId || attachment.conversationId || '';
+      const params = new URLSearchParams();
+      if (effectiveChatId) params.set('chatId', effectiveChatId);
+      if (langCode && langCode !== 'eng') params.set('lang', langCode);
+      const queryStr = params.toString() ? `?${params.toString()}` : '';
+
+      const res = await fetchWithAuth(`/api/upload/${attachment.id}/extraction${queryStr}`);
+      if (res.ok) {
+        const d = await res.json();
+        setOcrData(d);
+        setExtractionsByLang((prev) => ({ ...prev, [langCode]: d }));
+        if (d?.text) {
+          setTextContent(d.text);
+        }
+      } else {
+        setOcrData({
+          status: 'error',
+          error: `Extraction failed with HTTP ${res.status}.`
+        });
+      }
+    } catch (err) {
+      setOcrData({
+        status: 'error',
+        error: err.message || 'Failed to extract text from image.'
+      });
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  const handleSelectOcrLanguage = async (newLang) => {
+    if (newLang === selectedOcrLang) return;
+    setSelectedOcrLang(newLang);
+    setDownloadError(null);
+
+    const isCached = newLang === 'eng' || cachedLangs.includes(newLang);
+    if (isCached) {
+      await fetchOcrExtraction(newLang);
+    }
+  };
+
+  const handleDownloadPack = async () => {
+    const langCode = selectedOcrLang;
+    if (packDownloading || langCode === 'eng') return;
+
+    setPackDownloading(true);
+    setDownloadError(null);
+    setDownloadProgress({ loaded: 0, total: 0, percent: 0 });
+
+    const ctrl = new AbortController();
+    downloadAbortCtrlRef.current = ctrl;
+
+    try {
+      await downloadLanguagePack(langCode, {
+        signal: ctrl.signal,
+        onProgress: (p) => {
+          setDownloadProgress(p);
+        }
+      });
+
+      setCachedLangs((prev) => (prev.includes(langCode) ? prev : [...prev, langCode]));
+      setPackDownloading(false);
+      await fetchOcrExtraction(langCode);
+    } catch (err) {
+      setPackDownloading(false);
+      if (err?.name === 'AbortError' || ctrl.signal.aborted) {
+        setDownloadError('Download was cancelled.');
+      } else {
+        setDownloadError(err?.message || 'Failed to download language pack.');
+      }
+    } finally {
+      downloadAbortCtrlRef.current = null;
+    }
+  };
+
+  const handleCancelDownload = () => {
+    if (downloadAbortCtrlRef.current) {
+      downloadAbortCtrlRef.current.abort();
+      downloadAbortCtrlRef.current = null;
+    }
+    setPackDownloading(false);
+  };
 
   useEffect(() => {
     if (!isOpen || !attachment?.id) return;
@@ -159,8 +318,11 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
       try {
         // Fetch OCR extraction if not already present on image (skip for unsubmitted local composer attachments)
         if (isImage) {
+          const initLang = attachment.extraction?.language || 'eng';
+          setSelectedOcrLang(initLang);
           if (attachment.extraction) {
             setOcrData(attachment.extraction);
+            setExtractionsByLang({ [initLang]: attachment.extraction });
             if (attachment.extraction.text) {
               setTextContent(attachment.extraction.text);
             }
@@ -173,6 +335,8 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               .then((d) => {
                 if (active && d) {
                   setOcrData(d);
+                  const returnedLang = d.language || 'eng';
+                  setExtractionsByLang((prev) => ({ ...prev, [returnedLang]: d }));
                   if (d.text) setTextContent(d.text);
                 }
               })
@@ -555,61 +719,200 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               />
             </div>
           ) : isImage && activeView === 'ocr' ? (
-            ocrLoading ? (
-              <div className="preview-status-state">
-                <Loader2 size={28} className="animate-spin text-blue-400" />
-                <span className="preview-status-text">Extracting text from image with OCR...</span>
-              </div>
-            ) : ocrData?.status === 'NO_TEXT_DETECTED' || (ocrData?.success && !ocrData?.hasText) ? (
-              <div className="preview-status-state">
-                <div className="preview-status-icon-circle info">
-                  <FileText size={22} />
+            <div className="preview-ocr-container flex flex-col gap-3 w-full h-full">
+              {/* Multilingual OCR Language Selection Toolbar */}
+              <div className="preview-ocr-toolbar">
+                <div className="preview-ocr-lang-group">
+                  <span className="preview-ocr-lang-label">
+                    <Globe size={14} className="text-blue-400" />
+                    <span>OCR Language:</span>
+                  </span>
+                  <select
+                    className="preview-ocr-lang-select"
+                    value={selectedOcrLang}
+                    onChange={(e) => handleSelectOcrLanguage(e.target.value)}
+                    aria-label="Select OCR language"
+                    disabled={packDownloading || ocrLoading}
+                  >
+                    {SUPPORTED_OCR_LANGUAGES.map((lang) => {
+                      const isCached = lang.code === 'eng' || cachedLangs.includes(lang.code);
+                      return (
+                        <option key={lang.code} value={lang.code}>
+                          {lang.name} ({lang.nativeName}) {isCached ? '• Offline Ready' : `• (${lang.fileSizeEstimate})`}
+                        </option>
+                      );
+                    })}
+                  </select>
                 </div>
-                <h3 className="preview-status-title">No readable text detected in this image</h3>
-                <p className="preview-status-desc">
-                  The OCR scan completed successfully, but no readable text or characters were found in this image.
-                </p>
+
+                <div className="flex items-center gap-2">
+                  {isCurrentLangCached ? (
+                    <span className="preview-ocr-lang-badge">
+                      <Check size={11} className="text-emerald-400" />
+                      <span>{currentLangDetails.name} Ready</span>
+                    </span>
+                  ) : (
+                    <span className="preview-ocr-lang-badge text-amber-300">
+                      <span>Download needed ({currentLangDetails.fileSizeEstimate})</span>
+                    </span>
+                  )}
+                  {currentLangDetails.isRtl && (
+                    <span className="preview-ocr-rtl-badge">RTL</span>
+                  )}
+                </div>
               </div>
-            ) : ocrData?.status === 'ready' && ocrData?.hasText ? (
-              <div className="preview-text-container">
-                <div className="preview-ocr-stats-bar">
-                  <div className="preview-ocr-stats-group">
-                    <span className="preview-ocr-badge">OCR Text Extracted</span>
-                    {ocrData.confidence > 0 && (
-                      <span className="preview-ocr-confidence">• Confidence: {ocrData.confidence}%</span>
-                    )}
+
+              {/* Body: Download Card OR Loading OR Empty OR Extracted Text OR Error */}
+              {!isCurrentLangCached && selectedOcrLang !== 'eng' ? (
+                <div className="preview-ocr-pack-card">
+                  <div className="preview-ocr-pack-icon">
+                    <Globe size={24} />
                   </div>
-                  <div className="preview-ocr-counts">
-                    <span>{ocrData.totalWords || 0} words</span>
-                    <span>• {ocrData.totalCharacters || 0} characters</span>
-                    {ocrData.lineCount ? <span>• {ocrData.lineCount} lines</span> : null}
+                  <h3 className="preview-ocr-pack-title">
+                    {currentLangDetails.name} ({currentLangDetails.nativeName}) Language Pack Required
+                  </h3>
+                  <p className="preview-ocr-pack-desc">
+                    Download the {currentLangDetails.name} language pack ({currentLangDetails.fileSizeEstimate}) to extract text in {currentLangDetails.name}.
+                    Once downloaded, it will be cached locally in your browser for offline recognition.
+                  </p>
+
+                  {packDownloading ? (
+                    <div className="preview-ocr-progress-wrap">
+                      <div className="preview-ocr-progress-bar">
+                        <div
+                          className="preview-ocr-progress-fill"
+                          style={{ width: `${Math.max(5, downloadProgress.percent || 0)}%` }}
+                        />
+                      </div>
+                      <div className="preview-ocr-progress-meta">
+                        <span>{downloadProgress.percent || 0}% downloaded</span>
+                        <span>
+                          {downloadProgress.loaded
+                            ? `${(downloadProgress.loaded / (1024 * 1024)).toFixed(1)} MB`
+                            : '0 MB'}{' '}
+                          / {currentLangDetails.fileSizeEstimate}
+                        </span>
+                      </div>
+                      <div className="preview-ocr-pack-actions">
+                        <button
+                          type="button"
+                          onClick={handleCancelDownload}
+                          className="preview-download-btn"
+                        >
+                          <X size={13} />
+                          <span>Cancel Download</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : downloadError ? (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="text-xs text-amber-400 bg-amber-950/40 border border-amber-800/50 rounded px-3 py-2">
+                        <AlertTriangle size={14} className="inline mr-1 text-amber-400" />
+                        {downloadError}
+                      </div>
+                      <div className="preview-ocr-pack-actions">
+                        <button
+                          type="button"
+                          onClick={handleDownloadPack}
+                          className="preview-download-btn"
+                        >
+                          <RefreshCw size={13} />
+                          <span>Retry Download</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectOcrLanguage('eng')}
+                          className="preview-copy-btn"
+                        >
+                          <span>Use English OCR</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="preview-ocr-pack-actions">
+                      <button
+                        type="button"
+                        onClick={handleDownloadPack}
+                        className="preview-download-btn"
+                      >
+                        <Download size={13} />
+                        <span>Download {currentLangDetails.name} Pack</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectOcrLanguage('eng')}
+                        className="preview-copy-btn"
+                      >
+                        <span>Use English OCR</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : ocrLoading ? (
+                <div className="preview-status-state">
+                  <Loader2 size={28} className="animate-spin text-blue-400" />
+                  <span className="preview-status-text">
+                    Extracting text in {currentLangDetails.name} with OCR...
+                  </span>
+                </div>
+              ) : ocrData?.status === 'NO_TEXT_DETECTED' || (ocrData?.success && !ocrData?.hasText) ? (
+                <div className="preview-status-state">
+                  <div className="preview-status-icon-circle info">
+                    <FileText size={22} />
                   </div>
+                  <h3 className="preview-status-title">No readable text detected in this image</h3>
+                  <p className="preview-status-desc">
+                    The OCR scan completed successfully, but no readable text was detected for {currentLangDetails.name}.
+                  </p>
                 </div>
-                <pre className="preview-text-content">
-                  {ocrData.text || textContent}
-                </pre>
-              </div>
-            ) : ocrData?.status === 'unsupported_format' ? (
-              <div className="preview-status-state">
-                <div className="preview-status-icon-circle warning">
-                  <AlertTriangle size={22} />
+              ) : ocrData?.status === 'ready' && ocrData?.hasText ? (
+                <div className="preview-text-container">
+                  <div className="preview-ocr-stats-bar">
+                    <div className="preview-ocr-stats-group">
+                      <span className="preview-ocr-badge">OCR Text Extracted</span>
+                      <span className="preview-ocr-lang-badge">{currentLangDetails.name}</span>
+                      {currentLangDetails.isRtl && (
+                        <span className="preview-ocr-rtl-badge">RTL</span>
+                      )}
+                      {ocrData.confidence > 0 && (
+                        <span className="preview-ocr-confidence">• Confidence: {ocrData.confidence}%</span>
+                      )}
+                    </div>
+                    <div className="preview-ocr-counts">
+                      <span>{ocrData.totalWords || 0} words</span>
+                      <span>• {ocrData.totalCharacters || 0} characters</span>
+                      {ocrData.lineCount ? <span>• {ocrData.lineCount} lines</span> : null}
+                    </div>
+                  </div>
+                  <pre
+                    className={`preview-text-content ${currentLangDetails.isRtl ? 'preview-text-rtl' : ''}`}
+                    dir={currentLangDetails.isRtl ? 'rtl' : 'ltr'}
+                  >
+                    {ocrData.text || textContent}
+                  </pre>
                 </div>
-                <h3 className="preview-status-title">OCR Format Not Supported</h3>
-                <p className="preview-status-desc">
-                  {ocrData?.error || 'Text extraction is not supported for this image format in this environment.'}
-                </p>
-              </div>
-            ) : (
-              <div className="preview-status-state">
-                <div className="preview-status-icon-circle danger">
-                  <AlertTriangle size={22} />
+              ) : ocrData?.status === 'unsupported_format' ? (
+                <div className="preview-status-state">
+                  <div className="preview-status-icon-circle warning">
+                    <AlertTriangle size={22} />
+                  </div>
+                  <h3 className="preview-status-title">OCR Format Not Supported</h3>
+                  <p className="preview-status-desc">
+                    {ocrData?.error || 'Text extraction is not supported for this image format in this environment.'}
+                  </p>
                 </div>
-                <h3 className="preview-status-title">Image Processing Error</h3>
-                <p className="preview-status-desc">
-                  {ocrData?.error || 'Failed to process image for text extraction.'}
-                </p>
-              </div>
-            )
+              ) : (
+                <div className="preview-status-state">
+                  <div className="preview-status-icon-circle danger">
+                    <AlertTriangle size={22} />
+                  </div>
+                  <h3 className="preview-status-title">Image Processing Error</h3>
+                  <p className="preview-status-desc">
+                    {ocrData?.error || 'Failed to process image for text extraction.'}
+                  </p>
+                </div>
+              )}
+            </div>
           ) : isTextual || textContent ? (
             <div className="preview-text-container">
               {isOffice && (

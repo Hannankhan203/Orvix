@@ -532,8 +532,8 @@ export function detectReadableText(text, confidence = 0) {
   const trimmed = text.trim();
   if (trimmed.length === 0) return false;
 
-  // Extract all alphanumeric and extended Latin/accented characters
-  const alphanumericChars = trimmed.match(/[a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF]/g);
+  // Extract all alphanumeric, extended Latin/accented, and Arabic/Urdu script characters
+  const alphanumericChars = trimmed.match(/[a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g);
   if (!alphanumericChars || alphanumericChars.length === 0) {
     return false;
   }
@@ -599,7 +599,7 @@ function isNetworkOrOfflineVisionError(err) {
  * @param {string|null} [apiKey]
  * @returns {Promise<{ hasText: boolean, text: string } | null>}
  */
-export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = 'image/jpeg', apiKey = null) {
+export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = 'image/jpeg', apiKey = null, language = 'eng') {
   const key = apiKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
   if (!key || key === 'MY_GEMINI_API_KEY') {
     return null;
@@ -619,6 +619,18 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
     const base64Data = imageBuffer.toString('base64');
     const cleanMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
 
+    const langNames = {
+      eng: 'English',
+      spa: 'Spanish (Español)',
+      fra: 'French (Français)',
+      deu: 'German (Deutsch)',
+      ara: 'Arabic (العربية)',
+      urd: 'Urdu (اردو)'
+    };
+    const langPrompt = language && language !== 'eng' && langNames[language]
+      ? ` in ${langNames[language]}`
+      : '';
+
     const candidateModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
 
     for (const model of candidateModels) {
@@ -637,7 +649,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
                   }
                 },
                 {
-                  text: 'Transcribe and extract all readable text, words, and numbers from this image exactly as written. Preserve line breaks. If there is no readable text or words in this image, reply with ONLY: NO_READABLE_TEXT'
+                  text: `Transcribe and extract all readable text, words, and numbers from this image${langPrompt} exactly as written. Preserve line breaks. If there is no readable text or words in this image, reply with ONLY: NO_READABLE_TEXT`
                 }
               ]
             }
@@ -707,7 +719,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
  * @param {string} [fileId] - Unique attachment ID
  * @param {{ width?: number, height?: number }} [dimensions] - Pre-parsed dimensions
  * @param {string|null} [apiKey] - Optional Gemini API key for vision
- * @param {{ offline?: boolean, preferLocal?: boolean }} [options] - Optional execution hints
+ * @param {{ offline?: boolean, preferLocal?: boolean, language?: string }} [options] - Optional execution hints
  * @returns {Promise<Object>}
  */
 export async function extractImageText(
@@ -850,12 +862,17 @@ export async function extractImageText(
     };
   }
 
+  const targetLang = (options?.language || 'eng').toLowerCase().trim();
+  const validLangs = ['eng', 'spa', 'fra', 'deu', 'ara', 'urd'];
+  const activeLang = validLangs.includes(targetLang) ? targetLang : 'eng';
+  const isRtl = ['ara', 'urd'].includes(activeLang);
+
   // 4. PRIORITY 1: Gemini Vision AI when online and configured
   // Skipped immediately when client reports offline/preferLocal so zero cloud calls are made offline.
   const geminiKey = apiKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
   if (!isOfflineHint && geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
     try {
-      const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, geminiKey);
+      const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, geminiKey, activeLang);
       if (visionResult) {
         if (visionResult.hasText) {
           const vText = visionResult.text;
@@ -873,6 +890,8 @@ export async function extractImageText(
             hasText: true,
             text: vText,
             ocrEngine: 'gemini-vision',
+            language: activeLang,
+            isRtl,
             summaryText: generateSummaryPreview(vText),
             totalCharacters: vText.length,
             totalWords: countWords(vText),
@@ -895,6 +914,8 @@ export async function extractImageText(
             hasText: false,
             text: '',
             ocrEngine: 'gemini-vision',
+            language: activeLang,
+            isRtl,
             summaryText: '',
             totalCharacters: 0,
             totalWords: 0,
@@ -963,6 +984,8 @@ export async function extractImageText(
               hasText: true,
               text: normalizedText,
               ocrEngine: 'tesseract-local',
+              language: activeLang,
+              isRtl,
               summaryText,
               totalCharacters,
               totalWords,
@@ -987,6 +1010,8 @@ export async function extractImageText(
             hasText: false,
             text: '',
             ocrEngine: 'tesseract-local',
+            language: activeLang,
+            isRtl,
             summaryText: '',
             totalCharacters: 0,
             totalWords: 0,

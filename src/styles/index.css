@@ -12302,6 +12302,160 @@ body.theme-light .notice-retry-btn,
   color: var(--text-muted);
 }
 
+/* Multilingual OCR Controls & Toolbar */
+.preview-ocr-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+
+.preview-ocr-lang-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.775rem;
+}
+
+.preview-ocr-lang-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.preview-ocr-lang-select {
+  padding: 4px 8px;
+  font-size: 0.775rem;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-input, #1e293b);
+  border: 1px solid var(--border-subtle, #334155);
+  color: var(--text-primary, #f8fafc);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.preview-ocr-lang-select:focus {
+  border-color: #3b82f6;
+}
+
+.preview-ocr-lang-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  background-color: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.preview-ocr-rtl-badge {
+  display: inline-flex;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+/* Multilingual OCR Pack Download Card */
+.preview-ocr-pack-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  text-align: center;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  max-width: 480px;
+  margin: 40px auto;
+  gap: 16px;
+}
+
+.preview-ocr-pack-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-ocr-pack-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.preview-ocr-pack-desc {
+  font-size: 0.825rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.preview-ocr-progress-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.preview-ocr-progress-bar {
+  width: 100%;
+  height: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.preview-ocr-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
+
+.preview-ocr-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.preview-ocr-pack-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.preview-text-rtl {
+  direction: rtl;
+  text-align: right;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Naskh Arabic", "Noto Sans Arabic", Tahoma, sans-serif;
+  line-height: 1.8;
+}
+
 /* Office Notice */
 .preview-office-notice {
   font-size: 0.775rem;
