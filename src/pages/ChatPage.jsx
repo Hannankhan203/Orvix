@@ -2971,7 +2971,9 @@ export default function ChatPage({
       // 7. Persist changes to Cloud Firestore or Guest Storage
       if (isCloudEnabled && currentUser?.uid) {
         if (laterMessageIds.length > 0) {
-          deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds).catch((err) => {
+          deleteChatMessages(currentUser.uid, currentChatId, laterMessageIds, {
+            allMessages: messages
+          }).catch((err) => {
             console.warn('Could not delete truncated messages from Cloud Firestore:', err);
           });
         } else {

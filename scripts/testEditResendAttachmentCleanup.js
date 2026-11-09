@@ -434,6 +434,47 @@ try {
     assert.equal(res.status, 404);
   });
 
+  // Test 9: Authenticated cleanup detects orphaned attachments when local cache is empty but in-memory allMessages is supplied
+  await runTest('9. Authenticated cleanup detects orphaned attachments when local cache is empty but in-memory messages are provided', async () => {
+    localStorageStore.clear(); // Ensure localStorage cache is completely empty
+    deletedIndexedDBKeys.length = 0;
+    receivedRequests.length = 0;
+    isOnlineMock = true;
+    mockEndpointResponse = { status: 200, body: { success: true } };
+
+    // Confirm local cache is strictly empty for this user and chat
+    const cachedBefore = getCachedChatMessages(userAlice, 'chat_uncached_1');
+    assert.equal(cachedBefore.length, 0, 'Local cache must be empty initially');
+
+    // In-memory messages (e.g. from React state or active component memory)
+    const inMemoryMessages = [
+      { id: 'mem_1', sender: 'user', content: 'Retained turn' },
+      { id: 'mem_2', sender: 'assistant', content: 'Truncated response', attachments: [{ id: 'att_in_memory_orphan_1' }] }
+    ];
+
+    // Call deleteChatMessages with options: { allMessages: inMemoryMessages }
+    const result = await deleteChatMessages(userAlice, 'chat_uncached_1', ['mem_2'], {
+      allMessages: inMemoryMessages
+    });
+
+    assert.equal(result.deletedCount, 1);
+    assert.deepEqual(result.orphanedAttachments, ['att_in_memory_orphan_1'], 'Must identify orphan from in-memory allMessages');
+
+    // Cloud DELETE request dispatched with exact path, chatId, and auth
+    assert.equal(receivedRequests.length, 1);
+    assert.equal(receivedRequests[0].pathname, '/api/upload/att_in_memory_orphan_1');
+    assert.equal(receivedRequests[0].chatId, 'chat_uncached_1');
+    assert.equal(receivedRequests[0].headers.authorization, `Bearer ${tokenAlice}`);
+
+    // IndexedDB record cleaned up
+    assert.ok(deletedIndexedDBKeys.includes('att_in_memory_orphan_1'));
+
+    // Cache updated with remaining messages
+    const cachedAfter = getCachedChatMessages(userAlice, 'chat_uncached_1');
+    assert.equal(cachedAfter.length, 1);
+    assert.equal(cachedAfter[0].id, 'mem_1');
+  });
+
 } finally {
   server.close();
 }
