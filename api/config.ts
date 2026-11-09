@@ -29,7 +29,9 @@ export default function handler(req: Request, res: Response) {
       webllmSupported: true,
       demoModeEnabled: false,
       whisperConfigured: false,
-      whisperProvider: null
+      whisperProvider: null,
+      websocketStreamingSupported: false,
+      websocketStreamingEndpoint: null
     });
   }
 }

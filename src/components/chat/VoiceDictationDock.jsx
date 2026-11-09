@@ -20,6 +20,7 @@ export default function VoiceDictationDock({
   isListening = false,
   isPaused = false,
   isRequesting = false,
+  isStreamingWebSocket = false,
   formattedDuration = '00:00',
   audioLevel = 0,
   waveformBars = [],
@@ -75,6 +76,8 @@ export default function VoiceDictationDock({
               ? 'Transcript ready'
               : recordingState === 'cancelled'
               ? 'Cancelled'
+              : isStreamingWebSocket
+              ? 'Live Streaming'
               : 'Recording'}
           </span>
           <span className="listening-timer" aria-label={`Recording duration: ${formattedDuration}`}>

@@ -36,6 +36,8 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
    - [Excluded Zones & Interaction Safeguards](#excluded-zones--interaction-safeguards)
    - [Horizontal Intent Disambiguation](#horizontal-intent-disambiguation)
 9. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
+   - [Bi-Directional WebSocket Voice Streaming (AudioWorklet + PCM)](#bi-directional-websocket-voice-streaming-audioworklet--pcm)
+   - [Vercel Serverless & Deployment Architecture Considerations](#vercel-serverless--deployment-architecture-considerations)
    - [Hybrid Recognition & Whisper Refinement](#hybrid-recognition--whisper-refinement)
    - [Interim Transcript Handling & Deduplication](#interim-transcript-handling--deduplication)
    - [Smart Punctuation & Typography Formatting](#smart-punctuation--typography-formatting)
@@ -381,6 +383,30 @@ To prevent gesture conflicts, `isExcludedSwipeTarget()` ignores touches originat
 ## Voice Dictation & Speech Architecture
 
 Orvix provides a unified voice dictation engine (`src/hooks/useVoiceDictation.js`) combining real-time browser speech recognition with server-side Whisper refinement.
+
+### Bi-Directional WebSocket Voice Streaming (AudioWorklet + PCM)
+
+Introduced in Phase 6, Orvix provides an ultra-low-latency bi-directional voice streaming pipeline alongside its HTTP endpoints:
+
+1. **Browser-Side Capture (`AudioWorklet`)**: Raw microphone input is captured at native sample rates (e.g., 44.1kHz or 48kHz) via `public/audioWorkletProcessor.js` (with an automatic fallback to an inline Blob worker or `ScriptProcessorNode` on legacy browsers). Audio frames are downsampled and converted to 16-bit linear PCM (`Int16Array`) in real time without blocking the UI rendering loop.
+2. **WebSocket Upgrades (`/api/voice-stream`)**: The client opens an authenticated WebSocket connection (`wss://` or `ws://`). The server immediately initiates a 10-second authentication handshake verifying Firebase ID tokens (or authenticates guest sessions).
+3. **Bi-Directional Streaming Protocol**:
+   - `start`: Initializes stream sample rate and language.
+   - `pause` / `resume`: Suspends audio worklet capture and backend accumulation without tearing down the socket.
+   - `audio` (Binary PCM chunks): Streamed continuously to the server.
+   - `interim`: Backend returns incremental transcriptions to update the composer live.
+   - `stop`: Triggers final WAV synthesis (with standard 44-byte RIFF header) and high-accuracy Whisper transcription.
+   - `done`: Emits final polished transcript with performance metrics.
+4. **Resilience & Resource Safeguards**:
+   - Max 25 MB accumulated PCM audio buffer per session to protect server memory.
+   - 15-minute maximum session duration timeout.
+   - Heartbeat watchdog ping/pong every 30 seconds to clean up dropped mobile connections.
+
+### Vercel Serverless & Deployment Architecture Considerations
+
+- **Serverless WebSocket Incompatibility**: Vercel Serverless and Edge Functions do not support persistent stateful WebSocket connections. When deployed to Vercel, the backend configuration automatically detects the serverless environment (`websocketStreamingSupported: false`).
+- **Safe Graceful Fallback**: If the WebSocket connection fails, times out during handshake, or if WebSocket streaming is unsupported in the current deployment, `useVoiceDictation` immediately and seamlessly falls back to the native Web Speech API and HTTP multipart Whisper refinement (`/api/transcribe`).
+- **Dedicated Hosting for Persistent WebSockets**: For full real-time WebSocket streaming support in production, deploy the Node.js/Express server to a persistent container runtime (e.g. Google Cloud Run, Railway, Render, Fly.io, or AWS ECS/EC2) or run an external WebSocket proxy gateway.
 
 ### Hybrid Recognition & Whisper Refinement
 

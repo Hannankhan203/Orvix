@@ -66,6 +66,7 @@ import {
   resolveRequestUserId
 } from './server/uploadSubsystem.ts';
 import { registerTranscriptionRoutes } from './server/transcriptionSubsystem.ts';
+import { setupVoiceWebSocketServer } from './server/voiceWebSocketSubsystem.ts';
 import {
   registerChatRoutes,
   buildSystemInstruction,
@@ -197,7 +198,9 @@ app.get(['/api/config', '/config'], (_req, res) => {
       webllmSupported: true,
       demoModeEnabled: false,
       whisperConfigured: false,
-      whisperProvider: null
+      whisperProvider: null,
+      websocketStreamingSupported: false,
+      websocketStreamingEndpoint: null
     });
   }
 });
@@ -305,6 +308,9 @@ async function startServer() {
     console.log(`Orvix server running on http://0.0.0.0:${PORT}`);
   });
 
+  // Attach authenticated WebSocket voice streaming server
+  setupVoiceWebSocketServer(httpServer);
+
   // Eliminate artificial HTTP timeouts to allow long-running streams (60s, 90s, 5m+)
   httpServer.timeout = 0;
   httpServer.requestTimeout = 0;
@@ -362,7 +368,8 @@ export {
   MAX_CHAT_REQUEST_BYTES,
   MAX_VISION_IMAGE_BYTES,
   buildSystemInstruction,
-  generateSimulatedResponse
+  generateSimulatedResponse,
+  setupVoiceWebSocketServer
 };
 
 export type {

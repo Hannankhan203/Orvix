@@ -756,7 +756,8 @@ export default function ChatArea({
     transcriptionMeta,
     transcriptionNotice,
     clearTranscriptionNotice,
-    retryTranscription
+    retryTranscription,
+    isStreamingWebSocket
   } = useVoiceDictation({
     inputValue,
     onInputChange,
@@ -1496,6 +1497,7 @@ Transcript:
               isListening={isListening}
               isPaused={isPaused}
               isRequesting={isRequesting}
+              isStreamingWebSocket={isStreamingWebSocket}
               formattedDuration={formattedDuration}
               audioLevel={audioLevel}
               waveformBars={waveformBars}

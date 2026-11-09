@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { transcribeAudioBlob } from '../services/transcriptionService.js';
+import { VoiceStreamClient } from '../services/voiceStreamClient.js';
+import { auth } from '../config/firebaseConfig.js';
 import {
   createDiagnosticSession,
   finalizeDiagnosticSession,
@@ -102,8 +104,13 @@ export function detectDictationCapabilities() {
   );
   const hasMediaRecorder = Boolean(window.MediaRecorder);
 
+  const hasWebSocket = Boolean(typeof window !== 'undefined' && window.WebSocket);
+  const hasAudioWorklet = Boolean(typeof window !== 'undefined' && window.AudioContext);
+
   // Authoritative browser speech recognition or native audio recording with server transcription fallback
-  const isSupported = Boolean(hasSpeechRecognition || (hasGetUserMedia && hasMediaRecorder));
+  const isSupported = Boolean(
+    hasSpeechRecognition || (hasGetUserMedia && (hasMediaRecorder || hasWebSocket))
+  );
   const engineMode = hasSpeechRecognition
     ? 'browser-speech'
     : hasGetUserMedia && hasMediaRecorder
@@ -114,6 +121,8 @@ export function detectDictationCapabilities() {
     hasSpeechRecognition,
     hasGetUserMedia,
     hasMediaRecorder,
+    hasWebSocket,
+    hasAudioWorklet,
     isSupported,
     engineMode,
     isFirefox,
@@ -678,9 +687,26 @@ export function reconcileFallbackTranscript({
  * @param {(text: string) => void} options.onInputChange - Callback to update composer text
  * @returns {Object} Dictation states, controls, and audio metrics
  */
-export function useVoiceDictation({ inputValue = '', onInputChange, disabled = false }) {
+export function useVoiceDictation({
+  inputValue = '',
+  onInputChange,
+  disabled = false,
+  enableWebSocketStreaming = true,
+  webSocketUrl = '',
+  authToken = ''
+}) {
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
+
+  const enableWebSocketStreamingRef = useRef(enableWebSocketStreaming);
+  enableWebSocketStreamingRef.current = enableWebSocketStreaming;
+  const webSocketUrlRef = useRef(webSocketUrl);
+  webSocketUrlRef.current = webSocketUrl;
+  const authTokenRef = useRef(authToken);
+  authTokenRef.current = authToken;
+  const isWebSocketActiveRef = useRef(false);
+  const voiceStreamClientRef = useRef(null);
+  const [isStreamingWebSocket, setIsStreamingWebSocket] = useState(false);
 
   // Safe capability detection across browsers (Chrome, Edge, Safari, Firefox, iOS, Android)
   const [capabilities, setCapabilities] = useState(detectDictationCapabilities);
@@ -1767,13 +1793,166 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
       isExplicitStopRef.current = false;
       hasFatalErrorRef.current = false;
       setDictationError(null);
+
+      // Try WebSocket Streaming if enabled and browser supports WebSocket
+      const caps = detectDictationCapabilities();
+      const canTryWebSocket =
+        enableWebSocketStreamingRef.current !== false &&
+        typeof window !== 'undefined' &&
+        Boolean(window.WebSocket) &&
+        caps.hasGetUserMedia;
+
+      if (canTryWebSocket) {
+        try {
+          updateRecordingState('requesting');
+
+          // Cancel active TTS playback so microphone does not pick up audio from device speakers
+          if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+            try {
+              window.speechSynthesis.cancel();
+            } catch (_) {}
+          }
+
+          // Snapshot existing composer content as the base prefix
+          baseTextRef.current = inputValueRef.current || '';
+          sessionBaseTextRef.current = baseTextRef.current;
+          sessionAccumulatedTextRef.current = '';
+          currentInstanceFinalMapRef.current.clear();
+          currentInstanceFinalRef.current = '';
+          committedSegmentsRef.current = [];
+          interimTranscriptRef.current = '';
+          recentEmissionsRef.current.clear();
+          if (baseTextRef.current && baseTextRef.current.trim()) {
+            recordEmission(baseTextRef.current);
+          }
+          setInterimTranscript('');
+          setLastSessionTranscript('');
+          setTranscriptionNotice(null);
+
+          // Reset duration & audio buffers
+          audioChunksRef.current = [];
+          recordedBytesRef.current = 0;
+          recordingStartTimeRef.current = Date.now();
+          pausedDurationRef.current = 0;
+          pauseStartTimeRef.current = 0;
+          setRecordingDuration(0);
+          if (durationIntervalRef.current) {
+            clearInterval(durationIntervalRef.current);
+            durationIntervalRef.current = null;
+          }
+
+          // Acquire shared microphone stream
+          const stream = await acquireMicrophoneStream();
+          attachAudioAnalyser(stream);
+
+          // Resolve auth token (if available)
+          let token = authTokenRef.current || '';
+          if (!token && auth && auth.currentUser) {
+            try {
+              token = await auth.currentUser.getIdToken();
+            } catch (_) {}
+          }
+
+          const client = new VoiceStreamClient({
+            url: webSocketUrlRef.current,
+            onInterim: (rawInterim) => {
+              if (isCancelledRef.current) return;
+              const clean = (rawInterim || '').trim();
+              if (!clean) return;
+
+              interimTranscriptRef.current = clean;
+              setInterimTranscript(clean);
+
+              const fullRaw = mergeTranscriptSegments(sessionAccumulatedTextRef.current, clean);
+              const formattedSpeech = formatSpeechTranscript(
+                fullRaw,
+                selectedLanguageRef.current,
+                sessionBaseTextRef.current
+              );
+              const combined = combineComposerText(sessionBaseTextRef.current, formattedSpeech);
+              recordEmission(combined);
+              if (onInputChangeRef.current) {
+                onInputChangeRef.current(combined);
+              }
+            },
+            onFinal: (rawFinal) => {
+              if (isCancelledRef.current) return;
+              const clean = (rawFinal || '').trim();
+              if (!clean) return;
+
+              sessionAccumulatedTextRef.current = mergeTranscriptSegments(
+                sessionAccumulatedTextRef.current,
+                clean
+              );
+              interimTranscriptRef.current = '';
+              setInterimTranscript('');
+
+              const formattedSpeech = formatSpeechTranscript(
+                sessionAccumulatedTextRef.current,
+                selectedLanguageRef.current,
+                sessionBaseTextRef.current
+              );
+              const combined = combineComposerText(sessionBaseTextRef.current, formattedSpeech);
+              recordEmission(combined);
+              if (onInputChangeRef.current) {
+                onInputChangeRef.current(combined);
+              }
+            },
+            onError: (wsErr) => {
+              console.warn('[Dictation] WebSocket streaming error:', wsErr);
+              if (recordingStateRef.current === 'listening') {
+                setDictationError(wsErr.message || 'Streaming connection lost.');
+              }
+            }
+          });
+
+          await client.connect(token);
+          await client.start({
+            stream,
+            language: selectedLanguageRef.current
+          });
+
+          voiceStreamClientRef.current = client;
+          isWebSocketActiveRef.current = true;
+          setIsStreamingWebSocket(true);
+          updateRecordingState('listening');
+
+          // Start duration timer
+          if (!durationIntervalRef.current) {
+            durationIntervalRef.current = setInterval(() => {
+              if (recordingStateRef.current === 'listening') {
+                const now = Date.now();
+                const start = recordingStartTimeRef.current || now;
+                const elapsed = Math.max(0, Math.floor((now - start - pausedDurationRef.current) / 1000));
+                setRecordingDuration(elapsed);
+              }
+            }, 250);
+          }
+          return;
+        } catch (wsStartErr) {
+          console.warn('[Dictation] WebSocket streaming setup failed, falling back to Web Speech / HTTP:', wsStartErr);
+          if (voiceStreamClientRef.current) {
+            voiceStreamClientRef.current.disconnect();
+            voiceStreamClientRef.current = null;
+          }
+          isWebSocketActiveRef.current = false;
+          setIsStreamingWebSocket(false);
+        }
+      }
+
       await startRecognitionSession(true);
     } finally {
       setTimeout(() => {
         isTransitioningRef.current = false;
       }, 150);
     }
-  }, [startRecognitionSession]);
+  }, [
+    acquireMicrophoneStream,
+    attachAudioAnalyser,
+    recordEmission,
+    startRecognitionSession,
+    updateRecordingState
+  ]);
 
   // Pause dictation temporarily. If releaseHardware is true (e.g. app backgrounded or incoming phone call),
   // actively stops hardware tracks so the system microphone indicator turns off immediately.
@@ -1781,6 +1960,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     (releaseHardware = false) => {
       isExplicitStopRef.current = true;
       clearTimeout(restartTimeoutRef.current);
+
+      if (isWebSocketActiveRef.current && voiceStreamClientRef.current) {
+        voiceStreamClientRef.current.pause();
+      }
+
       cleanupRecognitionInstance();
 
       // Pause MediaRecorder
@@ -1848,6 +2032,27 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
       if (pauseStartTimeRef.current > 0) {
         pausedDurationRef.current += Date.now() - pauseStartTimeRef.current;
         pauseStartTimeRef.current = 0;
+      }
+
+      if (isWebSocketActiveRef.current && voiceStreamClientRef.current) {
+        voiceStreamClientRef.current.resume();
+        updateRecordingState('listening');
+
+        if (mediaStreamRef.current) {
+          attachAudioAnalyser(mediaStreamRef.current);
+        }
+
+        if (!durationIntervalRef.current) {
+          durationIntervalRef.current = setInterval(() => {
+            if (recordingStateRef.current === 'listening') {
+              const now = Date.now();
+              const start = recordingStartTimeRef.current || now;
+              const elapsed = Math.max(0, Math.floor((now - start - pausedDurationRef.current) / 1000));
+              setRecordingDuration(elapsed);
+            }
+          }, 250);
+        }
+        return;
       }
 
       if (engineMode === 'unsupported') {
@@ -2003,6 +2208,53 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     updateRecordingState('stopping');
 
     try {
+      // 0. Handle active WebSocket streaming stop
+      if (isWebSocketActiveRef.current && voiceStreamClientRef.current) {
+        try {
+          const streamFinalText = await voiceStreamClientRef.current.stop();
+          stopAudioResources();
+          voiceStreamClientRef.current.disconnect();
+          voiceStreamClientRef.current = null;
+          isWebSocketActiveRef.current = false;
+          setIsStreamingWebSocket(false);
+
+          updateRecordingState('transcribing');
+          const resolvedText = (streamFinalText || sessionAccumulatedTextRef.current || '').trim();
+          const formattedSpeech = formatSpeechTranscript(
+            resolvedText,
+            selectedLanguageRef.current,
+            sessionBaseTextRef.current
+          );
+
+          const combined = combineComposerText(sessionBaseTextRef.current, formattedSpeech);
+          recordEmission(combined);
+          if (onInputChangeRef.current) {
+            onInputChangeRef.current(combined);
+          }
+
+          setLastSessionTranscript(formattedSpeech);
+          setInterimTranscript('');
+          updateRecordingState('success');
+
+          setTimeout(() => {
+            if (recordingStateRef.current === 'success') {
+              updateRecordingState('idle');
+            }
+          }, 1200);
+
+          return formattedSpeech;
+        } catch (wsStopErr) {
+          console.warn('[Dictation] WebSocket stop notice:', wsStopErr);
+          stopAudioResources();
+          if (voiceStreamClientRef.current) {
+            voiceStreamClientRef.current.disconnect();
+            voiceStreamClientRef.current = null;
+          }
+          isWebSocketActiveRef.current = false;
+          setIsStreamingWebSocket(false);
+        }
+      }
+
       // 1. Gracefully signal the speech recognizer to finish and wait for final results to settle via onend
       if (recognitionRef.current) {
         const rec = recognitionRef.current;
@@ -2376,6 +2628,14 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
     isCancelledRef.current = true;
     isExplicitStopRef.current = true;
     clearTimeout(restartTimeoutRef.current);
+
+    if (isWebSocketActiveRef.current && voiceStreamClientRef.current) {
+      voiceStreamClientRef.current.cancel();
+      voiceStreamClientRef.current = null;
+      isWebSocketActiveRef.current = false;
+      setIsStreamingWebSocket(false);
+    }
+
     if (pendingRecognitionShutdownResolveRef.current) {
       try {
         pendingRecognitionShutdownResolveRef.current();
@@ -2638,6 +2898,11 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
           transcriptionAbortCtrlRef.current.abort();
         } catch (_) {}
       }
+      if (voiceStreamClientRef.current) {
+        voiceStreamClientRef.current.disconnect();
+        voiceStreamClientRef.current = null;
+        isWebSocketActiveRef.current = false;
+      }
       stopAudioResources();
       cleanupRecognitionInstance();
     };
@@ -2646,6 +2911,7 @@ export function useVoiceDictation({ inputValue = '', onInputChange, disabled = f
   return {
     recordingState,
     engineMode,
+    isStreamingWebSocket,
     isListening: recordingState === 'listening',
     isPaused: recordingState === 'paused',
     isRequesting: recordingState === 'requesting',

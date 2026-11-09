@@ -381,7 +381,9 @@ export function getServerProviderConfigStatus(serverlessRuntime = false) {
     webllmSupported: true,
     demoModeEnabled: isDemoModeEnabled(),
     whisperConfigured: groqConfigured || geminiConfigured,
-    whisperProvider: groqConfigured ? 'groq' : geminiConfigured ? 'gemini' : null
+    whisperProvider: groqConfigured ? 'groq' : geminiConfigured ? 'gemini' : null,
+    websocketStreamingSupported: !serverlessRuntime && !isServerless,
+    websocketStreamingEndpoint: !serverlessRuntime && !isServerless ? '/api/voice-stream' : null
   };
 }
 
