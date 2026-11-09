@@ -1712,12 +1712,14 @@ export function registerUploadRoutes(app: express.Express) {
       // Upload authenticated users' files to private Supabase Storage if configured and online
       if (authenticatedUserId && isSupabaseConfigured() && !isOfflineUpload) {
         const cleanChatId = conversationId!;
+        const uploadedToSupabase: { path: string; bucket?: string }[] = [];
 
         for (const rec of uploadedResults) {
           if (rec.buffer && rec.buffer.length > 0) {
             const rawExt = path.extname(rec.diskFilename).replace(/^\.+/, '').toLowerCase();
+            let supaRes;
             try {
-              const supaRes = await uploadAttachmentToStorage({
+              supaRes = await uploadAttachmentToStorage({
                 userId: authenticatedUserId,
                 chatId: cleanChatId,
                 attachmentId: rec.id,
@@ -1725,22 +1727,72 @@ export function registerUploadRoutes(app: express.Express) {
                 buffer: rec.buffer,
                 mimeType: rec.mimeType
               });
-
-              if (supaRes.success) {
-                rec.storageProvider = 'supabase';
-                rec.storagePath = supaRes.path;
-                rec.storageBucket = supaRes.bucket;
-                rec.userId = authenticatedUserId;
-              } else {
-                console.warn(
-                  `[Upload] Supabase upload failed for attachment ${rec.id}, maintaining local file:`,
-                  supaRes.error
-                );
-                rec.storageProvider = 'local';
-              }
             } catch (supaErr: any) {
-              console.warn(`[Upload] Supabase exception for attachment ${rec.id}:`, supaErr?.message || supaErr);
-              rec.storageProvider = 'local';
+              supaRes = {
+                success: false,
+                error: supaErr?.message || 'Unexpected exception during Supabase storage upload.',
+                code: 'STORAGE_UPLOAD_EXCEPTION',
+                status: 503,
+                retryable: true
+              };
+            }
+
+            if (!supaRes || !supaRes.success) {
+              const errorMessage = supaRes?.error || 'Failed to upload attachment to cloud storage. Please try again.';
+              const isRetryable =
+                typeof supaRes?.retryable === 'boolean'
+                  ? supaRes.retryable
+                  : (supaRes?.status ? (supaRes.status >= 500 || supaRes.status === 429) : true);
+
+              console.error(
+                `[Upload] Supabase cloud upload failed for attachment ${rec.id}:`,
+                errorMessage
+              );
+
+              // 1. Rollback local temporary files written to disk and in-memory registry during this request
+              for (const toClean of uploadedResults) {
+                fileRegistry.delete(toClean.id);
+                if (cleanChatId && conversationDocuments.has(cleanChatId)) {
+                  conversationDocuments.get(cleanChatId)!.delete(toClean.id);
+                }
+                try {
+                  const fullDiskPath = path.join(UPLOAD_DIR, toClean.diskFilename);
+                  if (fs.existsSync(fullDiskPath)) {
+                    await fs.promises.unlink(fullDiskPath);
+                  }
+                } catch (_) {}
+              }
+
+              // 2. Rollback any files from this batch that succeeded uploading to Supabase
+              for (const uploadedSupa of uploadedToSupabase) {
+                try {
+                  await deleteAttachmentFromStorage(uploadedSupa.path, {
+                    requestingUserId: authenticatedUserId,
+                    bucket: uploadedSupa.bucket
+                  });
+                } catch (delErr) {
+                  console.warn(
+                    `[Upload] Failed to rollback partial Supabase upload at ${uploadedSupa.path}:`,
+                    delErr
+                  );
+                }
+              }
+
+              // 3. Fail securely: Return HTTP 503 without silent fallback to local disk
+              return res.status(503).json({
+                error: errorMessage,
+                code: 'STORAGE_UPLOAD_FAILED',
+                status: 503,
+                retryable: isRetryable
+              });
+            }
+
+            rec.storageProvider = 'supabase';
+            rec.storagePath = supaRes.path;
+            rec.storageBucket = supaRes.bucket;
+            rec.userId = authenticatedUserId;
+            if (supaRes.path) {
+              uploadedToSupabase.push({ path: supaRes.path, bucket: supaRes.bucket });
             }
           }
         }

@@ -59,6 +59,7 @@ export interface UploadAttachmentResult {
   error?: string;
   code?: string;
   status?: number;
+  retryable?: boolean;
 }
 
 export interface DownloadAttachmentOptions {
@@ -340,13 +341,19 @@ export async function uploadAttachmentToStorage(
     });
 
     if (error) {
+      const errStatus = (error as any).status || 500;
+      const isRetryable =
+        errStatus >= 500 ||
+        errStatus === 429 ||
+        Boolean(error.message && /timeout|network|econnreset|enotfound|fetch failed|rate limit/i.test(error.message));
       return {
         success: false,
         path: storagePath,
         bucket,
         error: error.message || 'Supabase storage upload failed.',
         code: error.name || 'UPLOAD_FAILED',
-        status: (error as any).status || 500
+        status: errStatus,
+        retryable: isRetryable
       };
     }
 
@@ -358,11 +365,17 @@ export async function uploadAttachmentToStorage(
       status: 200
     };
   } catch (err: any) {
+    const errStatus = err?.status || 500;
+    const isRetryable =
+      errStatus >= 500 ||
+      errStatus === 429 ||
+      Boolean(err?.message && /timeout|network|econnreset|enotfound|fetch failed|rate limit/i.test(err.message));
     return {
       success: false,
       error: err?.message || 'Unexpected error during attachment upload.',
       code: err?.code || 'UNEXPECTED_ERROR',
-      status: err?.status || 500
+      status: errStatus,
+      retryable: isRetryable
     };
   }
 }
