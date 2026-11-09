@@ -218,7 +218,9 @@ export {
   downloadAttachmentFromStorage,
   createAttachmentSignedUrl,
   deleteAttachmentFromStorage,
-  deleteAttachmentsForChatInStorage
+  deleteAttachmentsForChatInStorage,
+  findAttachmentPathInStorage,
+  isExactAttachmentMatch
 } from './supabaseStorageService.ts';
 
 export type {
@@ -231,6 +233,7 @@ export type {
   CreateSignedUrlResult,
   DeleteAttachmentOptions,
   DeleteAttachmentResult,
-  DeleteChatAttachmentsResult
+  DeleteChatAttachmentsResult,
+  FindAttachmentResult
 } from './supabaseStorageService.ts';
 

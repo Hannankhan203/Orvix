@@ -22,6 +22,9 @@ import {
   uploadAttachmentToStorage,
   downloadAttachmentFromStorage,
   createAttachmentSignedUrl,
+  deleteAttachmentFromStorage,
+  deleteAttachmentsForChatInStorage,
+  findAttachmentPathInStorage,
   isValidPathSegment
 } from './supabaseStorageService.ts';
 import { isSupabaseConfigured } from './supabaseClient.ts';
@@ -984,33 +987,220 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   
-  // Upload Deletion Endpoint
-  app.delete(['/api/upload/:id', '/upload/:id'], async (req, res) => {
-    const fileId = req.params.id;
-    if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
-      return res.status(400).json({ error: 'Invalid attachment ID format.' });
-    }
-
-    const record = fileRegistry.get(fileId);
-    fileRegistry.delete(fileId);
-
-    if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
-      conversationDocuments.get(record.conversationId)!.delete(fileId);
-    }
-
+  // Helper to unlink local disk attachment files matching fileId exactly or with extension
+  async function unlinkLocalAttachmentFiles(fileId: string) {
     try {
       const files = await fs.promises.readdir(UPLOAD_DIR);
       for (const fname of files) {
-        if (fname.startsWith(fileId)) {
+        if (fname === fileId || fname.startsWith(`${fileId}.`)) {
           const safePath = path.resolve(UPLOAD_DIR, path.basename(fname));
           if (safePath.startsWith(path.resolve(UPLOAD_DIR) + path.sep)) {
-            await fs.promises.unlink(safePath);
+            await fs.promises.unlink(safePath).catch(() => {});
           }
         }
       }
     } catch (_) {}
+  }
 
-    return res.json({ success: true, id: fileId });
+  // Conversation Attachments Bulk Deletion Endpoint
+  app.delete(['/api/upload/conversations/:chatId', '/upload/conversations/:chatId'], async (req, res) => {
+    const chatId = req.params.chatId;
+    if (!chatId || !isValidPathSegment(chatId)) {
+      return res.status(400).json({ error: 'Invalid chatId format.', code: 'INVALID_PATH_SEGMENT' });
+    }
+
+    // 1. Authenticate request using authenticateRequest and verified Firebase identity
+    const authStatus = await authenticateRequest(req);
+    if (authStatus.status === 'invalid') {
+      return res.status(401).json({
+        error: `Authentication failed: ${authStatus.error}`,
+        code: authStatus.code || 'INVALID_TOKEN'
+      });
+    }
+    if (authStatus.status === 'guest') {
+      return res.status(401).json({
+        error: 'Authentication required to delete conversation attachments.',
+        code: 'AUTH_REQUIRED'
+      });
+    }
+
+    const authenticatedUserId = authStatus.userId;
+
+    // 2. Clear conversation records from in-memory maps and disk for this user
+    if (conversationDocuments.has(chatId)) {
+      const fileIds = conversationDocuments.get(chatId)!;
+      for (const fileId of fileIds) {
+        const rec = fileRegistry.get(fileId);
+        if (rec && (!rec.userId || rec.userId === authenticatedUserId)) {
+          fileRegistry.delete(fileId);
+          await unlinkLocalAttachmentFiles(fileId);
+        }
+      }
+      conversationDocuments.delete(chatId);
+    }
+
+    // 3. Delete from Supabase Storage with pagination support
+    let deletedCount = 0;
+    if (isSupabaseConfigured()) {
+      const deleteResult = await deleteAttachmentsForChatInStorage(
+        authenticatedUserId,
+        chatId,
+        authenticatedUserId
+      );
+
+      if (!deleteResult.success) {
+        if (deleteResult.code === 'STORAGE_ACCESS_DENIED' || deleteResult.status === 403) {
+          return res.status(403).json({
+            error: deleteResult.error || 'Access denied: You do not have permission to delete these attachments.',
+            code: 'STORAGE_ACCESS_DENIED'
+          });
+        }
+        return res.status(deleteResult.status || 500).json({
+          error: deleteResult.error || 'Failed to delete conversation attachments from storage.',
+          code: deleteResult.code || 'DELETE_FAILED',
+          deletedCount: deleteResult.deletedCount
+        });
+      }
+
+      deletedCount = deleteResult.deletedCount;
+    }
+
+    return res.status(200).json({
+      success: true,
+      chatId,
+      deletedCount
+    });
+  });
+
+  // Upload Deletion Endpoint (Individual Attachment)
+  app.delete(['/api/upload/:id', '/upload/:id'], async (req, res) => {
+    const fileId = req.params.id;
+    if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+      return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
+    }
+
+    const record = fileRegistry.get(fileId);
+    const rawChatId = (typeof req.query.chatId === 'string' ? req.query.chatId : typeof req.body?.chatId === 'string' ? req.body.chatId : '').trim();
+    const rawStoragePath = (typeof req.query.storagePath === 'string' ? req.query.storagePath : typeof req.body?.storagePath === 'string' ? req.body.storagePath : '').trim();
+
+    // Check if this is a cloud deletion request
+    const isCloudTarget = Boolean(
+      (record && (record.storageProvider === 'supabase' || record.userId)) ||
+      rawStoragePath ||
+      rawChatId
+    );
+
+    if (isCloudTarget) {
+      // 1. Authenticate request using cryptographically verified Firebase ID token
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status === 'invalid') {
+        return res.status(401).json({
+          error: `Authentication failed: ${authStatus.error}`,
+          code: authStatus.code || 'INVALID_TOKEN'
+        });
+      }
+      if (authStatus.status === 'guest') {
+        return res.status(401).json({
+          error: 'Authentication required to delete cloud attachment.',
+          code: 'AUTH_REQUIRED'
+        });
+      }
+
+      const authenticatedUserId = authStatus.userId;
+
+      // 2. Ownership check if record exists in memory with a userId
+      if (record?.userId && record.userId !== authenticatedUserId) {
+        return res.status(403).json({
+          error: 'Access denied: You do not have permission to delete attachments belonging to another user.',
+          code: 'STORAGE_ACCESS_DENIED'
+        });
+      }
+
+      // 3. Supabase deletion (if Supabase is configured)
+      if (isSupabaseConfigured()) {
+        const storagePath = record?.storagePath || rawStoragePath;
+
+        if (storagePath) {
+          try {
+            const deleteResult = await deleteAttachmentFromStorage(storagePath, {
+              requestingUserId: authenticatedUserId
+            });
+            if (!deleteResult.success) {
+              if (deleteResult.code === 'STORAGE_ACCESS_DENIED' || deleteResult.status === 403) {
+                return res.status(403).json({
+                  error: deleteResult.error || 'Access denied.',
+                  code: 'STORAGE_ACCESS_DENIED'
+                });
+              }
+              return res.status(deleteResult.status || 500).json({
+                error: deleteResult.error || 'Failed to delete attachment from storage.',
+                code: deleteResult.code || 'DELETE_FAILED'
+              });
+            }
+          } catch (err: any) {
+            return res.status(err?.status || 500).json({
+              error: err?.message || 'Storage deletion error.',
+              code: err?.code || 'DELETE_ERROR'
+            });
+          }
+        } else if (rawChatId) {
+          // Empty fileRegistry fallback: resolve attachment through authenticated user's own folder
+          if (!isValidPathSegment(rawChatId)) {
+            return res.status(400).json({ error: 'Invalid chatId format.', code: 'INVALID_PATH_SEGMENT' });
+          }
+
+          const lookup = await findAttachmentPathInStorage(authenticatedUserId, rawChatId, fileId);
+          if (lookup.error && lookup.status && lookup.status !== 404) {
+            return res.status(lookup.status).json({
+              error: lookup.error,
+              code: lookup.code || 'LOOKUP_FAILED'
+            });
+          }
+
+          if (lookup.found && lookup.path) {
+            const deleteResult = await deleteAttachmentFromStorage(lookup.path, {
+              requestingUserId: authenticatedUserId
+            });
+            if (!deleteResult.success) {
+              return res.status(deleteResult.status || 500).json({
+                error: deleteResult.error || 'Failed to delete attachment from storage.',
+                code: deleteResult.code || 'DELETE_FAILED'
+              });
+            }
+          }
+          // Idempotent: if lookup.found is false, file was already deleted or not present
+        }
+      }
+
+      // Clean local in-memory registry & disk
+      fileRegistry.delete(fileId);
+      if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
+        conversationDocuments.get(record.conversationId)!.delete(fileId);
+      }
+      await unlinkLocalAttachmentFiles(fileId);
+
+      return res.status(200).json({ success: true, id: fileId });
+    }
+
+    // Unauthenticated local/guest deletion path (preserves existing local behavior)
+    // If an Authorization header is provided anyway, check ownership if record has a userId
+    if (req.headers.authorization) {
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status === 'authenticated' && record?.userId && record.userId !== authStatus.userId) {
+        return res.status(403).json({
+          error: 'Access denied: You do not have permission to delete attachments belonging to another user.',
+          code: 'STORAGE_ACCESS_DENIED'
+        });
+      }
+    }
+
+    fileRegistry.delete(fileId);
+    if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
+      conversationDocuments.get(record.conversationId)!.delete(fileId);
+    }
+    await unlinkLocalAttachmentFiles(fileId);
+
+    return res.status(200).json({ success: true, id: fileId });
   });
 
 

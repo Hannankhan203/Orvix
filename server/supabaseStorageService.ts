@@ -111,6 +111,15 @@ export interface DeleteChatAttachmentsResult {
   status?: number;
 }
 
+export interface FindAttachmentResult {
+  found: boolean;
+  path?: string;
+  filename?: string;
+  error?: string;
+  code?: string;
+  status?: number;
+}
+
 /**
  * Validates that an individual path segment (userId, chatId, attachmentId) contains
  * only safe alphanumeric characters, dashes, and underscores without traversal sequences.
@@ -523,8 +532,108 @@ export async function deleteAttachmentFromStorage(
 }
 
 /**
+ * Checks whether a storage filename matches an attachmentId exactly or as {attachmentId}.{ext}.
+ * Strictly rejects loose prefix matches like {attachmentId}_thumb or {attachmentId}-copy.
+ */
+export function isExactAttachmentMatch(filename: string, attachmentId: string): boolean {
+  if (typeof filename !== 'string' || typeof attachmentId !== 'string') return false;
+  const cleanFilename = filename.trim();
+  const cleanId = attachmentId.trim();
+  if (!cleanFilename || !cleanId) return false;
+  if (cleanFilename === cleanId) return true;
+  if (cleanFilename.startsWith(`${cleanId}.`)) {
+    const ext = cleanFilename.slice(cleanId.length + 1);
+    return /^[a-zA-Z0-9]{1,16}$/.test(ext);
+  }
+  return false;
+}
+
+/**
+ * Resolves an attachment's storage path within a user's conversation folder
+ * using paginated listing and exact filename matching.
+ * Used when fileRegistry is empty after server restart or in serverless environments.
+ */
+export async function findAttachmentPathInStorage(
+  userId: string,
+  chatId: string,
+  attachmentId: string,
+  bucket?: string
+): Promise<FindAttachmentResult> {
+  try {
+    const cleanUser = String(userId || '').trim();
+    const cleanChat = String(chatId || '').trim();
+    const cleanAtt = String(attachmentId || '').trim();
+
+    if (!isValidPathSegment(cleanUser)) {
+      return { found: false, error: `Invalid userId: '${userId}'`, code: 'INVALID_PATH_SEGMENT', status: 400 };
+    }
+    if (!isValidPathSegment(cleanChat)) {
+      return { found: false, error: `Invalid chatId: '${chatId}'`, code: 'INVALID_PATH_SEGMENT', status: 400 };
+    }
+    if (!isValidPathSegment(cleanAtt)) {
+      return { found: false, error: `Invalid attachmentId: '${attachmentId}'`, code: 'INVALID_PATH_SEGMENT', status: 400 };
+    }
+
+    const client = getSupabaseServerClient();
+    if (!client) {
+      return { found: false, error: 'Supabase storage is not configured on this server.', code: 'STORAGE_UNCONFIGURED', status: 503 };
+    }
+
+    const activeBucket = bucket || getSupabaseBucket();
+    const folderPath = `${cleanUser}/${cleanChat}`;
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 50;
+    let offset = 0;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const { data: fileList, error: listError } = await client.storage
+        .from(activeBucket)
+        .list(folderPath, { limit: PAGE_SIZE, offset });
+
+      if (listError) {
+        return {
+          found: false,
+          error: listError.message || 'Failed to list storage folder.',
+          code: listError.name || 'LIST_FAILED',
+          status: (listError as any).status || 500
+        };
+      }
+
+      if (!fileList || fileList.length === 0) {
+        break;
+      }
+
+      const match = fileList.find((item) => item?.name && isExactAttachmentMatch(item.name, cleanAtt));
+      if (match) {
+        return {
+          found: true,
+          path: `${folderPath}/${match.name}`,
+          filename: match.name,
+          status: 200
+        };
+      }
+
+      if (fileList.length < PAGE_SIZE) {
+        break;
+      }
+      offset += PAGE_SIZE;
+    }
+
+    return { found: false, status: 404 };
+  } catch (err: any) {
+    return {
+      found: false,
+      error: err?.message || 'Failed to locate attachment in storage.',
+      code: err?.code || 'LOOKUP_ERROR',
+      status: err?.status || 500
+    };
+  }
+}
+
+/**
  * Deletes all attachments associated with a specific conversation ({userId}/{chatId}/*).
  * Verifies that the requesting user owns the conversation before pruning.
+ * Reliably paginates through batches of up to 1000 files to support conversations with >1000 attachments.
  */
 export async function deleteAttachmentsForChatInStorage(
   userId: string,
@@ -532,6 +641,7 @@ export async function deleteAttachmentsForChatInStorage(
   requestingUserId?: string,
   bucket?: string
 ): Promise<DeleteChatAttachmentsResult> {
+  let totalDeleted = 0;
   try {
     const cleanUser = String(userId || '').trim();
     const cleanChat = String(chatId || '').trim();
@@ -582,64 +692,110 @@ export async function deleteAttachmentsForChatInStorage(
 
     const activeBucket = bucket || getSupabaseBucket();
     const folderPath = `${cleanUser}/${cleanChat}`;
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 100;
+    let pageCount = 0;
+    let lastPathsSignature = '';
 
-    const { data: fileList, error: listError } = await client.storage
-      .from(activeBucket)
-      .list(folderPath);
+    // Strategy for mutable listings:
+    // Repeatedly fetch from offset: 0. Because deleted files are pruned from storage in each batch,
+    // subsequent files automatically shift down to offset: 0. Incrementing offset would cause files
+    // to be skipped as the underlying folder listing shrinks.
+    while (pageCount < MAX_PAGES) {
+      pageCount++;
+      const { data: fileList, error: listError } = await client.storage
+        .from(activeBucket)
+        .list(folderPath, { limit: PAGE_SIZE, offset: 0 });
 
-    if (listError) {
+      if (listError) {
+        return {
+          success: false,
+          deletedCount: totalDeleted,
+          error: listError.message || 'Failed to list conversation attachments.',
+          code: listError.name || 'LIST_FAILED',
+          status: (listError as any).status || 500
+        };
+      }
+
+      if (!fileList || fileList.length === 0) {
+        break;
+      }
+
+      const pathsToDelete = fileList
+        .filter((item) => item?.name)
+        .map((item) => `${folderPath}/${item.name}`);
+
+      if (pathsToDelete.length === 0) {
+        break;
+      }
+
+      // Detect stall: if the exact same file batch is returned after a deletion call,
+      // the backend cannot delete these files; abort to prevent an infinite loop.
+      const currentSignature = pathsToDelete.join(',');
+      if (currentSignature === lastPathsSignature) {
+        return {
+          success: false,
+          deletedCount: totalDeleted,
+          error: 'Failed to delete some files from storage; deletion stalled.',
+          code: 'DELETE_STALLED',
+          status: 500
+        };
+      }
+      lastPathsSignature = currentSignature;
+
+      const { data: removedData, error: removeError } = await client.storage
+        .from(activeBucket)
+        .remove(pathsToDelete);
+
+      if (removeError) {
+        return {
+          success: false,
+          deletedCount: totalDeleted,
+          error: removeError.message || 'Failed to remove conversation attachments.',
+          code: removeError.name || 'DELETE_FAILED',
+          status: (removeError as any).status || 500
+        };
+      }
+
+      const removedCount = Array.isArray(removedData) ? removedData.length : pathsToDelete.length;
+      totalDeleted += removedCount;
+
+      // Handle partial deletion safely
+      if (Array.isArray(removedData) && removedData.length < pathsToDelete.length) {
+        return {
+          success: false,
+          deletedCount: totalDeleted,
+          error: `Partial deletion failure: removed ${removedCount} of ${pathsToDelete.length} files in batch.`,
+          code: 'PARTIAL_DELETE_FAILURE',
+          status: 500
+        };
+      }
+
+      // If the listing returned fewer than PAGE_SIZE and all were deleted, folder is now empty
+      if (fileList.length < PAGE_SIZE) {
+        break;
+      }
+    }
+
+    if (pageCount >= MAX_PAGES) {
       return {
         success: false,
-        deletedCount: 0,
-        error: listError.message || 'Failed to list conversation attachments.',
-        code: listError.name || 'LIST_FAILED',
-        status: (listError as any).status || 500
-      };
-    }
-
-    if (!fileList || fileList.length === 0) {
-      return {
-        success: true,
-        deletedCount: 0,
-        status: 200
-      };
-    }
-
-    const pathsToDelete = fileList
-      .filter((item) => item?.name)
-      .map((item) => `${folderPath}/${item.name}`);
-
-    if (pathsToDelete.length === 0) {
-      return {
-        success: true,
-        deletedCount: 0,
-        status: 200
-      };
-    }
-
-    const { error: removeError } = await client.storage
-      .from(activeBucket)
-      .remove(pathsToDelete);
-
-    if (removeError) {
-      return {
-        success: false,
-        deletedCount: 0,
-        error: removeError.message || 'Failed to remove conversation attachments.',
-        code: removeError.name || 'DELETE_FAILED',
-        status: (removeError as any).status || 500
+        deletedCount: totalDeleted,
+        error: 'Exceeded maximum pagination limit while deleting conversation attachments.',
+        code: 'MAX_PAGES_EXCEEDED',
+        status: 500
       };
     }
 
     return {
       success: true,
-      deletedCount: pathsToDelete.length,
+      deletedCount: totalDeleted,
       status: 200
     };
   } catch (err: any) {
     return {
       success: false,
-      deletedCount: 0,
+      deletedCount: totalDeleted,
       error: err?.message || 'Failed to delete conversation attachments from storage.',
       code: err?.code || 'DELETE_ERROR',
       status: err?.status || 500

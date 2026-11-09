@@ -519,14 +519,47 @@ async function main() {
     });
 
     // -----------------------------------------------------------------------
-    // Test 12: Pre-Prompt-5 DELETE Route Behavior (Unchanged deletion behavior)
+    // Test 12: DELETE Route Behavior (Local Unauthenticated & Cloud Auth Enforcement)
     // -----------------------------------------------------------------------
-    await runTest('DELETE /api/upload/:id operates with pre-Prompt-5 behavior without auth requirement', async () => {
-      const deleteTargetId = crypto.randomUUID();
-      fileRegistry.set(deleteTargetId, {
-        id: deleteTargetId,
-        originalName: 'to_delete.txt',
-        diskFilename: `${deleteTargetId}.txt`,
+    await runTest('DELETE /api/upload/:id preserves local unauthenticated deletion and enforces cloud auth', async () => {
+      // 1. Local/guest record operates without auth requirement
+      const localDeleteId = crypto.randomUUID();
+      fileRegistry.set(localDeleteId, {
+        id: localDeleteId,
+        originalName: 'local_delete.txt',
+        diskFilename: `${localDeleteId}.txt`,
+        mimeType: 'text/plain',
+        extension: 'TXT',
+        size: 100,
+        formattedSize: '100 B',
+        status: 'ready',
+        uploadedAt: new Date().toISOString(),
+        expiresAt: Date.now() + 7200000,
+        storageProvider: 'local'
+      });
+
+      // Call DELETE without Authorization header on local file -> 200
+      const localDelRes = await fetch(`${baseUrl}/api/upload/${localDeleteId}`, {
+        method: 'DELETE'
+      });
+      assert.equal(localDelRes.status, 200);
+      const localDelData = await localDelRes.json();
+      assert.equal(localDelData.success, true);
+      assert.equal(localDelData.id, localDeleteId);
+      assert.equal(fileRegistry.has(localDeleteId), false, 'Record must be removed from fileRegistry');
+
+      // Calling DELETE on already deleted / missing file returns 200
+      const secondDelRes = await fetch(`${baseUrl}/api/upload/${localDeleteId}`, {
+        method: 'DELETE'
+      });
+      assert.equal(secondDelRes.status, 200);
+
+      // 2. Cloud Supabase record rejects unauthenticated requests with 401
+      const cloudDeleteId = crypto.randomUUID();
+      fileRegistry.set(cloudDeleteId, {
+        id: cloudDeleteId,
+        originalName: 'cloud_delete.txt',
+        diskFilename: `${cloudDeleteId}.txt`,
         mimeType: 'text/plain',
         extension: 'TXT',
         size: 100,
@@ -535,24 +568,31 @@ async function main() {
         uploadedAt: new Date().toISOString(),
         expiresAt: Date.now() + 7200000,
         userId: userA,
-        storageProvider: 'supabase'
+        storageProvider: 'supabase',
+        storagePath: `${userA}/chatA/${cloudDeleteId}.txt`
       });
 
-      // Call DELETE without Authorization header (pre-Prompt-5 behavior)
-      const delRes = await fetch(`${baseUrl}/api/upload/${deleteTargetId}`, {
+      const unauthCloudRes = await fetch(`${baseUrl}/api/upload/${cloudDeleteId}`, {
         method: 'DELETE'
       });
-      assert.equal(delRes.status, 200);
-      const delData = await delRes.json();
-      assert.equal(delData.success, true);
-      assert.equal(delData.id, deleteTargetId);
-      assert.equal(fileRegistry.has(deleteTargetId), false, 'Record must be removed from fileRegistry');
+      assert.equal(unauthCloudRes.status, 401, 'Unauthenticated cloud deletion must be rejected with 401');
 
-      // Calling DELETE on already deleted / missing file returns 404
-      const secondDelRes = await fetch(`${baseUrl}/api/upload/${deleteTargetId}`, {
-        method: 'DELETE'
+      // 3. Cloud Supabase record rejects cross-user requests with 403
+      const crossUserCloudRes = await fetch(`${baseUrl}/api/upload/${cloudDeleteId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${tokenUserB}` }
       });
-      assert.equal(secondDelRes.status, 200);
+      assert.equal(crossUserCloudRes.status, 403, 'Cross-user cloud deletion must be rejected with 403');
+
+      // 4. Owner can delete cloud record with 200
+      const ownerCloudRes = await fetch(`${baseUrl}/api/upload/${cloudDeleteId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${tokenUserA}` }
+      });
+      assert.equal(ownerCloudRes.status, 200);
+      const ownerCloudData = await ownerCloudRes.json();
+      assert.equal(ownerCloudData.success, true);
+      assert.equal(fileRegistry.has(cloudDeleteId), false);
 
       // Invalid ID format returns 400
       const badIdRes = await fetch(`${baseUrl}/api/upload/not-a-valid-uuid`, {
