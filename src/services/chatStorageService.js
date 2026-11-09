@@ -175,7 +175,28 @@ export function getCachedChatMessages(userId, chatId) {
     const raw = localStorage.getItem(getUserMessagesCacheKey(userId, chatId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((msg) => {
+      if (!msg || typeof msg !== 'object') return msg;
+      const restored = { ...msg };
+      if (Array.isArray(restored.attachments)) {
+        restored.attachments = restored.attachments.map(restoreAttachmentFromStorage);
+      }
+      if (Array.isArray(restored.referencedAttachments)) {
+        restored.referencedAttachments = restored.referencedAttachments.map(restoreAttachmentFromStorage);
+      }
+      if (Array.isArray(restored.alternatives)) {
+        restored.alternatives = restored.alternatives.map((alt) => {
+          if (!alt || typeof alt !== 'object') return alt;
+          return {
+            ...alt,
+            attachments: Array.isArray(alt.attachments) ? alt.attachments.map(restoreAttachmentFromStorage) : [],
+            referencedAttachments: Array.isArray(alt.referencedAttachments) ? alt.referencedAttachments.map(restoreAttachmentFromStorage) : []
+          };
+        });
+      }
+      return restored;
+    });
   } catch (err) {
     console.warn('Could not read cached chat messages:', err);
     return [];
@@ -620,7 +641,16 @@ function sanitizeExtractionForStorage(extraction) {
 export function serializeAttachmentForStorage(att) {
   if (!att || typeof att !== 'object') return att;
   const resolvedType = att.type || att.mimeType || '';
-  return {
+
+  // Determine storage provider and cloud status
+  let resolvedStorageProvider;
+  if (att.storageProvider && typeof att.storageProvider === 'string') {
+    resolvedStorageProvider = att.storageProvider;
+  } else if (att.isCloud === true) {
+    resolvedStorageProvider = 'supabase';
+  }
+
+  const serialized = {
     id: att.id,
     name: att.name || att.originalName || 'document',
     originalName: att.originalName || att.name || 'document',
@@ -633,6 +663,41 @@ export function serializeAttachmentForStorage(att) {
     status: att.status || 'uploaded',
     extraction: sanitizeExtractionForStorage(att.extraction)
   };
+
+  if (resolvedStorageProvider) {
+    serialized.storageProvider = resolvedStorageProvider;
+  }
+
+  if (resolvedStorageProvider === 'supabase' || att.isCloud === true) {
+    serialized.isCloud = true;
+  } else if (typeof att.isCloud === 'boolean' || resolvedStorageProvider === 'local') {
+    serialized.isCloud = Boolean(att.isCloud);
+  }
+
+  return serialized;
+}
+
+/**
+ * Restores and normalizes an attachment record retrieved from storage or Firestore,
+ * ensuring storageProvider and isCloud metadata are consistently populated and
+ * backward-compatible with legacy records.
+ *
+ * @param {Object} att
+ * @returns {Object}
+ */
+export function restoreAttachmentFromStorage(att) {
+  if (!att || typeof att !== 'object') return att;
+  const restored = { ...att };
+
+  if (!restored.storageProvider && restored.isCloud === true) {
+    restored.storageProvider = 'supabase';
+  }
+
+  if (restored.storageProvider === 'supabase' && restored.isCloud === undefined) {
+    restored.isCloud = true;
+  }
+
+  return restored;
 }
 
 export function sanitizeMessageForStorage(msg) {
@@ -683,6 +748,9 @@ export function buildFirestoreMessagePayload(targetMessage) {
           responseTimeMs: typeof alt.responseTimeMs === 'number' ? alt.responseTimeMs : null,
           timestamp: alt.timestamp || '',
           createdAt: typeof alt.createdAt === 'number' ? alt.createdAt : Date.now(),
+          attachments: Array.isArray(alt.attachments)
+            ? alt.attachments.map(serializeAttachmentForStorage)
+            : [],
           referencedAttachments: Array.isArray(alt.referencedAttachments)
             ? alt.referencedAttachments.map(serializeAttachmentForStorage)
             : [],
@@ -2299,9 +2367,15 @@ export async function loadConversationMessages(userId, chatId) {
         parentMessageId: data.parentMessageId || null,
         interactionId: data.interactionId || null,
         activeAlternativeId: data.activeAlternativeId || null,
-        alternatives: Array.isArray(data.alternatives) ? data.alternatives : [],
-        attachments: Array.isArray(data.attachments) ? data.attachments : [],
-        referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments : [],
+        alternatives: Array.isArray(data.alternatives)
+          ? data.alternatives.map((alt) => ({
+              ...alt,
+              attachments: Array.isArray(alt.attachments) ? alt.attachments.map(restoreAttachmentFromStorage) : [],
+              referencedAttachments: Array.isArray(alt.referencedAttachments) ? alt.referencedAttachments.map(restoreAttachmentFromStorage) : []
+            }))
+          : [],
+        attachments: Array.isArray(data.attachments) ? data.attachments.map(restoreAttachmentFromStorage) : [],
+        referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments.map(restoreAttachmentFromStorage) : [],
         createdAtMs: typeof data.createdAtMs === 'number' ? data.createdAtMs : (data.createdAt?.toMillis ? data.createdAt.toMillis() : undefined),
         timestamp:
           data.clientTimestamp ||
@@ -2391,9 +2465,15 @@ export function subscribeToChatMessages(userId, chatId, onUpdate, onError) {
           parentMessageId: data.parentMessageId || null,
           interactionId: data.interactionId || null,
           activeAlternativeId: data.activeAlternativeId || null,
-          alternatives: Array.isArray(data.alternatives) ? data.alternatives : [],
-          attachments: Array.isArray(data.attachments) ? data.attachments : [],
-          referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments : [],
+          alternatives: Array.isArray(data.alternatives)
+            ? data.alternatives.map((alt) => ({
+                ...alt,
+                attachments: Array.isArray(alt.attachments) ? alt.attachments.map(restoreAttachmentFromStorage) : [],
+                referencedAttachments: Array.isArray(alt.referencedAttachments) ? alt.referencedAttachments.map(restoreAttachmentFromStorage) : []
+              }))
+            : [],
+          attachments: Array.isArray(data.attachments) ? data.attachments.map(restoreAttachmentFromStorage) : [],
+          referencedAttachments: Array.isArray(data.referencedAttachments) ? data.referencedAttachments.map(restoreAttachmentFromStorage) : [],
           createdAtMs:
             typeof data.createdAtMs === 'number'
               ? data.createdAtMs
