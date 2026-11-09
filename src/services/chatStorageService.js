@@ -51,7 +51,7 @@ import {
   deleteAttachmentRecords,
   fetchWithAuth
 } from './attachmentStorageService.js';
-import { getIdToken } from './authService.js';
+import { getIdToken, getAuthUserId, onAuthChange } from './authService.js';
 
 const FIRESTORE_OP_TIMEOUT_MS = 4500;
 const MAX_DELETION_RETRIES = 5;
@@ -60,6 +60,8 @@ const MAX_RETRY_DELAY_MS = 30000;
 const activeSyncPromises = new Map();
 const activeDeletionPromises = new Map();
 const activeReplayPromises = new Map();
+const activeAttachmentDeletionPromises = new Map();
+const activeAttachmentReplayPromises = new Map();
 
 let testDbOverride = null;
 
@@ -354,6 +356,230 @@ export function removePendingDeletion(userId, chatId) {
   const queue = getPendingDeletedQueue(userId);
   const nextQueue = queue.filter((e) => e.chatId !== chatId);
   savePendingDeletedQueue(userId, nextQueue);
+}
+
+// --- Orphaned Attachment Deletion Durable Queue ---
+
+/**
+ * Returns pending orphaned attachment deletion queue for a given user.
+ * Reads both user-scoped key and fallback global key.
+ * @param {string} userId
+ * @returns {Array<{ attachmentId: string, chatId: string, userId: string, attempts: number, lastAttemptMs: number, nextRetryMs: number, error?: string|null, status?: number|null }>}
+ */
+export function getPendingOrphanedAttachmentDeletions(userId) {
+  if (!userId || userId === 'guest' || typeof window === 'undefined') return [];
+  try {
+    const userKey = `pendingOrphanedAttachmentDeletions_${userId}`;
+    const rawUser = localStorage.getItem(userKey);
+    if (rawUser) {
+      const parsed = JSON.parse(rawUser);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((e) => e && e.attachmentId && (!e.userId || e.userId === userId));
+      }
+    }
+
+    const rawGlobal = localStorage.getItem('pendingOrphanedAttachmentDeletions');
+    if (rawGlobal) {
+      const parsed = JSON.parse(rawGlobal);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((e) => e && e.attachmentId && e.userId === userId);
+      }
+    }
+
+    return [];
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Saves pending orphaned attachment deletions for a user to localStorage,
+ * updating both per-user and global keys while deduplicating by attachmentId.
+ * @param {string} userId
+ * @param {Array<Object>} queue
+ */
+export function savePendingOrphanedAttachmentDeletions(userId, queue) {
+  if (!userId || userId === 'guest' || typeof window === 'undefined') return;
+  try {
+    const seen = new Map();
+    if (Array.isArray(queue)) {
+      for (const entry of queue) {
+        if (entry?.attachmentId) {
+          seen.set(entry.attachmentId, {
+            ...entry,
+            userId: entry.userId || userId
+          });
+        }
+      }
+    }
+    const userEntries = Array.from(seen.values());
+
+    const userKey = `pendingOrphanedAttachmentDeletions_${userId}`;
+    if (userEntries.length === 0) {
+      localStorage.removeItem(userKey);
+    } else {
+      localStorage.setItem(userKey, JSON.stringify(userEntries));
+    }
+
+    const globalKey = 'pendingOrphanedAttachmentDeletions';
+    let globalQueue = [];
+    try {
+      const rawGlobal = localStorage.getItem(globalKey);
+      if (rawGlobal) {
+        const parsed = JSON.parse(rawGlobal);
+        if (Array.isArray(parsed)) {
+          globalQueue = parsed.filter((e) => e && e.userId !== userId && e.attachmentId);
+        }
+      }
+    } catch (_) {}
+
+    const combined = [...globalQueue, ...userEntries];
+    if (combined.length === 0) {
+      localStorage.removeItem(globalKey);
+    } else {
+      localStorage.setItem(globalKey, JSON.stringify(combined));
+    }
+  } catch (_) {}
+}
+
+/**
+ * Enqueues a failed orphaned attachment deletion with exponential backoff and deduplication.
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {string} attachmentId
+ * @param {Object} [patch={}]
+ */
+export function enqueuePendingOrphanedAttachmentDeletion(userId, chatId, attachmentId, patch = {}) {
+  if (!userId || userId === 'guest' || !attachmentId || typeof window === 'undefined') return;
+
+  const queue = getPendingOrphanedAttachmentDeletions(userId);
+  const existingIndex = queue.findIndex((e) => e.attachmentId === attachmentId);
+  const existing = existingIndex >= 0 ? queue[existingIndex] : null;
+
+  const now = Date.now();
+  const currentAttempts = existing ? (existing.attempts || 0) : 0;
+  const newAttempts = patch.attempts !== undefined ? patch.attempts : currentAttempts + 1;
+  const backoffDelay = Math.min(
+    BASE_RETRY_DELAY_MS * Math.pow(2, Math.max(0, newAttempts - 1)),
+    MAX_RETRY_DELAY_MS
+  );
+
+  const updatedEntry = {
+    attachmentId,
+    chatId: chatId || existing?.chatId || '',
+    userId,
+    attempts: newAttempts,
+    lastAttemptMs: now,
+    nextRetryMs: patch.nextRetryMs !== undefined ? patch.nextRetryMs : now + backoffDelay,
+    error: patch.error !== undefined ? patch.error : (existing?.error || null),
+    status: patch.status !== undefined ? patch.status : (existing?.status || null)
+  };
+
+  let nextQueue;
+  if (existingIndex >= 0) {
+    nextQueue = queue.map((e, idx) => (idx === existingIndex ? updatedEntry : e));
+  } else {
+    nextQueue = [...queue, updatedEntry];
+  }
+
+  savePendingOrphanedAttachmentDeletions(userId, nextQueue);
+}
+
+/**
+ * Removes a successfully deleted attachment from the durable queue.
+ * @param {string} userId
+ * @param {string} attachmentId
+ */
+export function removePendingOrphanedAttachmentDeletion(userId, attachmentId) {
+  if (!userId || userId === 'guest' || !attachmentId || typeof window === 'undefined') return;
+  const queue = getPendingOrphanedAttachmentDeletions(userId);
+  const nextQueue = queue.filter((e) => e.attachmentId !== attachmentId);
+  savePendingOrphanedAttachmentDeletions(userId, nextQueue);
+}
+
+/**
+ * Replays pending orphaned attachment deletions for a given user using exponential backoff.
+ * Retains entries that still fail, prevents duplicate concurrent replays, and enforces user isolation.
+ * @param {string} userId
+ * @param {Object} [options={}]
+ * @param {boolean} [options.force=false]
+ * @returns {Promise<{ replayed: number, remaining: number }>}
+ */
+export async function replayPendingOrphanedAttachmentDeletions(userId, options = {}) {
+  const { force = false } = options;
+  if (!userId || userId === 'guest' || typeof window === 'undefined') {
+    return { replayed: 0, remaining: 0 };
+  }
+
+  if (activeAttachmentReplayPromises.has(userId)) {
+    return activeAttachmentReplayPromises.get(userId);
+  }
+
+  const replayTask = (async () => {
+    if (!isBrowserOnline()) {
+      return { replayed: 0, remaining: getPendingOrphanedAttachmentDeletions(userId).length };
+    }
+
+    const token = await getIdToken().catch(() => null);
+    if (!token) {
+      return { replayed: 0, remaining: getPendingOrphanedAttachmentDeletions(userId).length };
+    }
+
+    const queue = getPendingOrphanedAttachmentDeletions(userId);
+    if (!queue || queue.length === 0) {
+      return { replayed: 0, remaining: 0 };
+    }
+
+    const now = Date.now();
+    let replayedCount = 0;
+
+    for (const entry of queue) {
+      if (!isBrowserOnline()) break;
+      if (!entry?.attachmentId || !entry?.chatId) continue;
+      // Cross-account isolation: strictly process entries matching this userId
+      if (entry.userId && entry.userId !== userId) continue;
+
+      const opKey = `${userId}:${entry.chatId}:${entry.attachmentId}`;
+      if (activeAttachmentDeletionPromises.has(opKey)) {
+        continue;
+      }
+
+      // Check exponential backoff window unless forced
+      if (!force && entry.nextRetryMs && now < entry.nextRetryMs) {
+        continue;
+      }
+
+      try {
+        const res = await cleanUpSingleAttachmentStorage(entry.attachmentId, entry.chatId, userId);
+        if (res.success) {
+          removePendingOrphanedAttachmentDeletion(userId, entry.attachmentId);
+          replayedCount++;
+        } else {
+          // Retain entries that still fail, updating attempts and next retry timestamp
+          enqueuePendingOrphanedAttachmentDeletion(userId, entry.chatId, entry.attachmentId, {
+            attempts: (entry.attempts || 0) + 1,
+            error: res.error || 'Retry failed',
+            status: res.status
+          });
+        }
+      } catch (err) {
+        enqueuePendingOrphanedAttachmentDeletion(userId, entry.chatId, entry.attachmentId, {
+          attempts: (entry.attempts || 0) + 1,
+          error: err?.message || 'Exception during replay'
+        });
+      }
+    }
+
+    const finalQueue = getPendingOrphanedAttachmentDeletions(userId);
+    return { replayed: replayedCount, remaining: finalQueue.length };
+  })();
+
+  activeAttachmentReplayPromises.set(userId, replayTask);
+  try {
+    return await replayTask;
+  } finally {
+    activeAttachmentReplayPromises.delete(userId);
+  }
 }
 
 export function upsertCachedUserChat(userId, chatPatch) {
@@ -1318,6 +1544,13 @@ export async function replayPendingDeletions(userId, options = {}) {
       }
     }
 
+    // Also replay any pending orphaned attachment deletions for this user
+    try {
+      await replayPendingOrphanedAttachmentDeletions(userId, options);
+    } catch (err) {
+      console.warn('[Chat Storage] Failed to replay orphaned attachment deletions:', err?.message || err);
+    }
+
     const finalQueue = getPendingDeletedQueue(userId);
     return { replayed: replayedCount, remaining: finalQueue.length };
   })();
@@ -1497,69 +1730,137 @@ export async function deleteConversation(userId, chatId) {
  * @param {string} chatId - Parent conversation document ID
  * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, error?: string }>}
  */
-export async function cleanUpSingleAttachmentStorage(attachmentId, chatId) {
+/**
+ * Deletes an individual attachment from Supabase cloud storage using the authenticated
+ * DELETE /api/upload/:id?chatId=... endpoint.
+ *
+ * @param {string} attachmentId - Unique attachment UUID
+ * @param {string} chatId - Parent conversation document ID
+ * @param {string} [userId=null] - Optional authenticated user UID
+ * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, error?: string }>}
+ */
+export async function cleanUpSingleAttachmentStorage(attachmentId, chatId, userId = null) {
   if (!attachmentId) {
     return { success: false, retryable: false, error: 'Attachment ID required' };
   }
 
-  if (!isBrowserOnline()) {
-    return { success: false, status: 0, code: 'OFFLINE', retryable: true, offline: true, error: 'Browser is offline.' };
+  const effectiveUserId = (userId && userId !== 'guest') ? userId : getAuthUserId();
+  const opKey = `${effectiveUserId || 'anon'}:${chatId || 'no-chat'}:${attachmentId}`;
+
+  // Prevent concurrent duplicate deletion attempts for the same attachment
+  if (activeAttachmentDeletionPromises.has(opKey)) {
+    return activeAttachmentDeletionPromises.get(opKey);
   }
 
-  try {
-    const token = await getIdToken().catch(() => null);
-    if (!token) {
-      return {
-        success: false,
-        status: 401,
-        code: 'AUTH_REQUIRED',
-        retryable: true,
-        error: 'Authentication required to delete cloud attachment.'
-      };
+  const deletionTask = (async () => {
+    if (!isBrowserOnline()) {
+      const offlineResult = { success: false, status: 0, code: 'OFFLINE', retryable: true, offline: true, error: 'Browser is offline.' };
+      if (effectiveUserId && effectiveUserId !== 'guest') {
+        enqueuePendingOrphanedAttachmentDeletion(effectiveUserId, chatId, attachmentId, {
+          error: offlineResult.error,
+          status: 0
+        });
+      }
+      return offlineResult;
     }
 
-    const query = chatId ? `?chatId=${encodeURIComponent(chatId)}` : '';
-    const endpoint = `/api/upload/${encodeURIComponent(attachmentId)}${query}`;
-
-    const res = await fetchWithAuth(endpoint, {
-      method: 'DELETE'
-    });
-
-    if (res.ok || res.status === 404) {
-      return { success: true, status: res.status };
-    }
-
-    if (res.status === 401) {
-      return { success: false, status: 401, code: 'UNAUTHORIZED', retryable: true, error: 'Unauthorized.' };
-    }
-
-    if (res.status === 403) {
-      return { success: false, status: 403, code: 'STORAGE_ACCESS_DENIED', retryable: false, error: 'Access denied.' };
-    }
-
-    const is5xx = res.status >= 500;
-    let errMsg = `HTTP ${res.status}`;
     try {
-      const errData = await res.json().catch(() => null);
-      if (errData?.error) errMsg = errData.error;
-    } catch (_) {}
+      const token = await getIdToken().catch(() => null);
+      if (!token) {
+        const authErr = {
+          success: false,
+          status: 401,
+          code: 'AUTH_REQUIRED',
+          retryable: true,
+          error: 'Authentication required to delete cloud attachment.'
+        };
+        if (effectiveUserId && effectiveUserId !== 'guest') {
+          enqueuePendingOrphanedAttachmentDeletion(effectiveUserId, chatId, attachmentId, {
+            error: authErr.error,
+            status: 401
+          });
+        }
+        return authErr;
+      }
 
-    return {
-      success: false,
-      status: res.status,
-      code: is5xx ? 'SERVER_ERROR' : 'DELETE_FAILED',
-      retryable: is5xx,
-      error: errMsg
-    };
-  } catch (err) {
-    const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout');
-    return {
-      success: false,
-      status: isTimeout ? 408 : 0,
-      code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
-      retryable: true,
-      error: isTimeout ? 'Storage deletion request timed out.' : (err?.message || 'Network error during storage deletion.')
-    };
+      const query = chatId ? `?chatId=${encodeURIComponent(chatId)}` : '';
+      const endpoint = `/api/upload/${encodeURIComponent(attachmentId)}${query}`;
+
+      const res = await fetchWithAuth(endpoint, {
+        method: 'DELETE'
+      });
+
+      if (res.ok || res.status === 404) {
+        if (effectiveUserId && effectiveUserId !== 'guest') {
+          removePendingOrphanedAttachmentDeletion(effectiveUserId, attachmentId);
+        }
+        return { success: true, status: res.status };
+      }
+
+      if (res.status === 401) {
+        const unauthErr = { success: false, status: 401, code: 'UNAUTHORIZED', retryable: true, error: 'Unauthorized.' };
+        if (effectiveUserId && effectiveUserId !== 'guest') {
+          enqueuePendingOrphanedAttachmentDeletion(effectiveUserId, chatId, attachmentId, {
+            error: unauthErr.error,
+            status: 401
+          });
+        }
+        return unauthErr;
+      }
+
+      if (res.status === 403) {
+        return { success: false, status: 403, code: 'STORAGE_ACCESS_DENIED', retryable: false, error: 'Access denied.' };
+      }
+
+      const is5xx = res.status >= 500;
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const errData = await res.json().catch(() => null);
+        if (errData?.error) errMsg = errData.error;
+      } catch (_) {}
+
+      const failResult = {
+        success: false,
+        status: res.status,
+        code: is5xx ? 'SERVER_ERROR' : 'DELETE_FAILED',
+        retryable: is5xx,
+        error: errMsg
+      };
+
+      if (effectiveUserId && effectiveUserId !== 'guest') {
+        enqueuePendingOrphanedAttachmentDeletion(effectiveUserId, chatId, attachmentId, {
+          error: errMsg,
+          status: res.status
+        });
+      }
+
+      return failResult;
+    } catch (err) {
+      const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout');
+      const networkResult = {
+        success: false,
+        status: isTimeout ? 408 : 0,
+        code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+        retryable: true,
+        error: isTimeout ? 'Storage deletion request timed out.' : (err?.message || 'Network error during storage deletion.')
+      };
+
+      if (effectiveUserId && effectiveUserId !== 'guest') {
+        enqueuePendingOrphanedAttachmentDeletion(effectiveUserId, chatId, attachmentId, {
+          error: networkResult.error,
+          status: networkResult.status
+        });
+      }
+
+      return networkResult;
+    }
+  })();
+
+  activeAttachmentDeletionPromises.set(opKey, deletionTask);
+  try {
+    return await deletionTask;
+  } finally {
+    activeAttachmentDeletionPromises.delete(opKey);
   }
 }
 
@@ -1658,7 +1959,7 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
   // 6. For authenticated cloud attachments, call authenticated DELETE /api/upload/:id?chatId=... (Requirement 5)
   if (userId && userId !== 'guest' && orphanedAttachmentIds.length > 0) {
     await Promise.allSettled(
-      orphanedAttachmentIds.map((attId) => cleanUpSingleAttachmentStorage(attId, chatId))
+      orphanedAttachmentIds.map((attId) => cleanUpSingleAttachmentStorage(attId, chatId, userId))
     );
   }
 
@@ -2138,4 +2439,26 @@ export function subscribeToChatMessages(userId, chatId, onUpdate, onError) {
       if (onError) onError(err);
     }
   );
+}
+
+// Background auto-replay: Trigger pending deletions replay when browser goes online or auth changes
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('online', () => {
+    const uid = getAuthUserId();
+    if (uid && uid !== 'guest') {
+      void replayPendingDeletions(uid).catch(() => {});
+      void replayPendingOrphanedAttachmentDeletions(uid).catch(() => {});
+    }
+  });
+}
+
+if (typeof window !== 'undefined') {
+  try {
+    onAuthChange((user) => {
+      if (user?.uid && isBrowserOnline()) {
+        void replayPendingDeletions(user.uid).catch(() => {});
+        void replayPendingOrphanedAttachmentDeletions(user.uid).catch(() => {});
+      }
+    });
+  } catch (_) {}
 }
