@@ -15,7 +15,8 @@
     "test:multitab-sync": "node scripts/testMultiTabConversationSync.js",
     "test:webgpu-fallback": "node scripts/testWebGPUFallbackBrowser.js",
     "test:timer-optimization": "node scripts/testLiveResponseTimerOptimization.js",
-    "test": "npm run lint && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMultiTabConversationSync.js && node scripts/testMessageAlignmentOrdering.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js && node scripts/testLiveResponseTimerOptimization.js"
+    "test:conversation-deletion": "node scripts/testSupabaseConversationDeletionLifecycle.js",
+    "test": "npm run lint && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMultiTabConversationSync.js && node scripts/testMessageAlignmentOrdering.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js && node scripts/testLiveResponseTimerOptimization.js && node scripts/testSupabaseConversationDeletionLifecycle.js"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",
@@ -54,6 +55,7 @@
     "vite-plugin-pwa": "^2.0.0"
   },
   "overrides": {
-    "mdast-util-gfm-autolink-literal": "2.0.0"
+    "mdast-util-gfm-autolink-literal": "2.0.0",
+    "wasm-feature-detect": "1.8.0"
   }
 }

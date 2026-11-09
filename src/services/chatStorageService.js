@@ -48,11 +48,28 @@ import {
 } from './alternativeResponseService.js';
 import {
   deleteAttachmentsForConversation,
-  deleteAttachmentRecords
+  deleteAttachmentRecords,
+  fetchWithAuth
 } from './attachmentStorageService.js';
+import { getIdToken } from './authService.js';
 
 const FIRESTORE_OP_TIMEOUT_MS = 4500;
+const MAX_DELETION_RETRIES = 5;
+const BASE_RETRY_DELAY_MS = 1000;
+const MAX_RETRY_DELAY_MS = 30000;
 const activeSyncPromises = new Map();
+const activeDeletionPromises = new Map();
+const activeReplayPromises = new Map();
+
+let testDbOverride = null;
+
+/**
+ * Sets a test Firestore database instance for test verification suites.
+ * @param {Object|null} mockDb
+ */
+export function setFirestoreInstanceForTesting(mockDb) {
+  testDbOverride = mockDb;
+}
 
 function getUserChatsCacheKey(userId) {
   return `orvix_user_chats_${userId}`;
@@ -179,22 +196,164 @@ export function saveCachedChatMessages(userId, chatId, messages) {
   }
 }
 
-function getPendingDeletedChatIds(userId) {
+/**
+ * Normalizes a queue item to a consistent pending deletion entry object.
+ * @param {string|Object} item
+ * @param {string} userId
+ * @returns {Object}
+ */
+function normalizeDeletionQueueEntry(item, userId) {
+  if (typeof item === 'string') {
+    return {
+      chatId: item,
+      userId,
+      attempts: 0,
+      lastAttemptMs: 0,
+      nextRetryMs: 0,
+      storageDeleted: false,
+      firestoreDeleted: false,
+      error: null
+    };
+  }
+  return {
+    chatId: item.chatId,
+    userId: item.userId || userId,
+    attempts: typeof item.attempts === 'number' ? item.attempts : 0,
+    lastAttemptMs: typeof item.lastAttemptMs === 'number' ? item.lastAttemptMs : 0,
+    nextRetryMs: typeof item.nextRetryMs === 'number' ? item.nextRetryMs : 0,
+    storageDeleted: Boolean(item.storageDeleted),
+    firestoreDeleted: Boolean(item.firestoreDeleted),
+    error: item.error || null
+  };
+}
+
+/**
+ * Returns the durable queue of pending deletion entries for a user.
+ * @param {string} userId
+ * @returns {Array<Object>}
+ */
+export function getPendingDeletedQueue(userId) {
   if (!userId || typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(getUserDeletedChatsKey(userId));
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => (typeof item === 'string' && item.trim().length > 0) || (item && typeof item.chatId === 'string' && item.chatId.trim().length > 0))
+      .map((item) => normalizeDeletionQueueEntry(item, userId));
   } catch (_) {
     return [];
   }
 }
 
-function savePendingDeletedChatIds(userId, ids) {
+/**
+ * Durably saves the pending deletion queue to localStorage.
+ * @param {string} userId
+ * @param {Array<Object>} queue
+ */
+export function savePendingDeletedQueue(userId, queue) {
   if (!userId || typeof window === 'undefined') return;
   try {
-    localStorage.setItem(getUserDeletedChatsKey(userId), JSON.stringify(Array.from(new Set(ids))));
+    if (!Array.isArray(queue) || queue.length === 0) {
+      localStorage.removeItem(getUserDeletedChatsKey(userId));
+      return;
+    }
+    const seen = new Map();
+    for (const entry of queue) {
+      if (entry?.chatId) {
+        seen.set(entry.chatId, entry);
+      }
+    }
+    localStorage.setItem(getUserDeletedChatsKey(userId), JSON.stringify(Array.from(seen.values())));
   } catch (_) {}
+}
+
+/**
+ * Returns array of pending deleted chat IDs (preserves existing API contract).
+ * @param {string} userId
+ * @returns {string[]}
+ */
+export function getPendingDeletedChatIds(userId) {
+  const queue = getPendingDeletedQueue(userId);
+  return Array.from(new Set(queue.map((e) => e.chatId)));
+}
+
+/**
+ * Saves array of pending deleted chat IDs or entries (preserves existing API contract).
+ * @param {string} userId
+ * @param {Array<string|Object>} idsOrEntries
+ */
+export function savePendingDeletedChatIds(userId, idsOrEntries) {
+  if (!userId || typeof window === 'undefined') return;
+  if (!Array.isArray(idsOrEntries)) {
+    savePendingDeletedQueue(userId, []);
+    return;
+  }
+  const currentQueue = getPendingDeletedQueue(userId);
+  const currentMap = new Map(currentQueue.map((e) => [e.chatId, e]));
+
+  const nextQueue = idsOrEntries.map((item) => {
+    if (typeof item === 'string') {
+      return currentMap.get(item) || normalizeDeletionQueueEntry(item, userId);
+    }
+    return normalizeDeletionQueueEntry(item, userId);
+  });
+
+  savePendingDeletedQueue(userId, nextQueue);
+}
+
+/**
+ * Adds or updates a chat in the durable deletion queue with exponential backoff.
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {Object} [patch={}]
+ */
+export function enqueuePendingDeletion(userId, chatId, patch = {}) {
+  if (!userId || !chatId || typeof window === 'undefined') return;
+  const queue = getPendingDeletedQueue(userId);
+  const existingIndex = queue.findIndex((e) => e.chatId === chatId);
+  const existing = existingIndex >= 0 ? queue[existingIndex] : null;
+
+  const now = Date.now();
+  const currentAttempts = existing ? (existing.attempts || 0) : 0;
+  const newAttempts = patch.attempts !== undefined ? patch.attempts : currentAttempts + 1;
+  const backoffDelay = Math.min(
+    BASE_RETRY_DELAY_MS * Math.pow(2, Math.max(0, newAttempts - 1)),
+    MAX_RETRY_DELAY_MS
+  );
+
+  const updatedEntry = {
+    chatId,
+    userId,
+    attempts: newAttempts,
+    lastAttemptMs: now,
+    nextRetryMs: patch.nextRetryMs !== undefined ? patch.nextRetryMs : now + backoffDelay,
+    storageDeleted: patch.storageDeleted !== undefined ? Boolean(patch.storageDeleted) : Boolean(existing?.storageDeleted),
+    firestoreDeleted: patch.firestoreDeleted !== undefined ? Boolean(patch.firestoreDeleted) : Boolean(existing?.firestoreDeleted),
+    error: patch.error !== undefined ? patch.error : (existing?.error || null)
+  };
+
+  let nextQueue;
+  if (existingIndex >= 0) {
+    nextQueue = queue.map((e, idx) => (idx === existingIndex ? updatedEntry : e));
+  } else {
+    nextQueue = [...queue, updatedEntry];
+  }
+
+  savePendingDeletedQueue(userId, nextQueue);
+}
+
+/**
+ * Removes a chat from the durable deletion queue.
+ * @param {string} userId
+ * @param {string} chatId
+ */
+export function removePendingDeletion(userId, chatId) {
+  if (!userId || !chatId || typeof window === 'undefined') return;
+  const queue = getPendingDeletedQueue(userId);
+  const nextQueue = queue.filter((e) => e.chatId !== chatId);
+  savePendingDeletedQueue(userId, nextQueue);
 }
 
 export function upsertCachedUserChat(userId, chatPatch) {
@@ -999,8 +1158,188 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
 }
 
 /**
- * Deletes a conversation and all its subcollection messages reliably
- * @param {string} userId - Authenticated user UID
+ * Calls the authenticated DELETE /api/upload/conversations/:chatId endpoint
+ * to clean up Supabase storage attachments for the conversation.
+ * Uses existing Firebase authentication to obtain a valid ID token.
+ * Never exposes Supabase credentials.
+ *
+ * @param {string} chatId
+ * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, error?: string, deletedCount?: number }>}
+ */
+export async function cleanUpSupabaseConversationStorage(chatId) {
+  if (!chatId) {
+    return { success: false, retryable: false, error: 'Chat ID required' };
+  }
+
+  if (!isBrowserOnline()) {
+    return {
+      success: false,
+      status: 0,
+      code: 'OFFLINE',
+      retryable: true,
+      offline: true,
+      error: 'Browser is offline.'
+    };
+  }
+
+  try {
+    const token = await getIdToken().catch(() => null);
+    if (!token) {
+      return {
+        success: false,
+        status: 401,
+        code: 'AUTH_REQUIRED',
+        retryable: true,
+        error: 'Authentication required to delete conversation attachments.'
+      };
+    }
+
+    const res = await fetchWithAuth(`/api/upload/conversations/${encodeURIComponent(chatId)}`, {
+      method: 'DELETE'
+    });
+
+    if (res.ok || res.status === 404) {
+      const data = await res.json().catch(() => ({}));
+      return {
+        success: true,
+        status: res.status,
+        deletedCount: typeof data?.deletedCount === 'number' ? data.deletedCount : 0
+      };
+    }
+
+    if (res.status === 401) {
+      return {
+        success: false,
+        status: 401,
+        code: 'UNAUTHORIZED',
+        retryable: true,
+        error: 'Authentication failed or token expired.'
+      };
+    }
+
+    if (res.status === 403) {
+      return {
+        success: false,
+        status: 403,
+        code: 'STORAGE_ACCESS_DENIED',
+        retryable: false,
+        error: 'Access denied: You do not have permission to delete these attachments.'
+      };
+    }
+
+    const is5xx = res.status >= 500;
+    let errMsg = `HTTP ${res.status}`;
+    try {
+      const errData = await res.json().catch(() => null);
+      if (errData?.error) errMsg = errData.error;
+    } catch (_) {}
+
+    return {
+      success: false,
+      status: res.status,
+      code: is5xx ? 'SERVER_ERROR' : 'DELETE_FAILED',
+      retryable: is5xx,
+      error: errMsg
+    };
+  } catch (err) {
+    const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout');
+    return {
+      success: false,
+      status: isTimeout ? 408 : 0,
+      code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+      retryable: true,
+      error: isTimeout
+        ? 'Storage deletion request timed out.'
+        : (err?.message || 'Network error during storage deletion.')
+    };
+  }
+}
+
+/**
+ * Replays all queued conversation deletions for a user using bounded retries
+ * and exponential backoff, preventing duplicate concurrent runs.
+ *
+ * @param {string} userId
+ * @param {Object} [options={}]
+ * @param {boolean} [options.force=false] - Force retry ignoring nextRetryMs backoff window
+ * @returns {Promise<{ replayed: number, remaining: number }>}
+ */
+export async function replayPendingDeletions(userId, options = {}) {
+  const { force = false } = options;
+  if (!userId || typeof window === 'undefined') {
+    return { replayed: 0, remaining: 0 };
+  }
+
+  // Prevent duplicate concurrent replay runs for the same user
+  if (activeReplayPromises.has(userId)) {
+    return activeReplayPromises.get(userId);
+  }
+
+  const replayTask = (async () => {
+    if (!isBrowserOnline()) {
+      return { replayed: 0, remaining: getPendingDeletedQueue(userId).length };
+    }
+
+    const queue = getPendingDeletedQueue(userId);
+    if (!queue || queue.length === 0) {
+      return { replayed: 0, remaining: 0 };
+    }
+
+    const now = Date.now();
+    let replayedCount = 0;
+
+    for (const entry of queue) {
+      if (!isBrowserOnline()) break;
+      const chatId = entry.chatId;
+
+      // Skip if this specific chat deletion is currently in-flight
+      const opKey = `${userId}:${chatId}`;
+      if (activeDeletionPromises.has(opKey)) {
+        continue;
+      }
+
+      // Check bounded retries: drop if exceeded maximum attempts
+      if ((entry.attempts || 0) >= MAX_DELETION_RETRIES && !force) {
+        console.warn(`[Chat Storage] Max deletion retries (${MAX_DELETION_RETRIES}) exceeded for chat ${chatId}. Discarding from queue.`);
+        removePendingDeletion(userId, chatId);
+        continue;
+      }
+
+      // Check exponential backoff window
+      if (!force && entry.nextRetryMs && now < entry.nextRetryMs) {
+        continue;
+      }
+
+      try {
+        await deleteConversation(userId, chatId);
+        replayedCount++;
+      } catch (err) {
+        console.warn(`[Chat Storage] Failed to replay deletion for chat ${chatId}:`, err?.message || err);
+      }
+    }
+
+    const finalQueue = getPendingDeletedQueue(userId);
+    return { replayed: replayedCount, remaining: finalQueue.length };
+  })();
+
+  activeReplayPromises.set(userId, replayTask);
+  try {
+    return await replayTask;
+  } finally {
+    activeReplayPromises.delete(userId);
+  }
+}
+
+/**
+ * Deletes a conversation following the safe order:
+ * 1. Supabase Storage cleanup via DELETE /api/upload/conversations/:chatId
+ * 2. Local cache cleanup (IndexedDB blobs and localStorage)
+ * 3. Cloud Firestore deletion (messages subcollection and parent chat doc)
+ *
+ * If Supabase cleanup fails (offline, 5xx, timeout), the deletion is durably queued
+ * with bounded retries and exponential backoff, without permanently losing the request.
+ *
+ * @param {string} userId - Authenticated user UID (or 'guest')
  * @param {string} chatId - Chat document ID
  */
 export async function deleteConversation(userId, chatId) {
@@ -1008,70 +1347,145 @@ export async function deleteConversation(userId, chatId) {
     throw new Error('Valid userId and chatId are required.');
   }
 
-  // Purge associated attachment blobs from IndexedDB to prevent orphan buildup
-  void deleteAttachmentsForConversation(chatId).catch(() => {});
-  try {
-    const cachedMessages = getCachedChatMessages(userId, chatId);
-    const attIds = [];
-    cachedMessages.forEach((m) => {
-      if (Array.isArray(m?.attachments)) {
-        m.attachments.forEach((a) => a?.id && attIds.push(a.id));
-      }
-      if (Array.isArray(m?.referencedAttachments)) {
-        m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
-      }
-    });
-    if (attIds.length > 0) {
-      void deleteAttachmentRecords(attIds).catch(() => {});
-    }
-  } catch (_) {}
+  const opKey = `${userId}:${chatId}`;
+  if (activeDeletionPromises.has(opKey)) {
+    return activeDeletionPromises.get(opKey);
+  }
 
-  const existingLocal = getCachedUserChats(userId);
-  const targetLocal = existingLocal.find((c) => c.id === chatId);
-  saveCachedUserChats(
-    userId,
-    existingLocal.filter((c) => c.id !== chatId)
-  );
-  if (typeof window !== 'undefined') {
+  const deletionTask = (async () => {
+    // 0. Inspect current pending queue entry (if replaying or previously failed)
+    const queue = getPendingDeletedQueue(userId);
+    const existingEntry = queue.find((e) => e.chatId === chatId);
+
+    let storageDeleted = Boolean(existingEntry?.storageDeleted);
+    let firestoreDeleted = Boolean(existingEntry?.firestoreDeleted);
+    let storageError = null;
+
+    // 1. SUPABASE STORAGE CLEANUP FIRST (Requirement 1, 2, 7, 8)
+    if (userId && userId !== 'guest' && !storageDeleted) {
+      const storageResult = await cleanUpSupabaseConversationStorage(chatId);
+      if (storageResult.success) {
+        storageDeleted = true;
+      } else {
+        storageError = storageResult;
+        if (storageResult.status === 403) {
+          // Cross-user / forbidden: non-retryable permission error
+          storageDeleted = true;
+        }
+      }
+    } else {
+      // Guest or already cleaned
+      storageDeleted = true;
+    }
+
+    // 2. LOCAL CACHE CLEANUP SECOND (Requirement 7)
+    // Purge associated attachment blobs from IndexedDB to prevent orphan buildup
+    void deleteAttachmentsForConversation(chatId).catch(() => {});
     try {
-      localStorage.removeItem(getUserMessagesCacheKey(userId, chatId));
-    } catch (_) {}
-  }
-
-  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
-    // Only queue cloud deletion if the chat wasn't strictly created offline and never synced
-    if (!targetLocal?.createdOffline) {
-      savePendingDeletedChatIds(userId, [...getPendingDeletedChatIds(userId), chatId]);
-    }
-    return;
-  }
-
-  try {
-    const messagesRef = collection(db, 'users', userId, 'chats', chatId, 'messages');
-    const snapshot = await withBoundedTimeout(getDocs(messagesRef), FIRESTORE_OP_TIMEOUT_MS, 'loadMessagesForDelete');
-
-    const docs = snapshot.docs;
-    const CHUNK_SIZE = 400;
-
-    for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
-      const chunk = docs.slice(i, i + CHUNK_SIZE);
-      const batch = writeBatch(db);
-      chunk.forEach((docSnap) => {
-        batch.delete(docSnap.ref);
+      const cachedMessages = getCachedChatMessages(userId, chatId);
+      const attIds = [];
+      cachedMessages.forEach((m) => {
+        if (Array.isArray(m?.attachments)) {
+          m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+        }
+        if (Array.isArray(m?.referencedAttachments)) {
+          m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+        }
       });
-      await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'deleteMessagesBatch');
+      if (attIds.length > 0) {
+        void deleteAttachmentRecords(attIds).catch(() => {});
+      }
+    } catch (_) {}
+
+    const existingLocal = getCachedUserChats(userId);
+    const targetLocal = existingLocal.find((c) => c.id === chatId);
+    saveCachedUserChats(
+      userId,
+      existingLocal.filter((c) => c.id !== chatId)
+    );
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(getUserMessagesCacheKey(userId, chatId));
+      } catch (_) {}
     }
 
-    const chatDocRef = doc(db, 'users', userId, 'chats', chatId);
-    await withBoundedTimeout(deleteDoc(chatDocRef), FIRESTORE_OP_TIMEOUT_MS, 'deleteChatDoc');
-  } catch (err) {
-    if (isOfflineOrNetworkError(err)) {
-      if (!targetLocal?.createdOffline) {
-        savePendingDeletedChatIds(userId, [...getPendingDeletedChatIds(userId), chatId]);
+    // 3. FIRESTORE DELETION THIRD (Requirement 1, 7)
+    // If Supabase storage cleanup failed with a retryable error, queue immediately and do not delete Firestore yet!
+    if (!storageDeleted && storageError?.retryable) {
+      if (!targetLocal?.createdOffline || existingEntry) {
+        enqueuePendingDeletion(userId, chatId, {
+          storageDeleted: false,
+          firestoreDeleted: false,
+          error: storageError.error
+        });
       }
       return;
     }
-    throw err;
+
+    // If storage is deleted (or guest), proceed with Firestore deletion if not already firestoreDeleted
+    if (!firestoreDeleted) {
+      const effectiveDb = testDbOverride !== null ? testDbOverride : db;
+      if (!effectiveDb || (!isFirebaseConfigured() && !testDbOverride) || !isBrowserOnline()) {
+        if (!targetLocal?.createdOffline || existingEntry) {
+          enqueuePendingDeletion(userId, chatId, {
+            storageDeleted: true,
+            firestoreDeleted: false,
+            error: 'Offline / Firebase unconfigured'
+          });
+        }
+        return;
+      }
+
+      try {
+        if (testDbOverride && typeof testDbOverride.deleteConversation === 'function') {
+          await testDbOverride.deleteConversation(userId, chatId);
+          firestoreDeleted = true;
+        } else {
+          const messagesRef = collection(effectiveDb, 'users', userId, 'chats', chatId, 'messages');
+          const snapshot = await withBoundedTimeout(getDocs(messagesRef), FIRESTORE_OP_TIMEOUT_MS, 'loadMessagesForDelete');
+
+          const docs = snapshot.docs;
+          const CHUNK_SIZE = 400;
+
+          for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+            const chunk = docs.slice(i, i + CHUNK_SIZE);
+            const batch = writeBatch(effectiveDb);
+            chunk.forEach((docSnap) => {
+              batch.delete(docSnap.ref);
+            });
+            await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'deleteMessagesBatch');
+          }
+
+          const chatDocRef = doc(effectiveDb, 'users', userId, 'chats', chatId);
+          await withBoundedTimeout(deleteDoc(chatDocRef), FIRESTORE_OP_TIMEOUT_MS, 'deleteChatDoc');
+          firestoreDeleted = true;
+        }
+      } catch (err) {
+        if (isOfflineOrNetworkError(err)) {
+          if (!targetLocal?.createdOffline || existingEntry) {
+            enqueuePendingDeletion(userId, chatId, {
+              storageDeleted: true,
+              firestoreDeleted: false,
+              error: err.message
+            });
+          }
+          return;
+        }
+        throw err;
+      }
+    }
+
+    // 4. Completed both cleanup stages successfully
+    if (storageDeleted && firestoreDeleted) {
+      removePendingDeletion(userId, chatId);
+    }
+  })();
+
+  activeDeletionPromises.set(opKey, deletionTask);
+  try {
+    return await deletionTask;
+  } finally {
+    activeDeletionPromises.delete(opKey);
   }
 }
 
@@ -1208,19 +1622,8 @@ export async function syncOfflineUserChatsToFirestore(userId) {
     try {
       await syncFirestoreNetworkState(true);
 
-      // 1. Replay any pending offline deletions
-      const pendingDeleted = getPendingDeletedChatIds(userId);
-      if (pendingDeleted.length > 0) {
-        const remainingDeletes = [];
-        for (const delChatId of pendingDeleted) {
-          try {
-            await deleteConversation(userId, delChatId);
-          } catch (_) {
-            remainingDeletes.push(delChatId);
-          }
-        }
-        savePendingDeletedChatIds(userId, remainingDeletes);
-      }
+      // 1. Replay any pending offline deletions (Supabase storage + Firestore)
+      await replayPendingDeletions(userId);
 
       // 2. Sync pending chat metadata and pending messages
       const localChats = getCachedUserChats(userId);

@@ -31,7 +31,8 @@ import {
   getCachedUserChats,
   saveCachedChatMessages,
   sanitizeMessageForStorage,
-  syncOfflineUserChatsToFirestore
+  syncOfflineUserChatsToFirestore,
+  replayPendingDeletions
 } from '../services/chatStorageService.js';
 import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
 import {
@@ -659,6 +660,7 @@ export default function ChatPage({
             .catch((err) => {
               console.warn('Background offline chat sync warning:', err);
             });
+          void replayPendingDeletions(currentUser.uid).catch(() => {});
         }
       }
     });
@@ -712,8 +714,9 @@ export default function ChatPage({
       return undefined;
     }
 
-    // Reconcile any pending offline chats when mounting online
+    // Reconcile any pending offline chats and re-attempt queued deletions when mounting online
     void syncOfflineUserChatsToFirestore(currentUser.uid);
+    void replayPendingDeletions(currentUser.uid).catch(() => {});
 
     const cachedInitial = getCachedUserChats(currentUser.uid);
     if (cachedInitial.length > 0) {
