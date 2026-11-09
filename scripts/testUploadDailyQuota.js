@@ -28,6 +28,7 @@ import {
 
 import {
   DAILY_UPLOAD_LIMIT,
+  RESERVATION_TTL_MS,
   setCustomDateHookForTesting,
   resetQuotaForTesting,
   resolveQuotaDirectory,
@@ -35,7 +36,17 @@ import {
   getNextUtcMidnight,
   getOrInitServerSecret,
   signGuestId,
-  createServerIssuedGuestToken
+  createServerIssuedGuestToken,
+  getFirestoreDb,
+  createSimulatedFirestoreInstance,
+  setFirestoreForTesting,
+  resetFirestoreForTesting,
+  setForceProductionModeForTesting,
+  isProductionEnvironment,
+  reserveUploadSlot,
+  commitUploadSlot,
+  releaseUploadSlot,
+  getQuotaStatus
 } from '../server/uploadQuotaService.ts';
 
 import http from 'node:http';
@@ -493,9 +504,9 @@ async function runAllTests() {
   });
 
   // -------------------------------------------------------------------------
-  // Test 9: Server Restart Does Not Reset Quota (Disk Persistence)
+  // Test 9: Serverless Instance Restart Does Not Reset Quota (Firestore Persistence)
   // -------------------------------------------------------------------------
-  await test('Server restart does not reset quota (persistent disk storage)', async () => {
+  await test('Serverless instance restart does not reset quota (Firestore persistence)', async () => {
     const uid = 'restart_user_' + crypto.randomUUID();
     const token = createSignedJwt(uid);
     const convId = 'conv_restart';
@@ -506,25 +517,35 @@ async function runAllTests() {
       assert.strictEqual(r.status, 200);
     }
 
-    // Verify quota file exists on disk
-    const quotaDir = resolveQuotaDirectory();
+    // Verify quota document exists in Firestore
+    const db = getFirestoreDb();
     const today = getUtcDayString();
     const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
-    const quotaFile = path.join(quotaDir, `auth_${hashedUid}_${today}.json`);
+    const docId = `auth_${hashedUid}_${today}`;
+    const docRef = db.collection('uploadQuotas').doc(docId);
+    let storedRecord;
+    await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(docRef);
+      assert.ok(snap.exists, 'Quota record must exist in persistent Firestore');
+      storedRecord = snap.data();
+    });
 
-    assert.ok(fs.existsSync(quotaFile), 'Quota record must exist on persistent disk');
-    const stored = JSON.parse(fs.readFileSync(quotaFile, 'utf8'));
-    assert.strictEqual(stored.committed, 5, 'Stored record must have committed: 5');
+    assert.strictEqual(storedRecord.committed, 5, 'Stored record must have committed: 5');
 
-    // Simulate server process restart: re-read from disk
+    // Simulate fresh serverless instance connecting to Firestore
+    const freshInstance = createSimulatedFirestoreInstance();
+    setFirestoreForTesting(freshInstance);
+
     const postRestartUpload = await uploadAttachment({
       token,
       conversationId: convId,
       filename: 'file_after_restart.txt'
     });
 
-    assert.strictEqual(postRestartUpload.status, 429, 'Must still be 429 after restart');
+    assert.strictEqual(postRestartUpload.status, 429, 'Must still be 429 after instance restart');
     assert.strictEqual(postRestartUpload.data.code, 'QUOTA_EXCEEDED');
+
+    setFirestoreForTesting(null);
   });
 
   // -------------------------------------------------------------------------
@@ -591,6 +612,332 @@ async function runAllTests() {
     assert.strictEqual(resetDate.getUTCHours(), 0);
     assert.strictEqual(resetDate.getUTCMinutes(), 0);
     assert.strictEqual(resetDate.getUTCSeconds(), 0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 12: Concurrent Requests Across Simulated Serverless Instances
+  // -------------------------------------------------------------------------
+  await test('Concurrent requests across simulated serverless instances enforce limit atomically', async () => {
+    const uid = 'multiserverless_user_' + crypto.randomUUID();
+    const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
+    const identity = {
+      type: 'auth',
+      id: uid,
+      key: `auth_${hashedUid}`
+    };
+
+    // Simulate 3 serverless instances sharing the same Firestore database
+    const instanceA = createSimulatedFirestoreInstance();
+    const instanceB = createSimulatedFirestoreInstance();
+    const instanceC = createSimulatedFirestoreInstance();
+
+    // Fire 12 concurrent reservation requests spread across the 3 instances
+    const instances = [instanceA, instanceB, instanceC];
+    const reservePromises = Array.from({ length: 12 }, async (_, idx) => {
+      const activeInst = instances[idx % instances.length];
+      setFirestoreForTesting(activeInst);
+      return reserveUploadSlot(identity);
+    });
+
+    const results = await Promise.all(reservePromises);
+    setFirestoreForTesting(null);
+
+    const allowed = results.filter((r) => r.allowed === true);
+    const rejected = results.filter((r) => r.allowed === false);
+
+    assert.strictEqual(allowed.length, 5, `Exactly 5 reservations allowed across instances, got ${allowed.length}`);
+    assert.strictEqual(rejected.length, 7, `Exactly 7 reservations rejected across instances, got ${rejected.length}`);
+
+    // Commit all 5 reservations across instances
+    for (let i = 0; i < allowed.length; i++) {
+      const res = allowed[i].reservation;
+      const inst = instances[i % instances.length];
+      setFirestoreForTesting(inst);
+      await commitUploadSlot(res);
+    }
+    setFirestoreForTesting(null);
+
+    // Final quota check must show committed: 5, remaining: 0
+    const finalStatus = await getQuotaStatus(identity);
+    assert.strictEqual(finalStatus.committed, 5);
+    assert.strictEqual(finalStatus.remaining, 0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 13: Reservation Expiry Protection (Requirement 5)
+  // -------------------------------------------------------------------------
+  await test('Expired reservations cannot cause active uploads to exceed quota', async () => {
+    const uid = 'expiry_race_user_' + crypto.randomUUID();
+    const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
+    const identity = {
+      type: 'auth',
+      id: uid,
+      key: `auth_${hashedUid}`
+    };
+
+    // 1. Commit 4 uploads so 1 slot remains
+    for (let i = 1; i <= 4; i++) {
+      const res = await reserveUploadSlot(identity);
+      assert.strictEqual(res.allowed, true);
+      await commitUploadSlot(res.reservation);
+    }
+
+    const t0 = new Date('2026-11-09T12:00:00.000Z');
+    setCustomDateHookForTesting(() => t0);
+
+    // 2. Slow upload A reserves slot 5 at T=0
+    const slowReserveA = await reserveUploadSlot(identity);
+    assert.strictEqual(slowReserveA.allowed, true, 'Slot 5 should be reserved by slow upload A');
+    assert.strictEqual(slowReserveA.remaining, 0);
+
+    // 3. Advance time by 125 seconds: slow upload A reservation expires
+    const tExpired = new Date('2026-11-09T12:02:05.000Z'); // +125 seconds (> 120s TTL)
+    setCustomDateHookForTesting(() => tExpired);
+
+    // 4. Fast upload B arrives while slow upload A is expired.
+    // Upload B detects A is expired, prunes it, and claims slot 5
+    const fastReserveB = await reserveUploadSlot(identity);
+    assert.strictEqual(fastReserveB.allowed, true, 'Slot 5 claimed by fast upload B');
+
+    // 5. Fast upload B commits successfully
+    const commitB = await commitUploadSlot(fastReserveB.reservation);
+    assert.strictEqual(commitB.committed, 5, 'Fast upload B committed 5th slot');
+    assert.strictEqual(commitB.remaining, 0);
+
+    // 6. Slow upload A now finishes at T=130s and attempts to commit its expired reservation.
+    // INVARIANT: Expired reservation MUST NOT cause quota to exceed 5!
+    let commitFailed = false;
+    try {
+      await commitUploadSlot(slowReserveA.reservation);
+    } catch (err) {
+      commitFailed = true;
+      assert.strictEqual(err.code, 'QUOTA_EXCEEDED');
+    }
+    assert.ok(commitFailed, 'Expired reservation must be rejected when quota is full');
+
+    // Total committed must strictly remain 5
+    const status = await getQuotaStatus(identity);
+    assert.strictEqual(status.committed, 5, 'Committed uploads must never exceed 5');
+    assert.strictEqual(status.remaining, 0);
+
+    setCustomDateHookForTesting(null);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 14: Expired reservation safely reclaimed when upload was abandoned
+  // -------------------------------------------------------------------------
+  await test('Expired reservation without subsequent quota exhaustion safely commits or reclaims', async () => {
+    const uid = 'abandoned_user_' + crypto.randomUUID();
+    const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
+    const identity = {
+      type: 'auth',
+      id: uid,
+      key: `auth_${hashedUid}`
+    };
+
+    const t0 = new Date('2026-11-09T14:00:00.000Z');
+    setCustomDateHookForTesting(() => t0);
+
+    // Reserve slot 1 but do NOT commit (abandoned upload)
+    const abandonedRes = await reserveUploadSlot(identity);
+    assert.strictEqual(abandonedRes.allowed, true);
+
+    // Advance time past 120s TTL
+    const tPastTtl = new Date('2026-11-09T14:03:00.000Z'); // +180s
+    setCustomDateHookForTesting(() => tPastTtl);
+
+    // Status should show 0 active reservations because abandoned reservation expired
+    const status = await getQuotaStatus(identity);
+    assert.strictEqual(status.activeReservations, 0);
+    assert.strictEqual(status.remaining, 5);
+
+    // New upload can successfully claim and commit
+    const freshRes = await reserveUploadSlot(identity);
+    assert.strictEqual(freshRes.allowed, true);
+    const committedStatus = await commitUploadSlot(freshRes.reservation);
+    assert.strictEqual(committedStatus.committed, 1);
+    assert.strictEqual(committedStatus.remaining, 4);
+
+    setCustomDateHookForTesting(null);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 15: UTC midnight rollover isolation under active load
+  // -------------------------------------------------------------------------
+  await test('UTC midnight rollover maintains complete date isolation in Firestore', async () => {
+    const uid = 'rollover_user_' + crypto.randomUUID();
+    const token = createSignedJwt(uid);
+    const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
+    const identity = {
+      type: 'auth',
+      id: uid,
+      key: `auth_${hashedUid}`
+    };
+
+    // Day 1: 23:59:50 UTC
+    const day1Time = new Date('2026-11-09T23:59:50.000Z');
+    setCustomDateHookForTesting(() => day1Time);
+
+    for (let i = 1; i <= 5; i++) {
+      const res = await uploadAttachment({ token, conversationId: 'conv_roll', filename: `roll1_${i}.txt` });
+      assert.strictEqual(res.status, 200);
+    }
+
+    const day1Status = await getQuotaStatus(identity);
+    assert.strictEqual(day1Status.committed, 5);
+    assert.strictEqual(day1Status.remaining, 0);
+
+    // Day 2: 00:00:05 UTC (Midnight rollover)
+    const day2Time = new Date('2026-11-10T00:00:05.000Z');
+    setCustomDateHookForTesting(() => day2Time);
+
+    const day2Status = await getQuotaStatus(identity);
+    assert.strictEqual(day2Status.committed, 0, 'New UTC day must start with 0 committed');
+    assert.strictEqual(day2Status.remaining, 5, 'New UTC day must start with 5 remaining');
+
+    // Complete Day 2 upload
+    const resDay2 = await uploadAttachment({ token, conversationId: 'conv_roll', filename: 'roll2_1.txt' });
+    assert.strictEqual(resDay2.status, 200);
+    assert.strictEqual(resDay2.headers.get('x-ratelimit-remaining'), '4');
+
+    // Check Day 1 record in Firestore remains committed: 5
+    const db = getFirestoreDb();
+    const day1DocRef = db.collection('uploadQuotas').doc(`auth_${hashedUid}_2026-11-09`);
+    await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(day1DocRef);
+      assert.strictEqual(snap.data().committed, 5);
+    });
+
+    setCustomDateHookForTesting(null);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 16: Production fails closed when FIREBASE_PROJECT_ID is missing
+  // -------------------------------------------------------------------------
+  await test('Production fails closed with fatal error when FIREBASE_PROJECT_ID is missing', async () => {
+    setForceProductionModeForTesting(true);
+    const origProjectId = process.env.FIREBASE_PROJECT_ID;
+    const origViteProjectId = process.env.VITE_FIREBASE_PROJECT_ID;
+    delete process.env.FIREBASE_PROJECT_ID;
+    delete process.env.VITE_FIREBASE_PROJECT_ID;
+
+    let thrownError = null;
+    try {
+      getFirestoreDb();
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      process.env.FIREBASE_PROJECT_ID = origProjectId;
+      if (origViteProjectId) process.env.VITE_FIREBASE_PROJECT_ID = origViteProjectId;
+      setForceProductionModeForTesting(null);
+    }
+
+    assert.ok(thrownError, 'Must throw fatal error in production when project ID is missing');
+    assert.ok(
+      thrownError.message.includes('Production deployment requires a valid FIREBASE_PROJECT_ID'),
+      `Expected fatal project ID error, got: ${thrownError.message}`
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 17: Production fails closed when Firebase Admin credentials are missing
+  // -------------------------------------------------------------------------
+  await test('Production fails closed with fatal error when Firebase Admin credentials are missing', async () => {
+    setForceProductionModeForTesting(true);
+    const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+    let thrownError = null;
+    try {
+      getFirestoreDb();
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      if (origGac) process.env.GOOGLE_APPLICATION_CREDENTIALS = origGac;
+      setForceProductionModeForTesting(null);
+    }
+
+    assert.ok(thrownError, 'Must throw fatal error in production when credentials are missing');
+    assert.ok(
+      thrownError.message.includes('Production deployment requires Firebase Admin credentials'),
+      `Expected fatal credentials error, got: ${thrownError.message}`
+    );
+    assert.ok(
+      thrownError.message.includes('In-memory fallback is strictly forbidden in production'),
+      'Must explicitly state that in-memory fallback is forbidden in production'
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 18: Production fails closed when FIREBASE_SERVICE_ACCOUNT contains invalid JSON
+  // -------------------------------------------------------------------------
+  await test('Production fails closed when FIREBASE_SERVICE_ACCOUNT contains invalid JSON', async () => {
+    setForceProductionModeForTesting(true);
+    const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    process.env.FIREBASE_SERVICE_ACCOUNT = '{ this_is: invalid_json, broken: ';
+
+    let thrownError = null;
+    try {
+      getFirestoreDb();
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      setForceProductionModeForTesting(null);
+    }
+
+    assert.ok(thrownError, 'Must throw fatal error for invalid service account JSON');
+    assert.ok(
+      thrownError.message.includes('FIREBASE_SERVICE_ACCOUNT contains invalid JSON') ||
+        thrownError.message.includes('Failed to initialize Firebase Admin Firestore'),
+      `Expected invalid JSON error, got: ${thrownError.message}`
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 19: Production fail-closed rejects live HTTP upload with 500 QUOTA_SERVICE_UNAVAILABLE
+  // -------------------------------------------------------------------------
+  await test('Production fail-closed rejects live HTTP upload with 500 QUOTA_SERVICE_UNAVAILABLE', async () => {
+    setForceProductionModeForTesting(true);
+    const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+    const uid = 'prod_failclosed_user_' + crypto.randomUUID();
+    const token = createSignedJwt(uid);
+
+    let res;
+    try {
+      res = await uploadAttachment({ token, conversationId: 'conv_prod_fail', filename: 'prod_fail.txt' });
+    } finally {
+      if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      if (origGac) process.env.GOOGLE_APPLICATION_CREDENTIALS = origGac;
+      setForceProductionModeForTesting(null);
+    }
+
+    assert.strictEqual(res.status, 500, `Expected 500 status when production misconfigured, got ${res.status}`);
+    assert.strictEqual(res.data.code, 'QUOTA_SERVICE_UNAVAILABLE');
+    assert.strictEqual(res.data.status, 'SERVICE_UNAVAILABLE');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 20: In-memory fallback is preserved exclusively for tests and permitted dev
+  // -------------------------------------------------------------------------
+  await test('In-memory fallback is strictly preserved for tests and permitted development environments', async () => {
+    setForceProductionModeForTesting(false);
+
+    // In testing/dev mode, getFirestoreDb returns the in-memory transactional adapter without throwing
+    const devDb = getFirestoreDb();
+    assert.ok(devDb, 'Must return database instance in test/dev mode');
+    assert.strictEqual(typeof devDb.runTransaction, 'function');
+    assert.strictEqual(typeof devDb.collection, 'function');
+
+    setForceProductionModeForTesting(null);
   });
 
   // Clean up

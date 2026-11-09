@@ -41,6 +41,7 @@ import {
   releaseUploadSlot,
   attachQuotaHeaders,
   getQuotaStatus,
+  getNextUtcMidnight,
   type QuotaIdentity,
   type QuotaReservation,
   type QuotaStatus
@@ -1607,7 +1608,17 @@ export function registerUploadRoutes(app: express.Express) {
 
       // Enforce secure, persistent daily upload quota of 5 per identity per UTC calendar day
       const quotaIdentity = await resolveUploadIdentity(req);
-      const quotaReservation = await reserveUploadSlot(quotaIdentity);
+      let quotaReservation: any;
+      try {
+        quotaReservation = await reserveUploadSlot(quotaIdentity);
+      } catch (quotaErr: any) {
+        console.error('[UploadQuota] Quota reservation failed:', quotaErr?.message || quotaErr);
+        return res.status(500).json({
+          error: 'Upload service temporarily unavailable due to storage configuration error.',
+          code: 'QUOTA_SERVICE_UNAVAILABLE',
+          status: 'SERVICE_UNAVAILABLE'
+        });
+      }
 
       if (!quotaReservation.allowed) {
         attachQuotaHeaders(
@@ -1870,7 +1881,31 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       isReservationSettled = true;
-      const committedStatus = await commitUploadSlot(reservation);
+      let committedStatus: QuotaStatus;
+      try {
+        committedStatus = await commitUploadSlot(reservation);
+      } catch (commitErr: any) {
+        if (commitErr?.code === 'QUOTA_EXCEEDED') {
+          attachQuotaHeaders(
+            res,
+            {
+              limit: DAILY_UPLOAD_LIMIT,
+              remaining: 0,
+              resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+            },
+            quotaIdentity
+          );
+          return res.status(429).json({
+            error: commitErr.message || 'Daily attachment upload limit exceeded.',
+            code: 'QUOTA_EXCEEDED',
+            status: 'QUOTA_EXCEEDED',
+            limit: DAILY_UPLOAD_LIMIT,
+            remaining: 0,
+            resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+          });
+        }
+        throw commitErr;
+      }
       attachQuotaHeaders(res, committedStatus, quotaIdentity);
 
       return res.status(200).json({

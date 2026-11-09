@@ -3,20 +3,20 @@ import type express from 'express';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { fileURLToPath } from 'url';
+import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
 import {
   authenticateRequest,
-  type AuthRequestResult
+  type AuthRequestResult,
+  getConfiguredFirebaseProjectId
 } from './firebaseAuthHelper.ts';
 import { resolveUploadDirectory } from './uploadSubsystem.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 export const DAILY_UPLOAD_LIMIT = 5;
-export const RESERVATION_TTL_MS = 120_000; // 2 minutes reservation TTL
-export const LOCK_TIMEOUT_MS = 15_000; // 15 seconds max lock wait
+export const RESERVATION_TTL_MS =
+  parseInt(process.env.ORVIX_UPLOAD_RESERVATION_TTL_MS || '', 10) || 120_000; // 120 seconds (2 minutes)
+export const LOCK_TIMEOUT_MS = 15_000;
 
 export interface QuotaIdentity {
   type: 'auth' | 'guest';
@@ -69,6 +69,7 @@ export type ReservationResult =
 // Test hooks for deterministic time travel and isolated testing
 let customDateHook: (() => Date) | null = null;
 let serverSecretOverride: string | null = null;
+let customFirestoreOverride: any | null = null;
 
 export function setCustomDateHookForTesting(hook: (() => Date) | null): void {
   customDateHook = hook;
@@ -103,19 +104,20 @@ export function getNextUtcMidnight(date: Date = getCurrentDate()): Date {
 }
 
 /**
- * Resolves the persistent directory where quota records and lockfiles reside.
- * Persists across server restarts.
+ * Resolves the persistent directory where quota records and lockfiles resided previously.
+ * Kept for backward compatibility with testing suites and migrations.
  */
 export function resolveQuotaDirectory(): string {
   if (process.env.QUOTA_DIR) {
     const dir = path.resolve(process.env.QUOTA_DIR);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (_) {}
     }
     return dir;
   }
 
-  // Derive quota directory alongside upload storage
   const baseUploadDir = resolveUploadDirectory();
   const quotaDir = path.resolve(baseUploadDir, '..', 'quotas');
   try {
@@ -126,7 +128,9 @@ export function resolveQuotaDirectory(): string {
   } catch (_) {
     const fallback = path.join(os.tmpdir(), 'orvix_quotas');
     if (!fs.existsSync(fallback)) {
-      fs.mkdirSync(fallback, { recursive: true });
+      try {
+        fs.mkdirSync(fallback, { recursive: true });
+      } catch (_) {}
     }
     return fallback;
   }
@@ -134,8 +138,10 @@ export function resolveQuotaDirectory(): string {
 
 /**
  * Retrieves or initializes the HMAC secret used to sign server-issued guest tokens.
- * Persisted to disk to remain stable across process restarts.
+ * Persisted in memory or env to remain stable across distributed instances.
  */
+let inMemoryServerSecret: string | null = null;
+
 export function getOrInitServerSecret(): string {
   if (serverSecretOverride) {
     return serverSecretOverride;
@@ -145,18 +151,24 @@ export function getOrInitServerSecret(): string {
     return process.env.ORVIX_GUEST_SECRET.trim();
   }
 
+  if (inMemoryServerSecret) {
+    return inMemoryServerSecret;
+  }
+
   const quotaDir = resolveQuotaDirectory();
   const secretFile = path.join(quotaDir, '.guest_secret');
   try {
     if (fs.existsSync(secretFile)) {
       const stored = fs.readFileSync(secretFile, 'utf8').trim();
       if (stored.length >= 32) {
+        inMemoryServerSecret = stored;
         return stored;
       }
     }
   } catch (_) {}
 
   const newSecret = crypto.randomBytes(32).toString('hex');
+  inMemoryServerSecret = newSecret;
   try {
     fs.writeFileSync(secretFile, newSecret, { mode: 0o600 });
   } catch (_) {}
@@ -291,99 +303,280 @@ export async function resolveUploadIdentity(req: express.Request): Promise<Quota
   };
 }
 
+// ==============================================================================
+// Distributed Firestore Transaction Engine & Provider
+// ==============================================================================
+
 /**
- * File-locking wrapper enforcing atomic transactions across concurrent requests and processes.
+ * Shared in-memory document state representation for testing and offline/local fallback.
+ * Allows simulating multiple concurrent serverless instances sharing a single database.
  */
-async function withFileLock<T>(lockKey: string, fn: () => Promise<T>): Promise<T> {
-  const quotaDir = resolveQuotaDirectory();
-  const lockPath = path.join(quotaDir, `${lockKey}.lock`);
-  const startTime = Date.now();
-
-  while (true) {
-    try {
-      // 'wx' flag: Open for writing. The file is created (if not exists) or fails with EEXIST.
-      const fd = fs.openSync(lockPath, 'wx');
-      fs.writeSync(fd, `${Date.now()}:${process.pid}`);
-      fs.closeSync(fd);
-      break;
-    } catch (err: any) {
-      if (err?.code === 'EEXIST') {
-        // Stale lock recovery: If lock is older than 10 seconds, remove it
-        try {
-          const stats = fs.statSync(lockPath);
-          if (Date.now() - stats.mtimeMs > 10000) {
-            fs.unlinkSync(lockPath);
-            continue;
-          }
-        } catch (_) {}
-
-        if (Date.now() - startTime > LOCK_TIMEOUT_MS) {
-          throw new Error(`Timeout waiting for quota lock (${lockKey})`);
-        }
-        await new Promise((r) => setTimeout(r, 10 + Math.random() * 20));
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  try {
-    return await fn();
-  } finally {
-    try {
-      if (fs.existsSync(lockPath)) {
-        fs.unlinkSync(lockPath);
-      }
-    } catch (_) {}
-  }
+interface StoredDoc {
+  data: QuotaRecord;
+  version: number;
 }
 
+const sharedInMemoryFirestoreStore = new Map<string, StoredDoc>();
+
 /**
- * Reads the persistent QuotaRecord for an identity and UTC day.
- * Must be invoked inside withFileLock.
+ * Creates an in-memory Firestore transaction adapter implementing the official
+ * Firestore transaction interface with optimistic concurrency control and retries.
  */
-function readQuotaRecordSync(identityKey: string, utcDay: string): QuotaRecord {
-  const quotaDir = resolveQuotaDirectory();
-  const filePath = path.join(quotaDir, `${identityKey}_${utcDay}.json`);
-
-  if (fs.existsSync(filePath)) {
-    try {
-      const content = fs.readFileSync(filePath, 'utf8');
-      const parsed = JSON.parse(content);
-      if (parsed && typeof parsed === 'object') {
-        return {
-          identityKey,
-          utcDay,
-          committed: typeof parsed.committed === 'number' ? parsed.committed : 0,
-          reservations: parsed.reservations && typeof parsed.reservations === 'object' ? parsed.reservations : {},
-          lastUpdated: parsed.lastUpdated || Date.now()
-        };
-      }
-    } catch (_) {}
-  }
-
+export function createSimulatedFirestoreInstance(): any {
   return {
-    identityKey,
-    utcDay,
-    committed: 0,
-    reservations: {},
-    lastUpdated: Date.now()
+    collection(colName: string) {
+      return {
+        doc(docId: string) {
+          const docPath = `${colName}/${docId}`;
+          return {
+            id: docId,
+            path: docPath,
+            parent: { id: colName }
+          };
+        }
+      };
+    },
+    async runTransaction<T>(updateFunction: (transaction: any) => Promise<T>): Promise<T> {
+      const maxRetries = 10;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const readVersions = new Map<string, number>();
+        const pendingMutations = new Map<string, QuotaRecord>();
+
+        const transaction = {
+          async get(docRef: any) {
+            const path = docRef.path;
+            const existing = sharedInMemoryFirestoreStore.get(path);
+            readVersions.set(path, existing ? existing.version : 0);
+
+            if (!existing) {
+              return {
+                exists: false,
+                id: docRef.id,
+                ref: docRef,
+                data: () => undefined
+              };
+            }
+
+            return {
+              exists: true,
+              id: docRef.id,
+              ref: docRef,
+              data: () => JSON.parse(JSON.stringify(existing.data))
+            };
+          },
+          set(docRef: any, data: any, options: { merge?: boolean } = {}) {
+            const path = docRef.path;
+            if (options.merge) {
+              const current = pendingMutations.get(path) ||
+                (sharedInMemoryFirestoreStore.has(path)
+                  ? JSON.parse(JSON.stringify(sharedInMemoryFirestoreStore.get(path)!.data))
+                  : {});
+              pendingMutations.set(path, { ...current, ...JSON.parse(JSON.stringify(data)) });
+            } else {
+              pendingMutations.set(path, JSON.parse(JSON.stringify(data)));
+            }
+            return transaction;
+          },
+          delete(docRef: any) {
+            pendingMutations.delete(docRef.path);
+            return transaction;
+          }
+        };
+
+        try {
+          const result = await updateFunction(transaction);
+
+          // Atomic validation: verify that no document read during this transaction was
+          // mutated by another concurrent transaction
+          let conflict = false;
+          for (const [path, expectedVersion] of readVersions.entries()) {
+            const current = sharedInMemoryFirestoreStore.get(path);
+            const currentVersion = current ? current.version : 0;
+            if (currentVersion !== expectedVersion) {
+              conflict = true;
+              break;
+            }
+          }
+
+          if (conflict) {
+            // Concurrent transaction conflict detected — back off and retry atomically
+            await new Promise((r) => setTimeout(r, 5 + Math.random() * 25));
+            continue;
+          }
+
+          // Commit mutations atomically
+          for (const [path, newData] of pendingMutations.entries()) {
+            const current = sharedInMemoryFirestoreStore.get(path);
+            const nextVersion = (current ? current.version : 0) + 1;
+            sharedInMemoryFirestoreStore.set(path, {
+              data: newData,
+              version: nextVersion
+            });
+          }
+
+          return result;
+        } catch (err) {
+          // If the updateFunction itself threw an error (like Quota Exceeded), rethrow immediately
+          throw err;
+        }
+      }
+
+      throw new Error('Firestore transaction failed after maximum optimistic concurrency retries');
+    }
   };
 }
 
-/**
- * Writes the QuotaRecord atomically to disk using write-to-temp and atomic rename.
- * Must be invoked inside withFileLock.
- */
-function writeQuotaRecordSync(record: QuotaRecord): void {
-  const quotaDir = resolveQuotaDirectory();
-  const filePath = path.join(quotaDir, `${record.identityKey}_${record.utcDay}.json`);
-  const tempPath = path.join(quotaDir, `${record.identityKey}_${record.utcDay}.${crypto.randomUUID()}.tmp`);
+let simulatedFirestoreSingleton: any = null;
+let forceProductionModeForTesting: boolean | null = null;
 
-  record.lastUpdated = Date.now();
-  const json = JSON.stringify(record, null, 2);
-  fs.writeFileSync(tempPath, json, 'utf8');
-  fs.renameSync(tempPath, filePath);
+/**
+ * Test hook to simulate production deployment fail-closed behavior during automated test suites.
+ */
+export function setForceProductionModeForTesting(forced: boolean | null): void {
+  forceProductionModeForTesting = forced;
+}
+
+/**
+ * Determines whether the current process is running in a production or serverless deployment.
+ */
+export function isProductionEnvironment(): boolean {
+  if (forceProductionModeForTesting !== null) {
+    return forceProductionModeForTesting;
+  }
+  if (process.env.TESTING === '1') {
+    return false;
+  }
+  return (
+    process.env.NODE_ENV === 'production' ||
+    Boolean(process.env.VERCEL) ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    Boolean(process.env.LAMBDA_TASK_ROOT) ||
+    Boolean(process.env.SERVERLESS)
+  );
+}
+
+/**
+ * Sets a custom Firestore database instance for testing (e.g. simulated serverless instances).
+ */
+export function setFirestoreForTesting(db: any): void {
+  customFirestoreOverride = db;
+}
+
+/**
+ * Resets Firestore test overrides.
+ */
+export function resetFirestoreForTesting(): void {
+  customFirestoreOverride = null;
+  forceProductionModeForTesting = null;
+  sharedInMemoryFirestoreStore.clear();
+}
+
+/**
+ * Resolves the Firestore database client to use.
+ *
+ * PRODUCTION REQUIREMENT:
+ * In production or Vercel deployments, Firebase Admin Firestore is MANDATORY.
+ * If credentials are missing, invalid, or initialization fails, a clear fatal error is thrown.
+ * Never falls back to simulated or in-memory Firestore in production.
+ *
+ * The in-memory transactional adapter is preserved exclusively for tests and permitted development environments.
+ */
+export function getFirestoreDb(): any {
+  if (customFirestoreOverride) {
+    return customFirestoreOverride;
+  }
+
+  const isProd = isProductionEnvironment();
+
+  // In production or Vercel deployments, Firebase Admin Firestore is MANDATORY.
+  // Never fall back to simulated or in-memory Firestore in production.
+  if (isProd) {
+    const projectId = getConfiguredFirebaseProjectId();
+    if (!projectId) {
+      throw new Error(
+        '[UploadQuota] Fatal: Production deployment requires a valid FIREBASE_PROJECT_ID (or VITE_FIREBASE_PROJECT_ID). In-memory fallback is strictly forbidden in production.'
+      );
+    }
+
+    const existingApps = getApps();
+    if (existingApps.length > 0) {
+      try {
+        return getFirestore();
+      } catch (err: any) {
+        throw new Error(
+          `[UploadQuota] Fatal: Failed to acquire initialized Firestore instance in production: ${err?.message || err}`
+        );
+      }
+    }
+
+    const hasServiceAccount = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
+    const hasGoogleCredentials = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+
+    if (!hasServiceAccount && !hasGoogleCredentials) {
+      throw new Error(
+        '[UploadQuota] Fatal: Production deployment requires Firebase Admin credentials (FIREBASE_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS). In-memory fallback is strictly forbidden in production.'
+      );
+    }
+
+    try {
+      if (hasServiceAccount) {
+        let sa: any;
+        try {
+          sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!);
+        } catch (parseErr: any) {
+          throw new Error(
+            `FIREBASE_SERVICE_ACCOUNT contains invalid JSON: ${parseErr?.message || parseErr}`
+          );
+        }
+        initializeApp({
+          credential: cert(sa),
+          projectId: sa.project_id || projectId
+        });
+      } else {
+        initializeApp({ projectId });
+      }
+      return getFirestore();
+    } catch (initErr: any) {
+      throw new Error(
+        `[UploadQuota] Fatal: Failed to initialize Firebase Admin Firestore in production: ${initErr?.message || initErr}`
+      );
+    }
+  }
+
+  // Development & Testing environment logic:
+  // Try connecting to Firebase Admin if configured, otherwise fall back to simulated in-memory Firestore
+  try {
+    const projectId = getConfiguredFirebaseProjectId();
+    const existingApps = getApps();
+    if (projectId && existingApps.length > 0) {
+      return getFirestore();
+    }
+
+    if (projectId && (process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+      if (existingApps.length === 0) {
+        if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+          try {
+            const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            initializeApp({
+              credential: cert(sa),
+              projectId: sa.project_id || projectId
+            });
+          } catch (_) {
+            initializeApp({ projectId });
+          }
+        } else {
+          initializeApp({ projectId });
+        }
+      }
+      return getFirestore();
+    }
+  } catch (_) {}
+
+  // Fallback to resilient in-memory simulated Firestore exclusively in tests and development
+  if (!simulatedFirestoreSingleton) {
+    simulatedFirestoreSingleton = createSimulatedFirestoreInstance();
+  }
+  return simulatedFirestoreSingleton;
 }
 
 /**
@@ -391,6 +584,11 @@ function writeQuotaRecordSync(record: QuotaRecord): void {
  */
 function pruneExpiredReservations(record: QuotaRecord, nowMs: number): number {
   let activeCount = 0;
+  if (!record.reservations || typeof record.reservations !== 'object') {
+    record.reservations = {};
+    return 0;
+  }
+
   for (const [resId, res] of Object.entries(record.reservations)) {
     if (!res || typeof res.expiresAt !== 'number' || res.expiresAt <= nowMs) {
       delete record.reservations[resId];
@@ -402,8 +600,9 @@ function pruneExpiredReservations(record: QuotaRecord, nowMs: number): number {
 }
 
 /**
- * Atomically reserves 1 upload slot for an identity on the current UTC calendar day.
- * Prevents concurrent requests from exceeding the limit of 5.
+ * Atomically reserves 1 upload slot for an identity on the current UTC calendar day
+ * using an atomic Firestore transaction.
+ * Prevents concurrent requests across serverless instances from exceeding the limit of 5.
  */
 export async function reserveUploadSlot(
   identity: QuotaIdentity,
@@ -413,17 +612,37 @@ export async function reserveUploadSlot(
   const nowMs = now.getTime();
   const utcDay = getUtcDayString(now);
   const resetAt = getNextUtcMidnight(now).toISOString();
-  const lockKey = `${identity.key}_${utcDay}`;
+  const docId = `${identity.key}_${utcDay}`;
+  const db = getFirestoreDb();
 
-  return withFileLock(lockKey, async () => {
-    const record = readQuotaRecordSync(identity.key, utcDay);
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('uploadQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
+
+    const record: QuotaRecord = (snap.exists && snap.data())
+      ? (snap.data() as QuotaRecord)
+      : {
+          identityKey: identity.key,
+          utcDay,
+          committed: 0,
+          reservations: {},
+          lastUpdated: nowMs
+        };
+
+    if (!record.reservations || typeof record.reservations !== 'object') {
+      record.reservations = {};
+    }
+    if (typeof record.committed !== 'number') {
+      record.committed = 0;
+    }
+
     const activeReservationsCount = pruneExpiredReservations(record, nowMs);
-
     const totalUsage = record.committed + activeReservationsCount;
+
     if (totalUsage >= DAILY_UPLOAD_LIMIT) {
       const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - totalUsage);
       return {
-        allowed: false,
+        allowed: false as const,
         limit: DAILY_UPLOAD_LIMIT,
         remaining,
         resetAt,
@@ -438,13 +657,14 @@ export async function reserveUploadSlot(
       expiresAt,
       createdAt: nowMs
     };
+    record.lastUpdated = nowMs;
 
-    writeQuotaRecordSync(record);
+    transaction.set(docRef, record, { merge: true });
 
     const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + activeReservationsCount + 1));
 
     return {
-      allowed: true,
+      allowed: true as const,
       reservation: {
         reservationId,
         identityKey: identity.key,
@@ -460,33 +680,109 @@ export async function reserveUploadSlot(
 }
 
 /**
- * Commits a reservation upon successful upload completion.
- * Increments committed count and removes reservation atomically.
+ * Commits a reservation upon successful upload completion within an atomic Firestore transaction.
+ *
+ * Expiration Invariant (Requirement 5):
+ * If a reservation expired before completion:
+ * - It checks whether other active reservations or committed uploads now consume the quota.
+ * - If committed + other active reservations >= DAILY_UPLOAD_LIMIT, the expired reservation CANNOT commit
+ *   and throws QUOTA_EXCEEDED, ensuring expired reservations never cause active uploads to exceed quota.
+ * - Otherwise, it safely commits the upload without exceeding the quota.
  */
-export async function commitUploadSlot(reservation: QuotaReservation): Promise<QuotaStatus> {
-  const lockKey = `${reservation.identityKey}_${reservation.utcDay}`;
-  const now = getCurrentDate();
+export async function commitUploadSlot(
+  reservation: QuotaReservation,
+  options: { customNow?: Date } = {}
+): Promise<QuotaStatus> {
+  const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
   const resetAt = getNextUtcMidnight(now).toISOString();
+  const docId = `${reservation.identityKey}_${reservation.utcDay}`;
+  const db = getFirestoreDb();
 
-  return withFileLock(lockKey, async () => {
-    const record = readQuotaRecordSync(reservation.identityKey, reservation.utcDay);
-    pruneExpiredReservations(record, now.getTime());
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('uploadQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
 
-    // Remove the reservation
+    const record: QuotaRecord = (snap.exists && snap.data())
+      ? (snap.data() as QuotaRecord)
+      : {
+          identityKey: reservation.identityKey,
+          utcDay: reservation.utcDay,
+          committed: 0,
+          reservations: {},
+          lastUpdated: nowMs
+        };
+
+    if (!record.reservations || typeof record.reservations !== 'object') {
+      record.reservations = {};
+    }
+    if (typeof record.committed !== 'number') {
+      record.committed = 0;
+    }
+
+    const targetRes = record.reservations[reservation.reservationId];
+    const isTargetStillValid = targetRes && targetRes.expiresAt > nowMs;
+
+    // Prune all other expired reservations
+    let otherActiveCount = 0;
+    for (const [resId, res] of Object.entries(record.reservations)) {
+      if (resId === reservation.reservationId) continue;
+      if (!res || typeof res.expiresAt !== 'number' || res.expiresAt <= nowMs) {
+        delete record.reservations[resId];
+      } else {
+        otherActiveCount++;
+      }
+    }
+
+    // 1. Normal path: target reservation is active and unexpired
+    if (isTargetStillValid) {
+      delete record.reservations[reservation.reservationId];
+      record.committed = Math.min(DAILY_UPLOAD_LIMIT, record.committed + 1);
+      record.lastUpdated = nowMs;
+
+      transaction.set(docRef, record, { merge: true });
+
+      const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + otherActiveCount));
+      return {
+        limit: DAILY_UPLOAD_LIMIT,
+        committed: record.committed,
+        activeReservations: otherActiveCount,
+        remaining,
+        resetAt
+      };
+    }
+
+    // 2. Expired reservation path:
+    // Check if committing this expired reservation would cause active uploads or committed total to exceed quota
+    if (record.committed + otherActiveCount >= DAILY_UPLOAD_LIMIT) {
+      // Quota is full! Active uploads or committed slots occupy all available quota.
+      delete record.reservations[reservation.reservationId];
+      record.lastUpdated = nowMs;
+      transaction.set(docRef, record, { merge: true });
+
+      const error: any = new Error(
+        `Upload reservation ${reservation.reservationId} expired and daily quota is exhausted.`
+      );
+      error.code = 'QUOTA_EXCEEDED';
+      error.status = 'QUOTA_EXCEEDED';
+      error.limit = DAILY_UPLOAD_LIMIT;
+      error.remaining = 0;
+      error.resetAt = resetAt;
+      throw error;
+    }
+
+    // Unclaimed slot exists: safely commit
     delete record.reservations[reservation.reservationId];
-
-    // Increment committed count
     record.committed = Math.min(DAILY_UPLOAD_LIMIT, record.committed + 1);
+    record.lastUpdated = nowMs;
 
-    writeQuotaRecordSync(record);
+    transaction.set(docRef, record, { merge: true });
 
-    const activeCount = Object.keys(record.reservations).length;
-    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + activeCount));
-
+    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + otherActiveCount));
     return {
       limit: DAILY_UPLOAD_LIMIT,
       committed: record.committed,
-      activeReservations: activeCount,
+      activeReservations: otherActiveCount,
       remaining,
       resetAt
     };
@@ -494,29 +790,48 @@ export async function commitUploadSlot(reservation: QuotaReservation): Promise<Q
 }
 
 /**
- * Releases a reserved slot when an upload fails or is cancelled.
+ * Releases a reserved slot when an upload fails or is cancelled within an atomic Firestore transaction.
  * Does NOT increment committed count, ensuring failed uploads never consume quota.
  */
-export async function releaseUploadSlot(reservation: QuotaReservation): Promise<QuotaStatus> {
-  const lockKey = `${reservation.identityKey}_${reservation.utcDay}`;
-  const now = getCurrentDate();
+export async function releaseUploadSlot(
+  reservation: QuotaReservation,
+  options: { customNow?: Date } = {}
+): Promise<QuotaStatus> {
+  const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
   const resetAt = getNextUtcMidnight(now).toISOString();
+  const docId = `${reservation.identityKey}_${reservation.utcDay}`;
+  const db = getFirestoreDb();
 
-  return withFileLock(lockKey, async () => {
-    const record = readQuotaRecordSync(reservation.identityKey, reservation.utcDay);
-    pruneExpiredReservations(record, now.getTime());
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('uploadQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
 
-    // Safely remove the reservation if present
+    if (!snap.exists || !snap.data()) {
+      return {
+        limit: DAILY_UPLOAD_LIMIT,
+        committed: 0,
+        activeReservations: 0,
+        remaining: DAILY_UPLOAD_LIMIT,
+        resetAt
+      };
+    }
+
+    const record = snap.data() as QuotaRecord;
+    if (!record.reservations || typeof record.reservations !== 'object') {
+      record.reservations = {};
+    }
+
     delete record.reservations[reservation.reservationId];
+    const activeCount = pruneExpiredReservations(record, nowMs);
 
-    writeQuotaRecordSync(record);
+    record.lastUpdated = nowMs;
+    transaction.set(docRef, record, { merge: true });
 
-    const activeCount = Object.keys(record.reservations).length;
-    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + activeCount));
-
+    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - ((record.committed || 0) + activeCount));
     return {
       limit: DAILY_UPLOAD_LIMIT,
-      committed: record.committed,
+      committed: record.committed || 0,
       activeReservations: activeCount,
       remaining,
       resetAt
@@ -525,26 +840,41 @@ export async function releaseUploadSlot(reservation: QuotaReservation): Promise<
 }
 
 /**
- * Retrieves the current quota status for an identity without modifying records.
+ * Retrieves the current quota status for an identity without modifying committed records.
  */
 export async function getQuotaStatus(
   identity: QuotaIdentity,
   options: { customNow?: Date } = {}
 ): Promise<QuotaStatus> {
   const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
   const utcDay = getUtcDayString(now);
   const resetAt = getNextUtcMidnight(now).toISOString();
-  const lockKey = `${identity.key}_${utcDay}`;
+  const docId = `${identity.key}_${utcDay}`;
+  const db = getFirestoreDb();
 
-  return withFileLock(lockKey, async () => {
-    const record = readQuotaRecordSync(identity.key, utcDay);
-    const activeCount = pruneExpiredReservations(record, now.getTime());
-    const totalUsage = record.committed + activeCount;
-    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - totalUsage);
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('uploadQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
+
+    if (!snap.exists || !snap.data()) {
+      return {
+        limit: DAILY_UPLOAD_LIMIT,
+        committed: 0,
+        activeReservations: 0,
+        remaining: DAILY_UPLOAD_LIMIT,
+        resetAt
+      };
+    }
+
+    const record = snap.data() as QuotaRecord;
+    const activeCount = pruneExpiredReservations(record, nowMs);
+    const committed = typeof record.committed === 'number' ? record.committed : 0;
+    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (committed + activeCount));
 
     return {
       limit: DAILY_UPLOAD_LIMIT,
-      committed: record.committed,
+      committed,
       activeReservations: activeCount,
       remaining,
       resetAt
@@ -577,9 +907,21 @@ export function attachQuotaHeaders(
 }
 
 /**
- * Testing utility: Clears quota records on disk.
+ * Testing utility: Clears quota records in Firestore and on disk.
  */
 export async function resetQuotaForTesting(identityKey?: string): Promise<void> {
+  // Clear simulated in-memory Firestore records
+  if (identityKey) {
+    for (const key of Array.from(sharedInMemoryFirestoreStore.keys())) {
+      if (key.includes(identityKey)) {
+        sharedInMemoryFirestoreStore.delete(key);
+      }
+    }
+  } else {
+    sharedInMemoryFirestoreStore.clear();
+  }
+
+  // Clear legacy directory files if any existed
   const quotaDir = resolveQuotaDirectory();
   try {
     const files = fs.readdirSync(quotaDir);

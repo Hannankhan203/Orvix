@@ -199,6 +199,11 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Internal server-side upload quotas: public client read and write strictly denied
+    match /uploadQuotas/{quotaDocId} {
+      allow read, write: if false;
+    }
+
     // Default deny all other paths
     match /{document=**} {
       allow read, write: if false;

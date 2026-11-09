@@ -349,6 +349,36 @@
         }
       },
       "required": ["id", "title", "mode", "createdAt", "messageCount", "messages"]
+    },
+    "UploadQuota": {
+      "title": "UploadQuota",
+      "description": "Atomic daily attachment upload quota tracking record for users and server-signed guests.",
+      "type": "object",
+      "properties": {
+        "identityKey": {
+          "type": "string",
+          "description": "Internal SHA256 hashed identity key (auth_<hash> or guest_<hash>)."
+        },
+        "utcDay": {
+          "type": "string",
+          "description": "UTC date string in YYYY-MM-DD format."
+        },
+        "committed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Number of successfully completed and committed uploads for this day."
+        },
+        "reservations": {
+          "type": "object",
+          "description": "Active in-flight reservations keyed by reservationId."
+        },
+        "lastUpdated": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds of last modification."
+        }
+      },
+      "required": ["identityKey", "utcDay", "committed"]
     }
   },
   "firestore": {
@@ -381,6 +411,12 @@
         "$ref": "SharedChat"
       },
       "description": "Top-level collection holding deliberately published, immutable, sanitized conversation snapshots accessible by exact shareId."
+    },
+    "/uploadQuotas/{quotaDocId}": {
+      "schema": {
+        "$ref": "UploadQuota"
+      },
+      "description": "Server-side atomic upload quota tracking collection. Client access is strictly denied."
     }
   }
 }
