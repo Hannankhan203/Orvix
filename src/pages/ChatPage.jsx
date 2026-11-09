@@ -1021,30 +1021,30 @@ export default function ChatPage({
   // Delete a conversation.
   const handleDeleteChat = async (chatId) => {
     try {
-      // Clean up associated IndexedDB attachment blobs for this conversation
-      void deleteAttachmentsForConversation(chatId).catch(() => {});
-      const targetChat = userChats.find((c) => c.id === chatId);
-      if (Array.isArray(targetChat?.messages)) {
-        const attIds = [];
-        targetChat.messages.forEach((m) => {
-          if (Array.isArray(m?.attachments)) {
-            m.attachments.forEach((a) => a?.id && attIds.push(a.id));
-          }
-          if (Array.isArray(m?.referencedAttachments)) {
-            m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
-          }
-        });
-        if (attIds.length > 0) {
-          void deleteAttachmentRecords(attIds).catch(() => {});
-        }
-      }
-
       if (isCloudEnabled && currentUser?.uid) {
         await deleteConversation(currentUser.uid, chatId);
         setUserChats((previous) =>
           previous.filter((chat) => chat.id !== chatId)
         );
       } else {
+        // Clean up associated IndexedDB attachment blobs for this guest conversation
+        void deleteAttachmentsForConversation(chatId).catch(() => {});
+        const targetChat = userChats.find((c) => c.id === chatId);
+        if (Array.isArray(targetChat?.messages)) {
+          const attIds = [];
+          targetChat.messages.forEach((m) => {
+            if (Array.isArray(m?.attachments)) {
+              m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+            }
+            if (Array.isArray(m?.referencedAttachments)) {
+              m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+            }
+          });
+          if (attIds.length > 0) {
+            void deleteAttachmentRecords(attIds).catch(() => {});
+          }
+        }
+
         setUserChats((previous) => {
           const next = previous.filter(
             (chat) => chat.id !== chatId
@@ -1073,6 +1073,8 @@ export default function ChatPage({
       );
     }
   };
+
+  const handleDeleteConversation = handleDeleteChat;
 
   // Pin/unpin conversations, with a maximum of five pinned chats.
   const handleTogglePin = async (chatId) => {
