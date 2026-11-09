@@ -57,6 +57,7 @@ import {
   getLastStorageError
 } from '../services/attachmentStorageService.js';
 import { isVisionCapableProvider } from '../services/documentContextService.js';
+import { indexDocument } from '../services/semanticRetrievalService.js';
 import {
   isContinuationRequest,
   resolveMultiPartContext,
@@ -2053,11 +2054,15 @@ export default function ChatPage({
             currentChatId
           );
 
-          // Associate newly saved attachments with the confirmed conversation ID
+          // Associate newly saved attachments with the confirmed conversation ID and index into vector store
           if (Array.isArray(processedAttachments)) {
             for (const att of processedAttachments) {
               if (att?.id) {
                 void updateAttachmentConversationId(att.id, currentChatId).catch(() => {});
+                const docPayload = att.extraction || att;
+                if (docPayload && (docPayload.text || docPayload.pages || docPayload.slides || docPayload.sections)) {
+                  void indexDocument(docPayload, currentChatId).catch(() => {});
+                }
               }
             }
           }

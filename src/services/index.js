@@ -17,5 +17,9 @@ export * from './browserDocumentExtractor.js';
 export * from './errorNormalizationService.js';
 export * from './attachmentStorageService.js';
 export * from './authService.js';
+export * from './semanticChunkingService.js';
+export * from './semanticEmbeddingService.js';
+export * from './semanticVectorStorage.js';
+export * from './semanticRetrievalService.js';
 
 

@@ -6,6 +6,11 @@
 
 import { isVisionCapableProvider } from './documentContextService.js';
 import { getAuthHeaders, getAuthUserId } from './authService.js';
+import {
+  deleteChunksForDocument,
+  deleteChunksForDocuments,
+  deleteChunksForConversation
+} from './semanticVectorStorage.js';
 
 const DB_NAME = 'orvix_attachments_db';
 const DB_VERSION = 1;
@@ -277,6 +282,7 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
  */
 export async function deleteAttachmentRecord(id) {
   if (!id) return false;
+  void deleteChunksForDocument(id).catch(() => {});
   try {
     const db = await getDB();
     if (!db) return false;
@@ -317,6 +323,7 @@ export async function deleteAttachmentRecords(ids = []) {
   if (!Array.isArray(ids) || ids.length === 0) return 0;
   const validIds = ids.filter((id) => typeof id === 'string' && id.trim().length > 0);
   if (validIds.length === 0) return 0;
+  void deleteChunksForDocuments(validIds).catch(() => {});
 
   try {
     const db = await getDB();
@@ -385,6 +392,7 @@ export async function deleteAttachmentRecords(ids = []) {
  */
 export async function deleteAttachmentsForConversation(conversationId) {
   if (!conversationId) return 0;
+  void deleteChunksForConversation(conversationId).catch(() => {});
 
   try {
     const db = await getDB();

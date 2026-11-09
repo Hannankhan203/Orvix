@@ -16,6 +16,7 @@ import { APP_CONFIG } from '../config/appConfig.js';
 import { getChatMode } from '../config/chatModes.js';
 import {
   prepareDocumentContext,
+  retrieveSemanticDocumentContext,
   adaptDocumentContextForProvider,
   formatOpenAIMessages
 } from './documentContextService.js';
@@ -4706,8 +4707,9 @@ export async function streamWebLLMMessage({
         });
       }
 
-      const preparedContext = prepareDocumentContext(cleanPrompt, normalizedDocs, {
-        provider: WEBLLM_PROVIDER_ID
+      const preparedContext = await retrieveSemanticDocumentContext(cleanPrompt, normalizedDocs, {
+        provider: WEBLLM_PROVIDER_ID,
+        conversationId
       });
 
       // Direct deterministic response when attached image/document has NO_TEXT_DETECTED or unreadable notice

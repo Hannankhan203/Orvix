@@ -5,6 +5,12 @@
  * Pure JavaScript module for React.js and Node.js compatibility.
  */
 
+import {
+  searchSemanticChunks,
+  formatSemanticResultsForContext
+} from './semanticRetrievalService.js';
+import { chunkDocument } from './semanticChunkingService.js';
+
 const MAX_PROMPT_CHARS_PER_DOC = 100_000; // ~20k words limit per document for safe LLM context
 
 /**
@@ -659,7 +665,10 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
     docBlocks.push(docBody);
   }
 
-  const formattedContext = docBlocks.join('\n\n' + '='.repeat(60) + '\n\n');
+  let formattedContext = docBlocks.join('\n\n' + '='.repeat(60) + '\n\n');
+  if (options && typeof options === 'object' && options.semanticContextText) {
+    formattedContext = `${options.semanticContextText}\n\n${'='.repeat(60)}\n\n${formattedContext}`;
+  }
 
   return {
     formattedContext,
@@ -670,7 +679,95 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
     isBoundedOrChunked,
     truncationNote,
     directAnswer,
-    isVision: Boolean(isVision)
+    isVision: Boolean(isVision),
+    retrievalMethod: options?.semanticChunks ? 'semantic_rag' : 'rule_based',
+    semanticChunks: options?.semanticChunks || []
+  };
+}
+
+/**
+ * Retrieves semantic document context using lightweight client-side RAG.
+ * Performs intelligent chunking, subword vector embeddings, and cosine-similarity search.
+ * Supports cross-document search across multiple attachments, and seamlessly
+ * falls back to rule-based retrieval if no relevant chunks are found or on structural queries.
+ *
+ * @param {string} prompt
+ * @param {Array<Object>} docs
+ * @param {Object} [options={}]
+ * @returns {Promise<any>}
+ */
+export async function retrieveSemanticDocumentContext(prompt, docs, options = {}) {
+  if (!docs || docs.length === 0) {
+    return prepareDocumentContext(prompt, docs, options);
+  }
+
+  const intent = parseDocumentQueryIntent(prompt, docs);
+
+  // If user requested an explicit structural target (specific page, slide, image OCR, top/bottom section),
+  // honor the structural rule directly
+  const structuralScopes = [
+    'page',
+    'page_range',
+    'slide',
+    'slide_range',
+    'top_section',
+    'bottom_section',
+    'image_read',
+    'image_explain',
+    'image_summary'
+  ];
+
+  if (structuralScopes.includes(intent.targetScope)) {
+    const res = prepareDocumentContext(prompt, docs, options);
+    return {
+      ...res,
+      retrievalMethod: 'rule_based_intent',
+      semanticChunks: []
+    };
+  }
+
+  // Attempt semantic top-k retrieval across attached documents
+  try {
+    const docIds = docs.map((d) => d.id || d.fileId).filter(Boolean);
+    const topK = options.topK || 5;
+    const minScore = options.minScore || 0.15;
+    const conversationId = options.conversationId || docs[0]?.conversationId || null;
+
+    const semanticChunks = await searchSemanticChunks({
+      query: prompt,
+      docIds,
+      conversationId,
+      inMemoryDocs: docs,
+      topK,
+      minScore,
+      ensureMultiDocDiversity: true
+    });
+
+    if (Array.isArray(semanticChunks) && semanticChunks.length > 0) {
+      const semanticContextText = formatSemanticResultsForContext(semanticChunks, prompt);
+      const res = prepareDocumentContext(prompt, docs, {
+        ...options,
+        semanticChunks,
+        semanticContextText
+      });
+
+      return {
+        ...res,
+        retrievalMethod: 'semantic_rag',
+        semanticChunks,
+        semanticScore: semanticChunks[0]?.score || 0
+      };
+    }
+  } catch (err) {
+    console.warn('[Semantic RAG] Retrieval error, falling back to rule-based context:', err);
+  }
+
+  // Seamless fallback to existing rule-based retrieval
+  const fallbackRes = prepareDocumentContext(prompt, docs, options);
+  return {
+    ...fallbackRes,
+    retrievalMethod: 'rule_based_fallback',
+    semanticChunks: []
   };
 }
 
