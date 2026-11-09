@@ -336,14 +336,28 @@ function ChatMessage({
                           aria-label="Attached images"
                         >
                           {imageAtts.map((att, idx) => (
-                            <ImageAttachmentCard key={att.id || idx} attachment={att} />
+                            <ImageAttachmentCard
+                              key={att.id || idx}
+                              attachment={{
+                                ...att,
+                                chatId: att.chatId || att.conversationId || message.conversationId || message.chatId,
+                                conversationId: att.conversationId || att.chatId || message.conversationId || message.chatId
+                              }}
+                            />
                           ))}
                         </div>
                       )}
                       {docAtts.length > 0 && (
                         <div className="message-attachments-list" role="region" aria-label="Attached documents">
                           {docAtts.map((att, idx) => (
-                            <AttachmentCard key={att.id || idx} attachment={att} />
+                            <AttachmentCard
+                              key={att.id || idx}
+                              attachment={{
+                                ...att,
+                                chatId: att.chatId || att.conversationId || message.conversationId || message.chatId,
+                                conversationId: att.conversationId || att.chatId || message.conversationId || message.chatId
+                              }}
+                            />
                           ))}
                         </div>
                       )}
@@ -365,7 +379,15 @@ function ChatMessage({
                   </div>
                   <div className="referenced-attachments-list">
                     {message.referencedAttachments.map((att, idx) => (
-                      <AttachmentCard key={att.id || idx} attachment={att} compact={true} />
+                      <AttachmentCard
+                        key={att.id || idx}
+                        attachment={{
+                          ...att,
+                          chatId: att.chatId || att.conversationId || message.conversationId || message.chatId,
+                          conversationId: att.conversationId || att.chatId || message.conversationId || message.chatId
+                        }}
+                        compact={true}
+                      />
                     ))}
                   </div>
                 </div>

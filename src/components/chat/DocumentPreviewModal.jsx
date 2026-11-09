@@ -166,7 +166,9 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             }
           } else if (!isUnsubmittedComposerFile) {
             setOcrLoading(true);
-            fetchWithAuth(`/api/upload/${attachment.id}/extraction`)
+            const effectiveChatId = attachment.chatId || attachment.conversationId || '';
+            const query = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : '';
+            fetchWithAuth(`/api/upload/${attachment.id}/extraction${query}`)
               .then((r) => (r.ok ? r.json() : null))
               .then((d) => {
                 if (active && d) {
@@ -242,7 +244,9 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         }
 
         // 2. Fetch from backend server with authentication
-        const fileRes = await fetchWithAuth(`/api/upload/${attachment.id}/file`);
+        const effectiveFileChatId = attachment.chatId || attachment.conversationId || '';
+        const fileQuery = effectiveFileChatId ? `?chatId=${encodeURIComponent(effectiveFileChatId)}` : '';
+        const fileRes = await fetchWithAuth(`/api/upload/${attachment.id}/file${fileQuery}`);
         if (!fileRes.ok) {
           if (attachment.extraction?.text) {
             // If binary file is expired but extraction is available in metadata

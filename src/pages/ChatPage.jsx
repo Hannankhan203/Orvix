@@ -2077,7 +2077,15 @@ export default function ChatPage({
         createdAt: now,
         createdAtMs: now,
         content: trimmed,
-        attachments: processedAttachments
+        conversationId: currentChatId,
+        chatId: currentChatId,
+        attachments: Array.isArray(processedAttachments)
+          ? processedAttachments.map((a) => ({
+              ...a,
+              chatId: a?.chatId || a?.conversationId || currentChatId,
+              conversationId: a?.conversationId || a?.chatId || currentChatId
+            }))
+          : processedAttachments
       };
 
       // Detect if user sent a continuation request (e.g., 'Continue', 'Send the rest', 'Next', 'Part 2')

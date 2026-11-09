@@ -1701,7 +1701,7 @@ export async function fetchWithAuth(url, options = {}) {
  * @param {Object} attachment
  * @returns {Promise<{ success: boolean, blob?: Blob, source?: 'memory' | 'data-url' | 'indexeddb' | 'server', error?: string, status?: number, code?: string }>}
  */
-export async function fetchAttachmentBlob(attachment) {
+export async function fetchAttachmentBlob(attachment, chatId = null) {
   if (!attachment || !attachment.id) {
     return { success: false, error: 'Invalid attachment data.' };
   }
@@ -1731,7 +1731,14 @@ export async function fetchAttachmentBlob(attachment) {
 
   // 2. Fetch from backend API endpoint
   try {
-    const res = await fetchWithAuth(`/api/upload/${attachment.id}/file`);
+    const effectiveChatId =
+      chatId ||
+      (typeof attachment === 'object' && attachment !== null
+        ? (attachment.chatId || attachment.conversationId)
+        : null) ||
+      '';
+    const query = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : '';
+    const res = await fetchWithAuth(`/api/upload/${attachment.id}/file${query}`);
     if (res.ok) {
       const blob = await res.blob();
       // Cache in IndexedDB asynchronously for faster subsequent loads and offline retrieval
@@ -1742,7 +1749,8 @@ export async function fetchAttachmentBlob(attachment) {
           type: blob.type || attachment.type || attachment.mimeType,
           userId: currentUid,
           storageProvider: 'supabase',
-          isCloud: true
+          isCloud: true,
+          conversationId: effectiveChatId || attachment.conversationId || null
         }).catch(() => {});
       } catch (_) {}
       return { success: true, blob, source: 'server' };
@@ -1794,13 +1802,23 @@ export async function fetchAttachmentBlob(attachment) {
 
 /**
  * Requests a short-lived pre-signed URL from the backend for Supabase-backed attachments.
- * @param {string} attachmentId
+ * @param {string|Object} attachmentId - Attachment ID or attachment object
+ * @param {string} [chatId=null] - Optional conversation/chat ID
  * @returns {Promise<string|null>}
  */
-export async function getAttachmentSignedUrl(attachmentId) {
+export async function getAttachmentSignedUrl(attachmentId, chatId = null) {
   if (!attachmentId) return null;
+  const actualId = typeof attachmentId === 'object' && attachmentId !== null ? attachmentId.id : attachmentId;
+  const actualChatId =
+    chatId ||
+    (typeof attachmentId === 'object' && attachmentId !== null
+      ? (attachmentId.chatId || attachmentId.conversationId)
+      : null) ||
+    '';
+  if (!actualId) return null;
   try {
-    const res = await fetchWithAuth(`/api/upload/${attachmentId}/signed-url`);
+    const query = actualChatId ? `?chatId=${encodeURIComponent(actualChatId)}` : '';
+    const res = await fetchWithAuth(`/api/upload/${actualId}/signed-url${query}`);
     if (res.ok) {
       const data = await res.json();
       return data?.signedUrl || null;
@@ -1814,9 +1832,10 @@ export async function getAttachmentSignedUrl(attachmentId) {
 /**
  * Checks whether an attachment is available either in browser IndexedDB or on the backend server.
  * @param {Object} attachment
+ * @param {string} [chatId=null]
  * @returns {Promise<{ available: boolean, source?: 'indexeddb' | 'server' | 'memory', reason?: string }>}
  */
-export async function checkAttachmentStatus(attachment) {
+export async function checkAttachmentStatus(attachment, chatId = null) {
   if (!attachment || !attachment.id) {
     return { available: false, reason: 'invalid_attachment' };
   }
@@ -1834,7 +1853,14 @@ export async function checkAttachmentStatus(attachment) {
 
   // 2. Check server upload registry with auth
   try {
-    const res = await fetchWithAuth(`/api/upload/${attachment.id}`, { method: 'GET' });
+    const effectiveChatId =
+      chatId ||
+      (typeof attachment === 'object' && attachment !== null
+        ? (attachment.chatId || attachment.conversationId)
+        : null) ||
+      '';
+    const query = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : '';
+    const res = await fetchWithAuth(`/api/upload/${attachment.id}${query}`, { method: 'GET' });
     if (res.ok) {
       return { available: true, source: 'server' };
     }
@@ -1886,7 +1912,7 @@ export function isFormatPreviewable(extension = '', mimeType = '') {
  * @param {Object} attachment
  * @returns {Promise<{ success: boolean, action: 'preview' | 'download' | 'unavailable', error?: string }>}
  */
-export async function openOrPreviewAttachment(attachment) {
+export async function openOrPreviewAttachment(attachment, chatId = null) {
   if (!attachment || !attachment.id) {
     return { success: false, action: 'unavailable', error: 'Missing attachment ID.' };
   }
@@ -1958,7 +1984,13 @@ export async function openOrPreviewAttachment(attachment) {
 
   // 2. Fetch authenticated blob from backend server (Supabase or local disk)
   try {
-    const result = await fetchAttachmentBlob(attachment);
+    const effectiveChatId =
+      chatId ||
+      (typeof attachment === 'object' && attachment !== null
+        ? (attachment.chatId || attachment.conversationId)
+        : null) ||
+      '';
+    const result = await fetchAttachmentBlob(attachment, effectiveChatId);
     if (!result.success || !result.blob) {
       return {
         success: false,
@@ -2000,9 +2032,10 @@ export async function openOrPreviewAttachment(attachment) {
 /**
  * Downloads the original attachment file with its exact original filename.
  * @param {Object} attachment
+ * @param {string} [chatId=null]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-export async function downloadAttachmentFile(attachment) {
+export async function downloadAttachmentFile(attachment, chatId = null) {
   if (!attachment || !attachment.id) {
     return { success: false, error: 'Missing attachment ID.' };
   }
@@ -2050,7 +2083,13 @@ export async function downloadAttachmentFile(attachment) {
 
   // 2. Fetch authenticated blob from server (Supabase or local)
   try {
-    const result = await fetchAttachmentBlob(attachment);
+    const effectiveChatId =
+      chatId ||
+      (typeof attachment === 'object' && attachment !== null
+        ? (attachment.chatId || attachment.conversationId)
+        : null) ||
+      '';
+    const result = await fetchAttachmentBlob(attachment, effectiveChatId);
     if (!result.success || !result.blob) {
       // If server does not have binary but extraction text is available for textual document
       if (attachment.extraction?.text) {

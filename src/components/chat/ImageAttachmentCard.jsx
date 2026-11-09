@@ -110,8 +110,9 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         } catch (_) {}
 
         // 5. Fallback to backend serving endpoint (with authenticated Supabase retrieval and guest fallback)
+        const effectiveChatId = attachment.chatId || attachment.conversationId || '';
         try {
-          const fetchResult = await fetchAttachmentBlob(attachment);
+          const fetchResult = await fetchAttachmentBlob(attachment, effectiveChatId);
           if (active) {
             if (fetchResult.success && fetchResult.blob) {
               createdBlobUrl = URL.createObjectURL(fetchResult.blob);
@@ -127,7 +128,8 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         } catch (_) {}
 
         if (active) {
-          setImageSrc(`/api/upload/${attachment.id}/file`);
+          const query = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : '';
+          setImageSrc(`/api/upload/${attachment.id}/file${query}`);
           setLoading(false);
         }
       } else {
