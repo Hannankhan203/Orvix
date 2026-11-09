@@ -266,7 +266,11 @@ async function runAllTests() {
       removeHook = null;
 
       // 3. Verify pagination parameters and that no files were skipped because offsets shifted
-      assert.equal(iterations.length, 3, 'Should take exactly 3 list calls for 2,500 files (1000 + 1000 + 500)');
+      const batchIterations = iterations.filter((it) => it.limit === 1000);
+      assert.equal(batchIterations.length, 3, 'Should take exactly 3 batch list calls for 2,500 files (1000 + 1000 + 500)');
+      if (iterations.length > 3) {
+        assert.equal(iterations[3].limit, 1, 'Final verification call checks that 0 files remain');
+      }
 
       // Iteration 1: offset 0, limit 1000, fetched att_0000 to att_0999, store size 2500 -> 1500
       assert.equal(iterations[0].offset, 0, 'Iteration 1 must query offset 0');

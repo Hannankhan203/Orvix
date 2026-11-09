@@ -234,6 +234,8 @@ export type {
   DeleteAttachmentOptions,
   DeleteAttachmentResult,
   DeleteChatAttachmentsResult,
-  FindAttachmentResult
+  DeleteChatAttachmentsOptions,
+  FindAttachmentResult,
+  FindAttachmentOptions
 } from './supabaseStorageService.ts';
 

@@ -112,6 +112,12 @@ export interface DeleteChatAttachmentsResult {
   status?: number;
 }
 
+export interface DeleteChatAttachmentsOptions {
+  bucket?: string;
+  maxPages?: number;
+  pageSize?: number;
+}
+
 export interface FindAttachmentResult {
   found: boolean;
   path?: string;
@@ -119,6 +125,12 @@ export interface FindAttachmentResult {
   error?: string;
   code?: string;
   status?: number;
+}
+
+export interface FindAttachmentOptions {
+  bucket?: string;
+  maxPages?: number;
+  pageSize?: number;
 }
 
 /**
@@ -570,7 +582,7 @@ export async function findAttachmentPathInStorage(
   userId: string,
   chatId: string,
   attachmentId: string,
-  bucket?: string
+  bucketOrOptions?: string | FindAttachmentOptions
 ): Promise<FindAttachmentResult> {
   try {
     const cleanUser = String(userId || '').trim();
@@ -592,13 +604,22 @@ export async function findAttachmentPathInStorage(
       return { found: false, error: 'Supabase storage is not configured on this server.', code: 'STORAGE_UNCONFIGURED', status: 503 };
     }
 
-    const activeBucket = bucket || getSupabaseBucket();
-    const folderPath = `${cleanUser}/${cleanChat}`;
-    const PAGE_SIZE = 1000;
-    const MAX_PAGES = 50;
-    let offset = 0;
+    const options: FindAttachmentOptions =
+      typeof bucketOrOptions === 'object' && bucketOrOptions !== null
+        ? bucketOrOptions
+        : { bucket: typeof bucketOrOptions === 'string' ? bucketOrOptions : undefined };
 
-    for (let page = 0; page < MAX_PAGES; page++) {
+    const activeBucket = options.bucket || getSupabaseBucket();
+    const folderPath = `${cleanUser}/${cleanChat}`;
+    const PAGE_SIZE = typeof options.pageSize === 'number' && options.pageSize > 0 ? options.pageSize : 1000;
+    // Bounded safety limit against runaway infinite loops (default: 10,000 pages = 10,000,000 files)
+    const effectiveMaxPages = typeof options.maxPages === 'number' && options.maxPages > 0 ? options.maxPages : 10000;
+
+    let offset = 0;
+    let pageCount = 0;
+
+    while (pageCount < effectiveMaxPages) {
+      pageCount++;
       const { data: fileList, error: listError } = await client.storage
         .from(activeBucket)
         .list(folderPath, { limit: PAGE_SIZE, offset });
@@ -629,7 +650,16 @@ export async function findAttachmentPathInStorage(
       if (fileList.length < PAGE_SIZE) {
         break;
       }
-      offset += PAGE_SIZE;
+      offset += fileList.length;
+    }
+
+    if (pageCount >= effectiveMaxPages) {
+      return {
+        found: false,
+        error: `Exceeded maximum pagination limit (${effectiveMaxPages} pages) while searching for attachment in storage.`,
+        code: 'PAGINATION_LIMIT_EXCEEDED',
+        status: 500
+      };
     }
 
     return { found: false, status: 404 };
@@ -646,13 +676,18 @@ export async function findAttachmentPathInStorage(
 /**
  * Deletes all attachments associated with a specific conversation ({userId}/{chatId}/*).
  * Verifies that the requesting user owns the conversation before pruning.
- * Reliably paginates through batches of up to 1000 files to support conversations with >1000 attachments.
+ *
+ * Reliably paginates through arbitrarily large conversations without arbitrary ceilings.
+ * Preserves offset: 0 reset behavior as the underlying storage listing shrinks.
+ * Retains anti-stall protection and bounded resource safeguards against runaway loops.
+ * Verifies that zero matching files remain before reporting success.
  */
 export async function deleteAttachmentsForChatInStorage(
   userId: string,
   chatId: string,
   requestingUserId?: string,
-  bucket?: string
+  bucketOrOptions?: string | DeleteChatAttachmentsOptions,
+  explicitOptions?: DeleteChatAttachmentsOptions
 ): Promise<DeleteChatAttachmentsResult> {
   let totalDeleted = 0;
   try {
@@ -703,10 +738,17 @@ export async function deleteAttachmentsForChatInStorage(
       };
     }
 
-    const activeBucket = bucket || getSupabaseBucket();
+    const options: DeleteChatAttachmentsOptions =
+      typeof bucketOrOptions === 'object' && bucketOrOptions !== null
+        ? bucketOrOptions
+        : explicitOptions || { bucket: typeof bucketOrOptions === 'string' ? bucketOrOptions : undefined };
+
+    const activeBucket = options.bucket || getSupabaseBucket();
     const folderPath = `${cleanUser}/${cleanChat}`;
-    const PAGE_SIZE = 1000;
-    const MAX_PAGES = 100;
+    const PAGE_SIZE = typeof options.pageSize === 'number' && options.pageSize > 0 ? options.pageSize : 1000;
+    // Bounded safety limit against runaway infinite loops (default: 10,000 pages = 10,000,000 files)
+    const effectiveMaxPages = typeof options.maxPages === 'number' && options.maxPages > 0 ? options.maxPages : 10000;
+
     let pageCount = 0;
     let lastPathsSignature = '';
 
@@ -714,7 +756,7 @@ export async function deleteAttachmentsForChatInStorage(
     // Repeatedly fetch from offset: 0. Because deleted files are pruned from storage in each batch,
     // subsequent files automatically shift down to offset: 0. Incrementing offset would cause files
     // to be skipped as the underlying folder listing shrinks.
-    while (pageCount < MAX_PAGES) {
+    while (pageCount < effectiveMaxPages) {
       pageCount++;
       const { data: fileList, error: listError } = await client.storage
         .from(activeBucket)
@@ -790,12 +832,37 @@ export async function deleteAttachmentsForChatInStorage(
       }
     }
 
-    if (pageCount >= MAX_PAGES) {
+    if (pageCount >= effectiveMaxPages) {
       return {
         success: false,
         deletedCount: totalDeleted,
-        error: 'Exceeded maximum pagination limit while deleting conversation attachments.',
+        error: `Exceeded maximum pagination limit (${effectiveMaxPages} pages) while deleting conversation attachments.`,
         code: 'MAX_PAGES_EXCEEDED',
+        status: 500
+      };
+    }
+
+    // Post-deletion verification: strictly verify that no matching files remain before reporting success
+    const { data: verifyList, error: verifyError } = await client.storage
+      .from(activeBucket)
+      .list(folderPath, { limit: 1, offset: 0 });
+
+    if (verifyError) {
+      return {
+        success: false,
+        deletedCount: totalDeleted,
+        error: `Could not verify conversation folder is empty: ${verifyError.message}`,
+        code: verifyError.name || 'LIST_FAILED',
+        status: (verifyError as any).status || 500
+      };
+    }
+
+    if (verifyList && verifyList.length > 0) {
+      return {
+        success: false,
+        deletedCount: totalDeleted,
+        error: `Incomplete deletion: ${verifyList.length} attachment file(s) still remain in storage folder.`,
+        code: 'INCOMPLETE_DELETION',
         status: 500
       };
     }
