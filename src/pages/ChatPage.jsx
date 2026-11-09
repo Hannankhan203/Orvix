@@ -2975,6 +2975,11 @@ export default function ChatPage({
         }
         void persistMessageSafe(currentChatId, updatedUserMessage);
       } else {
+        if (laterMessageIds.length > 0) {
+          deleteChatMessages('guest', currentChatId, laterMessageIds, {
+            allMessages: messages
+          }).catch(() => {});
+        }
         setUserChats((previous) => {
           const next = previous.map((chat) => {
             if (chat.id !== currentChatId) return chat;

@@ -1490,61 +1490,204 @@ export async function deleteConversation(userId, chatId) {
 }
 
 /**
- * Deletes specific messages from a chat's messages subcollection in Firestore (and local cache).
- * Used when truncating conversation branches during Edit and Resend.
+ * Deletes an individual attachment from Supabase cloud storage using the authenticated
+ * DELETE /api/upload/:id?chatId=... endpoint.
  *
- * @param {string} userId - Authenticated user UID
+ * @param {string} attachmentId - Unique attachment UUID
+ * @param {string} chatId - Parent conversation document ID
+ * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, error?: string }>}
+ */
+export async function cleanUpSingleAttachmentStorage(attachmentId, chatId) {
+  if (!attachmentId) {
+    return { success: false, retryable: false, error: 'Attachment ID required' };
+  }
+
+  if (!isBrowserOnline()) {
+    return { success: false, status: 0, code: 'OFFLINE', retryable: true, offline: true, error: 'Browser is offline.' };
+  }
+
+  try {
+    const token = await getIdToken().catch(() => null);
+    if (!token) {
+      return {
+        success: false,
+        status: 401,
+        code: 'AUTH_REQUIRED',
+        retryable: true,
+        error: 'Authentication required to delete cloud attachment.'
+      };
+    }
+
+    const query = chatId ? `?chatId=${encodeURIComponent(chatId)}` : '';
+    const endpoint = `/api/upload/${encodeURIComponent(attachmentId)}${query}`;
+
+    const res = await fetchWithAuth(endpoint, {
+      method: 'DELETE'
+    });
+
+    if (res.ok || res.status === 404) {
+      return { success: true, status: res.status };
+    }
+
+    if (res.status === 401) {
+      return { success: false, status: 401, code: 'UNAUTHORIZED', retryable: true, error: 'Unauthorized.' };
+    }
+
+    if (res.status === 403) {
+      return { success: false, status: 403, code: 'STORAGE_ACCESS_DENIED', retryable: false, error: 'Access denied.' };
+    }
+
+    const is5xx = res.status >= 500;
+    let errMsg = `HTTP ${res.status}`;
+    try {
+      const errData = await res.json().catch(() => null);
+      if (errData?.error) errMsg = errData.error;
+    } catch (_) {}
+
+    return {
+      success: false,
+      status: res.status,
+      code: is5xx ? 'SERVER_ERROR' : 'DELETE_FAILED',
+      retryable: is5xx,
+      error: errMsg
+    };
+  } catch (err) {
+    const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout');
+    return {
+      success: false,
+      status: isTimeout ? 408 : 0,
+      code: isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+      retryable: true,
+      error: isTimeout ? 'Storage deletion request timed out.' : (err?.message || 'Network error during storage deletion.')
+    };
+  }
+}
+
+/**
+ * Deletes specific messages from a chat's messages subcollection in Firestore (and local cache)
+ * when truncating conversation branches during Edit and Resend.
+ * Safely calculates retained attachment references across both `attachments` and `referencedAttachments`,
+ * and only deletes orphaned attachments from Supabase storage and IndexedDB.
+ *
+ * @param {string} userId - Authenticated user UID (or 'guest')
  * @param {string} chatId - Chat document ID
  * @param {string[]} messageIds - Array of message document IDs to delete
+ * @param {Object} [options={}] - Optional overrides (e.g., allMessages)
+ * @returns {Promise<{ deletedCount: number, orphanedAttachments: string[] }>}
  */
-export async function deleteChatMessages(userId, chatId, messageIds = []) {
+export async function deleteChatMessages(userId, chatId, messageIds = [], options = {}) {
   if (!userId || !chatId || !Array.isArray(messageIds) || messageIds.length === 0) {
-    return;
+    return { deletedCount: 0, orphanedAttachments: [] };
   }
 
   const validIds = messageIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
-  if (validIds.length === 0) return;
+  if (validIds.length === 0) return { deletedCount: 0, orphanedAttachments: [] };
 
   const removeSet = new Set(validIds);
-  const cached = getCachedChatMessages(userId, chatId);
-  const remainingLocal = cached.filter((m) => !removeSet.has(m.id));
-  saveCachedChatMessages(userId, chatId, remainingLocal);
 
-  // Clean up any attachment records for deleted messages
-  try {
-    const deletedMessages = cached.filter((m) => removeSet.has(m.id));
-    const attIds = [];
-    deletedMessages.forEach((m) => {
-      if (Array.isArray(m?.attachments)) {
-        m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+  // 1. Resolve conversation messages: options.allMessages if provided, or from local cache
+  let allMessages = Array.isArray(options.allMessages) && options.allMessages.length > 0
+    ? options.allMessages
+    : getCachedChatMessages(userId, chatId);
+
+  // If cached was empty but guest chats exist, check guest chats in localStorage
+  if (allMessages.length === 0 && (userId === 'guest' || typeof window !== 'undefined')) {
+    try {
+      const guestRaw = localStorage.getItem('orvix_guest_chats') || localStorage.getItem('chatora_guest_chats');
+      if (guestRaw) {
+        const guestChats = JSON.parse(guestRaw);
+        if (Array.isArray(guestChats)) {
+          const chat = guestChats.find((c) => c.id === chatId);
+          if (Array.isArray(chat?.messages)) {
+            allMessages = chat.messages;
+          }
+        }
       }
-      if (Array.isArray(m?.referencedAttachments)) {
-        m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
-      }
-    });
-    if (attIds.length > 0) {
-      void deleteAttachmentRecords(attIds).catch(() => {});
+    } catch (_) {}
+  }
+
+  const remainingLocal = allMessages.filter((m) => !removeSet.has(m.id));
+  if (userId !== 'guest') {
+    saveCachedChatMessages(userId, chatId, remainingLocal);
+  }
+
+  // 2. Collect all attachment IDs still referenced by retained messages (Requirement 2 & 3)
+  const retainedAttachmentIds = new Set();
+  remainingLocal.forEach((m) => {
+    if (Array.isArray(m?.attachments)) {
+      m.attachments.forEach((a) => {
+        if (a?.id) retainedAttachmentIds.add(String(a.id));
+      });
     }
-  } catch (_) {}
+    if (Array.isArray(m?.referencedAttachments)) {
+      m.referencedAttachments.forEach((a) => {
+        if (a?.id) retainedAttachmentIds.add(String(a.id));
+      });
+    }
+  });
 
-  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
-    return;
+  // 3. Collect candidate attachments from deleted messages (Requirement 3)
+  const candidateAttachmentMap = new Map();
+  const deletedMessages = allMessages.filter((m) => removeSet.has(m.id));
+  deletedMessages.forEach((m) => {
+    if (Array.isArray(m?.attachments)) {
+      m.attachments.forEach((a) => {
+        if (a?.id) candidateAttachmentMap.set(String(a.id), a);
+      });
+    }
+    if (Array.isArray(m?.referencedAttachments)) {
+      m.referencedAttachments.forEach((a) => {
+        if (a?.id) candidateAttachmentMap.set(String(a.id), a);
+      });
+    }
+  });
+
+  // 4. Identify orphaned attachments no longer referenced by any retained message (Requirement 4 & 7)
+  const orphanedAttachmentIds = [];
+  for (const [attId] of candidateAttachmentMap.entries()) {
+    if (!retainedAttachmentIds.has(attId)) {
+      orphanedAttachmentIds.push(attId);
+    }
+  }
+
+  // 5. Clean up local IndexedDB records for orphaned attachments (Requirement 6)
+  if (orphanedAttachmentIds.length > 0) {
+    void deleteAttachmentRecords(orphanedAttachmentIds).catch(() => {});
+  }
+
+  // 6. For authenticated cloud attachments, call authenticated DELETE /api/upload/:id?chatId=... (Requirement 5)
+  if (userId && userId !== 'guest' && orphanedAttachmentIds.length > 0) {
+    await Promise.allSettled(
+      orphanedAttachmentIds.map((attId) => cleanUpSingleAttachmentStorage(attId, chatId))
+    );
+  }
+
+  // 7. Delete truncated message documents from Cloud Firestore
+  const effectiveDb = testDbOverride !== null ? testDbOverride : db;
+  if (!effectiveDb || (!isFirebaseConfigured() && !testDbOverride) || !isBrowserOnline() || userId === 'guest') {
+    return { deletedCount: validIds.length, orphanedAttachments: orphanedAttachmentIds };
   }
 
   try {
-    const CHUNK_SIZE = 400;
-    for (let i = 0; i < validIds.length; i += CHUNK_SIZE) {
-      const chunk = validIds.slice(i, i + CHUNK_SIZE);
-      const batch = writeBatch(db);
-      chunk.forEach((msgId) => {
-        const msgRef = doc(db, 'users', userId, 'chats', chatId, 'messages', msgId);
-        batch.delete(msgRef);
-      });
-      await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'deleteChatMessages');
+    if (testDbOverride && typeof testDbOverride.deleteChatMessages === 'function') {
+      await testDbOverride.deleteChatMessages(userId, chatId, validIds);
+    } else {
+      const CHUNK_SIZE = 400;
+      for (let i = 0; i < validIds.length; i += CHUNK_SIZE) {
+        const chunk = validIds.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(effectiveDb);
+        chunk.forEach((msgId) => {
+          const msgRef = doc(effectiveDb, 'users', userId, 'chats', chatId, 'messages', msgId);
+          batch.delete(msgRef);
+        });
+        await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'deleteChatMessages');
+      }
     }
   } catch (err) {
     console.warn('Could not delete truncated messages in Firestore (updated locally):', err?.message || err);
   }
+
+  return { deletedCount: validIds.length, orphanedAttachments: orphanedAttachmentIds };
 }
 
 /**
