@@ -28,6 +28,10 @@ import {
   EMBEDDING_DIMENSION
 } from '../src/services/semanticEmbeddingService.js';
 import {
+  getConceptVocabularySize,
+  getConceptClusterCount
+} from '../src/services/semanticConceptModel.js';
+import {
   storeDocumentChunks,
   getChunksForDocuments,
   getChunksForConversation,
@@ -545,6 +549,162 @@ async function main() {
     chunks = await getChunksForDocuments(['doc_versioned']);
     assert.strictEqual(chunks.length, 1);
     assert.strictEqual(chunks[0].text, 'Version 2 updated content');
+  });
+
+  // --------------------------------------------------------------------------
+  // Group 7: Conceptual Similarity (Synonyms, Paraphrases & Different Vocabulary)
+  // --------------------------------------------------------------------------
+  console.log('\n--- 7. Conceptual Similarity (Synonyms, Paraphrases & Different Vocabulary) ---');
+
+  runTest('7.1 Semantic concept ontology model is properly initialized', () => {
+    const vocabSize = getConceptVocabularySize();
+    const clusterCount = getConceptClusterCount();
+    assert.ok(vocabSize >= 150, `Expected at least 150 concept vocabulary words, got ${vocabSize}`);
+    assert.ok(clusterCount >= 10, `Expected at least 10 concept clusters, got ${clusterCount}`);
+  });
+
+  runTest('7.2 Embeddings exhibit strong cosine similarity for differently worded synonymous queries', () => {
+    const synonymPairs = [
+      {
+        query: 'How much money did the firm make?',
+        passage: 'Total net revenue and operating profit reached ten million.',
+        label: 'Earnings / Net Profit vs Money Made by Firm'
+      },
+      {
+        query: 'Can I get my cash back?',
+        passage: 'Customers are entitled to a full reimbursement within 30 days.',
+        label: 'Cash Back vs Reimbursement'
+      },
+      {
+        query: 'How do I contact customer support?',
+        passage: 'For client assistance and helpdesk inquiries, email our team.',
+        label: 'Customer Support vs Client Assistance / Helpdesk'
+      },
+      {
+        query: 'The physician prescribed medicine.',
+        passage: 'The doctor gave pharmaceutical treatments to the patient.',
+        label: 'Physician / Medicine vs Doctor / Pharmaceutical'
+      },
+      {
+        query: 'Cancel my subscription plan',
+        passage: 'Terminate the recurring membership agreement.',
+        label: 'Cancel Subscription vs Terminate Membership'
+      }
+    ];
+
+    const irrelevantText = 'How to configure Webpack and Vite plugins for React TypeScript bundling.';
+    const irrelVec = generateSemanticEmbedding(irrelevantText);
+
+    for (const pair of synonymPairs) {
+      const qVec = generateSemanticEmbedding(pair.query);
+      const passVec = generateSemanticEmbedding(pair.passage);
+
+      const relSim = computeCosineSimilarity(qVec, passVec);
+      const irrelSim = computeCosineSimilarity(qVec, irrelVec);
+
+      assert.ok(
+        relSim > irrelSim,
+        `[${pair.label}] Expected relevant similarity (${relSim.toFixed(3)}) > irrelevant (${irrelSim.toFixed(3)})`
+      );
+      assert.ok(
+        relSim >= 0.25,
+        `[${pair.label}] Expected strong conceptual similarity >= 0.25, got ${relSim.toFixed(3)}`
+      );
+      assert.ok(
+        irrelSim < 0.20,
+        `[${pair.label}] Expected irrelevant text similarity < 0.20, got ${irrelSim.toFixed(3)}`
+      );
+    }
+  });
+
+  await runTestAsync('7.3 searchSemanticChunks retrieves documents using completely different vocabulary', async () => {
+    await clearAllChunks();
+
+    const supportDoc = {
+      id: 'doc_support',
+      originalName: 'support_guide.txt',
+      format: 'TXT',
+      text: 'Our client assistance team offers 24/7 helpdesk guidance and resolves billing disputes for all patrons.'
+    };
+
+    const techDoc = {
+      id: 'doc_tech_build',
+      originalName: 'build_guide.txt',
+      format: 'TXT',
+      text: 'Configure the rollup bundling pipeline, tree shaking, and code splitting for client web performance.'
+    };
+
+    await indexDocument(supportDoc);
+    await indexDocument(techDoc);
+
+    // Query uses different vocabulary: "help customer with invoice problem"
+    // Document uses: "client assistance", "helpdesk", "billing disputes", "patrons"
+    const results = await searchSemanticChunks({
+      query: 'Who can help customer with invoice problem?',
+      docIds: ['doc_support', 'doc_tech_build'],
+      topK: 3,
+      minScore: 0.15
+    });
+
+    assert.ok(results.length >= 1, `Expected at least 1 retrieval match, got ${results.length}`);
+    assert.strictEqual(results[0].docId, 'doc_support');
+    assert.ok(results[0].score >= 0.25, `Expected score >= 0.25, got ${results[0].score}`);
+    assert.ok(results[0].text.includes('client assistance'));
+  });
+
+  await runTestAsync('7.4 Multi-domain concept retrieval accurately discriminates between domains', async () => {
+    await clearAllChunks();
+
+    const medicalDoc = {
+      id: 'doc_medical',
+      originalName: 'clinical_notes.txt',
+      format: 'TXT',
+      text: 'The clinician provided therapeutic care and prescribed antibiotic treatments to recover health.'
+    };
+
+    const financeDoc = {
+      id: 'doc_finance_report',
+      originalName: 'financials.txt',
+      format: 'TXT',
+      text: 'The corporation announced record revenue, high EBITDA profit margins, and quarterly dividend payouts.'
+    };
+
+    const legalDoc = {
+      id: 'doc_legal_terms',
+      originalName: 'terms.txt',
+      format: 'TXT',
+      text: 'The contract provisions mandate strict compliance with regulatory guidelines and confidential privacy rules.'
+    };
+
+    await indexDocument(medicalDoc);
+    await indexDocument(financeDoc);
+    await indexDocument(legalDoc);
+
+    const docIds = ['doc_medical', 'doc_finance_report', 'doc_legal_terms'];
+
+    // 1. Medical domain query with alternate terms
+    const medResults = await searchSemanticChunks({
+      query: 'doctor pharmaceutical drugs',
+      docIds,
+      topK: 1
+    });
+    assert.strictEqual(medResults[0]?.docId, 'doc_medical');
+
+    // 2. Finance domain query with alternate terms
+    const finResults = await searchSemanticChunks({
+      query: 'how much money earnings did company gain',
+      docIds,
+      topK: 1
+    });
+    assert.strictEqual(finResults[0]?.docId, 'doc_finance_report');
+
+    // 3. Legal domain query with alternate terms
+    const legalResults = await searchSemanticChunks({
+      query: 'agreement policies and legal statutes',
+      docIds,
+      topK: 1
+    });
+    assert.strictEqual(legalResults[0]?.docId, 'doc_legal_terms');
   });
 
   // --------------------------------------------------------------------------

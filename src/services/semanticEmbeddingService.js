@@ -8,6 +8,8 @@
  * Avoids multi-hundred-megabyte model downloads and memory exhaustion on mobile devices.
  */
 
+import { getConceptsForWord, getConceptsForPhrase } from './semanticConceptModel.js';
+
 export const EMBEDDING_DIMENSION = 256;
 
 // Common English stopwords downweighted to emphasize salient conceptual terms
@@ -84,9 +86,9 @@ export function stemToken(word) {
 }
 
 /**
- * Tokenizes and normalizes text into salient terms, numbers, and subwords.
+ * Tokenizes and normalizes text into salient terms, numbers, subwords, and semantic concepts.
  * @param {string} text
- * @returns {Array<{ token: string, weight: number, isSubword: boolean }>}
+ * @returns {Array<{ token: string, weight: number, isSubword: boolean, k?: number }>}
  */
 export function extractWeightedFeatures(text) {
   if (!text || typeof text !== 'string') return [];
@@ -96,6 +98,27 @@ export function extractWeightedFeatures(text) {
   const rawWords = clean.match(/[a-z0-9]+(?:[-_'][a-z0-9]+)*/g) || [];
   const features = [];
   const wordFrequency = new Map();
+
+  // Multi-word phrase concepts (e.g. "cash back", "customer support", "help desk")
+  for (let i = 0; i < rawWords.length - 1; i++) {
+    const bigram = rawWords[i] + ' ' + rawWords[i + 1];
+    const bgConcepts = getConceptsForPhrase(bigram);
+    for (let cIdx = 0; cIdx < bgConcepts.length; cIdx++) {
+      const c = bgConcepts[cIdx];
+      features.push({
+        token: `C:${c.cluster}`,
+        weight: 3.5,
+        isSubword: false,
+        k: 6
+      });
+      features.push({
+        token: `D:${c.domain}`,
+        weight: 1.8,
+        isSubword: false,
+        k: 4
+      });
+    }
+  }
 
   for (const w of rawWords) {
     wordFrequency.set(w, (wordFrequency.get(w) || 0) + 1);
@@ -113,26 +136,45 @@ export function extractWeightedFeatures(text) {
 
     // 1. Primary stemmed token feature
     const stem = stemToken(word);
-    features.push({ token: `W:${stem}`, weight: totalWeight * 1.5, isSubword: false });
+    features.push({ token: `W:${stem}`, weight: totalWeight * 2.0, isSubword: false, k: 2 });
 
     // Exact word feature for identifiers, acronyms, or numbers
     if (word !== stem || isNumeric) {
-      features.push({ token: `E:${word}`, weight: totalWeight, isSubword: false });
+      features.push({ token: `E:${word}`, weight: totalWeight, isSubword: false, k: 2 });
     }
 
     // 2. Character n-grams (3-grams and 4-grams) to capture subwords, typos, and morphs
-    if (word.length >= 3 && !isStop) {
+    if (word.length >= 3) {
       const padded = `^${word}$`;
       for (let n = 3; n <= 4; n++) {
         for (let i = 0; i <= padded.length - n; i++) {
           const ngram = padded.slice(i, i + n);
           features.push({
             token: `NG:${ngram}`,
-            weight: totalWeight * 0.35,
-            isSubword: true
+            weight: totalWeight * 0.15,
+            isSubword: true,
+            k: 1
           });
         }
       }
+    }
+
+    // 3. Conceptual cluster and domain features for genuine semantic similarity (synonyms & paraphrases)
+    const concepts = getConceptsForWord(word, stem);
+    for (let cIdx = 0; cIdx < concepts.length; cIdx++) {
+      const c = concepts[cIdx];
+      features.push({
+        token: `C:${c.cluster}`,
+        weight: totalWeight * 3.2,
+        isSubword: false,
+        k: 6
+      });
+      features.push({
+        token: `D:${c.domain}`,
+        weight: totalWeight * 1.6,
+        isSubword: false,
+        k: 4
+      });
     }
   }
 
@@ -142,6 +184,9 @@ export function extractWeightedFeatures(text) {
 /**
  * Generates a dense unit-normalized vector embedding for a given text string.
  * Dimension: 256 (EMBEDDING_DIMENSION)
+ *
+ * Uses multi-k pseudo-orthogonal dense projection to distribute conceptual energy
+ * smoothly across dimensions and prevent isolated single-dimension collisions.
  *
  * @param {string} text
  * @param {number} [dimension=256]
@@ -156,15 +201,16 @@ export function generateSemanticEmbedding(text, dimension = EMBEDDING_DIMENSION)
   }
 
   for (let i = 0; i < features.length; i++) {
-    const { token, weight } = features[i];
-    // Hash feature string to index and random sign (+1 / -1)
-    const h1 = fnv1a32(token, 0x811c9dc5);
-    const h2 = fnv1a32(token, 0x9e3779b9);
-
-    const index = h1 % dimension;
-    const sign = (h2 & 1) === 0 ? 1.0 : -1.0;
-
-    vec[index] += sign * weight;
+    const { token, weight, k = 1 } = features[i];
+    const perKWeight = weight / Math.sqrt(k);
+    let baseHash = fnv1a32(token, 0x811c9dc5);
+    for (let step = 0; step < k; step++) {
+      baseHash = (baseHash ^ Math.imul(step + 1, 0x9e3779b9)) >>> 0;
+      baseHash = Math.imul(baseHash, 0x01000193);
+      const index = (baseHash >>> 7) % dimension;
+      const sign = (baseHash & 1) === 0 ? 1.0 : -1.0;
+      vec[index] += sign * perKWeight;
+    }
   }
 
   // Calculate L2 Euclidean norm
@@ -256,3 +302,5 @@ export async function generateChunkEmbeddingsAsync(chunks = [], options = {}) {
 
   return enriched;
 }
+
+export { getConceptsForWord, getConceptsForPhrase };

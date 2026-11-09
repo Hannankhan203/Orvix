@@ -21,5 +21,6 @@ export * from './semanticChunkingService.js';
 export * from './semanticEmbeddingService.js';
 export * from './semanticVectorStorage.js';
 export * from './semanticRetrievalService.js';
+export * from './semanticConceptModel.js';
 
 
