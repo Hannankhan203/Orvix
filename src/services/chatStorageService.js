@@ -612,20 +612,35 @@ export function generateLocalChatId(userId = '') {
  * @param {string} userId - Authenticated user UID
  * @param {string} [initialTitle='New Conversation']
  * @param {string} [mode='general'] - Active chat mode (general | coding | writing | learning)
- * @returns {Promise<string>} The generated chatId
+ * @param {Object} [extraMetadata={}] - Optional metadata or settings
+ * @param {string} [targetChatId=null] - Optional pre-generated chatId to reuse
+ * @returns {Promise<string>} The generated or reused chatId
  */
-export async function createChatDocument(userId, initialTitle = 'New Conversation', mode = 'general', extraMetadata = {}) {
+export async function createChatDocument(
+  userId,
+  initialTitle = 'New Conversation',
+  mode = 'general',
+  extraMetadata = {},
+  targetChatId = null
+) {
   if (!userId) {
     throw new Error('Valid userId is required to create a conversation.');
   }
 
   const nowMs = Date.now();
-  const chatId = generateLocalChatId(userId);
+  // Support pre-generated conversation ID passed directly as 5th argument, or in extraMetadata.chatId,
+  // or as 4th argument if extraMetadata is a string. If not provided, generate a new valid ID.
+  const resolvedChatId =
+    targetChatId ||
+    (typeof extraMetadata === 'string' ? extraMetadata : extraMetadata?.chatId) ||
+    generateLocalChatId(userId);
+
   const cleanMode = mode || 'general';
+  const metaObj = extraMetadata && typeof extraMetadata === 'object' ? extraMetadata : {};
 
   // Always record locally first so offline mode or interrupted connections never lose the chat
   upsertCachedUserChat(userId, {
-    id: chatId,
+    id: resolvedChatId,
     title: initialTitle,
     mode: cleanMode,
     timestamp: 'Just now',
@@ -633,19 +648,19 @@ export async function createChatDocument(userId, initialTitle = 'New Conversatio
     createdAtMs: nowMs,
     isPinned: false,
     pinnedAt: null,
-    isImported: Boolean(extraMetadata.isImported),
-    importedFromShareId: extraMetadata.importedFromShareId || null,
+    isImported: Boolean(metaObj.isImported),
+    importedFromShareId: metaObj.importedFromShareId || null,
     pendingSync: true,
     createdOffline: !isBrowserOnline()
   });
 
   if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
-    return chatId;
+    return resolvedChatId;
   }
 
-  const newChatDoc = doc(db, 'users', userId, 'chats', chatId);
+  const newChatDoc = doc(db, 'users', userId, 'chats', resolvedChatId);
   const chatData = {
-    id: chatId,
+    id: resolvedChatId,
     title: initialTitle,
     mode: cleanMode,
     userId,
@@ -653,26 +668,26 @@ export async function createChatDocument(userId, initialTitle = 'New Conversatio
     updatedAt: serverTimestamp(),
     isPinned: false,
     pinnedAt: null,
-    ...(extraMetadata.isImported ? { isImported: true } : {}),
-    ...(extraMetadata.importedFromShareId ? { importedFromShareId: extraMetadata.importedFromShareId } : {})
+    ...(metaObj.isImported ? { isImported: true } : {}),
+    ...(metaObj.importedFromShareId ? { importedFromShareId: metaObj.importedFromShareId } : {})
   };
 
   try {
     await withBoundedTimeout(setDoc(newChatDoc, chatData), FIRESTORE_OP_TIMEOUT_MS, 'createChatDocument');
     upsertCachedUserChat(userId, {
-      id: chatId,
+      id: resolvedChatId,
       pendingSync: false,
       createdOffline: false
     });
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      console.warn('Offline/network fallback: created conversation locally for later sync:', chatId);
-      return chatId;
+      console.warn('Offline/network fallback: created conversation locally for later sync:', resolvedChatId);
+      return resolvedChatId;
     }
     throw err;
   }
 
-  return chatId;
+  return resolvedChatId;
 }
 
 /**

@@ -16,6 +16,7 @@ import {
 } from '../services/providerModelSanitizer.js';
 import {
   createChatDocument,
+  generateLocalChatId,
   saveChatMessage,
   renameConversation,
   deleteConversation,
@@ -1498,6 +1499,19 @@ export default function ChatPage({
     }
 
     const initialChatId = activeChatIdRef.current;
+    // If there is no active conversation (first turn), pre-generate a valid conversation ID
+    // BEFORE uploading any attachments. This guarantees all first-turn attachments upload directly
+    // into the conversation's storage folder ({userId}/{chatId}/*) rather than temporary 'staging',
+    // preventing Supabase Storage orphan files.
+    const pregeneratedChatId = !initialChatId
+      ? (isAuthenticatedSharedPreview
+          ? `shared-preview-${sharedShareId || Date.now()}`
+          : (isCloudEnabled && currentUser?.uid)
+            ? generateLocalChatId(currentUser.uid)
+            : `guest-${Date.now()}`)
+      : null;
+    const effectiveChatId = initialChatId || pregeneratedChatId;
+
     const submitProvider = selectedProvider;
     const preflightEntry = requestControllerRef.current.beginRequest({
       chatId: initialChatId,
@@ -1571,7 +1585,7 @@ export default function ChatPage({
                 formattedSize: att.formattedSize,
                 extension: att.extension,
                 isImage: Boolean(att.isImage),
-                conversationId: initialChatId || null
+                conversationId: effectiveChatId || null
               });
               if (!isPreflightActive()) return false;
               localExtractedAttachments.push({
@@ -1639,7 +1653,7 @@ export default function ChatPage({
               formattedSize: att.formattedSize,
               extension: att.extension,
               isImage: Boolean(att.isImage),
-              conversationId: initialChatId || null
+              conversationId: effectiveChatId || null
             });
 
             if (!isPreflightActive()) return false;
@@ -1691,8 +1705,8 @@ export default function ChatPage({
 
           try {
             const formData = new FormData();
-            if (initialChatId) {
-              formData.append('conversationId', initialChatId);
+            if (effectiveChatId) {
+              formData.append('conversationId', effectiveChatId);
             }
             formData.append('provider', submitProvider || DEFAULT_PROVIDER);
             formData.append('offline', String(!isBrowserOnline()));
@@ -1752,7 +1766,7 @@ export default function ChatPage({
                     formattedSize: att.formattedSize,
                     extension: att.extension,
                     isImage: Boolean(att.isImage),
-                    conversationId: initialChatId || null
+                    conversationId: effectiveChatId || null
                   });
                   if (!isPreflightActive()) return false;
                   fallbackLocalAttachments.push({
@@ -1803,7 +1817,7 @@ export default function ChatPage({
                         formattedSize: cleanProc.formattedSize || orig.formattedSize,
                         extension: cleanProc.extension || orig.extension,
                         isImage: Boolean(cleanProc.isImage || orig.isImage),
-                        conversationId: initialChatId || null
+                        conversationId: effectiveChatId || null
                       });
                     } catch (e) {
                       console.warn('Could not cache blob in IndexedDB:', e);
@@ -1880,7 +1894,7 @@ export default function ChatPage({
                     formattedSize: att.formattedSize,
                     extension: att.extension,
                     isImage: Boolean(att.isImage),
-                    conversationId: initialChatId || null
+                    conversationId: effectiveChatId || null
                   });
 
                   if (!isPreflightActive()) return false;
@@ -1954,7 +1968,7 @@ export default function ChatPage({
       if (!currentChatId) {
         if (isAuthenticatedSharedPreview) {
           // Provision an isolated temporary preview chat ID in memory without creating Firestore or guest docs
-          currentChatId = `shared-preview-${sharedShareId || Date.now()}`;
+          currentChatId = effectiveChatId;
           activeChatIdRef.current = currentChatId;
           setActiveChatId(currentChatId);
         } else {
@@ -1970,7 +1984,9 @@ export default function ChatPage({
               const createdId = await createChatDocument(
                 currentUser.uid,
                 titleSnippet,
-                activeMode
+                activeMode,
+                {},
+                effectiveChatId
               );
               if (!isPreflightActive()) return false;
               currentChatId = createdId;
@@ -1983,7 +1999,7 @@ export default function ChatPage({
             } catch (error) {
               if (!isPreflightActive()) return false;
               console.warn('Could not create Firestore chat doc, falling back to local conversation:', error);
-              currentChatId = `local-${Date.now()}`;
+              currentChatId = effectiveChatId;
               skipNextChatLoadRef.current = currentChatId;
               const fallbackChat = {
                 id: currentChatId,
@@ -1998,7 +2014,7 @@ export default function ChatPage({
               setUserChats((previous) => [fallbackChat, ...previous]);
             }
           } else {
-            currentChatId = `guest-${Date.now()}`;
+            currentChatId = effectiveChatId;
 
             // Prevent the history effect from replacing the new chat's
             // messages with an empty guest list before they are persisted.
