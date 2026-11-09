@@ -33,11 +33,36 @@ import {
   resolveVerifiedUserId,
   authenticateRequest
 } from './firebaseAuthHelper.ts';
+import {
+  DAILY_UPLOAD_LIMIT,
+  resolveUploadIdentity,
+  reserveUploadSlot,
+  commitUploadSlot,
+  releaseUploadSlot,
+  attachQuotaHeaders,
+  getQuotaStatus,
+  type QuotaIdentity,
+  type QuotaReservation,
+  type QuotaStatus
+} from './uploadQuotaService.ts';
 
 export {
   verifyFirebaseIdToken,
   resolveVerifiedUserId,
-  authenticateRequest
+  authenticateRequest,
+  DAILY_UPLOAD_LIMIT,
+  resolveUploadIdentity,
+  reserveUploadSlot,
+  commitUploadSlot,
+  releaseUploadSlot,
+  attachQuotaHeaders,
+  getQuotaStatus
+};
+
+export type {
+  QuotaIdentity,
+  QuotaReservation,
+  QuotaStatus
 };
 
 /**
@@ -580,6 +605,7 @@ export function registerUploadRoutes(app: express.Express) {
       maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
       maxFileSizeFormatted: formatBytes(MAX_FILE_SIZE_BYTES),
       maxAttachments: MAX_ATTACHMENTS_PER_UPLOAD,
+      dailyUploadLimit: DAILY_UPLOAD_LIMIT,
       allowedExtensions: Object.keys(ALLOWED_EXTENSIONS_MAP).map((e) =>
         e.replace('.', '').toUpperCase()
       ),
@@ -1578,6 +1604,49 @@ export function registerUploadRoutes(app: express.Express) {
           });
         }
       }
+
+      // Enforce secure, persistent daily upload quota of 5 per identity per UTC calendar day
+      const quotaIdentity = await resolveUploadIdentity(req);
+      const quotaReservation = await reserveUploadSlot(quotaIdentity);
+
+      if (!quotaReservation.allowed) {
+        attachQuotaHeaders(
+          res,
+          {
+            limit: quotaReservation.limit,
+            remaining: quotaReservation.remaining,
+            resetAt: quotaReservation.resetAt
+          },
+          quotaIdentity
+        );
+        return res.status(429).json({
+          error: quotaReservation.error,
+          code: 'QUOTA_EXCEEDED',
+          status: 'QUOTA_EXCEEDED',
+          limit: quotaReservation.limit,
+          remaining: quotaReservation.remaining,
+          resetAt: quotaReservation.resetAt
+        });
+      }
+
+      const reservation = quotaReservation.reservation;
+      let isReservationSettled = false;
+
+      const releaseQuotaReservationSafely = async () => {
+        if (!isReservationSettled) {
+          isReservationSettled = true;
+          try {
+            await releaseUploadSlot(reservation);
+          } catch (_) {}
+        }
+      };
+
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          void releaseQuotaReservationSafely();
+        }
+      });
+
       const uploadedResults: UploadedFileRecord[] = [];
       const validationErrors: string[] = [];
 
@@ -1649,6 +1718,7 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       if (validationErrors.length > 0) {
+        await releaseQuotaReservationSafely();
         for (const rec of uploadedResults) {
           fileRegistry.delete(rec.id);
           if (conversationId && conversationDocuments.has(conversationId)) {
@@ -1779,6 +1849,7 @@ export function registerUploadRoutes(app: express.Express) {
               }
 
               // 3. Fail securely: Return HTTP 503 without silent fallback to local disk
+              await releaseQuotaReservationSafely();
               return res.status(503).json({
                 error: errorMessage,
                 code: 'STORAGE_UPLOAD_FAILED',
@@ -1797,6 +1868,10 @@ export function registerUploadRoutes(app: express.Express) {
           }
         }
       }
+
+      isReservationSettled = true;
+      const committedStatus = await commitUploadSlot(reservation);
+      attachQuotaHeaders(res, committedStatus, quotaIdentity);
 
       return res.status(200).json({
         success: true,
