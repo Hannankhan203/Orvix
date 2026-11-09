@@ -1551,7 +1551,8 @@ export function registerUploadRoutes(app: express.Express) {
         });
       }
 
-      const conversationId = req.body?.conversationId ? String(req.body.conversationId).trim() : undefined;
+      const rawConvId = req.body?.conversationId !== undefined ? String(req.body.conversationId).trim() : undefined;
+      const conversationId = rawConvId && rawConvId.length > 0 ? rawConvId : undefined;
       const authStatus = await authenticateRequest(req);
       if (authStatus.status === 'invalid') {
         return res.status(401).json({
@@ -1561,6 +1562,22 @@ export function registerUploadRoutes(app: express.Express) {
       }
       const authenticatedUserId = authStatus.userId;
       const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
+
+      // Authenticated cloud uploads require a valid conversation ID to prevent orphaned staging storage
+      if (authenticatedUserId) {
+        if (!conversationId) {
+          return res.status(400).json({
+            error: 'A valid conversationId is required for authenticated uploads.',
+            code: 'MISSING_CONVERSATION_ID'
+          });
+        }
+        if (!isValidPathSegment(conversationId) || conversationId.toLowerCase() === 'staging') {
+          return res.status(400).json({
+            error: 'Invalid conversationId provided. Must contain only alphanumeric characters, dashes, and underscores.',
+            code: 'INVALID_CONVERSATION_ID'
+          });
+        }
+      }
       const uploadedResults: UploadedFileRecord[] = [];
       const validationErrors: string[] = [];
 
@@ -1694,10 +1711,7 @@ export function registerUploadRoutes(app: express.Express) {
 
       // Upload authenticated users' files to private Supabase Storage if configured and online
       if (authenticatedUserId && isSupabaseConfigured() && !isOfflineUpload) {
-        const cleanChatId =
-          conversationId && isValidPathSegment(conversationId)
-            ? conversationId
-            : 'staging';
+        const cleanChatId = conversationId!;
 
         for (const rec of uploadedResults) {
           if (rec.buffer && rec.buffer.length > 0) {
