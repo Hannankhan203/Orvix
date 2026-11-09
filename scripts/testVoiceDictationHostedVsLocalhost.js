@@ -406,44 +406,41 @@ try {
   process.env.TESTING = 'true';
   const { app } = await import('../server.ts');
 
-  const server = app.listen(3015, '127.0.0.1', async () => {
-    try {
-      // Localhost fallback path: send transcript with dummy audio
-      const formLocal = new FormData();
-      const dummyAudio = new Blob([new Uint8Array(2000).fill(1)], { type: 'audio/webm' });
-      formLocal.append('file', dummyAudio, 'dictation.webm');
-      formLocal.append(
-        'transcript',
-        "this is the original or fix's readme md file, which is firebase integrated."
-      );
+  await new Promise((resolve, reject) => {
+    const server = app.listen(3015, '127.0.0.1', async () => {
+      try {
+        // Localhost fallback path: send transcript with dummy audio
+        const formLocal = new FormData();
+        const dummyAudio = new Blob([new Uint8Array(2000).fill(1)], { type: 'audio/webm' });
+        formLocal.append('file', dummyAudio, 'dictation.webm');
+        formLocal.append(
+          'transcript',
+          "this is the original or fix's readme md file, which is firebase integrated."
+        );
 
-      const res = await fetch('http://127.0.0.1:3015/api/transcribe', {
-        method: 'POST',
-        body: formLocal
-      });
-      assert.equal(res.status, 200, 'HTTP status must be 200');
-      const data = await res.json();
-      assert.equal(data.success, true);
-      assert.equal(
-        data.text,
-        "This is the original Orvix's README.md file, which is Firebase integrated."
-      );
-      console.log('  ✓ Localhost path returns canonical formatted transcript.');
-      passedTests++;
-      server.close();
-    } catch (apiErr) {
-      server.close();
-      console.error('  ✗ Test 13 failed:', apiErr);
-      process.exit(1);
-    }
+        const res = await fetch('http://127.0.0.1:3015/api/transcribe', {
+          method: 'POST',
+          body: formLocal
+        });
+        assert.equal(res.status, 200, 'HTTP status must be 200');
+        const data = await res.json();
+        assert.equal(data.success, true);
+        assert.equal(
+          data.text,
+          "This is the original Orvix's README.md file, which is Firebase integrated."
+        );
+        console.log('  ✓ Localhost path returns canonical formatted transcript.');
+        passedTests++;
+        server.close(() => resolve());
+      } catch (apiErr) {
+        server.close(() => reject(apiErr));
+      }
+    });
   });
 } catch (err) {
-  console.error('  ✗ Test 13 setup failed:', err);
+  console.error('  ✗ Test 13 failed:', err);
   process.exit(1);
 }
-
-// Allow asynchronous server test 13 to complete before test 14
-await new Promise((r) => setTimeout(r, 600));
 
 /* --------------------------------------------------------------------------
    Test 14: Server Cache-Control headers verification (sw.js & index.html)

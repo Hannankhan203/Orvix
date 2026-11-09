@@ -1,6 +1,13 @@
 import type { Server as HttpServer, IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parse as parseUrl } from 'url';
+import dns from 'dns';
+
+// Ensure IPv4 is prioritized for outbound external API connections (Gemini, Groq)
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (_) {}
+
 import { verifyFirebaseIdToken } from './firebaseAuthHelper.ts';
 import {
   getGroqApiBaseUrl,
@@ -12,6 +19,36 @@ import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Spoken transcript cleaner
 import { polishSpokenTranscript } from '../src/utils/speechTextCleaner.js';
 import { mapBcp47ToIso639, DEFAULT_WHISPER_CONTEXT_PROMPT } from './transcriptionSubsystem.ts';
+
+/**
+ * Returns whether at least one real transcription provider (Groq Whisper or Gemini) is configured.
+ */
+export function isTranscriptionProviderConfigured(): boolean {
+  const groqKey = getGroqApiKey();
+  const geminiKey = getGeminiApiKey();
+  return isConfiguredCredential(groqKey) || isConfiguredCredential(geminiKey);
+}
+
+/**
+ * Extracts transcription text from Gemini generateContent response.
+ * Supports both standard text parts and dedicated audioTranscription parts from gemini-3.5-transcribe.
+ */
+export function extractGeminiTranscript(result: any): string {
+  if (!result) return '';
+  let text = '';
+  const parts = result.candidates?.[0]?.content?.parts || [];
+  for (const part of parts) {
+    if (part.audioTranscription?.text) {
+      text += (text ? ' ' : '') + part.audioTranscription.text;
+    } else if (part.text) {
+      text += (text ? ' ' : '') + part.text;
+    }
+  }
+  if (!text && typeof result.text === 'string') {
+    text = result.text;
+  }
+  return text.trim();
+}
 
 /**
  * Voice Streaming WebSocket Subsystem (Phase 6 Prompt 30)
@@ -107,52 +144,9 @@ export function pcmToWavBuffer(
   return Buffer.concat([header, pcmBuffer]);
 }
 
-let testCustomTranscriber:
-  | ((
-      wavBuffer: Buffer,
-      language: string,
-      prompt: string,
-      incomingHint: string
-    ) => Promise<{ text: string; provider: string; model: string } | null>)
-  | null = null;
-
-export function setCustomTranscriberForTesting(
-  transcriber:
-    | ((
-        wavBuffer: Buffer,
-        language: string,
-        prompt: string,
-        incomingHint: string
-      ) => Promise<{ text: string; provider: string; model: string } | null>)
-    | null
-): void {
-  testCustomTranscriber = transcriber;
-}
-
 /**
- * Deterministic progressive fallback transcript synthesizer.
- * Simulates genuine progressive speech recognition growth according to audio duration.
- */
-export function generateProgressiveFallbackTranscript(durationSec: number, context = ''): string {
-  const steps = [
-    { maxSec: 0.7, text: 'Hello' },
-    { maxSec: 1.5, text: 'Hello, this is Orvix' },
-    { maxSec: 2.6, text: 'Hello, this is Orvix voice streaming' },
-    { maxSec: 3.8, text: 'Hello, this is Orvix live voice streaming with progressive transcription.' },
-    { maxSec: Infinity, text: 'Hello, this is Orvix live voice streaming with progressive transcription and Whisper refinement.' }
-  ];
-
-  for (const step of steps) {
-    if (durationSec < step.maxSec) {
-      return polishSpokenTranscript(step.text, context);
-    }
-  }
-  return polishSpokenTranscript(steps[steps.length - 1].text, context);
-}
-
-/**
- * Transcribes audio buffer using available configured upstream providers (Groq Whisper, Gemini),
- * falling back to realistic progressive transcription if offline, demo mode, or in test environments.
+ * Transcribes audio buffer using available configured upstream providers (Groq Whisper or Gemini).
+ * Never generates fabricated transcript text based on recording duration.
  */
 export async function transcribeAudioBuffer(
   wavBuffer: Buffer,
@@ -160,11 +154,6 @@ export async function transcribeAudioBuffer(
   prompt = '',
   incomingHint = ''
 ): Promise<{ text: string; provider: string; model: string }> {
-  if (testCustomTranscriber) {
-    const customResult = await testCustomTranscriber(wavBuffer, language, prompt, incomingHint);
-    if (customResult) return customResult;
-  }
-
   const groqKey = getGroqApiKey();
   const geminiKey = getGeminiApiKey();
   const isoLang = mapBcp47ToIso639(language);
@@ -256,7 +245,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
             ]
           });
 
-          const rawText = (result.text || '').trim();
+          const rawText = extractGeminiTranscript(result);
           if (rawText) {
             const polished = polishSpokenTranscript(rawText, incomingHint || '');
             return {
@@ -274,15 +263,11 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
     }
   }
 
-  // 3. Realistic progressive fallback when offline, in demo mode, or in automated tests
-  const pcmBytes = Math.max(0, wavBuffer.length - 44);
-  const durationSec = pcmBytes / (16000 * 2); // default 16kHz 16-bit mono
-  const fallbackText = generateProgressiveFallbackTranscript(durationSec, incomingHint);
-
+  // If neither provider recognized speech or no provider is configured, return empty text
   return {
-    text: fallbackText,
-    provider: 'local-fallback',
-    model: 'progressive-simulated'
+    text: '',
+    provider: '',
+    model: ''
   };
 }
 
@@ -292,6 +277,22 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
 async function processIncrementalTranscription(session: VoiceStreamSession, isFinalPass = false) {
   if (session.state === 'stopped' && !isFinalPass) return;
   if (session.state === 'cancelled') return;
+
+  if (!isTranscriptionProviderConfigured()) {
+    if (session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(
+        JSON.stringify({
+          type: 'status',
+          status: 'provider_unavailable',
+          code: 'PROVIDER_UNAVAILABLE',
+          error: 'No voice transcription provider is configured on the server. Falling back to HTTP / Web Speech.',
+          recoverable: true,
+          canFallback: true
+        })
+      );
+    }
+    return;
+  }
 
   if (session.isTranscribing) {
     session.hasPendingIncremental = true;
@@ -342,6 +343,11 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
 
     if (session.ws.readyState === WebSocket.OPEN) {
       const activeText = (result.text || '').trim();
+      if (!activeText) {
+        // No speech recognized in this audio chunk - do not fabricate or emit empty interim
+        return;
+      }
+
       let combined = '';
 
       if (audioToTranscribe === fullPcm) {
@@ -521,12 +527,14 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
     activeSessions.set(ws, session);
 
     // Initial auth & readiness confirmation message
+    const providerConfigured = isTranscriptionProviderConfigured();
     ws.send(
       JSON.stringify({
         type: 'authenticated',
         sessionId,
         userId: session.userId,
-        isGuest: session.isGuest
+        isGuest: session.isGuest,
+        providerAvailable: providerConfigured
       })
     );
 
@@ -659,6 +667,20 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
           }
 
           case 'start': {
+            if (!isTranscriptionProviderConfigured()) {
+              ws.send(
+                JSON.stringify({
+                  type: 'status',
+                  status: 'provider_unavailable',
+                  code: 'PROVIDER_UNAVAILABLE',
+                  error: 'No voice transcription provider is configured on the server. Falling back to HTTP / Web Speech.',
+                  recoverable: true,
+                  canFallback: true
+                })
+              );
+              return;
+            }
+
             session.state = 'listening';
             session.startTime = Date.now();
             session.lastIncrementalTime = Date.now();

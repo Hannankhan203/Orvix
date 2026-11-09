@@ -1900,6 +1900,16 @@ export function useVoiceDictation({
             },
             onError: (wsErr) => {
               console.warn('[Dictation] WebSocket streaming error:', wsErr);
+              if (wsErr?.code === 'PROVIDER_UNAVAILABLE' || wsErr?.canFallback) {
+                if (voiceStreamClientRef.current) {
+                  voiceStreamClientRef.current.disconnect();
+                  voiceStreamClientRef.current = null;
+                }
+                isWebSocketActiveRef.current = false;
+                setIsStreamingWebSocket(false);
+                startRecognitionSession(true).catch(() => {});
+                return;
+              }
               if (recordingStateRef.current === 'listening') {
                 setDictationError(wsErr.message || 'Streaming connection lost.');
               }

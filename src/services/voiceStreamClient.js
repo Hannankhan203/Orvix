@@ -154,6 +154,26 @@ export class VoiceStreamClient {
               }
             } else if (data.type === 'ready') {
               this.setState('listening');
+              if (this.startResolve) {
+                const resolveFn = this.startResolve;
+                this.startResolve = null;
+                this.startReject = null;
+                resolveFn();
+              }
+            } else if (data.type === 'status') {
+              if (data.status === 'provider_unavailable' || data.code === 'PROVIDER_UNAVAILABLE') {
+                const err = new Error(data.error || 'Voice transcription provider is unavailable.');
+                err.code = 'PROVIDER_UNAVAILABLE';
+                err.canFallback = true;
+                err.recoverable = true;
+                this.onError(err);
+                if (this.startReject) {
+                  const rejectFn = this.startReject;
+                  this.startResolve = null;
+                  this.startReject = null;
+                  rejectFn(err);
+                }
+              }
             } else if (data.type === 'transcription') {
               const text = (data.text || '').trim();
               if (text) {
@@ -183,7 +203,14 @@ export class VoiceStreamClient {
               const err = new Error(data.error || 'Voice streaming error');
               err.code = data.code || 'WS_STREAM_ERROR';
               err.recoverable = Boolean(data.recoverable);
+              err.canFallback = Boolean(data.canFallback ?? true);
               this.onError(err);
+              if (this.startReject && (err.code === 'PROVIDER_UNAVAILABLE' || err.canFallback)) {
+                const rejectFn = this.startReject;
+                this.startResolve = null;
+                this.startReject = null;
+                rejectFn(err);
+              }
             } else if (data.type === 'ping') {
               try {
                 ws.send(JSON.stringify({ type: 'pong' }));
@@ -335,20 +362,51 @@ export class VoiceStreamClient {
     this.accumulatedTranscript = '';
     const sampleRate = this.audioContext?.sampleRate || 16000;
 
-    this.ws.send(
-      JSON.stringify({
-        type: 'start',
-        format: {
-          sampleRate,
-          channels: 1,
-          bitDepth: 16
-        },
-        language,
-        prompt
-      })
-    );
+    return new Promise((resolve, reject) => {
+      this.startResolve = resolve;
+      this.startReject = reject;
 
-    this.setState('listening');
+      const timeoutTimer = setTimeout(() => {
+        if (this.startResolve) {
+          this.startResolve = null;
+          this.startReject = null;
+          this.setState('listening');
+          resolve();
+        }
+      }, 4000);
+
+      const origResolve = this.startResolve;
+      const origReject = this.startReject;
+
+      this.startResolve = () => {
+        clearTimeout(timeoutTimer);
+        origResolve();
+      };
+      this.startReject = (err) => {
+        clearTimeout(timeoutTimer);
+        origReject(err);
+      };
+
+      try {
+        this.ws.send(
+          JSON.stringify({
+            type: 'start',
+            format: {
+              sampleRate,
+              channels: 1,
+              bitDepth: 16
+            },
+            language,
+            prompt
+          })
+        );
+      } catch (err) {
+        clearTimeout(timeoutTimer);
+        this.startResolve = null;
+        this.startReject = null;
+        reject(err);
+      }
+    });
   }
 
   /**

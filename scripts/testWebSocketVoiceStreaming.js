@@ -15,10 +15,22 @@ import assert from 'node:assert/strict';
 import http from 'http';
 import { WebSocket } from 'ws';
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dns from 'dns';
+
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (_) {}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import {
   setupVoiceWebSocketServer,
   pcmToWavBuffer,
-  setCustomTranscriberForTesting,
+  isTranscriptionProviderConfigured,
   MAX_STREAM_PCM_BYTES
 } from '../server/voiceWebSocketSubsystem.ts';
 import {
@@ -27,11 +39,11 @@ import {
 } from '../server/firebaseAuthHelper.ts';
 
 console.log('\n===============================================================');
-console.log('ORVIX PHASE 6 PROMPT 30: WEBSOCKET VOICE STREAMING TEST SUITE');
+console.log('ORVIX PHASE 6: WEBSOCKET VOICE STREAMING VERIFICATION SUITE');
 console.log('===============================================================\n');
 
 let passedTests = 0;
-const totalTests = 6;
+const totalTests = 7;
 
 // Helper to create synthetic 16-bit mono PCM sine wave chunks
 function generatePcmChunk(sampleCount = 1024, sampleRate = 16000, frequency = 440) {
@@ -227,12 +239,16 @@ async function runTest2() {
 
 // -----------------------------------------------------------------------------
 // TEST 3: Progressive Incremental Transcription Delivery
-// Proves genuine interim transcription arrives BEFORE recording stops without test mocks
+// Proves genuine interim transcription from ACTUAL speech audio arrives BEFORE recording stops
 // -----------------------------------------------------------------------------
 async function runTest3() {
-  console.log('Running Test 3: Incremental transcription delivery before stop...');
-  // Ensure no test mock transcriber is active - must execute production transcription flow
-  setCustomTranscriberForTesting(null);
+  console.log('Running Test 3: Incremental transcription delivery from actual speech audio before stop...');
+
+  // Ensure actual speech audio fixture is present
+  const speechPcmPath = path.resolve(__dirname, 'fixtures', 'test_speech_hello_orvix.pcm');
+  assert.ok(fs.existsSync(speechPcmPath), 'Speech audio fixture test_speech_hello_orvix.pcm must exist');
+  const speechPcm = fs.readFileSync(speechPcmPath);
+  assert.ok(speechPcm.length >= 16000, 'Speech fixture must contain valid audio');
 
   const testServer = await startTestServer();
 
@@ -252,59 +268,68 @@ async function runTest3() {
 
     await collector.waitFor((m) => m.type === 'ready');
 
-    // Stream audio chunks over time to simulate a real speaker (16000 Hz, 16-bit mono)
-    // 5 chunks of 2048 samples = 20,480 bytes (~0.64 seconds of speech, exceeds initial 12.8KB threshold)
-    for (let i = 0; i < 5; i++) {
-      const pcm = generatePcmChunk(2048, 16000, 440 + i * 20);
-      ws.send(pcm);
+    // Stream initial speech audio chunks exceeding the initial threshold (12,800 bytes)
+    // 5 chunks of 2048 samples = 20,480 bytes (~0.64s of "Hello Orvix")
+    const chunkSize = 4096;
+    for (let offset = 0; offset < 20480 && offset < speechPcm.length; offset += chunkSize) {
+      const chunk = speechPcm.subarray(offset, Math.min(offset + chunkSize, speechPcm.length));
+      ws.send(chunk);
+      await new Promise((r) => setTimeout(r, 60));
     }
 
     // CRITICAL PROOF: Wait for and assert receipt of interim transcription BEFORE sending stop!
     const interimMsg = await collector.waitFor(
       (m) => m.type === 'transcription' && m.isFinal === false && typeof m.text === 'string' && m.text.length > 0,
-      3000
+      15000
     );
 
     assert.equal(interimMsg.type, 'transcription', 'Message type must be transcription');
     assert.equal(interimMsg.isFinal, false, 'Interim transcription must have isFinal: false');
     assert.ok(interimMsg.text.length > 0, 'Interim transcript must not be empty');
     assert.ok(interimMsg.segmentIndex >= 1, 'Segment index must increment for interim updates');
-    assert.ok(interimMsg.provider, 'Provider metadata must be present');
+    assert.ok(
+      interimMsg.provider === 'gemini' || interimMsg.provider === 'groq',
+      `Provider must be a real AI provider (gemini or groq), got: ${interimMsg.provider}`
+    );
 
-    console.log(`   ✓ Received interim transcript before stop: "${interimMsg.text}" (segment #${interimMsg.segmentIndex}, provider: ${interimMsg.provider})`);
+    // CRITICAL REQUIREMENT: Verify recognized words match actual spoken speech content ("Hello Orvix") BEFORE stop event
+    const normalizedInterim = interimMsg.text.toLowerCase();
+    const matchesSpoken = /hello/i.test(normalizedInterim) || /orvix/i.test(normalizedInterim);
+    assert.ok(
+      matchesSpoken,
+      `Recognized interim transcript ("${interimMsg.text}") must match spoken words "Hello Orvix" BEFORE stop event`
+    );
 
-    // Stream additional audio chunks to demonstrate progressive transcript growth
-    for (let i = 0; i < 6; i++) {
-      const pcm = generatePcmChunk(2048, 16000, 500 + i * 20);
-      ws.send(pcm);
+    console.log(
+      `   ✓ Verified interim transcript matches spoken speech BEFORE stop: "${interimMsg.text}" (segment #${interimMsg.segmentIndex}, provider: ${interimMsg.provider})`
+    );
+
+    // Stream remaining speech audio chunks demonstrating progressive transcript growth
+    for (let offset = 20480; offset < speechPcm.length; offset += chunkSize) {
+      const chunk = speechPcm.subarray(offset, Math.min(offset + chunkSize, speechPcm.length));
+      ws.send(chunk);
+      await new Promise((r) => setTimeout(r, 60));
     }
 
-    // Wait a brief tick to allow the progressive interval to process
-    await new Promise((r) => setTimeout(r, 700));
-
-    // Check if second progressive interim arrives
-    const secondInterim = await collector.waitFor(
-      (m) => m.type === 'transcription' && m.isFinal === false && m.segmentIndex > interimMsg.segmentIndex,
-      2000
-    ).catch(() => null);
-
-    if (secondInterim) {
-      console.log(`   ✓ Received progressive second interim: "${secondInterim.text}" (segment #${secondInterim.segmentIndex})`);
-      assert.ok(secondInterim.segmentIndex > interimMsg.segmentIndex, 'Segment index must progress');
-    }
+    // Wait for subsequent progressive pass or tick
+    await new Promise((r) => setTimeout(r, 800));
 
     // ONLY NOW send stop to finalize recording
     ws.send(JSON.stringify({ type: 'stop' }));
 
-    const doneMsg = await collector.waitFor((m) => m.type === 'done');
+    const doneMsg = await collector.waitFor((m) => m.type === 'done', 15000);
     assert.equal(doneMsg.type, 'done', 'Server must emit done message on stop');
     assert.ok(typeof doneMsg.text === 'string', 'Done message must include final transcript string');
     assert.ok(doneMsg.text.length > 0, 'Done message transcript must not be empty');
+    assert.ok(
+      /hello/i.test(doneMsg.text) || /orvix/i.test(doneMsg.text),
+      `Final transcript ("${doneMsg.text}") must preserve recognized spoken words`
+    );
     assert.ok(typeof doneMsg.duration === 'number', 'Done message must include duration');
 
     ws.close();
     passedTests++;
-    console.log('✅ Test 3 Passed: Interim transcription arrives BEFORE recording stops with progressive text growth.');
+    console.log('✅ Test 3 Passed: Actual speech audio transcribed into matching words BEFORE recording stops.');
   } finally {
     await testServer.close();
   }
@@ -424,6 +449,55 @@ async function runTest6() {
 }
 
 // -----------------------------------------------------------------------------
+// TEST 7: Provider Unavailable Status & Fallback Signal
+// Proves server emits clear provider-unavailable status when no AI provider is configured
+// -----------------------------------------------------------------------------
+async function runTest7() {
+  console.log('Running Test 7: Provider unavailable status and fallback signal...');
+  const originalGeminiKey = process.env.GEMINI_API_KEY;
+  const originalGroqKey = process.env.GROQ_API_KEY;
+
+  try {
+    // Clear provider keys to simulate environment with no transcription providers configured
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GROQ_API_KEY;
+
+    const testServer = await startTestServer();
+    try {
+      const ws = new WebSocket(testServer.wsUrl);
+      const collector = createMessageCollector(ws);
+
+      const authMsg = await collector.waitFor((m) => m.type === 'authenticated');
+      assert.equal(authMsg.type, 'authenticated');
+      assert.equal(authMsg.providerAvailable, false, 'providerAvailable must be false when no providers configured');
+
+      // Attempt to start streaming
+      ws.send(JSON.stringify({ type: 'start' }));
+
+      // Server must emit clear provider_unavailable status with canFallback: true
+      const statusMsg = await collector.waitFor(
+        (m) => m.type === 'status' && m.status === 'provider_unavailable',
+        4000
+      );
+
+      assert.equal(statusMsg.type, 'status');
+      assert.equal(statusMsg.status, 'provider_unavailable');
+      assert.equal(statusMsg.code, 'PROVIDER_UNAVAILABLE');
+      assert.equal(statusMsg.canFallback, true, 'Status message must indicate fallback is available');
+
+      ws.close();
+      passedTests++;
+      console.log('✅ Test 7 Passed: Server emits clear provider-unavailable status with canFallback: true.');
+    } finally {
+      await testServer.close();
+    }
+  } finally {
+    if (originalGeminiKey) process.env.GEMINI_API_KEY = originalGeminiKey;
+    if (originalGroqKey) process.env.GROQ_API_KEY = originalGroqKey;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Test Runner
 // -----------------------------------------------------------------------------
 async function runAllTests() {
@@ -434,6 +508,7 @@ async function runAllTests() {
     await runTest4();
     await runTest5();
     await runTest6();
+    await runTest7();
 
     console.log(`\n===============================================================`);
     console.log(`ALL TESTS PASSED: ${passedTests}/${totalTests}`);
@@ -442,8 +517,6 @@ async function runAllTests() {
   } catch (err) {
     console.error('\n❌ Test failure:', err);
     process.exit(1);
-  } finally {
-    setCustomTranscriberForTesting(null);
   }
 }
 

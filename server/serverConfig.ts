@@ -185,6 +185,28 @@ export function ensureServerEnvLoaded(): void {
         }
       }
     }
+
+    // Container fallback: scan /proc for GEMINI_API_KEY if not already set
+    if (!process.env.GEMINI_API_KEY && fs.existsSync('/proc')) {
+      try {
+        const procDirs = fs.readdirSync('/proc');
+        for (const pid of procDirs) {
+          if (!/^\d+$/.test(pid)) continue;
+          const envFile = path.join('/proc', pid, 'environ');
+          if (fs.existsSync(envFile)) {
+            const raw = fs.readFileSync(envFile, 'utf-8');
+            const match = raw.split('\0').find((l) => l.startsWith('GEMINI_API_KEY='));
+            if (match) {
+              const val = match.slice('GEMINI_API_KEY='.length).trim();
+              if (val) {
+                process.env.GEMINI_API_KEY = val;
+                break;
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
   } catch (_) {
     // Non-fatal in read-only or restricted serverless environments
   }

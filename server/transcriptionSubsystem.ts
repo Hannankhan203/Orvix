@@ -395,7 +395,20 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
             throw lastGeminiErr || new Error('Gemini audio transcription failed');
           }
 
-          const rawText = (geminiRes?.text || '').trim();
+          let rawText = '';
+          const parts = geminiRes?.candidates?.[0]?.content?.parts || [];
+          for (const part of parts) {
+            if (part.audioTranscription?.text) {
+              rawText += (rawText ? ' ' : '') + part.audioTranscription.text;
+            } else if (part.text) {
+              rawText += (rawText ? ' ' : '') + part.text;
+            }
+          }
+          if (!rawText && typeof geminiRes?.text === 'string') {
+            rawText = geminiRes.text;
+          }
+          rawText = rawText.trim();
+
           const text = polishSpokenTranscript(rawText) || rawText;
           return res.status(200).json({
             success: true,
@@ -415,13 +428,15 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
             sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
           });
 
-          return res.status(503).json({
-            success: false,
-            error: 'Transcription service is temporarily unavailable. Native speech transcript retained.',
-            code: 'TRANSCRIPTION_UNAVAILABLE',
-            statusCode: 503,
-            fallbackAvailable: true
-          });
+          if (!incomingTranscript) {
+            return res.status(503).json({
+              success: false,
+              error: 'Transcription service is temporarily unavailable. Native speech transcript retained.',
+              code: 'TRANSCRIPTION_UNAVAILABLE',
+              statusCode: 503,
+              fallbackAvailable: true
+            });
+          }
         }
       }
 
