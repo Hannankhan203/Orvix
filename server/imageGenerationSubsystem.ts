@@ -707,7 +707,9 @@ export function registerImageGenerationRoutes(app: express.Express): void {
             attachmentId: imageId,
             extension: ext.replace(/^\.+/, ''),
             buffer: imgBuffer,
-            mimeType: mime
+            mimeType: mime,
+            expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+            isPermanent: false
           });
           if (supaRes && supaRes.success && supaRes.path) {
             storageProvider = 'supabase';

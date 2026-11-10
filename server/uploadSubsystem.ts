@@ -1794,6 +1794,7 @@ export function registerUploadRoutes(app: express.Express) {
           expiresAt: Date.now() + TEMP_FILE_TTL_MS,
           conversationId,
           userId: authenticatedUserId || undefined,
+          isPermanent: String(req.body?.isPermanent || req.body?.permanent || '').toLowerCase() === 'true',
           storageProvider: 'local',
           isImage: isImg,
           dimensions: sigResult.dimensions,
@@ -1890,7 +1891,9 @@ export function registerUploadRoutes(app: express.Express) {
                 attachmentId: rec.id,
                 extension: rawExt,
                 buffer: rec.buffer,
-                mimeType: rec.mimeType
+                mimeType: rec.mimeType,
+                expiresAt: rec.expiresAt,
+                isPermanent: rec.isPermanent
               });
             } catch (supaErr: any) {
               supaRes = {

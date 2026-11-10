@@ -356,6 +356,30 @@ export function isSupabaseStorageConfigured(): boolean {
   return isConfiguredCredential(url) && isValidSupabaseUrl(url) && isConfiguredCredential(secretKey);
 }
 
+export const DEFAULT_SUPABASE_CLEANUP_INTERVAL_MS = 3_600_000; // 1 hour
+export const DEFAULT_SUPABASE_CLEANUP_BATCH_SIZE = 50;
+
+export function isSupabaseAttachmentCleanupEnabled(): boolean {
+  const val = (process.env.SUPABASE_ATTACHMENT_CLEANUP_ENABLED ?? 'true').trim().toLowerCase();
+  return val !== 'false' && val !== '0' && val !== 'no' && val !== 'off' && val !== 'disabled';
+}
+
+export function getSupabaseAttachmentCleanupIntervalMs(): number {
+  const raw = Number(process.env.SUPABASE_ATTACHMENT_CLEANUP_INTERVAL_MS);
+  if (Number.isFinite(raw) && raw >= 1000) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_SUPABASE_CLEANUP_INTERVAL_MS;
+}
+
+export function getSupabaseAttachmentCleanupBatchSize(): number {
+  const raw = Number(process.env.SUPABASE_ATTACHMENT_CLEANUP_BATCH_SIZE);
+  if (Number.isFinite(raw) && raw >= 1 && raw <= 500) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_SUPABASE_CLEANUP_BATCH_SIZE;
+}
+
 export function getCloudflareCredentials(): { accountId: string; apiToken: string } {
   const accountId = resolveEnvCredential(
     'CLOUDFLARE_ACCOUNT_ID',

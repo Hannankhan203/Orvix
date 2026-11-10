@@ -420,7 +420,14 @@ export {
   deleteAttachmentFromStorage,
   deleteAttachmentsForChatInStorage,
   findAttachmentPathInStorage,
-  isExactAttachmentMatch
+  isExactAttachmentMatch,
+  EXPIRY_RECORDS_PREFIX,
+  getDurableExpiryRecordPath,
+  parseDurableExpiryRecordPath,
+  saveDurableAttachmentExpiry,
+  deleteDurableAttachmentExpiry,
+  deleteDurableExpiryForChatInStorage,
+  listDurableExpiredAttachments
 } from './supabaseStorageService.ts';
 
 export type {
@@ -436,6 +443,9 @@ export type {
   DeleteChatAttachmentsResult,
   DeleteChatAttachmentsOptions,
   FindAttachmentResult,
-  FindAttachmentOptions
+  FindAttachmentOptions,
+  ParsedDurableExpiryRecord,
+  DurableExpiredAttachmentRecord,
+  ListDurableExpiredOptions
 } from './supabaseStorageService.ts';
 

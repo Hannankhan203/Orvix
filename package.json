@@ -17,6 +17,7 @@
     "test:timer-optimization": "node scripts/testLiveResponseTimerOptimization.js",
     "test:conversation-deletion": "node scripts/testSupabaseConversationDeletionLifecycle.js",
     "test:bucket-provisioning": "node scripts/testSupabaseBucketProvisioning.js",
+    "test:attachment-cleanup": "node scripts/testSupabaseAttachmentCleanup.js",
     "test:edit-resend-attachments": "node scripts/testEditResendAttachmentCleanup.js",
     "test:storage-metadata": "node scripts/testStorageProviderMetadataRegression.js",
     "test:premature-attachment-deletion": "node scripts/testPrematureLocalAttachmentDeletion.js",

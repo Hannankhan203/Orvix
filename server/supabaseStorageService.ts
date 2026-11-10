@@ -50,6 +50,8 @@ export interface UploadAttachmentOptions {
   mimeType?: string;
   upsert?: boolean;
   bucket?: string;
+  expiresAt?: number;
+  isPermanent?: boolean;
 }
 
 export interface UploadAttachmentResult {
@@ -130,6 +132,37 @@ export interface FindAttachmentResult {
 
 export interface FindAttachmentOptions {
   bucket?: string;
+  maxPages?: number;
+  pageSize?: number;
+}
+
+export interface ParsedDurableExpiryRecord {
+  valid: boolean;
+  expiresAt?: number;
+  userId?: string;
+  chatId?: string;
+  attachmentId?: string;
+  extension?: string;
+  storagePath?: string;
+  expiryRecordPath?: string;
+  error?: string;
+}
+
+export interface DurableExpiredAttachmentRecord {
+  id: string;
+  userId: string;
+  chatId: string;
+  attachmentId: string;
+  extension?: string;
+  storagePath: string;
+  expiresAt: number;
+  expiryRecordPath: string;
+}
+
+export interface ListDurableExpiredOptions {
+  nowMs?: number;
+  bucket?: string;
+  client?: any;
   maxPages?: number;
   pageSize?: number;
 }
@@ -389,6 +422,28 @@ export async function uploadAttachmentToStorage(
       };
     }
 
+    // If an expiresAt timestamp is provided and the file is not permanent, persist durable expiry metadata
+    if (
+      typeof options.expiresAt === 'number' &&
+      Number.isFinite(options.expiresAt) &&
+      options.expiresAt > 0 &&
+      options.isPermanent !== true
+    ) {
+      try {
+        await saveDurableAttachmentExpiry({
+          userId: options.userId,
+          chatId: options.chatId,
+          attachmentId: options.attachmentId,
+          extension: options.extension,
+          expiresAt: options.expiresAt,
+          bucket,
+          client
+        });
+      } catch (durableErr) {
+        console.warn('[Supabase Storage] Notice: Could not save durable expiry metadata:', durableErr);
+      }
+    }
+
     return {
       success: true,
       path: data?.path || storagePath,
@@ -561,6 +616,16 @@ export async function deleteAttachmentFromStorage(
         status: (error as any).status || 500
       };
     }
+
+    try {
+      await deleteDurableAttachmentExpiry({
+        userId: parsed.userId!,
+        chatId: parsed.chatId!,
+        attachmentId: parsed.attachmentId!,
+        bucket,
+        client
+      });
+    } catch (_) {}
 
     return {
       success: true,
@@ -887,6 +952,10 @@ export async function deleteAttachmentsForChatInStorage(
       };
     }
 
+    try {
+      await deleteDurableExpiryForChatInStorage(cleanUser, cleanChat, activeBucket, client);
+    } catch (_) {}
+
     return {
       success: true,
       deletedCount: totalDeleted,
@@ -902,3 +971,336 @@ export async function deleteAttachmentsForChatInStorage(
     };
   }
 }
+
+export const EXPIRY_RECORDS_PREFIX = '_expiry_records';
+
+/**
+ * Encodes a durable expiry record path in the format:
+ * _expiry_records/{expiresAt}__{userId}__{chatId}__{attachmentId}__{extension || 'none'}.json
+ */
+export function getDurableExpiryRecordPath(options: {
+  expiresAt: number;
+  userId: string;
+  chatId: string;
+  attachmentId: string;
+  extension?: string;
+}): string {
+  const cleanUser = String(options.userId || '').trim();
+  const cleanChat = String(options.chatId || '').trim();
+  const cleanAtt = String(options.attachmentId || '').trim();
+  const cleanExt = normalizeExtension(options.extension) || 'none';
+  const expNum = Math.floor(options.expiresAt);
+
+  return `${EXPIRY_RECORDS_PREFIX}/${expNum}__${cleanUser}__${cleanChat}__${cleanAtt}__${cleanExt}.json`;
+}
+
+/**
+ * Parses and validates an expiry record filename or path.
+ * Supports both 5-part (...__{ext}.json) and 4-part (...__{att}.json) formats.
+ */
+export function parseDurableExpiryRecordPath(nameOrPath: unknown): ParsedDurableExpiryRecord {
+  if (typeof nameOrPath !== 'string' || !nameOrPath.trim()) {
+    return { valid: false, error: 'Path must be a non-empty string.' };
+  }
+
+  const clean = nameOrPath.trim().replace(/^\/+|\/+$/g, '');
+  const filename = clean.includes('/') ? clean.split('/').pop()! : clean;
+
+  if (!filename.endsWith('.json')) {
+    return { valid: false, error: 'Expiry record must have .json extension.' };
+  }
+
+  const withoutJson = filename.slice(0, -5);
+  const parts = withoutJson.split('__');
+
+  if (parts.length < 4 || parts.length > 5) {
+    return {
+      valid: false,
+      error: `Invalid expiry record format: '${filename}'. Expected 4 or 5 __-delimited segments.`
+    };
+  }
+
+  const [expiresAtStr, userId, chatId, p3, p4] = parts;
+  const expiresAt = Number(expiresAtStr);
+
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    return { valid: false, error: `Invalid expiresAt timestamp: '${expiresAtStr}'.` };
+  }
+
+  if (!isValidPathSegment(userId)) {
+    return { valid: false, error: `Invalid userId in expiry record: '${userId}'.` };
+  }
+
+  if (!isValidPathSegment(chatId)) {
+    return { valid: false, error: `Invalid chatId in expiry record: '${chatId}'.` };
+  }
+
+  let attachmentId = '';
+  let extension = '';
+
+  if (parts.length === 5) {
+    attachmentId = p3;
+    extension = p4 === 'none' ? '' : normalizeExtension(p4);
+  } else {
+    // 4 parts: expiresAt__userId__chatId__attachmentId
+    attachmentId = p3;
+    extension = '';
+  }
+
+  if (!isValidPathSegment(attachmentId)) {
+    return { valid: false, error: `Invalid attachmentId in expiry record: '${attachmentId}'.` };
+  }
+
+  let storagePath = '';
+  try {
+    storagePath = buildAttachmentStoragePath(userId, chatId, attachmentId, extension);
+  } catch (err: any) {
+    return { valid: false, error: err?.message || 'Could not construct storage path.' };
+  }
+
+  return {
+    valid: true,
+    expiresAt,
+    userId,
+    chatId,
+    attachmentId,
+    extension,
+    storagePath,
+    expiryRecordPath: `${EXPIRY_RECORDS_PREFIX}/${filename}`
+  };
+}
+
+/**
+ * Persists a durable expiry record into Supabase Storage under _expiry_records/.
+ * Strictly no-op if isPermanent is true or expiresAt is missing/invalid.
+ */
+export async function saveDurableAttachmentExpiry(options: {
+  userId: string;
+  chatId: string;
+  attachmentId: string;
+  extension?: string;
+  expiresAt: number;
+  isPermanent?: boolean;
+  bucket?: string;
+  client?: any;
+}): Promise<{ success: boolean; path?: string; error?: string }> {
+  try {
+    if (options.isPermanent === true || !options.expiresAt || options.expiresAt <= 0) {
+      return { success: true };
+    }
+
+    const client = options.client || getSupabaseServerClient();
+    if (!client) {
+      return { success: false, error: 'Supabase storage is not configured.' };
+    }
+
+    const bucket = options.bucket || getSupabaseBucket();
+    const expiryPath = getDurableExpiryRecordPath(options);
+    const storagePath = buildAttachmentStoragePath(
+      options.userId,
+      options.chatId,
+      options.attachmentId,
+      options.extension
+    );
+
+    const payload = {
+      userId: options.userId,
+      chatId: options.chatId,
+      attachmentId: options.attachmentId,
+      extension: normalizeExtension(options.extension),
+      storagePath,
+      expiresAt: options.expiresAt,
+      isPermanent: false,
+      createdAt: new Date().toISOString()
+    };
+
+    const buffer = Buffer.from(JSON.stringify(payload, null, 2), 'utf-8');
+
+    const { data, error } = await client.storage.from(bucket).upload(expiryPath, buffer, {
+      contentType: 'application/json',
+      upsert: true
+    });
+
+    if (error) {
+      return { success: false, error: error.message || 'Failed to save expiry record' };
+    }
+
+    return { success: true, path: data?.path || expiryPath };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Exception saving expiry record' };
+  }
+}
+
+/**
+ * Deletes durable expiry tracking marker(s) for a given attachment.
+ */
+export async function deleteDurableAttachmentExpiry(options: {
+  userId: string;
+  chatId?: string;
+  attachmentId: string;
+  bucket?: string;
+  client?: any;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const client = options.client || getSupabaseServerClient();
+    if (!client) {
+      return { success: false, error: 'Supabase storage is not configured.' };
+    }
+
+    const bucket = options.bucket || getSupabaseBucket();
+    const bucketInstance = client.storage.from(bucket);
+    if (!bucketInstance || typeof bucketInstance.list !== 'function') {
+      return { success: true };
+    }
+    const cleanUser = String(options.userId || '').trim();
+    const cleanAtt = String(options.attachmentId || '').trim();
+
+    const { data: listData, error: listErr } = await bucketInstance
+      .list(EXPIRY_RECORDS_PREFIX, { limit: 1000 });
+
+    if (listErr || !listData) {
+      return { success: false, error: listErr?.message };
+    }
+
+    const toRemove = listData
+      .filter((item: any) => {
+        if (!item?.name) return false;
+        const parsed = parseDurableExpiryRecordPath(item.name);
+        if (!parsed.valid) return false;
+        if (parsed.userId !== cleanUser || parsed.attachmentId !== cleanAtt) return false;
+        if (options.chatId && parsed.chatId !== options.chatId) return false;
+        return true;
+      })
+      .map((item: any) => `${EXPIRY_RECORDS_PREFIX}/${item.name}`);
+
+    if (toRemove.length > 0) {
+      await client.storage.from(bucket).remove(toRemove);
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message };
+  }
+}
+
+/**
+ * Deletes all durable expiry tracking markers associated with a conversation.
+ */
+export async function deleteDurableExpiryForChatInStorage(
+  userId: string,
+  chatId: string,
+  bucket?: string,
+  clientOverride?: any
+): Promise<number> {
+  let deletedCount = 0;
+  try {
+    const client = clientOverride || getSupabaseServerClient();
+    if (!client) return 0;
+
+    const activeBucket = bucket || getSupabaseBucket();
+    const bucketInstance = client.storage.from(activeBucket);
+    if (!bucketInstance || typeof bucketInstance.list !== 'function') {
+      return 0;
+    }
+    const cleanUser = String(userId || '').trim();
+    const cleanChat = String(chatId || '').trim();
+
+    const { data: listData, error: listErr } = await bucketInstance
+      .list(EXPIRY_RECORDS_PREFIX, { limit: 1000 });
+
+    if (listErr || !listData || listData.length === 0) {
+      return 0;
+    }
+
+    const toRemove = listData
+      .filter((item: any) => {
+        if (!item?.name) return false;
+        const parsed = parseDurableExpiryRecordPath(item.name);
+        return parsed.valid && parsed.userId === cleanUser && parsed.chatId === cleanChat;
+      })
+      .map((item: any) => `${EXPIRY_RECORDS_PREFIX}/${item.name}`);
+
+    if (toRemove.length > 0) {
+      const { data: removed } = await client.storage.from(activeBucket).remove(toRemove);
+      deletedCount = Array.isArray(removed) ? removed.length : toRemove.length;
+    }
+
+    return deletedCount;
+  } catch (err) {
+    console.warn('[Supabase Storage] Notice: Could not remove chat expiry records:', err);
+    return deletedCount;
+  }
+}
+
+/**
+ * Lists all expired attachments from durable tracking markers in Supabase Storage.
+ * Strictly checks that expiresAt <= nowMs and validates that records are authentic.
+ * Permanent files are NEVER listed because they have no expiry records.
+ */
+export async function listDurableExpiredAttachments(
+  options?: ListDurableExpiredOptions
+): Promise<DurableExpiredAttachmentRecord[]> {
+  const expiredItems: DurableExpiredAttachmentRecord[] = [];
+  try {
+    const client = options?.client || getSupabaseServerClient();
+    if (!client || typeof client.storage?.from !== 'function') return expiredItems;
+
+    const activeBucket = options?.bucket || getSupabaseBucket();
+    const bucketInstance = client.storage.from(activeBucket);
+    if (!bucketInstance || typeof bucketInstance.list !== 'function') return expiredItems;
+
+    const nowMs = typeof options?.nowMs === 'number' ? options.nowMs : Date.now();
+    const PAGE_SIZE = typeof options?.pageSize === 'number' && options.pageSize > 0 ? options.pageSize : 1000;
+    const effectiveMaxPages = typeof options?.maxPages === 'number' && options.maxPages > 0 ? options.maxPages : 50;
+
+    let offset = 0;
+    let pageCount = 0;
+
+    while (pageCount < effectiveMaxPages) {
+      pageCount++;
+      const { data: fileList, error: listError } = await bucketInstance
+        .list(EXPIRY_RECORDS_PREFIX, { limit: PAGE_SIZE, offset });
+
+      if (listError) {
+        // If folder does not exist or empty, exit gracefully
+        break;
+      }
+
+      if (!fileList || fileList.length === 0) {
+        break;
+      }
+
+      for (const item of fileList) {
+        if (!item?.name) continue;
+        const parsed = parseDurableExpiryRecordPath(item.name);
+        if (!parsed.valid || typeof parsed.expiresAt !== 'number') {
+          continue;
+        }
+
+        // Strict verification: expiresAt must be in the past (<= nowMs)
+        if (parsed.expiresAt <= nowMs) {
+          expiredItems.push({
+            id: parsed.attachmentId!,
+            userId: parsed.userId!,
+            chatId: parsed.chatId!,
+            attachmentId: parsed.attachmentId!,
+            extension: parsed.extension,
+            storagePath: parsed.storagePath!,
+            expiresAt: parsed.expiresAt,
+            expiryRecordPath: parsed.expiryRecordPath!
+          });
+        }
+      }
+
+      if (fileList.length < PAGE_SIZE) {
+        break;
+      }
+      offset += fileList.length;
+    }
+  } catch (err) {
+    console.warn('[Supabase Storage] Notice: Exception during listDurableExpiredAttachments:', err);
+  }
+
+  return expiredItems;
+}
+

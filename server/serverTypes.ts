@@ -200,6 +200,7 @@ export interface UploadedFileRecord {
   storagePath?: string;
   storageBucket?: string;
   userId?: string;
+  isPermanent?: boolean;
 }
 
 

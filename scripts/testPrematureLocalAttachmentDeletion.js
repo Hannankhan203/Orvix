@@ -69,6 +69,7 @@ globalThis.indexedDB = {
                       value: item,
                       key: item.conversationId,
                       primaryKey: item.id,
+                      delete: () => {},
                       continue: () => setTimeout(continueCursor, 0)
                     };
                     r.onsuccess && r.onsuccess({ target: { result: cursor } });
@@ -91,6 +92,7 @@ globalThis.indexedDB = {
                     value: item,
                     key: item.id,
                     primaryKey: item.id,
+                    delete: () => {},
                     continue: () => setTimeout(continueCursor, 0)
                   };
                   r.onsuccess && r.onsuccess({ target: { result: cursor } });

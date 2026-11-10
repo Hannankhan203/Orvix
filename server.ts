@@ -85,6 +85,13 @@ import {
   ensureSupabaseBucketExists,
   isSupabaseConfigured
 } from './server/supabaseClient.ts';
+import {
+  startSupabaseAttachmentCleanupScheduler,
+  stopSupabaseAttachmentCleanupScheduler,
+  runExpiredSupabaseAttachmentCleanup,
+  getSupabaseAttachmentCleanupSchedulerStatus,
+  isAttachmentEligibleForExpiryCleanup
+} from './server/supabaseAttachmentCleanupService.ts';
 import type {
   DocumentData,
   PreparedDocumentContext,
@@ -335,7 +342,17 @@ async function startServer() {
     }).catch((err) => {
       console.warn('[Supabase] Non-fatal bucket provisioning notice:', err?.message || err);
     });
+
+    // Start automatic recurring cleanup of expired Supabase attachments
+    startSupabaseAttachmentCleanupScheduler();
   }
+
+  // Graceful shutdown handling
+  const handleShutdown = () => {
+    stopSupabaseAttachmentCleanupScheduler();
+  };
+  process.once('SIGTERM', handleShutdown);
+  process.once('SIGINT', handleShutdown);
 
   // Eliminate artificial HTTP timeouts to allow long-running streams (60s, 90s, 5m+)
   httpServer.timeout = 0;
@@ -398,7 +415,12 @@ export {
   setupVoiceWebSocketServer,
   setCustomImageGeneratorForTesting,
   resetImageGenerationForTesting,
-  ensureSupabaseBucketExists
+  ensureSupabaseBucketExists,
+  startSupabaseAttachmentCleanupScheduler,
+  stopSupabaseAttachmentCleanupScheduler,
+  runExpiredSupabaseAttachmentCleanup,
+  getSupabaseAttachmentCleanupSchedulerStatus,
+  isAttachmentEligibleForExpiryCleanup
 };
 
 export type {
