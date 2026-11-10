@@ -52,8 +52,21 @@ export default function ComposerAttachmentTray({
               <div className="attachment-chip-submeta">
                 <span className="attachment-chip-badge">{att.extension || 'IMG'}</span>
                 <span className="attachment-chip-size">{att.formattedSize}</span>
+                {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
+                  <span className="attachment-chip-progress text-xs font-mono text-blue-400 font-medium">
+                    {Math.round(att.uploadProgress)}%
+                  </span>
+                ) : null}
               </div>
             </div>
+            {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
+              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-500/20 overflow-hidden rounded-b">
+                <div
+                  className="h-full bg-blue-500 transition-all duration-150 ease-out"
+                  style={{ width: `${Math.round(att.uploadProgress)}%` }}
+                />
+              </div>
+            ) : null}
             <div className="composer-chip-actions">
               <button
                 type="button"
@@ -84,7 +97,7 @@ export default function ComposerAttachmentTray({
         ) : (
           <div
             key={att.id}
-            className="composer-attachment-chip is-previewable"
+            className="composer-attachment-chip is-previewable relative overflow-hidden"
             title={`Click to preview ${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
             onClick={() => onPreview && onPreview(att)}
           >
@@ -93,6 +106,19 @@ export default function ComposerAttachmentTray({
               {att.name}
             </span>
             <span className="attachment-chip-size">{att.formattedSize}</span>
+            {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
+              <span className="attachment-chip-progress text-xs font-mono text-blue-400 font-medium">
+                {Math.round(att.uploadProgress)}%
+              </span>
+            ) : null}
+            {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
+              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-500/20 overflow-hidden rounded-b">
+                <div
+                  className="h-full bg-blue-500 transition-all duration-150 ease-out"
+                  style={{ width: `${Math.round(att.uploadProgress)}%` }}
+                />
+              </div>
+            ) : null}
             <div className="composer-chip-actions">
               <button
                 type="button"

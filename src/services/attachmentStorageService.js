@@ -2136,3 +2136,184 @@ export async function downloadAttachmentFile(attachment, chatId = null) {
   }
 }
 
+export const DIRECT_UPLOAD_THRESHOLD_BYTES = 4 * 1024 * 1024; // 4 MB
+
+/**
+ * Checks whether a file attachment qualifies for direct Supabase upload.
+ * Large files (>= 4 MB) bypass the Vercel serverless request body limitation.
+ * @param {File|Blob} file
+ * @param {Object} [options={}]
+ * @returns {boolean}
+ */
+export function isDirectUploadCandidate(file, options = {}) {
+  if (!file) return false;
+  if (options.forceDirect) return true;
+  if (options.offline) return false;
+  const size = file.size || 0;
+  return size >= DIRECT_UPLOAD_THRESHOLD_BYTES;
+}
+
+/**
+ * Uploads a file directly to Supabase Storage using a short-lived signed upload URL.
+ * Bypasses Vercel Serverless Functions' 4.5 MB request payload limit.
+ *
+ * @param {File|Blob} file - The file to upload
+ * @param {Object} options
+ * @param {string} options.chatId - The conversation ID
+ * @param {boolean} [options.isPermanent=false] - Whether file is permanent
+ * @param {AbortSignal} [options.signal] - Abort signal for cancellation
+ * @param {(percent: number, loaded: number, total: number) => void} [options.onProgress] - Progress callback
+ * @returns {Promise<{ success: boolean, attachment: Object }>}
+ */
+export async function uploadFileDirectToSupabase(file, options = {}) {
+  const { chatId, isPermanent = false, signal, onProgress } = options;
+
+  if (!file) {
+    throw new Error('No file provided for direct upload.');
+  }
+  if (!chatId) {
+    throw new Error('A valid chatId is required for direct upload.');
+  }
+
+  const fileName = file.name || 'attachment';
+  const fileSize = file.size || 0;
+  const mimeType = file.type || 'application/octet-stream';
+
+  // 1. Authenticated request for a short-lived signed upload URL
+  const signedUrlRes = await fetchWithAuth('/api/upload/direct/signed-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chatId,
+      fileName,
+      fileSize,
+      mimeType,
+      isPermanent
+    }),
+    signal
+  });
+
+  if (!signedUrlRes.ok) {
+    let errData;
+    try {
+      errData = await signedUrlRes.json();
+    } catch (_) {}
+    const err = new Error(errData?.error || `Failed to initiate direct upload (HTTP ${signedUrlRes.status}).`);
+    err.code = errData?.code || 'SIGNED_URL_FAILED';
+    err.status = signedUrlRes.status;
+    throw err;
+  }
+
+  const signedUrlData = await signedUrlRes.json();
+  const { signedUrl, attachmentId, storagePath } = signedUrlData;
+
+  if (!signedUrl || !attachmentId) {
+    throw new Error('Server did not return a valid signed upload URL.');
+  }
+
+  // 2. Direct upload to Supabase Storage via XMLHttpRequest for precise progress & cancellation
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    const onAbort = () => {
+      try {
+        xhr.abort();
+      } catch (_) {}
+      fetchWithAuth('/api/upload/direct/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attachmentId, chatId })
+      }).catch(() => {});
+      const abortErr = new DOMException('Direct upload cancelled by user.', 'AbortError');
+      reject(abortErr);
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && typeof onProgress === 'function') {
+        const percent = Math.min(99, Math.round((event.loaded / event.total) * 100));
+        onProgress(percent, event.loaded, event.total);
+      }
+    };
+
+    xhr.onload = () => {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (typeof onProgress === 'function') {
+          onProgress(100, fileSize, fileSize);
+        }
+        resolve();
+      } else {
+        let errorDetail = `Storage upload failed with status ${xhr.status}`;
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          if (parsed?.message || parsed?.error) {
+            errorDetail = parsed.message || parsed.error;
+          }
+        } catch (_) {}
+        const uploadErr = new Error(errorDetail);
+        uploadErr.status = xhr.status;
+        reject(uploadErr);
+      }
+    };
+
+    xhr.onerror = () => {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      reject(new Error('Network error during direct upload to storage.'));
+    };
+
+    xhr.ontimeout = () => {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      reject(new Error('Direct upload to storage timed out.'));
+    };
+
+    xhr.open('PUT', signedUrl);
+    xhr.setRequestHeader('Content-Type', mimeType || 'application/octet-stream');
+    xhr.send(file);
+  });
+
+  // 3. Authenticated completion call: verifies object in storage, runs extraction, records metadata
+  const completeRes = await fetchWithAuth('/api/upload/direct/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      attachmentId,
+      chatId,
+      storagePath
+    }),
+    signal
+  });
+
+  if (!completeRes.ok) {
+    let errData;
+    try {
+      errData = await completeRes.json();
+    } catch (_) {}
+    const err = new Error(errData?.error || `Failed to complete direct upload (HTTP ${completeRes.status}).`);
+    err.code = errData?.code || 'COMPLETE_FAILED';
+    err.status = completeRes.status;
+    throw err;
+  }
+
+  const completeData = await completeRes.json();
+  const attachment = completeData.attachment || completeData.attachments?.[0];
+
+  return {
+    success: true,
+    attachment
+  };
+}
+

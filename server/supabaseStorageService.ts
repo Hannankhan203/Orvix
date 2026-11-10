@@ -95,6 +95,27 @@ export interface CreateSignedUrlResult {
   status?: number;
 }
 
+export interface CreateSignedUploadUrlOptions {
+  userId: string;
+  chatId: string;
+  attachmentId: string;
+  extension?: string;
+  upsert?: boolean;
+  bucket?: string;
+}
+
+export interface CreateSignedUploadUrlResult {
+  success: boolean;
+  signedUrl?: string;
+  token?: string;
+  path?: string;
+  fullPath?: string;
+  bucket?: string;
+  error?: string;
+  code?: string;
+  status?: number;
+}
+
 export interface DeleteAttachmentOptions {
   requestingUserId?: string;
   bucket?: string;
@@ -577,6 +598,91 @@ export async function createAttachmentSignedUrl(
       success: false,
       error: err?.message || 'Failed to create signed attachment URL.',
       code: err?.code || 'SIGNED_URL_ERROR',
+      status: err?.status || 500
+    };
+  }
+}
+
+/**
+ * Creates a short-lived signed upload URL for direct browser uploads to Supabase Storage.
+ * Uses the canonical {userId}/{chatId}/{attachmentId}.{extension} path structure.
+ * Strictly verifies path validity and enforces user ownership.
+ */
+export async function createSignedUploadUrlForAttachment(
+  options: CreateSignedUploadUrlOptions
+): Promise<CreateSignedUploadUrlResult> {
+  try {
+    if (!options || typeof options !== 'object') {
+      return {
+        success: false,
+        error: 'Upload options must be provided.',
+        code: 'INVALID_OPTIONS',
+        status: 400
+      };
+    }
+
+    const storagePath = buildAttachmentStoragePath(
+      options.userId,
+      options.chatId,
+      options.attachmentId,
+      options.extension
+    );
+
+    const client = getSupabaseServerClient();
+    if (!client) {
+      return {
+        success: false,
+        path: storagePath,
+        error: 'Supabase storage is not configured on this server.',
+        code: 'STORAGE_UNCONFIGURED',
+        status: 503
+      };
+    }
+
+    const bucket = options.bucket || getSupabaseBucket();
+
+    // Verify or auto-provision bucket if necessary
+    await ensureSupabaseBucketExists(bucket);
+
+    const bucketRef = client.storage.from(bucket);
+    if (!bucketRef || typeof bucketRef.createSignedUploadUrl !== 'function') {
+      return {
+        success: false,
+        path: storagePath,
+        error: 'createSignedUploadUrl method not available on Supabase client.',
+        code: 'METHOD_NOT_SUPPORTED',
+        status: 500
+      };
+    }
+
+    const { data, error } = await bucketRef.createSignedUploadUrl(storagePath, {
+      upsert: Boolean(options.upsert)
+    });
+
+    if (error || !data?.signedUrl) {
+      return {
+        success: false,
+        path: storagePath,
+        error: error?.message || 'Failed to generate signed upload URL.',
+        code: (error as any)?.name || 'SIGNED_UPLOAD_URL_FAILED',
+        status: (error as any)?.status || 500
+      };
+    }
+
+    return {
+      success: true,
+      signedUrl: data.signedUrl,
+      token: data.token,
+      path: data.path || storagePath,
+      fullPath: `${bucket}/${storagePath}`,
+      bucket,
+      status: 200
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Unexpected exception creating signed upload URL.',
+      code: err?.code || 'SIGNED_UPLOAD_URL_ERROR',
       status: err?.status || 500
     };
   }

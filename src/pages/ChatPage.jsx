@@ -54,7 +54,9 @@ import {
   updateAttachmentConversationId,
   subscribeStorageQuotaExceeded,
   isQuotaExceededError,
-  getLastStorageError
+  getLastStorageError,
+  isDirectUploadCandidate,
+  uploadFileDirectToSupabase
 } from '../services/attachmentStorageService.js';
 import { isVisionCapableProvider } from '../services/documentContextService.js';
 import { indexDocument } from '../services/semanticRetrievalService.js';
@@ -1712,97 +1714,122 @@ export default function ChatPage({
           }
 
           try {
-            const formData = new FormData();
-            if (effectiveChatId) {
-              formData.append('conversationId', effectiveChatId);
-            }
-            formData.append('provider', submitProvider || DEFAULT_PROVIDER);
-            formData.append('offline', String(!isBrowserOnline()));
-            filesToUpload.forEach((att) => {
-              formData.append('files', att.file, att.name);
-            });
+            let rawUploaded = [];
+            const directCandidate =
+              filesToUpload.length === 1 &&
+              Boolean(currentUser?.uid) &&
+              isBrowserOnline() &&
+              isDirectUploadCandidate(filesToUpload[0].file);
 
-            let uploadRes;
-            try {
-              const headers = await getAuthHeaders();
-              uploadRes = await fetch('/api/upload', {
-                method: 'POST',
-                headers,
-                body: formData,
-                signal: uploadController.signal
+            if (directCandidate) {
+              try {
+                const directResult = await uploadFileDirectToSupabase(filesToUpload[0].file, {
+                  chatId: effectiveChatId,
+                  signal: uploadController.signal
+                });
+                rawUploaded = directResult.attachment ? [directResult.attachment] : [];
+              } finally {
+                clearTimeout(uploadTimeoutId);
+                preflightEntry.signal.removeEventListener('abort', onRequestCancelled);
+              }
+            } else {
+              const formData = new FormData();
+              if (effectiveChatId) {
+                formData.append('conversationId', effectiveChatId);
+              }
+              formData.append('provider', submitProvider || DEFAULT_PROVIDER);
+              formData.append('offline', String(!isBrowserOnline()));
+              filesToUpload.forEach((att) => {
+                formData.append('files', att.file, att.name);
               });
-            } finally {
-              clearTimeout(uploadTimeoutId);
-              preflightEntry.signal.removeEventListener('abort', onRequestCancelled);
+
+              let uploadRes;
+              try {
+                const headers = await getAuthHeaders();
+                uploadRes = await fetch('/api/upload', {
+                  method: 'POST',
+                  headers,
+                  body: formData,
+                  signal: uploadController.signal
+                });
+              } finally {
+                clearTimeout(uploadTimeoutId);
+                preflightEntry.signal.removeEventListener('abort', onRequestCancelled);
+              }
+
+              if (!isPreflightActive()) return false;
+
+              if (!uploadRes.ok) {
+                let errorMsg = `Upload failed (${uploadRes.status})`;
+                try {
+                  const errData = await uploadRes.json();
+                  if (errData?.error) {
+                    errorMsg = errData.error;
+                  }
+                } catch (_) {}
+
+                if (!isPreflightActive()) return false;
+
+                // If Browser AI is selected and upload returned an error, attempt browser extraction fallback!
+                if (isWebLLM) {
+                  console.warn('Server upload endpoint failed for Browser AI, attempting local browser extraction fallback...');
+                  const fallbackLocalAttachments = [];
+                  for (const att of filesToUpload) {
+                    if (!isPreflightActive()) return false;
+                    const extResult = await extractBrowserDocument(att.file, {
+                      id: att.id,
+                      name: att.name,
+                      originalName: att.originalName || att.name,
+                      mimeType: att.type || att.file.type,
+                      extension: att.extension
+                    });
+                    if (!isPreflightActive()) return false;
+                    if (!extResult.success || !extResult.text) {
+                      throw new Error(extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'.`);
+                    }
+                    await saveAttachmentBlob(att.id || extResult.fileId, att.file, {
+                      name: att.name,
+                      originalName: att.originalName || att.name,
+                      mimeType: att.type || att.file.type,
+                      size: att.size || att.file.size,
+                      formattedSize: att.formattedSize,
+                      extension: att.extension,
+                      isImage: Boolean(att.isImage),
+                      conversationId: effectiveChatId || null
+                    });
+                    if (!isPreflightActive()) return false;
+                    fallbackLocalAttachments.push({
+                      id: att.id || extResult.fileId,
+                      name: att.name || extResult.originalName,
+                      originalName: att.originalName || att.name,
+                      size: att.size || att.file.size,
+                      formattedSize: att.formattedSize,
+                      type: att.type || att.file.type,
+                      extension: att.extension,
+                      isImage: Boolean(att.isImage),
+                      status: extResult.status,
+                      file: att.file,
+                      previewUrl: att.previewUrl,
+                      extraction: extResult
+                    });
+                  }
+                  processedAttachments = fallbackLocalAttachments;
+                } else {
+                  return failPreflightIfActive(errorMsg);
+                }
+              } else {
+                const uploadData = await uploadRes.json();
+                if (!isPreflightActive()) return false;
+
+                rawUploaded = Array.isArray(uploadData?.attachments)
+                  ? uploadData.attachments
+                  : [];
+              }
             }
 
             if (!isPreflightActive()) return false;
 
-            if (!uploadRes.ok) {
-              let errorMsg = `Upload failed (${uploadRes.status})`;
-              try {
-                const errData = await uploadRes.json();
-                if (errData?.error) {
-                  errorMsg = errData.error;
-                }
-              } catch (_) {}
-
-              if (!isPreflightActive()) return false;
-
-              // If Browser AI is selected and upload returned an error, attempt browser extraction fallback!
-              if (isWebLLM) {
-                console.warn('Server upload endpoint failed for Browser AI, attempting local browser extraction fallback...');
-                const fallbackLocalAttachments = [];
-                for (const att of filesToUpload) {
-                  if (!isPreflightActive()) return false;
-                  const extResult = await extractBrowserDocument(att.file, {
-                    id: att.id,
-                    name: att.name,
-                    originalName: att.originalName || att.name,
-                    mimeType: att.type || att.file.type,
-                    extension: att.extension
-                  });
-                  if (!isPreflightActive()) return false;
-                  if (!extResult.success || !extResult.text) {
-                    throw new Error(extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'.`);
-                  }
-                  await saveAttachmentBlob(att.id || extResult.fileId, att.file, {
-                    name: att.name,
-                    originalName: att.originalName || att.name,
-                    mimeType: att.type || att.file.type,
-                    size: att.size || att.file.size,
-                    formattedSize: att.formattedSize,
-                    extension: att.extension,
-                    isImage: Boolean(att.isImage),
-                    conversationId: effectiveChatId || null
-                  });
-                  if (!isPreflightActive()) return false;
-                  fallbackLocalAttachments.push({
-                    id: att.id || extResult.fileId,
-                    name: att.name || extResult.originalName,
-                    originalName: att.originalName || att.name,
-                    size: att.size || att.file.size,
-                    formattedSize: att.formattedSize,
-                    type: att.type || att.file.type,
-                    extension: att.extension,
-                    isImage: Boolean(att.isImage),
-                    status: extResult.status,
-                    file: att.file,
-                    previewUrl: att.previewUrl,
-                    extraction: extResult
-                  });
-                }
-                processedAttachments = fallbackLocalAttachments;
-              } else {
-                return failPreflightIfActive(errorMsg);
-              }
-            } else {
-              const uploadData = await uploadRes.json();
-              if (!isPreflightActive()) return false;
-
-              const rawUploaded = Array.isArray(uploadData?.attachments)
-                ? uploadData.attachments
-                : [];
+            if (rawUploaded.length > 0) {
 
               // Persist file blobs into IndexedDB first so React message state never needs large base64/dataUrl strings
               processedAttachments = await Promise.all(

@@ -24,6 +24,7 @@
     "test:staging-uploads": "node scripts/testOrphanedStagingUploadsRegression.js",
     "test:upload-failure": "node scripts/testSupabaseUploadFailureRegression.js",
     "test:upload-quota": "node scripts/testUploadDailyQuota.js",
+    "test:direct-upload": "node scripts/testDirectSupabaseUpload.js",
     "test:pagination": "node scripts/testStoragePaginationReliability.js",
     "test:semantic-rag": "node scripts/testSemanticRAG.js",
     "test:ocr-packs": "node scripts/testMultilingualOcrPacks.js",

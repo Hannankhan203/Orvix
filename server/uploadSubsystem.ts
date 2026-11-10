@@ -22,12 +22,16 @@ import {
   uploadAttachmentToStorage,
   downloadAttachmentFromStorage,
   createAttachmentSignedUrl,
+  createSignedUploadUrlForAttachment,
   deleteAttachmentFromStorage,
   deleteAttachmentsForChatInStorage,
   findAttachmentPathInStorage,
+  buildAttachmentStoragePath,
+  assertUserOwnsStoragePath,
+  saveDurableAttachmentExpiry,
   isValidPathSegment
 } from './supabaseStorageService.ts';
-import { isSupabaseConfigured } from './supabaseClient.ts';
+import { isSupabaseConfigured, getSupabaseBucket } from './supabaseClient.ts';
 import {
   verifyFirebaseIdToken,
   resolveVerifiedUserId,
@@ -519,12 +523,61 @@ export const fileRegistry = new Map<string, UploadedFileRecord>();
 // Conversation to file IDs association mapping (strictly isolates documents per conversation)
 export const conversationDocuments = new Map<string, Set<string>>();
 
+export interface PendingDirectUploadTicket {
+  attachmentId: string;
+  userId: string;
+  chatId: string;
+  storagePath: string;
+  bucket: string;
+  fileName: string;
+  extension: string;
+  mimeType: string;
+  size: number;
+  quotaReservation: QuotaReservation;
+  expiresAt: number;
+  createdAt: number;
+  isPermanent?: boolean;
+}
+
+// Map of pending direct uploads waiting for client completion
+export const pendingDirectUploads = new Map<string, PendingDirectUploadTicket>();
+
 /**
- * Automated lifecycle cleanup: Sweeps the temporary upload directory and registry,
- * unlinking files exceeding the TTL (default: 2 hours).
+ * Sweeps expired or abandoned direct upload tickets, releasing quota slots
+ * and removing any uncompleted objects from storage safely.
+ */
+export async function pruneExpiredDirectUploadTickets(): Promise<number> {
+  const now = Date.now();
+  let pruned = 0;
+  for (const [attachmentId, ticket] of pendingDirectUploads.entries()) {
+    if (ticket.expiresAt <= now) {
+      pendingDirectUploads.delete(attachmentId);
+      pruned++;
+      try {
+        await releaseUploadSlot(ticket.quotaReservation);
+      } catch (_) {}
+      try {
+        await deleteAttachmentFromStorage(ticket.storagePath, {
+          requestingUserId: ticket.userId,
+          bucket: ticket.bucket
+        });
+      } catch (_) {}
+    }
+  }
+  return pruned;
+}
+
+export function resetDirectUploadTicketsForTesting(): void {
+  pendingDirectUploads.clear();
+}
+
+/**
+ * Automated lifecycle cleanup: Sweeps the temporary upload directory, registry,
+ * and abandoned direct upload tickets.
  */
 export function cleanupExpiredUploads() {
   try {
+    void pruneExpiredDirectUploadTickets();
     const now = Date.now();
     for (const [id, record] of fileRegistry.entries()) {
       if (record.expiresAt <= now) {
@@ -679,7 +732,9 @@ export function registerUploadRoutes(app: express.Express) {
       ),
       ttlMinutes: Math.round(TEMP_FILE_TTL_MS / (60 * 1000)),
       storageMode: isServerless ? 'serverless-temp' : 'local-disk',
-      isServerless
+      isServerless,
+      directUploadSupported: isSupabaseConfigured(),
+      directUploadThresholdBytes: 4 * 1024 * 1024
     });
   });
 
@@ -1616,8 +1671,452 @@ export function registerUploadRoutes(app: express.Express) {
     return res.status(200).json({ success: true, id: fileId });
   });
 
+  // Direct Supabase Upload: Create Short-Lived Signed Upload URL
+  app.post(['/api/upload/direct/signed-url', '/upload/direct/signed-url'], async (req, res) => {
+    void pruneExpiredDirectUploadTickets();
 
-  // Dedicated Multipart File Upload Endpoint
+    const authStatus = await authenticateRequest(req);
+    if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+      return res.status(401).json({
+        error: 'Authentication required for direct cloud upload.',
+        code: 'UNAUTHENTICATED'
+      });
+    }
+    const authenticatedUserId = authStatus.userId;
+
+    if (!isSupabaseConfigured()) {
+      return res.status(503).json({
+        error: 'Cloud storage is not configured on this server.',
+        code: 'STORAGE_UNCONFIGURED'
+      });
+    }
+
+    const rawChatId = req.body?.chatId ?? req.body?.conversationId;
+    const chatId = typeof rawChatId === 'string' ? rawChatId.trim() : '';
+    if (!chatId || !isValidPathSegment(chatId) || chatId.toLowerCase() === 'staging') {
+      return res.status(400).json({
+        error: 'A valid conversationId is required for direct upload.',
+        code: 'INVALID_CONVERSATION_ID'
+      });
+    }
+
+    const rawFileName = req.body?.fileName ?? req.body?.filename ?? req.body?.name;
+    if (typeof rawFileName !== 'string' || !rawFileName.trim()) {
+      return res.status(400).json({
+        error: 'A valid fileName is required.',
+        code: 'MISSING_FILENAME'
+      });
+    }
+    const safeBaseName = path.basename(rawFileName)
+      .replace(/[\0\r\n\t]/g, '')
+      .replace(/[/\\?%*:|"<>]/g, '_')
+      .trim()
+      .slice(0, 150) || 'attachment';
+
+    const ext = path.extname(safeBaseName).toLowerCase();
+    if (!ext || !ALLOWED_EXTENSIONS_MAP[ext]) {
+      return res.status(400).json({
+        error: `File '${safeBaseName}' has an unsupported file format.`,
+        code: 'INVALID_FILE_TYPE'
+      });
+    }
+
+    const mimeType = typeof req.body?.mimeType === 'string' ? req.body.mimeType.trim().toLowerCase() : '';
+    if (mimeType) {
+      if (
+        mimeType.includes('javascript') ||
+        mimeType.includes('executable') ||
+        mimeType.includes('x-sh') ||
+        mimeType.includes('x-msdownload') ||
+        mimeType.includes('x-dosexec')
+      ) {
+        return res.status(400).json({
+          error: `MIME type '${mimeType}' is not permitted.`,
+          code: 'INVALID_MIME_TYPE'
+        });
+      }
+    }
+
+    const rawSize = req.body?.fileSize ?? req.body?.size;
+    const fileSize = Number(rawSize);
+    if (!Number.isFinite(fileSize) || fileSize <= 0) {
+      return res.status(400).json({
+        error: 'File size must be greater than 0 bytes.',
+        code: 'EMPTY_FILE'
+      });
+    }
+    if (fileSize > MAX_FILE_SIZE_BYTES) {
+      return res.status(400).json({
+        error: `File exceeds maximum allowed size of ${formatBytes(MAX_FILE_SIZE_BYTES)}.`,
+        code: 'FILE_TOO_LARGE'
+      });
+    }
+
+    const quotaIdentity = await resolveUploadIdentity(req);
+    let quotaReservation: any;
+    try {
+      quotaReservation = await reserveUploadSlot(quotaIdentity);
+    } catch (quotaErr: any) {
+      console.error('[DirectUpload] Quota reservation failed:', quotaErr?.message || quotaErr);
+      return res.status(500).json({
+        error: 'Upload service temporarily unavailable due to storage configuration error.',
+        code: 'QUOTA_SERVICE_UNAVAILABLE',
+        status: 'SERVICE_UNAVAILABLE'
+      });
+    }
+
+    if (!quotaReservation.allowed) {
+      attachQuotaHeaders(
+        res,
+        {
+          limit: quotaReservation.limit,
+          remaining: quotaReservation.remaining,
+          resetAt: quotaReservation.resetAt
+        },
+        quotaIdentity
+      );
+      return res.status(429).json({
+        error: quotaReservation.error,
+        code: 'QUOTA_EXCEEDED',
+        status: 'QUOTA_EXCEEDED',
+        limit: quotaReservation.limit,
+        remaining: quotaReservation.remaining,
+        resetAt: quotaReservation.resetAt
+      });
+    }
+
+    const attachmentId = crypto.randomUUID();
+    const extension = ext.replace('.', '').toLowerCase();
+    const storagePath = buildAttachmentStoragePath(authenticatedUserId, chatId, attachmentId, extension);
+    const bucket = getSupabaseBucket();
+
+    const signRes = await createSignedUploadUrlForAttachment({
+      userId: authenticatedUserId,
+      chatId,
+      attachmentId,
+      extension,
+      bucket,
+      upsert: false
+    });
+
+    if (!signRes.success || !signRes.signedUrl) {
+      try {
+        await releaseUploadSlot(quotaReservation.reservation);
+      } catch (_) {}
+      return res.status(503).json({
+        error: signRes.error || 'Failed to generate signed upload URL.',
+        code: signRes.code || 'SIGNED_URL_FAILED'
+      });
+    }
+
+    const defaultMime =
+      ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext)
+        ? `image/${extension}`
+        : (ALLOWED_EXTENSIONS_MAP[ext]?.[0] || 'application/octet-stream');
+
+    const ticket: PendingDirectUploadTicket = {
+      attachmentId,
+      userId: authenticatedUserId,
+      chatId,
+      storagePath: signRes.path || storagePath,
+      bucket: signRes.bucket || bucket,
+      fileName: safeBaseName,
+      extension: extension.toUpperCase(),
+      mimeType: mimeType || defaultMime,
+      size: fileSize,
+      quotaReservation: quotaReservation.reservation,
+      expiresAt: Date.now() + 15 * 60 * 1000,
+      createdAt: Date.now(),
+      isPermanent: String(req.body?.isPermanent || req.body?.permanent || '').toLowerCase() === 'true'
+    };
+    pendingDirectUploads.set(attachmentId, ticket);
+
+    return res.status(200).json({
+      success: true,
+      signedUrl: signRes.signedUrl,
+      token: signRes.token,
+      storagePath: signRes.path || storagePath,
+      attachmentId,
+      bucket: signRes.bucket || bucket,
+      expiresIn: 7200
+    });
+  });
+
+  // Direct Supabase Upload: Authenticated Completion & Object Verification
+  app.post(['/api/upload/direct/complete', '/upload/direct/complete'], async (req, res) => {
+    const authStatus = await authenticateRequest(req);
+    if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+      return res.status(401).json({
+        error: 'Authentication required to complete upload.',
+        code: 'UNAUTHENTICATED'
+      });
+    }
+    const authenticatedUserId = authStatus.userId;
+
+    const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
+    const rawChatId = req.body?.chatId ?? req.body?.conversationId;
+    const chatId = typeof rawChatId === 'string' ? rawChatId.trim() : '';
+
+    if (!attachmentId || !isValidPathSegment(attachmentId)) {
+      return res.status(400).json({
+        error: 'A valid attachmentId is required.',
+        code: 'INVALID_ATTACHMENT_ID'
+      });
+    }
+
+    if (!chatId || !isValidPathSegment(chatId)) {
+      return res.status(400).json({
+        error: 'A valid conversationId is required.',
+        code: 'INVALID_CONVERSATION_ID'
+      });
+    }
+
+    const ticket = pendingDirectUploads.get(attachmentId);
+    if (!ticket) {
+      return res.status(404).json({
+        error: 'Upload ticket not found, expired, or already completed.',
+        code: 'TICKET_NOT_FOUND'
+      });
+    }
+
+    if (ticket.userId !== authenticatedUserId) {
+      return res.status(403).json({
+        error: 'Access denied: You cannot complete uploads belonging to another user.',
+        code: 'STORAGE_ACCESS_DENIED'
+      });
+    }
+
+    if (ticket.chatId !== chatId) {
+      return res.status(400).json({
+        error: 'Conversation ID mismatch.',
+        code: 'CONVERSATION_ID_MISMATCH'
+      });
+    }
+
+    // Verify ownership and structure of storage path
+    try {
+      assertUserOwnsStoragePath(ticket.storagePath, authenticatedUserId);
+    } catch (pathErr: any) {
+      return res.status(403).json({
+        error: pathErr?.message || 'Access denied: Invalid storage path.',
+        code: 'STORAGE_ACCESS_DENIED'
+      });
+    }
+
+    // Verify object in Supabase Storage by downloading
+    const downloadRes = await downloadAttachmentFromStorage(ticket.storagePath, {
+      requestingUserId: authenticatedUserId,
+      bucket: ticket.bucket
+    });
+
+    if (!downloadRes.success || !downloadRes.data) {
+      return res.status(400).json({
+        error: 'Uploaded object was not found in storage. Ensure the upload to the signed URL finished successfully before completing.',
+        code: 'OBJECT_NOT_FOUND'
+      });
+    }
+
+    const uploadedBuffer = downloadRes.data;
+    const verifiedSize = uploadedBuffer.length;
+
+    if (verifiedSize === 0) {
+      await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
+      await releaseUploadSlot(ticket.quotaReservation);
+      pendingDirectUploads.delete(attachmentId);
+      return res.status(400).json({
+        error: 'Uploaded file is empty (0 bytes).',
+        code: 'EMPTY_FILE'
+      });
+    }
+
+    if (verifiedSize > MAX_FILE_SIZE_BYTES) {
+      await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
+      await releaseUploadSlot(ticket.quotaReservation);
+      pendingDirectUploads.delete(attachmentId);
+      return res.status(400).json({
+        error: `Uploaded file exceeds maximum allowed size of ${formatBytes(MAX_FILE_SIZE_BYTES)}.`,
+        code: 'FILE_TOO_LARGE'
+      });
+    }
+
+    const ext = '.' + ticket.extension.toLowerCase();
+    const sigResult = await verifyFileSignature(uploadedBuffer, ext);
+    if (!sigResult.valid) {
+      await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
+      await releaseUploadSlot(ticket.quotaReservation);
+      pendingDirectUploads.delete(attachmentId);
+      return res.status(400).json({
+        error: sigResult.reason || 'Invalid file signature.',
+        code: 'INVALID_FILE_SIGNATURE'
+      });
+    }
+
+    const quotaIdentity = await resolveUploadIdentity(req);
+    let committedStatus: QuotaStatus;
+    try {
+      committedStatus = await commitUploadSlot(ticket.quotaReservation);
+    } catch (commitErr: any) {
+      if (commitErr?.code === 'QUOTA_EXCEEDED') {
+        await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
+        pendingDirectUploads.delete(attachmentId);
+        attachQuotaHeaders(
+          res,
+          {
+            limit: DAILY_UPLOAD_LIMIT,
+            remaining: 0,
+            resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+          },
+          quotaIdentity
+        );
+        return res.status(429).json({
+          error: commitErr.message || 'Daily attachment upload limit exceeded.',
+          code: 'QUOTA_EXCEEDED'
+        });
+      }
+      throw commitErr;
+    }
+    attachQuotaHeaders(res, committedStatus, quotaIdentity);
+
+    const expiresAt = Date.now() + TEMP_FILE_TTL_MS;
+    if (!ticket.isPermanent) {
+      try {
+        await saveDurableAttachmentExpiry({
+          userId: authenticatedUserId,
+          chatId: ticket.chatId,
+          attachmentId: ticket.attachmentId,
+          extension: ticket.extension.toLowerCase(),
+          expiresAt,
+          isPermanent: false,
+          bucket: ticket.bucket
+        });
+      } catch (durableErr) {
+        console.warn('[DirectUpload] Notice: Could not save durable expiry metadata:', durableErr);
+      }
+    }
+
+    const isImg =
+      ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+      ticket.mimeType.startsWith('image/');
+
+    let extraction: any = null;
+    const geminiKey = process.env.GEMINI_API_KEY || null;
+    try {
+      if (isImg) {
+        extraction = await extractImageText(
+          uploadedBuffer,
+          ticket.fileName,
+          ext,
+          ticket.mimeType,
+          ticket.attachmentId,
+          sigResult.dimensions,
+          geminiKey,
+          { offline: false }
+        );
+      } else {
+        extraction = await extractDocumentContent(
+          uploadedBuffer,
+          ticket.fileName,
+          ext,
+          ticket.mimeType,
+          ticket.attachmentId,
+          { offline: false, apiKey: geminiKey }
+        );
+      }
+    } catch (extErr) {
+      console.warn('[DirectUpload] Extraction error:', extErr);
+    }
+
+    const diskFilename = `${ticket.attachmentId}${ext}`;
+    try {
+      const fullDiskPath = path.join(UPLOAD_DIR, diskFilename);
+      fs.writeFile(fullDiskPath, uploadedBuffer, () => {});
+    } catch (_) {}
+
+    const record: UploadedFileRecord = {
+      id: ticket.attachmentId,
+      originalName: ticket.fileName,
+      diskFilename,
+      mimeType: ticket.mimeType,
+      extension: ticket.extension,
+      size: verifiedSize,
+      formattedSize: formatBytes(verifiedSize),
+      status: isImg ? 'ready' : (extraction?.success || extraction?.status === 'ready' || extraction?.status === 'scanned_or_image_only' || extraction?.status === 'NO_TEXT_DETECTED' ? 'ready' : 'uploaded'),
+      uploadedAt: new Date().toISOString(),
+      expiresAt,
+      conversationId: ticket.chatId,
+      userId: authenticatedUserId,
+      isPermanent: ticket.isPermanent,
+      storageProvider: 'supabase',
+      storagePath: ticket.storagePath,
+      storageBucket: ticket.bucket,
+      isImage: isImg,
+      dimensions: sigResult.dimensions,
+      extraction,
+      buffer: uploadedBuffer
+    };
+
+    fileRegistry.set(ticket.attachmentId, record);
+    let docSet = conversationDocuments.get(ticket.chatId);
+    if (!docSet) {
+      docSet = new Set<string>();
+      conversationDocuments.set(ticket.chatId, docSet);
+    }
+    docSet.add(ticket.attachmentId);
+
+    pendingDirectUploads.delete(attachmentId);
+
+    const serializedAtt = {
+      id: record.id,
+      name: record.originalName,
+      originalName: record.originalName,
+      size: record.size,
+      formattedSize: record.formattedSize,
+      type: record.mimeType,
+      mimeType: record.mimeType,
+      extension: record.extension,
+      isImage: record.isImage,
+      status: record.status,
+      storageProvider: 'supabase' as const,
+      storagePath: record.storagePath,
+      storageBucket: record.storageBucket,
+      conversationId: record.conversationId,
+      userId: record.userId,
+      extraction: record.extraction
+    };
+
+    return res.status(200).json({
+      success: true,
+      count: 1,
+      attachments: [serializedAtt],
+      attachment: serializedAtt
+    });
+  });
+
+  // Direct Supabase Upload: Cancel & Rollback Upload Ticket
+  app.post(['/api/upload/direct/cancel', '/upload/direct/cancel'], async (req, res) => {
+    const authStatus = await authenticateRequest(req);
+    if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+      return res.status(401).json({
+        error: 'Authentication required to cancel upload.',
+        code: 'UNAUTHENTICATED'
+      });
+    }
+    const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
+    const ticket = pendingDirectUploads.get(attachmentId);
+    if (ticket && ticket.userId === authStatus.userId) {
+      try {
+        await releaseUploadSlot(ticket.quotaReservation);
+      } catch (_) {}
+      try {
+        await deleteAttachmentFromStorage(ticket.storagePath, {
+          requestingUserId: authStatus.userId,
+          bucket: ticket.bucket
+        });
+      } catch (_) {}
+      pendingDirectUploads.delete(attachmentId);
+    }
+    return res.status(200).json({ success: true, cancelled: true });
+  });
   app.post(['/api/upload', '/upload'], (req, res) => {
     uploadMiddleware.array('files', MAX_ATTACHMENTS_PER_UPLOAD)(req as any, res as any, async (err: any) => {
       if (err) {

@@ -63,7 +63,10 @@ import {
   fileRegistry,
   conversationDocuments,
   UPLOAD_DIR,
-  resolveRequestUserId
+  resolveRequestUserId,
+  pendingDirectUploads,
+  pruneExpiredDirectUploadTickets,
+  resetDirectUploadTicketsForTesting
 } from './server/uploadSubsystem.ts';
 import { registerTranscriptionRoutes } from './server/transcriptionSubsystem.ts';
 import { setupVoiceWebSocketServer } from './server/voiceWebSocketSubsystem.ts';
@@ -420,7 +423,10 @@ export {
   stopSupabaseAttachmentCleanupScheduler,
   runExpiredSupabaseAttachmentCleanup,
   getSupabaseAttachmentCleanupSchedulerStatus,
-  isAttachmentEligibleForExpiryCleanup
+  isAttachmentEligibleForExpiryCleanup,
+  pendingDirectUploads,
+  pruneExpiredDirectUploadTickets,
+  resetDirectUploadTicketsForTesting
 };
 
 export type {
