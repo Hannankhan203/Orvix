@@ -1035,7 +1035,7 @@ export function registerUploadRoutes(app: express.Express) {
     ],
     async (req, res) => {
       const fileId = req.params.id;
-      if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
+      if (!fileId || (!/^[0-9a-fA-F-]{36}$/.test(fileId) && !/^gen-[a-zA-Z0-9_-]{10,80}$/.test(fileId))) {
         return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
       }
 

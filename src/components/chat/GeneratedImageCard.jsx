@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { downloadGeneratedImage } from '../../services/imageGenerationService.js';
+import { getAttachmentBlob } from '../../services/attachmentStorageService.js';
 const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
 
 /**
@@ -40,11 +41,44 @@ export default function GeneratedImageCard({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [localBlobUrl, setLocalBlobUrl] = useState(null);
+
+  // Hydrate image binary from local IndexedDB if memory base64 was stripped for storage
+  useEffect(() => {
+    let active = true;
+    let objectUrl = null;
+
+    if (!imageResult?.dataUrl && !imageResult?.base64 && imageResult?.id) {
+      getAttachmentBlob(imageResult.id)
+        .then((blob) => {
+          if (active && blob) {
+            objectUrl = URL.createObjectURL(blob);
+            setLocalBlobUrl(objectUrl);
+          }
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      active = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [imageResult?.id, imageResult?.dataUrl, imageResult?.base64]);
 
   const effectivePrompt = imageResult?.prompt || prompt || '';
   const effectiveProvider = imageResult?.provider || provider || 'gemini';
   const effectiveModel = imageResult?.model || model || (effectiveProvider === 'gemini' ? 'gemini-3.1-flash-lite-image' : 'flux-1-schnell');
-  const effectiveDataUrl = imageResult?.dataUrl || (imageResult?.base64 ? `data:${imageResult.mimeType || 'image/png'};base64,${imageResult.base64}` : imageResult?.url);
+  const chatIdQuery = imageResult?.conversationId ? `?chatId=${encodeURIComponent(imageResult.conversationId)}` : '';
+  const effectiveDataUrl =
+    localBlobUrl ||
+    imageResult?.dataUrl ||
+    (imageResult?.base64
+      ? `data:${imageResult.mimeType || 'image/png'};base64,${imageResult.base64}`
+      : imageResult?.url ||
+        (imageResult?.id ? `/api/image/${imageResult.id}/file${chatIdQuery}` : null) ||
+        (imageResult?.id ? `/api/upload/${imageResult.id}/file${chatIdQuery}` : null));
   const effectiveDimensions = imageResult?.dimensions;
   const effectiveFormat = (imageResult?.format || (imageResult?.mimeType || '').split('/')[1] || 'png').toUpperCase();
   const effectiveAspectRatio = imageResult?.aspectRatio || aspectRatio || '1:1';

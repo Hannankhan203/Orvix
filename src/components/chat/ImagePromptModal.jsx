@@ -71,8 +71,8 @@ export default function ImagePromptModal({
     }
   };
 
-  const isGeminiAvailable = Boolean(providerConfig?.geminiConfigured);
-  const isCloudflareAvailable = Boolean(providerConfig?.cloudflareConfigured);
+  const isGeminiAvailable = Boolean(providerConfig?.geminiConfigured ?? providerConfig?.data?.geminiConfigured);
+  const isCloudflareAvailable = Boolean(providerConfig?.cloudflareConfigured ?? providerConfig?.data?.cloudflareConfigured);
 
   return (
     <div className="modal-backdrop image-prompt-modal-backdrop" onClick={onClose} role="dialog" aria-modal="true">

@@ -700,6 +700,12 @@ export function restoreAttachmentFromStorage(att) {
   return restored;
 }
 
+export function sanitizeImageResultForStorage(result) {
+  if (!result || typeof result !== 'object') return null;
+  const { base64, dataUrl, ...cleanResult } = result;
+  return cleanResult;
+}
+
 export function sanitizeMessageForStorage(msg) {
   if (!msg || typeof msg !== 'object') return msg;
   const next = { ...msg };
@@ -708,6 +714,9 @@ export function sanitizeMessageForStorage(msg) {
   }
   if (Array.isArray(next.referencedAttachments)) {
     next.referencedAttachments = next.referencedAttachments.map(serializeAttachmentForStorage);
+  }
+  if (next.imageResult) {
+    next.imageResult = sanitizeImageResultForStorage(next.imageResult);
   }
   if (Array.isArray(next.alternatives)) {
     next.alternatives = next.alternatives.map((alt) => {
@@ -737,6 +746,11 @@ export function buildFirestoreMessagePayload(targetMessage) {
     interactionId: targetMessage.interactionId || null,
     createdAtMs: typeof targetMessage.createdAtMs === 'number' ? targetMessage.createdAtMs : Date.now(),
     activeAlternativeId: targetMessage.activeAlternativeId || null,
+    isImageGeneration: Boolean(targetMessage.isImageGeneration),
+    imageStatus: targetMessage.imageStatus || null,
+    imagePrompt: targetMessage.imagePrompt || null,
+    aspectRatio: targetMessage.aspectRatio || null,
+    imageResult: sanitizeImageResultForStorage(targetMessage.imageResult),
     alternatives: Array.isArray(targetMessage.alternatives)
       ? targetMessage.alternatives.map((alt) => ({
           id: alt.id,

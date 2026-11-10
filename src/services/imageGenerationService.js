@@ -9,7 +9,8 @@ export async function generateImage({
   provider = 'auto',
   model,
   aspectRatio = '1:1',
-  conversationId
+  conversationId,
+  signal = null
 }) {
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     throw new Error('A descriptive text prompt is required to generate an image.');
@@ -33,6 +34,15 @@ export async function generateImage({
   }
 
   const controller = new AbortController();
+  const onSignalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', onSignalAbort, { once: true });
+    }
+  }
+
   const timeoutId = setTimeout(() => {
     controller.abort(new Error('Image generation timed out after 60 seconds.'));
   }, 60000);
@@ -130,10 +140,16 @@ export function downloadGeneratedImage(imageResult, preferredFilename) {
     return true;
   }
 
-  // Fallback to URL if provided
-  if (imageResult.url) {
+  // Fallback to URL if provided, or upload/image file endpoint by ID
+  const chatIdParam = imageResult.conversationId ? `?chatId=${encodeURIComponent(imageResult.conversationId)}` : '';
+  const fallbackUrl =
+    imageResult.url ||
+    (imageResult.id ? `/api/upload/${imageResult.id}/file${chatIdParam}` : null) ||
+    (imageResult.id ? `/api/image/${imageResult.id}/download${chatIdParam}` : null);
+
+  if (fallbackUrl) {
     const link = document.createElement('a');
-    link.href = imageResult.url;
+    link.href = fallbackUrl;
     link.download = filename;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';

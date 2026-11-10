@@ -1860,6 +1860,23 @@ Transcript:
           />
         </React.Suspense>
       )}
+
+      {imageModalOpen && (
+        <ImagePromptModal
+          isOpen={imageModalOpen}
+          onClose={() => setImageModalOpen(false)}
+          onSubmit={(options) => {
+            if (onInputChange && inputValue.trim()) {
+              onInputChange('');
+            }
+            if (onGenerateImage) {
+              onGenerateImage(options);
+            }
+          }}
+          initialPrompt={inputValue.trim()}
+          providerConfig={providerConfig}
+        />
+      )}
     </main>
   );
 }

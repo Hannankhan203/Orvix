@@ -114,6 +114,7 @@ import {
   importSharedConversationToAccount
 } from '../services/shareChatService.js';
 import ShareChatModal from '../components/chat/ShareChatModal.jsx';
+import { generateImage } from '../services/imageGenerationService.js';
 import { AlertCircle, X, Check, WifiOff } from 'lucide-react';
 
 const AuthScreenModal = React.lazy(() => import('../components/auth/AuthScreen.jsx'));
@@ -237,6 +238,7 @@ export default function ChatPage({
   const userChatsRef = useRef(userChats);
   const fetchRequestIdRef = useRef(0);
   const skipNextChatLoadRef = useRef(null);
+  const activeImageAbortControllerRef = useRef(null);
   const requestControllerRef = useRef(null);
   if (!requestControllerRef.current) {
     requestControllerRef.current = createRequestIsolationController();
@@ -2248,10 +2250,295 @@ export default function ChatPage({
     }
   };
 
+  // Generate an AI image from a descriptive text prompt
+  const handleGenerateImage = async ({
+    prompt,
+    aspectRatio = '1:1',
+    provider = 'auto',
+    model = undefined,
+    targetMessageId = null
+  }) => {
+    if (isPublicSharedViewer) return false;
+    if (isSharedView && !isAuthenticatedSharedPreview) return false;
+
+    stopSpeech();
+
+    const trimmedPrompt = (prompt || '').trim();
+    if (!trimmedPrompt) return false;
+
+    // Reject offline requests for image generation immediately
+    if (!isBrowserOnline()) {
+      setPersistenceError('Image generation requires an active internet connection.');
+      return false;
+    }
+
+    const initialChatId = activeChatIdRef.current;
+    let currentChatId = initialChatId;
+
+    // Create conversation on first turn if activeChatId is empty
+    if (!currentChatId) {
+      if (isAuthenticatedSharedPreview) {
+        currentChatId = `shared-preview-${sharedShareId || Date.now()}`;
+        activeChatIdRef.current = currentChatId;
+        setActiveChatId(currentChatId);
+      } else {
+        const titleSnippet = generateChatTitle(`Image: ${trimmedPrompt}`);
+        if (isCloudEnabled && currentUser?.uid) {
+          try {
+            const createdId = await createChatDocument(
+              currentUser.uid,
+              titleSnippet,
+              activeMode,
+              {},
+              undefined
+            );
+            currentChatId = createdId;
+            skipNextChatLoadRef.current = currentChatId;
+            const cachedList = getCachedUserChats(currentUser.uid);
+            if (cachedList.length > 0) {
+              setUserChats(cachedList);
+            }
+          } catch (error) {
+            console.warn('Could not create Firestore chat doc for image, using local fallback:', error);
+            currentChatId = `chat-${Date.now()}`;
+            skipNextChatLoadRef.current = currentChatId;
+            const fallbackChat = {
+              id: currentChatId,
+              title: titleSnippet,
+              mode: activeMode || 'general',
+              timestamp: 'Just now',
+              rawUpdatedAt: Date.now(),
+              isPinned: false,
+              pinnedAt: null,
+              pendingSync: true
+            };
+            setUserChats((previous) => [fallbackChat, ...previous]);
+          }
+        } else {
+          currentChatId = `guest-${Date.now()}`;
+          skipNextChatLoadRef.current = currentChatId;
+          const newGuestChat = {
+            id: currentChatId,
+            title: titleSnippet,
+            mode: activeMode || 'general',
+            timestamp: 'Just now',
+            rawUpdatedAt: Date.now(),
+            isPinned: false,
+            pinnedAt: null,
+            messages: []
+          };
+          setUserChats((previous) => {
+            const next = [newGuestChat, ...previous];
+            saveGuestChats(next);
+            return next;
+          });
+        }
+
+        activeChatIdRef.current = currentChatId;
+        setActiveChatId(currentChatId);
+        sessionStorage.setItem('orvix_active_chat', currentChatId);
+      }
+    }
+
+    const now = Date.now();
+    const interactionId = `interaction-${now}`;
+    const userMessageId = `user-${now}`;
+    const assistantMessageId = targetMessageId || `image-${now}-assistant`;
+
+    setLoadingAndSubmitting(true);
+    setPersistenceError(null);
+
+    const abortController = new AbortController();
+    activeImageAbortControllerRef.current = abortController;
+
+    const defaultProvider = providerConfig?.data?.imageGenerationDefaultProvider || providerConfig?.imageGenerationDefaultProvider || 'gemini';
+    const resolvedProvider = provider === 'auto' ? defaultProvider : provider;
+
+    if (!targetMessageId) {
+      const userMessage = {
+        id: userMessageId,
+        interactionId,
+        sender: 'user',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: now,
+        createdAtMs: now,
+        content: `/image ${trimmedPrompt}`,
+        conversationId: currentChatId,
+        chatId: currentChatId,
+        attachments: []
+      };
+
+      const initialAssistantMessage = {
+        id: assistantMessageId,
+        interactionId,
+        parentMessageId: userMessage.id,
+        sender: 'assistant',
+        provider: resolvedProvider,
+        modelUsed: model || null,
+        mode: activeMode || 'general',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: now,
+        createdAtMs: now,
+        content: '',
+        conversationId: currentChatId,
+        chatId: currentChatId,
+        isImageGeneration: true,
+        imageStatus: 'generating',
+        imagePrompt: trimmedPrompt,
+        aspectRatio: aspectRatio,
+        elapsedSec: 0,
+        isGenerating: true
+      };
+
+      setMessages((prev) => [...prev, userMessage, initialAssistantMessage]);
+      if (currentChatId) {
+        void persistMessageSafe(currentChatId, userMessage);
+      }
+    } else {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === targetMessageId
+            ? {
+                ...m,
+                imageStatus: 'generating',
+                isGenerating: true,
+                isError: false,
+                error: null,
+                errorMessage: null,
+                elapsedSec: 0,
+                provider: resolvedProvider,
+                aspectRatio: aspectRatio || m.aspectRatio || '1:1'
+              }
+            : m
+        )
+      );
+    }
+
+    let elapsed = 0;
+    const ticker = setInterval(() => {
+      elapsed += 1;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMessageId && m.imageStatus === 'generating'
+            ? { ...m, elapsedSec: elapsed }
+            : m
+        )
+      );
+    }, 1000);
+
+    try {
+      const result = await generateImage({
+        prompt: trimmedPrompt,
+        provider,
+        model,
+        aspectRatio,
+        conversationId: currentChatId,
+        signal: abortController.signal
+      });
+
+      clearInterval(ticker);
+
+      const updatedAssistantMessage = {
+        id: assistantMessageId,
+        interactionId,
+        parentMessageId: userMessageId,
+        sender: 'assistant',
+        provider: result.provider || resolvedProvider,
+        modelUsed: result.model,
+        mode: activeMode || 'general',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: now,
+        createdAtMs: now,
+        content: `Generated image for: "${trimmedPrompt}"`,
+        conversationId: currentChatId,
+        chatId: currentChatId,
+        isImageGeneration: true,
+        imageStatus: 'ready',
+        imageResult: result,
+        imagePrompt: trimmedPrompt,
+        aspectRatio: result.aspectRatio || aspectRatio,
+        isGenerating: false,
+        isError: false,
+        error: null,
+        errorMessage: null,
+        elapsedSec: elapsed
+      };
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantMessageId ? updatedAssistantMessage : m))
+      );
+
+      if (currentChatId) {
+        void persistMessageSafe(currentChatId, updatedAssistantMessage, true);
+      }
+
+      return true;
+    } catch (err) {
+      clearInterval(ticker);
+      console.error('[ChatPage] Image generation error:', err);
+
+      const isAborted = err?.name === 'AbortError' || abortController.signal.aborted;
+      const errorMsg = isAborted
+        ? 'Image generation was stopped.'
+        : err?.message || 'Image generation failed.';
+
+      const failedAssistantMessage = {
+        id: assistantMessageId,
+        interactionId,
+        parentMessageId: userMessageId,
+        sender: 'assistant',
+        provider: resolvedProvider,
+        modelUsed: model || null,
+        mode: activeMode || 'general',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: now,
+        createdAtMs: now,
+        content: `Image generation failed: ${errorMsg}`,
+        conversationId: currentChatId,
+        chatId: currentChatId,
+        isImageGeneration: true,
+        imageStatus: 'error',
+        imagePrompt: trimmedPrompt,
+        aspectRatio: aspectRatio,
+        isGenerating: false,
+        isError: true,
+        error: errorMsg,
+        errorMessage: errorMsg,
+        elapsedSec: elapsed
+      };
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantMessageId ? failedAssistantMessage : m))
+      );
+
+      if (currentChatId) {
+        void persistMessageSafe(currentChatId, failedAssistantMessage, true);
+      }
+
+      return false;
+    } finally {
+      clearInterval(ticker);
+      if (activeImageAbortControllerRef.current === abortController) {
+        activeImageAbortControllerRef.current = null;
+      }
+      setLoadingAndSubmitting(false);
+    }
+  };
+
   // Retry a failed AI response with the same provider.
   const handleRetry = async (failedMessage) => {
     if (isPublicSharedViewer) return;
     stopSpeech();
+
+    if (failedMessage?.isImageGeneration) {
+      return handleGenerateImage({
+        prompt: failedMessage.imagePrompt || failedMessage.prompt,
+        aspectRatio: failedMessage.aspectRatio || '1:1',
+        provider: failedMessage.provider || 'auto',
+        model: failedMessage.modelUsed || failedMessage.model,
+        targetMessageId: failedMessage.id
+      });
+    }
 
     if (
       isLoading ||
@@ -2790,6 +3077,10 @@ export default function ChatPage({
   // Stop active AI response generation
   const handleStopGenerating = () => {
     stopSpeech();
+    if (activeImageAbortControllerRef.current) {
+      activeImageAbortControllerRef.current.abort();
+      activeImageAbortControllerRef.current = null;
+    }
     cancelCurrentGeneration('stopped');
     if (isAuthenticatedSharedPreview) {
       setIsSubmittingFirstSharedMessage(false);
@@ -3407,6 +3698,7 @@ export default function ChatPage({
         sharedLoading={sharedLoading}
         onSignInClick={() => setShowAuthModal(true)}
         onNavigateHome={onNavigateHome || handleNewChat}
+        onGenerateImage={handleGenerateImage}
       />
 
       <ShareChatModal

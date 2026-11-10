@@ -190,7 +190,7 @@ export function signGuestId(guestId: string, secret = getOrInitServerSecret()): 
 export function verifyGuestToken(
   token: unknown,
   secret = getOrInitServerSecret()
-): { valid: boolean; guestId?: string } {
+): { valid: boolean; guestId?: string; expired?: boolean } {
   if (typeof token !== 'string' || !token.trim()) {
     return { valid: false };
   }
@@ -204,7 +204,7 @@ export function verifyGuestToken(
   const guestId = trimmed.slice(0, dotIndex);
   const signature = trimmed.slice(dotIndex + 1);
 
-  if (!guestId.startsWith('guest_') || guestId.length < 10 || guestId.length > 64) {
+  if (!guestId.startsWith('guest_') || guestId.length < 10 || guestId.length > 80) {
     return { valid: false };
   }
 
@@ -215,9 +215,22 @@ export function verifyGuestToken(
     if (sigBuffer.length !== expectedBuffer.length) {
       return { valid: false };
     }
-    if (crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
-      return { valid: true, guestId };
+    if (!crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+      return { valid: false };
     }
+
+    // Cryptographic signature verified. Now check if token has an explicit expiration timestamp
+    // Supported formats: guest_exp_<timestamp>_<random> or guest_<random>_exp_<timestamp>
+    const expMatch = guestId.match(/_exp_(\d{10,15})/);
+    if (expMatch && expMatch[1]) {
+      const expMs = parseInt(expMatch[1], 10);
+      const nowMs = getCurrentDate().getTime();
+      if (!isNaN(expMs) && expMs > 0 && nowMs > expMs) {
+        return { valid: false, guestId, expired: true };
+      }
+    }
+
+    return { valid: true, guestId };
   } catch (_) {}
 
   return { valid: false };
@@ -235,6 +248,27 @@ export function createServerIssuedGuestToken(secret = getOrInitServerSecret()): 
   return {
     guestId,
     guestToken: `${guestId}.${signature}`
+  };
+}
+
+/**
+ * Creates an expiring server-issued guest token for testing and session management.
+ */
+export function createExpiringGuestToken(
+  ttlMs = 3600_000,
+  secret = getOrInitServerSecret()
+): {
+  guestId: string;
+  guestToken: string;
+  expiresAt: number;
+} {
+  const expiresAt = getCurrentDate().getTime() + ttlMs;
+  const guestId = `guest_exp_${expiresAt}_${crypto.randomBytes(12).toString('hex')}`;
+  const signature = signGuestId(guestId, secret);
+  return {
+    guestId,
+    guestToken: `${guestId}.${signature}`,
+    expiresAt
   };
 }
 
@@ -936,3 +970,304 @@ export async function resetQuotaForTesting(identityKey?: string): Promise<void> 
     }
   } catch (_) {}
 }
+
+// ==============================================================================
+// Image Generation Quota Engine (Distributed Firestore-backed rate limiting)
+// ==============================================================================
+
+export const DAILY_IMAGE_LIMIT =
+  parseInt(process.env.ORVIX_IMAGE_DAILY_LIMIT || '', 10) || 10;
+
+/**
+ * Atomically reserves 1 image generation slot for an identity on the current UTC calendar day
+ * using an atomic Firestore transaction.
+ */
+export async function reserveImageSlot(
+  identity: QuotaIdentity,
+  options: { customNow?: Date; limit?: number } = {}
+): Promise<ReservationResult> {
+  const limit = options.limit ?? DAILY_IMAGE_LIMIT;
+  const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
+  const utcDay = getUtcDayString(now);
+  const resetAt = getNextUtcMidnight(now).toISOString();
+  const docId = `${identity.key}_${utcDay}`;
+  const db = getFirestoreDb();
+
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('imageQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
+
+    const record: QuotaRecord = (snap.exists && snap.data())
+      ? (snap.data() as QuotaRecord)
+      : {
+          identityKey: identity.key,
+          utcDay,
+          committed: 0,
+          reservations: {},
+          lastUpdated: nowMs
+        };
+
+    if (!record.reservations || typeof record.reservations !== 'object') {
+      record.reservations = {};
+    }
+    if (typeof record.committed !== 'number') {
+      record.committed = 0;
+    }
+
+    const activeReservationsCount = pruneExpiredReservations(record, nowMs);
+    const totalUsage = record.committed + activeReservationsCount;
+
+    if (totalUsage >= limit) {
+      const remaining = Math.max(0, limit - totalUsage);
+      return {
+        allowed: false as const,
+        limit,
+        remaining,
+        resetAt,
+        error: `Daily image generation limit of ${limit} images per day exceeded. Quota resets at midnight UTC.`
+      };
+    }
+
+    const reservationId = 'res_img_' + crypto.randomUUID();
+    const expiresAt = nowMs + RESERVATION_TTL_MS;
+
+    record.reservations[reservationId] = {
+      expiresAt,
+      createdAt: nowMs
+    };
+    record.lastUpdated = nowMs;
+
+    transaction.set(docRef, record, { merge: true });
+
+    const remaining = Math.max(0, limit - (record.committed + activeReservationsCount + 1));
+
+    return {
+      allowed: true as const,
+      reservation: {
+        reservationId,
+        identityKey: identity.key,
+        utcDay,
+        expiresAt,
+        createdAt: nowMs
+      },
+      remaining,
+      resetAt,
+      limit
+    };
+  });
+}
+
+/**
+ * Commits an image generation reservation upon successful generation completion.
+ */
+export async function commitImageSlot(
+  reservation: QuotaReservation,
+  options: { customNow?: Date; limit?: number } = {}
+): Promise<QuotaStatus> {
+  const limit = options.limit ?? DAILY_IMAGE_LIMIT;
+  const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
+  const resetAt = getNextUtcMidnight(now).toISOString();
+  const docId = `${reservation.identityKey}_${reservation.utcDay}`;
+  const db = getFirestoreDb();
+
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('imageQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
+
+    const record: QuotaRecord = (snap.exists && snap.data())
+      ? (snap.data() as QuotaRecord)
+      : {
+          identityKey: reservation.identityKey,
+          utcDay: reservation.utcDay,
+          committed: 0,
+          reservations: {},
+          lastUpdated: nowMs
+        };
+
+    if (!record.reservations || typeof record.reservations !== 'object') {
+      record.reservations = {};
+    }
+    if (typeof record.committed !== 'number') {
+      record.committed = 0;
+    }
+
+    const targetRes = record.reservations[reservation.reservationId];
+    const isTargetStillValid = targetRes && targetRes.expiresAt > nowMs;
+
+    // Prune all other expired reservations
+    let otherActiveCount = 0;
+    for (const [resId, res] of Object.entries(record.reservations)) {
+      if (resId === reservation.reservationId) continue;
+      if (!res || typeof res.expiresAt !== 'number' || res.expiresAt <= nowMs) {
+        delete record.reservations[resId];
+      } else {
+        otherActiveCount++;
+      }
+    }
+
+    if (isTargetStillValid) {
+      delete record.reservations[reservation.reservationId];
+      record.committed = Math.min(limit, record.committed + 1);
+      record.lastUpdated = nowMs;
+
+      transaction.set(docRef, record, { merge: true });
+
+      const remaining = Math.max(0, limit - (record.committed + otherActiveCount));
+      return {
+        limit,
+        committed: record.committed,
+        activeReservations: otherActiveCount,
+        remaining,
+        resetAt
+      };
+    }
+
+    // Expired reservation path: check quota bounds
+    if (record.committed + otherActiveCount >= limit) {
+      delete record.reservations[reservation.reservationId];
+      record.lastUpdated = nowMs;
+      transaction.set(docRef, record, { merge: true });
+
+      const error: any = new Error(
+        `Image generation reservation ${reservation.reservationId} expired and daily quota is exhausted.`
+      );
+      error.code = 'QUOTA_EXCEEDED';
+      error.status = 'QUOTA_EXCEEDED';
+      error.limit = limit;
+      error.remaining = 0;
+      error.resetAt = resetAt;
+      throw error;
+    }
+
+    delete record.reservations[reservation.reservationId];
+    record.committed = Math.min(limit, record.committed + 1);
+    record.lastUpdated = nowMs;
+
+    transaction.set(docRef, record, { merge: true });
+
+    const remaining = Math.max(0, limit - (record.committed + otherActiveCount));
+    return {
+      limit,
+      committed: record.committed,
+      activeReservations: otherActiveCount,
+      remaining,
+      resetAt
+    };
+  });
+}
+
+/**
+ * Releases a reserved image generation slot when generation fails or is aborted.
+ */
+export async function releaseImageSlot(
+  reservation: QuotaReservation,
+  options: { customNow?: Date; limit?: number } = {}
+): Promise<QuotaStatus> {
+  const limit = options.limit ?? DAILY_IMAGE_LIMIT;
+  const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
+  const resetAt = getNextUtcMidnight(now).toISOString();
+  const docId = `${reservation.identityKey}_${reservation.utcDay}`;
+  const db = getFirestoreDb();
+
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('imageQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
+
+    if (!snap.exists || !snap.data()) {
+      return {
+        limit,
+        committed: 0,
+        activeReservations: 0,
+        remaining: limit,
+        resetAt
+      };
+    }
+
+    const record = snap.data() as QuotaRecord;
+    if (!record.reservations || typeof record.reservations !== 'object') {
+      record.reservations = {};
+    }
+
+    delete record.reservations[reservation.reservationId];
+    const activeCount = pruneExpiredReservations(record, nowMs);
+
+    record.lastUpdated = nowMs;
+    transaction.set(docRef, record, { merge: true });
+
+    const remaining = Math.max(0, limit - ((record.committed || 0) + activeCount));
+    return {
+      limit,
+      committed: record.committed || 0,
+      activeReservations: activeCount,
+      remaining,
+      resetAt
+    };
+  });
+}
+
+/**
+ * Retrieves the current image generation quota status for an identity.
+ */
+export async function getImageQuotaStatus(
+  identity: QuotaIdentity,
+  options: { customNow?: Date; limit?: number } = {}
+): Promise<QuotaStatus> {
+  const limit = options.limit ?? DAILY_IMAGE_LIMIT;
+  const now = options.customNow || getCurrentDate();
+  const nowMs = now.getTime();
+  const utcDay = getUtcDayString(now);
+  const resetAt = getNextUtcMidnight(now).toISOString();
+  const docId = `${identity.key}_${utcDay}`;
+  const db = getFirestoreDb();
+
+  return await db.runTransaction(async (transaction: any) => {
+    const docRef = db.collection('imageQuotas').doc(docId);
+    const snap = await transaction.get(docRef);
+
+    if (!snap.exists || !snap.data()) {
+      return {
+        limit,
+        committed: 0,
+        activeReservations: 0,
+        remaining: limit,
+        resetAt
+      };
+    }
+
+    const record = snap.data() as QuotaRecord;
+    const activeCount = pruneExpiredReservations(record, nowMs);
+    const committed = typeof record.committed === 'number' ? record.committed : 0;
+    const remaining = Math.max(0, limit - (committed + activeCount));
+
+    return {
+      limit,
+      committed,
+      activeReservations: activeCount,
+      remaining,
+      resetAt
+    };
+  });
+}
+
+/**
+ * Resets image quota records for testing.
+ */
+export async function resetImageQuotaForTesting(identityKey?: string): Promise<void> {
+  if (identityKey) {
+    for (const key of Array.from(sharedInMemoryFirestoreStore.keys())) {
+      if (key.includes('imageQuotas') && key.includes(identityKey)) {
+        sharedInMemoryFirestoreStore.delete(key);
+      }
+    }
+  } else {
+    for (const key of Array.from(sharedInMemoryFirestoreStore.keys())) {
+      if (key.startsWith('imageQuotas/')) {
+        sharedInMemoryFirestoreStore.delete(key);
+      }
+    }
+  }
+}
+
