@@ -12,7 +12,8 @@
 import {
   getSupabaseServerClient,
   getSupabaseBucket,
-  isSupabaseConfigured
+  isSupabaseConfigured,
+  ensureSupabaseBucketExists
 } from './supabaseClient.ts';
 
 export class SupabaseStorageError extends Error {
@@ -347,10 +348,29 @@ export async function uploadAttachmentToStorage(
     const bucket = options.bucket || getSupabaseBucket();
     const contentType = options.mimeType || 'application/octet-stream';
 
-    const { data, error } = await client.storage.from(bucket).upload(storagePath, options.buffer, {
+    let { data, error } = await client.storage.from(bucket).upload(storagePath, options.buffer, {
       contentType,
       upsert: Boolean(options.upsert)
     });
+
+    if (error) {
+      // If error indicates bucket does not exist, attempt auto-provisioning and retry upload once
+      if (
+        (error.message && /bucket not found|not found|does not exist/i.test(error.message)) ||
+        (error as any).status === 404 ||
+        (error as any).statusCode === 404
+      ) {
+        const provRes = await ensureSupabaseBucketExists(bucket, { forceRefresh: true });
+        if (provRes.success) {
+          const retry = await client.storage.from(bucket).upload(storagePath, options.buffer, {
+            contentType,
+            upsert: Boolean(options.upsert)
+          });
+          data = retry.data;
+          error = retry.error;
+        }
+      }
+    }
 
     if (error) {
       const errStatus = (error as any).status || 500;

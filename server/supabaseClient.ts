@@ -22,6 +22,22 @@ export interface SupabaseClientStatus {
   error: string | null;
 }
 
+export interface EnsureBucketOptions {
+  forceRefresh?: boolean;
+  client?: any;
+}
+
+export interface EnsureBucketResult {
+  success: boolean;
+  bucket: string;
+  created: boolean;
+  alreadyExisted: boolean;
+  isConfigured: boolean;
+  error?: string | null;
+  code?: string;
+  status?: number;
+}
+
 let cachedClient: SupabaseClient | null = null;
 let lastUrl: string | null = null;
 let lastKey: string | null = null;
@@ -186,6 +202,189 @@ export function getSupabaseServerClient(): SupabaseClient | null {
   }
 }
 
+const verifiedBuckets = new Set<string>();
+const inFlightBucketPromises = new Map<string, Promise<EnsureBucketResult>>();
+
+/**
+ * Resets bucket provisioning tracking state (used in automated test suites).
+ */
+export function resetBucketProvisioningForTesting(): void {
+  verifiedBuckets.clear();
+  inFlightBucketPromises.clear();
+}
+
+/**
+ * Idempotently verifies or auto-provisions the configured Supabase Storage bucket.
+ *
+ * Rules:
+ * 1. Checks whether the bucket already exists.
+ * 2. If missing, creates it as a PRIVATE bucket ({ public: false }).
+ * 3. Never modifies privacy settings or configuration of an existing bucket.
+ * 4. Deduplicates concurrent in-flight requests and handles already-exists / 409 responses gracefully.
+ * 5. Returns a structured result without exposing credentials.
+ * 6. Preserves optional-storage behavior if Supabase is unconfigured (returns status 503 without throwing).
+ */
+export async function ensureSupabaseBucketExists(
+  targetBucket?: string,
+  options?: EnsureBucketOptions
+): Promise<EnsureBucketResult> {
+  const bucketName = (targetBucket || getSupabaseBucket()).trim() || DEFAULT_SUPABASE_STORAGE_BUCKET;
+
+  // If Supabase is not configured, exit gracefully without throwing
+  if (!isSupabaseConfigured() && !options?.client && (!isMockClient || !cachedClient)) {
+    return {
+      success: false,
+      bucket: bucketName,
+      created: false,
+      alreadyExisted: false,
+      isConfigured: false,
+      error: 'Supabase storage is not configured on this server.',
+      code: 'STORAGE_UNCONFIGURED',
+      status: 503
+    };
+  }
+
+  const client = options?.client || getSupabaseServerClient();
+  if (!client || !client.storage) {
+    return {
+      success: false,
+      bucket: bucketName,
+      created: false,
+      alreadyExisted: false,
+      isConfigured: false,
+      error: 'Supabase client storage is unavailable.',
+      code: 'CLIENT_UNAVAILABLE',
+      status: 503
+    };
+  }
+
+  // If already verified during this server lifecycle and not forced, return cached status
+  if (!options?.forceRefresh && verifiedBuckets.has(bucketName)) {
+    return {
+      success: true,
+      bucket: bucketName,
+      created: false,
+      alreadyExisted: true,
+      isConfigured: true,
+      error: null
+    };
+  }
+
+  // Deduplicate concurrent in-flight provisioning calls for the same bucket
+  if (!options?.forceRefresh && inFlightBucketPromises.has(bucketName)) {
+    return inFlightBucketPromises.get(bucketName)!;
+  }
+
+  const provisioningPromise = (async (): Promise<EnsureBucketResult> => {
+    try {
+      // 1. Check if bucket exists
+      let bucketFound = false;
+      if (typeof client.storage.getBucket === 'function') {
+        const { data: bucketData, error: getErr } = await client.storage.getBucket(bucketName);
+        if (!getErr && bucketData && (bucketData.name === bucketName || bucketData.id === bucketName)) {
+          bucketFound = true;
+        }
+      } else if (typeof client.storage.listBuckets === 'function') {
+        const { data: buckets, error: listErr } = await client.storage.listBuckets();
+        if (!listErr && Array.isArray(buckets) && buckets.some((b: any) => b?.name === bucketName || b?.id === bucketName)) {
+          bucketFound = true;
+        }
+      }
+
+      if (bucketFound) {
+        verifiedBuckets.add(bucketName);
+        return {
+          success: true,
+          bucket: bucketName,
+          created: false,
+          alreadyExisted: true,
+          isConfigured: true,
+          error: null
+        };
+      }
+
+      // 2. Bucket is missing: create it as PRIVATE ({ public: false })
+      if (typeof client.storage.createBucket !== 'function') {
+        return {
+          success: false,
+          bucket: bucketName,
+          created: false,
+          alreadyExisted: false,
+          isConfigured: true,
+          error: 'Supabase createBucket method is not available on this client.',
+          code: 'METHOD_NOT_SUPPORTED',
+          status: 500
+        };
+      }
+
+      const { data: _createData, error: createErr } = await client.storage.createBucket(bucketName, {
+        public: false
+      });
+
+      if (createErr) {
+        const errMsg = createErr.message || String(createErr);
+        const errStatus = (createErr as any).status || (createErr as any).statusCode || 500;
+
+        // Handle race conditions: if bucket was created concurrently by another process
+        if (
+          /already exists|duplicate|conflict/i.test(errMsg) ||
+          errStatus === 409 ||
+          (errStatus === 400 && /exists/i.test(errMsg))
+        ) {
+          verifiedBuckets.add(bucketName);
+          return {
+            success: true,
+            bucket: bucketName,
+            created: false,
+            alreadyExisted: true,
+            isConfigured: true,
+            error: null
+          };
+        }
+
+        return {
+          success: false,
+          bucket: bucketName,
+          created: false,
+          alreadyExisted: false,
+          isConfigured: true,
+          error: errMsg,
+          code: createErr.name || 'BUCKET_CREATION_FAILED',
+          status: errStatus
+        };
+      }
+
+      verifiedBuckets.add(bucketName);
+      return {
+        success: true,
+        bucket: bucketName,
+        created: true,
+        alreadyExisted: false,
+        isConfigured: true,
+        error: null
+      };
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const errStatus = err?.status || err?.statusCode || 500;
+      return {
+        success: false,
+        bucket: bucketName,
+        created: false,
+        alreadyExisted: false,
+        isConfigured: true,
+        error: errMsg,
+        code: err?.code || 'PROVISIONING_EXCEPTION',
+        status: errStatus
+      };
+    } finally {
+      inFlightBucketPromises.delete(bucketName);
+    }
+  })();
+
+  inFlightBucketPromises.set(bucketName, provisioningPromise);
+  return provisioningPromise;
+}
+
 /**
  * Resets the cached singleton client (used in test suites or dynamic reloads).
  */
@@ -194,6 +393,7 @@ export function resetSupabaseClientForTesting(): void {
   lastUrl = null;
   lastKey = null;
   isMockClient = false;
+  resetBucketProvisioningForTesting();
 }
 
 /**

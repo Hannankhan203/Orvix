@@ -81,6 +81,10 @@ import {
   MAX_CHAT_REQUEST_BYTES,
   MAX_VISION_IMAGE_BYTES
 } from './src/services/attachmentStorageService.js';
+import {
+  ensureSupabaseBucketExists,
+  isSupabaseConfigured
+} from './server/supabaseClient.ts';
 import type {
   DocumentData,
   PreparedDocumentContext,
@@ -320,6 +324,19 @@ async function startServer() {
   // Attach authenticated WebSocket voice streaming server
   setupVoiceWebSocketServer(httpServer);
 
+  // Idempotently verify or auto-provision Supabase storage bucket without blocking server listening
+  if (isSupabaseConfigured()) {
+    void ensureSupabaseBucketExists().then((res) => {
+      if (res.created) {
+        console.log(`[Supabase] Auto-provisioned private storage bucket '${res.bucket}'.`);
+      } else if (res.alreadyExisted) {
+        console.log(`[Supabase] Verified storage bucket '${res.bucket}' is ready.`);
+      }
+    }).catch((err) => {
+      console.warn('[Supabase] Non-fatal bucket provisioning notice:', err?.message || err);
+    });
+  }
+
   // Eliminate artificial HTTP timeouts to allow long-running streams (60s, 90s, 5m+)
   httpServer.timeout = 0;
   httpServer.requestTimeout = 0;
@@ -380,7 +397,8 @@ export {
   generateSimulatedResponse,
   setupVoiceWebSocketServer,
   setCustomImageGeneratorForTesting,
-  resetImageGenerationForTesting
+  resetImageGenerationForTesting,
+  ensureSupabaseBucketExists
 };
 
 export type {
