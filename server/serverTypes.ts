@@ -94,13 +94,14 @@ export type AIDiagnosticCategory =
   | 'provider network failure'
   | 'streaming failure'
   | 'attachment/context processing failure'
-  | 'internal server error';
+  | 'internal server error'
+  | 'image generation error';
 
 export interface DiagnosticLogData {
   category: AIDiagnosticCategory;
   provider: string;
   model?: string;
-  phase?: 'validation' | 'configuration' | 'attachment' | 'pre-stream' | 'mid-stream' | 'non-streaming' | 'dispatch';
+  phase?: 'validation' | 'configuration' | 'attachment' | 'pre-stream' | 'mid-stream' | 'non-streaming' | 'dispatch' | 'generation';
   attempt?: number;
   maxAttempts?: number;
   upstreamStatus?: number;
@@ -180,6 +181,8 @@ export interface UploadedFileRecord {
   id: string;
   originalName: string;
   diskFilename: string;
+  filename?: string;
+  path?: string;
   mimeType: string;
   extension: string;
   size: number;
