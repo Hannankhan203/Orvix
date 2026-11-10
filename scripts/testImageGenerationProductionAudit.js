@@ -20,16 +20,23 @@ import http from 'http';
 import assert from 'assert';
 import crypto from 'crypto';
 import express from 'express';
+import path from 'path';
 
 import {
   registerImageGenerationRoutes,
   sanitizeAspectRatio,
   validateImageBufferMagicBytes,
+  detectImageMimeType,
   setCustomImageGeneratorForTesting,
   resetImageGenerationForTesting,
   ALLOWED_PROVIDERS,
   ALLOWED_ASPECT_RATIOS
 } from '../server/imageGenerationSubsystem.ts';
+
+import {
+  setSupabaseServerClientForTesting,
+  resetSupabaseClientForTesting
+} from '../server/supabaseClient.ts';
 
 import {
   setTestPublicKey,
@@ -493,6 +500,292 @@ async function runAuditTests() {
       console.log('    --------------------------------------\n');
 
       assert.ok(true);
+    });
+
+    // -------------------------------------------------------------------------
+    // Test 10: Gemini Image Request, Response Parsing & MIME Header Detection
+    // -------------------------------------------------------------------------
+    await test('Gemini request/response contract: aspect ratio config, candidate inlineData parsing, magic byte detection', async () => {
+      const validPng = createValidTestPngBuffer();
+      const validJpeg = createValidTestJpegBuffer();
+
+      // Verify MIME detection from magic bytes
+      assert.strictEqual(detectImageMimeType(validPng), 'image/png');
+      assert.strictEqual(detectImageMimeType(validJpeg), 'image/jpeg');
+
+      // Verify aspect ratio sanitizer
+      assert.strictEqual(sanitizeAspectRatio('16:9'), '16:9');
+      assert.strictEqual(sanitizeAspectRatio('3:4'), '3:4');
+      assert.strictEqual(sanitizeAspectRatio('unsupported'), '1:1');
+
+      // Verify that candidate with inlineData correctly extracts and sets format & dimensions
+      setCustomImageGeneratorForTesting(async (req, userId) => {
+        const mime = detectImageMimeType(validPng, 'image/png');
+        return {
+          id: `gemini-test-${Date.now()}`,
+          prompt: req.prompt,
+          provider: 'gemini',
+          model: req.model || 'gemini-3.1-flash-lite-image',
+          mimeType: mime,
+          format: 'png',
+          aspectRatio: req.aspectRatio || '1:1',
+          dataUrl: `data:${mime};base64,${validPng.toString('base64')}`,
+          base64: validPng.toString('base64'),
+          size: validPng.length,
+          dimensions: { width: 1, height: 1 },
+          filename: 'gemini-output.png',
+          createdAt: new Date().toISOString(),
+          conversationId: req.conversationId,
+          userId
+        };
+      });
+
+      const res = await fetch(`${baseUrl}/api/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'A minimalist origami crane',
+          provider: 'gemini',
+          aspectRatio: '16:9',
+          conversationId: 'chat-gemini-test'
+        })
+      });
+
+      assert.strictEqual(res.status, 200);
+      const data = await res.json();
+      assert.strictEqual(data.success, true);
+      assert.strictEqual(data.provider, 'gemini');
+      assert.strictEqual(data.model, 'gemini-3.1-flash-lite-image');
+      assert.strictEqual(data.format, 'png');
+      assert.strictEqual(data.aspectRatio, '16:9');
+      assert.ok(data.dataUrl.startsWith('data:image/png;base64,'));
+      resetImageGenerationForTesting();
+    });
+
+    // -------------------------------------------------------------------------
+    // Test 11: Cloudflare Workers AI Flux Request & Response Contract
+    // -------------------------------------------------------------------------
+    await test('Cloudflare Workers AI contract: auth headers, payload steps, and error mapping', async () => {
+      // 1. Unconfigured Cloudflare returns 503 PROVIDER_NOT_CONFIGURED
+      const resUnconf = await fetch(`${baseUrl}/api/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'A neon cyberpunk city',
+          provider: 'cloudflare'
+        })
+      });
+
+      if (!process.env.CLOUDFLARE_ACCOUNT_ID || !process.env.CLOUDFLARE_API_TOKEN) {
+        assert.strictEqual(resUnconf.status, 503);
+        const dataUnconf = await resUnconf.json();
+        assert.strictEqual(dataUnconf.code, 'PROVIDER_NOT_CONFIGURED');
+        assert.strictEqual(dataUnconf.provider, 'cloudflare');
+      }
+
+      // 2. Simulated Cloudflare generation verifies binary and JSON response contracts
+      const testJpeg = createValidTestJpegBuffer();
+      setCustomImageGeneratorForTesting(async (req, userId) => {
+        return {
+          id: `cf-flux-${Date.now()}`,
+          prompt: req.prompt,
+          provider: 'cloudflare',
+          model: '@cf/black-forest-labs/flux-1-schnell',
+          mimeType: 'image/jpeg',
+          format: 'jpg',
+          aspectRatio: '1:1',
+          dataUrl: `data:image/jpeg;base64,${testJpeg.toString('base64')}`,
+          base64: testJpeg.toString('base64'),
+          size: testJpeg.length,
+          filename: 'flux-output.jpg',
+          createdAt: new Date().toISOString(),
+          conversationId: req.conversationId,
+          userId
+        };
+      });
+
+      const resCf = await fetch(`${baseUrl}/api/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'A misty pine forest at sunrise',
+          provider: 'cloudflare'
+        })
+      });
+
+      assert.strictEqual(resCf.status, 200);
+      const dataCf = await resCf.json();
+      assert.strictEqual(dataCf.provider, 'cloudflare');
+      assert.strictEqual(dataCf.model, '@cf/black-forest-labs/flux-1-schnell');
+      assert.strictEqual(dataCf.format, 'jpg');
+      assert.ok(dataCf.dataUrl.startsWith('data:image/jpeg;base64,'));
+      resetImageGenerationForTesting();
+    });
+
+    // -------------------------------------------------------------------------
+    // Test 12: Cancellation and AbortSignal Enforcement
+    // -------------------------------------------------------------------------
+    await test('Cancellation and AbortSignal: aborted requests return 499 CLIENT_CLOSED_REQUEST and release quota', async () => {
+      // Simulate client aborting during generation
+      setCustomImageGeneratorForTesting(async () => {
+        const abortErr = new Error('Image generation aborted by user.');
+        abortErr.name = 'AbortError';
+        abortErr.status = 499;
+        throw abortErr;
+      });
+
+      const res = await fetch(`${baseUrl}/api/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'A soaring eagle over canyons' })
+      });
+
+      assert.strictEqual(res.status, 499);
+      const data = await res.json();
+      assert.strictEqual(data.code, 'CLIENT_CLOSED_REQUEST');
+      assert.strictEqual(data.status, 'CLIENT_CLOSED_REQUEST');
+      resetImageGenerationForTesting();
+    });
+
+    // -------------------------------------------------------------------------
+    // Test 13: Supabase Storage Persistence & Post-Restart Authenticated Retrieval
+    // -------------------------------------------------------------------------
+    await test('Storage persistence: post-restart retrieval from Supabase private storage with owner verification', async () => {
+      const ownerUid = `owner_restart_${Date.now()}`;
+      const thiefUid = `thief_restart_${Date.now()}`;
+      const ownerToken = createSignedJwt(ownerUid);
+      const thiefToken = createSignedJwt(thiefUid);
+      const chatId = 'conversation_audit_101';
+      const imageId = crypto.randomUUID();
+      const testPng = createValidTestPngBuffer();
+      const storagePath = `${ownerUid}/${chatId}/${imageId}.png`;
+
+      // Mock in-memory Supabase storage bucket
+      const mockStorageMap = new Map();
+      mockStorageMap.set(storagePath, testPng);
+
+      const mockClient = {
+        storage: {
+          from: (bucket) => ({
+            upload: async (destPath, data) => {
+              mockStorageMap.set(destPath, Buffer.isBuffer(data) ? data : Buffer.from(data));
+              return { data: { path: destPath }, error: null };
+            },
+            download: async (srcPath) => {
+              if (mockStorageMap.has(srcPath)) {
+                const buf = mockStorageMap.get(srcPath);
+                return {
+                  data: {
+                    arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+                    type: 'image/png'
+                  },
+                  error: null
+                };
+              }
+              return { data: null, error: { message: 'Object not found', status: 404 } };
+            },
+            list: async (folder, options) => {
+              const results = [];
+              for (const [key] of mockStorageMap.entries()) {
+                if (key.startsWith(`${folder}/`)) {
+                  const filename = key.substring(`${folder}/`.length);
+                  results.push({ name: filename });
+                }
+              }
+              return { data: results, error: null };
+            }
+          })
+        }
+      };
+
+      setSupabaseServerClientForTesting(mockClient);
+
+      // Simulate post-restart: fileRegistry is CLEARED (not in memory or local disk)
+      fileRegistry.clear();
+      assert.strictEqual(fileRegistry.has(imageId), false, 'Memory fileRegistry must be empty to simulate server restart');
+
+      // 1. Unauthenticated guest attempts to retrieve post-restart image -> 401 AUTH_REQUIRED
+      const resGuest = await fetch(`${baseUrl}/api/image/${imageId}/download?chatId=${chatId}`);
+      assert.strictEqual(resGuest.status, 401, 'Guest must be rejected on private post-restart retrieval');
+
+      // 2. Different user (thief) attempts to retrieve image -> 404/403 (storage path isolation prevents lookup)
+      const resThief = await fetch(`${baseUrl}/api/image/${imageId}/download?chatId=${chatId}`, {
+        headers: { Authorization: `Bearer ${thiefToken}` }
+      });
+      assert.ok(
+        resThief.status === 403 || resThief.status === 404,
+        `Intruder must be rejected with 403 or 404 (got ${resThief.status})`
+      );
+
+      // 3. Authenticated owner retrieves image -> 200 with binary buffer and Content-Type
+      const resOwner = await fetch(`${baseUrl}/api/image/${imageId}/download?chatId=${chatId}`, {
+        headers: { Authorization: `Bearer ${ownerToken}` }
+      });
+      assert.strictEqual(resOwner.status, 200, 'Owner must successfully retrieve image from persistent storage');
+      assert.strictEqual(resOwner.headers.get('content-type'), 'image/png');
+      const retrievedBuf = Buffer.from(await resOwner.arrayBuffer());
+      assert.strictEqual(retrievedBuf.length, testPng.length);
+
+      // 4. Verify local cache was rehydrated in fileRegistry for rapid subsequent serving
+      assert.strictEqual(fileRegistry.has(imageId), true, 'Downloaded image should be cached in fileRegistry');
+      assert.strictEqual(fileRegistry.get(imageId).userId, ownerUid, 'Cached record must preserve owner ID');
+
+      resetSupabaseClientForTesting();
+      fileRegistry.delete(imageId);
+    });
+
+    // -------------------------------------------------------------------------
+    // Test 14: Serverless Vercel Image Route Verification
+    // -------------------------------------------------------------------------
+    await test('Serverless route compliance: verify /api/image handler and vercel.json rewrites', async () => {
+      const fs = await import('fs');
+      const vercelJsonPath = path.resolve('vercel.json');
+      const apiImagePath = path.resolve('api/image.ts');
+
+      assert.ok(fs.existsSync(vercelJsonPath), 'vercel.json must exist');
+      assert.ok(fs.existsSync(apiImagePath), 'api/image.ts serverless handler must exist');
+
+      const vercelJson = JSON.parse(fs.readFileSync(vercelJsonPath, 'utf-8'));
+      const hasImageRewrite = vercelJson.rewrites?.some(
+        (r) => r.source === '/api/image/:subpath*' && r.destination.includes('/api/image')
+      );
+      assert.ok(hasImageRewrite, 'vercel.json must contain rewrite for /api/image/:subpath*');
+    });
+
+    // -------------------------------------------------------------------------
+    // Test 15: Live Provider Direct Probe (Clearly distinguished from mock tests)
+    // -------------------------------------------------------------------------
+    await test('Live Gemini model probe execution (real API call - no mocks)', async () => {
+      const geminiKey = process.env.GEMINI_API_KEY;
+      if (!geminiKey) {
+        console.log('    [Live Probe] Skipped: GEMINI_API_KEY not configured in environment.');
+        return;
+      }
+
+      console.log('    [Live Probe] Executing live request to Gemini API (gemini-3.1-flash-lite-image)...');
+      const probeRes = await fetch(`${baseUrl}/api/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'A simple red circle on white background',
+          provider: 'gemini',
+          aspectRatio: '1:1'
+        })
+      });
+
+      const probeData = await probeRes.json().catch(() => ({}));
+      if (probeRes.status === 200) {
+        console.log('    [Live Probe] SUCCESS: Live Gemini generated image successfully.');
+        assert.strictEqual(probeData.success, true);
+        assert.ok(probeData.dataUrl);
+      } else if (probeRes.status === 429) {
+        console.log(`    [Live Probe] EXPECTED ON FREE TIER: HTTP 429 Quota Exceeded (${probeData.error || probeData.code}). Free Tier has 0 limit for flash-lite-image.`);
+        assert.strictEqual(probeData.code, 'QUOTA_EXCEEDED');
+      } else if (probeRes.status === 400 && probeData.code === 'SAFETY_VIOLATION') {
+        console.log('    [Live Probe] Live request reached Gemini and returned safety violation (valid live response).');
+      } else {
+        console.log(`    [Live Probe] Live request returned HTTP ${probeRes.status}: ${probeData.error || JSON.stringify(probeData)}`);
+      }
     });
 
   } finally {

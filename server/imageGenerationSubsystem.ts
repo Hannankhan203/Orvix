@@ -34,8 +34,13 @@ import {
   findAttachmentPathInStorage,
   isValidPathSegment
 } from './supabaseStorageService.ts';
-import { isSupabaseConfigured, getSupabaseBucket } from './supabaseClient.ts';
+import { isSupabaseConfigured, getSupabaseBucket, getSupabaseServerClient } from './supabaseClient.ts';
 import { logAIDiagnostic } from './diagnosticLogger.ts';
+import type {
+  UploadedFileRecord,
+  AIDiagnosticCategory,
+  DiagnosticLogData
+} from './serverTypes.ts';
 
 export interface ImageGenerationRequest {
   prompt: string;
@@ -152,6 +157,39 @@ export function validateImageBufferMagicBytes(buffer: Buffer, mimeType: string):
 }
 
 /**
+ * Detects actual image MIME type by inspecting leading magic header bytes.
+ */
+export function detectImageMimeType(buffer: Buffer, fallbackMime = 'image/png'): string {
+  if (!buffer || buffer.length < 4) return fallbackMime;
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return 'image/png';
+  }
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+  return fallbackMime;
+}
+
+export const ALLOWED_GEMINI_IMAGE_MODELS = [
+  'gemini-3.1-flash-lite-image',
+  'gemini-nano-banana-2.1',
+  'gemini-3-pro-image'
+] as const;
+
+/**
  * Generates an image using Gemini's official @google/genai multimodal image model.
  */
 async function generateWithGemini(
@@ -165,7 +203,10 @@ async function generateWithGemini(
     throw new Error('Gemini API key is not configured.');
   }
 
-  const model = modelName || 'gemini-3.1-flash-lite-image';
+  const model =
+    modelName && (ALLOWED_GEMINI_IMAGE_MODELS as readonly string[]).includes(modelName)
+      ? modelName
+      : 'gemini-3.1-flash-lite-image';
 
   const ai = new GoogleGenAI({
     apiKey,
@@ -193,6 +234,7 @@ async function generateWithGemini(
       ]
     },
     config: {
+      abortSignal: signal,
       imageConfig: {
         aspectRatio: sanitizeAspectRatio(aspectRatio)
       }
@@ -219,9 +261,10 @@ async function generateWithGemini(
   const parts = candidate?.content?.parts ?? [];
   for (const part of parts) {
     if (part.inlineData?.data) {
-      const mime = part.inlineData.mimeType || 'image/png';
+      const declaredMime = part.inlineData.mimeType || 'image/png';
       const buf = Buffer.from(part.inlineData.data, 'base64');
-      validateImageBufferMagicBytes(buf, mime);
+      validateImageBufferMagicBytes(buf, declaredMime);
+      const mime = detectImageMimeType(buf, declaredMime);
       return { buffer: buf, mimeType: mime, modelUsed: model };
     }
   }
@@ -326,7 +369,8 @@ async function generateWithCloudflare(
     if (json?.result?.image) {
       const buf = Buffer.from(json.result.image, 'base64');
       validateImageBufferMagicBytes(buf, 'image/png');
-      return { buffer: buf, mimeType: 'image/png', modelUsed: model };
+      const mime = detectImageMimeType(buf, 'image/png');
+      return { buffer: buf, mimeType: mime, modelUsed: model };
     }
     throw new Error('Cloudflare returned JSON without an image payload.');
   }
@@ -334,7 +378,8 @@ async function generateWithCloudflare(
   const arrayBuf = await response.arrayBuffer();
   const buffer = Buffer.from(arrayBuf);
   validateImageBufferMagicBytes(buffer, contentType || 'image/png');
-  return { buffer, mimeType: contentType || 'image/png', modelUsed: model };
+  const mime = detectImageMimeType(buffer, contentType || 'image/png');
+  return { buffer, mimeType: mime, modelUsed: model };
 }
 
 /**
@@ -506,10 +551,11 @@ export function registerImageGenerationRoutes(app: express.Express): void {
             reservedSlot = null;
           }
           guard.cleanup();
+          const isAbort = testErr.name === 'AbortError' || testErr.status === 499;
           return res.status(testErr.status || 500).json({
             error: testErr.message || 'Image generation failed',
-            code: testErr.code || 'GENERATION_FAILED',
-            status: testErr.statusText || 'ERROR'
+            code: isAbort ? 'CLIENT_CLOSED_REQUEST' : testErr.code || 'GENERATION_FAILED',
+            status: isAbort ? 'CLIENT_CLOSED_REQUEST' : testErr.statusText || 'ERROR'
           });
         }
       }
@@ -576,7 +622,13 @@ export function registerImageGenerationRoutes(app: express.Express): void {
         );
       } else if (rawProvider === 'cloudflare') {
         effectiveProvider = 'cloudflare';
-        generated = await generateWithCloudflare(trimmedPrompt, model, guard);
+        const cfCtrl = new AbortController();
+        guard.registerController(cfCtrl);
+        try {
+          generated = await generateWithCloudflare(trimmedPrompt, model, guard, cfCtrl.signal);
+        } finally {
+          guard.unregisterController(cfCtrl);
+        }
       } else {
         // 'auto' mode: Prefer Gemini, fallback to Cloudflare if Gemini encounters quota/transient failure
         if (geminiAvailable) {
@@ -587,23 +639,43 @@ export function registerImageGenerationRoutes(app: express.Express): void {
               { provider: 'gemini', headersTimeoutMs: 60000 }
             );
           } catch (geminiErr: any) {
+            // Never fall back if request was aborted or cancelled by client
+            if (
+              geminiErr.name === 'AbortError' ||
+              geminiErr.status === 499 ||
+              guard.isClientClosed()
+            ) {
+              throw geminiErr;
+            }
             if (cloudflareAvailable) {
               console.warn('[ImageGeneration] Gemini generation failed in auto mode, falling back to Cloudflare Workers AI:', geminiErr?.message);
               effectiveProvider = 'cloudflare';
-              generated = await generateWithCloudflare(trimmedPrompt, model, guard);
+              const cfCtrl = new AbortController();
+              guard.registerController(cfCtrl);
+              try {
+                generated = await generateWithCloudflare(trimmedPrompt, model, guard, cfCtrl.signal);
+              } finally {
+                guard.unregisterController(cfCtrl);
+              }
             } else {
               throw geminiErr;
             }
           }
         } else {
           effectiveProvider = 'cloudflare';
-          generated = await generateWithCloudflare(trimmedPrompt, model, guard);
+          const cfCtrl = new AbortController();
+          guard.registerController(cfCtrl);
+          try {
+            generated = await generateWithCloudflare(trimmedPrompt, model, guard, cfCtrl.signal);
+          } finally {
+            guard.unregisterController(cfCtrl);
+          }
         }
       }
 
       // 7. Structure Output and Persist to Supabase and Local Cache
       const imgBuffer = generated.buffer;
-      const mime = generated.mimeType || 'image/png';
+      const mime = detectImageMimeType(imgBuffer, generated.mimeType || 'image/png');
       const ext = mime.includes('jpeg') || mime.includes('jpg') ? '.jpg' : mime.includes('webp') ? '.webp' : '.png';
       const format = ext.replace('.', '');
       const imageId = crypto.randomUUID();
@@ -653,7 +725,7 @@ export function registerImageGenerationRoutes(app: express.Express): void {
         const diskPath = path.join(uploadDir, `${imageId}${ext}`);
         fs.writeFileSync(diskPath, imgBuffer);
 
-        fileRegistry.set(imageId, {
+        const generatedRecord: UploadedFileRecord = {
           id: imageId,
           originalName: filename,
           diskFilename: `${imageId}${ext}`,
@@ -671,9 +743,11 @@ export function registerImageGenerationRoutes(app: express.Express): void {
           storagePath,
           storageBucket,
           path: diskPath,
+          buffer: imgBuffer,
           conversationId: sanitizedChatId,
           userId: userId || undefined
-        });
+        };
+        fileRegistry.set(imageId, generatedRecord);
       } catch (saveErr) {
         console.warn('[ImageGeneration] Disk cache warning:', saveErr);
       }
@@ -727,7 +801,7 @@ export function registerImageGenerationRoutes(app: express.Express): void {
       }
 
       const errMsg = err?.message || String(err);
-      logAIDiagnostic({
+      const diagnosticPayload: DiagnosticLogData = {
         category: 'image generation error',
         provider: (req.body?.provider as string) || 'gemini',
         phase: 'generation',
@@ -735,13 +809,27 @@ export function registerImageGenerationRoutes(app: express.Express): void {
         upstreamErrorCode: err.code || 'IMAGE_GENERATION_FAILED',
         sanitizedMessage: errMsg,
         willRetry: false
-      });
+      };
+      logAIDiagnostic(diagnosticPayload);
 
-      if (errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota') || errMsg.includes('Free Tier') || err.status === 429) {
+      if (
+        errMsg.includes('RESOURCE_EXHAUSTED') ||
+        errMsg.includes('quota') ||
+        errMsg.includes('Free Tier') ||
+        errMsg.includes('rate limit') ||
+        err.status === 429 ||
+        err.code === 'QUOTA_EXCEEDED' ||
+        err.code === 'RATE_LIMITED'
+      ) {
+        const providerName =
+          (req.body?.provider === 'cloudflare' || err?.provider === 'cloudflare')
+            ? 'Cloudflare Workers AI'
+            : 'Gemini';
         return res.status(429).json({
-          error: 'Gemini image generation quota exceeded. Configure a billing-enabled API key or use Cloudflare Workers AI.',
+          error: `${providerName} image generation quota or rate limit exceeded. Please configure billing or try again later.`,
           code: 'QUOTA_EXCEEDED',
           status: 'RESOURCE_EXHAUSTED',
+          provider: (req.body?.provider as string) || 'gemini',
           retryable: false
         });
       }
@@ -751,6 +839,7 @@ export function registerImageGenerationRoutes(app: express.Express): void {
           error: 'The requested prompt was blocked by AI safety policies. Please rephrase your prompt.',
           code: 'SAFETY_VIOLATION',
           status: 'BAD_REQUEST',
+          provider: (req.body?.provider as string) || 'gemini',
           retryable: false
         });
       }
@@ -763,11 +852,22 @@ export function registerImageGenerationRoutes(app: express.Express): void {
         });
       }
 
+      if (err.code === 'PROVIDER_AUTH_ERROR' || (err.status === 403 && !errMsg.includes('CORS'))) {
+        return res.status(403).json({
+          error: errMsg || 'Provider authentication failed. Check your API credentials.',
+          code: 'PROVIDER_AUTH_ERROR',
+          status: 'FORBIDDEN',
+          provider: (req.body?.provider as string) || 'gemini',
+          retryable: false
+        });
+      }
+
       if (err.isUpstreamHeadersTimeout || err.code === 'DEADLINE_EXCEEDED') {
         return res.status(504).json({
           error: 'Image generation timed out waiting for provider response. Please try again.',
           code: 'DEADLINE_EXCEEDED',
           status: 'GATEWAY_TIMEOUT',
+          provider: (req.body?.provider as string) || 'gemini',
           retryable: true
         });
       }
@@ -776,6 +876,7 @@ export function registerImageGenerationRoutes(app: express.Express): void {
         error: errMsg || 'An unexpected error occurred while generating the image.',
         code: err.code || 'GENERATION_FAILED',
         status: 'SERVER_ERROR',
+        provider: (req.body?.provider as string) || 'gemini',
         retryable: true
       });
     }
@@ -794,7 +895,7 @@ export function registerImageGenerationRoutes(app: express.Express): void {
     }
 
     const rawChatId = (typeof req.query.chatId === 'string' ? req.query.chatId : '').trim() || 'default';
-    const record = fileRegistry.get(fileId);
+    const record: UploadedFileRecord | undefined = fileRegistry.get(fileId);
 
     if (record) {
       let authenticatedUserId: string | null = null;
@@ -888,7 +989,29 @@ export function registerImageGenerationRoutes(app: express.Express): void {
       });
     }
 
-    const lookup = await findAttachmentPathInStorage(authenticatedUserId, rawChatId, fileId);
+    let lookup = await findAttachmentPathInStorage(authenticatedUserId, rawChatId, fileId);
+    if (!lookup.found && rawChatId === 'default') {
+      const client = getSupabaseServerClient();
+      if (client) {
+        try {
+          const { data: chatFolders } = await client.storage
+            .from(getSupabaseBucket())
+            .list(authenticatedUserId, { limit: 100 });
+          if (Array.isArray(chatFolders)) {
+            for (const folder of chatFolders) {
+              if (folder.name && folder.name !== 'default') {
+                const subLookup = await findAttachmentPathInStorage(authenticatedUserId, folder.name, fileId);
+                if (subLookup.found && subLookup.path) {
+                  lookup = subLookup;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
     if (!lookup.found || !lookup.path) {
       return res.status(404).json({
         error: 'Image file not found in persistent storage.',
@@ -923,6 +1046,32 @@ export function registerImageGenerationRoutes(app: express.Express): void {
       'Content-Disposition',
       `${forceDownload ? 'attachment' : 'inline'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
     );
+
+    // Cache locally in fileRegistry so subsequent requests within this server container are fast
+    try {
+      const cachedRecord: UploadedFileRecord = {
+        id: fileId,
+        originalName: safeFilename,
+        diskFilename: `${fileId}${ext}`,
+        filename: safeFilename,
+        mimeType,
+        extension: ext,
+        size: downloadResult.data.length,
+        formattedSize: `${Math.round(downloadResult.data.length / 1024)} KB`,
+        status: 'ready',
+        uploadedAt: new Date().toISOString(),
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+        isImage: true,
+        storageProvider: 'supabase',
+        storagePath: lookup.path,
+        storageBucket: getSupabaseBucket(),
+        path: lookup.path,
+        buffer: downloadResult.data,
+        conversationId: rawChatId,
+        userId: authenticatedUserId
+      };
+      fileRegistry.set(fileId, cachedRecord);
+    } catch (_) {}
 
     return res.send(downloadResult.data);
   };

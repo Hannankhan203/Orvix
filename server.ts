@@ -205,7 +205,10 @@ app.get(['/api/config', '/config'], (_req, res) => {
       whisperConfigured: false,
       whisperProvider: null,
       websocketStreamingSupported: false,
-      websocketStreamingEndpoint: null
+      websocketStreamingEndpoint: null,
+      imageGenerationSupported: false,
+      imageGenerationProviders: [],
+      imageGenerationDefaultProvider: null
     });
   }
 });
