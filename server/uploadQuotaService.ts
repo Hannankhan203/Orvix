@@ -346,27 +346,113 @@ export async function resolveUploadIdentity(req: express.Request): Promise<Quota
  * Allows simulating multiple concurrent serverless instances sharing a single database.
  */
 interface StoredDoc {
-  data: QuotaRecord;
+  data: any;
   version: number;
 }
 
 const sharedInMemoryFirestoreStore = new Map<string, StoredDoc>();
 
+export function getSharedInMemoryFirestoreStore(): Map<string, StoredDoc> {
+  return sharedInMemoryFirestoreStore;
+}
+
 /**
  * Creates an in-memory Firestore transaction adapter implementing the official
- * Firestore transaction interface with optimistic concurrency control and retries.
+ * Firestore transaction interface with optimistic concurrency control, document operations,
+ * and collection querying.
  */
 export function createSimulatedFirestoreInstance(): any {
   return {
     collection(colName: string) {
+      const createQuery = (filters: Array<{ field: string; op: string; value: any }> = []) => ({
+        where(field: string, op: string, value: any) {
+          return createQuery([...filters, { field, op, value }]);
+        },
+        async get() {
+          const prefix = `${colName}/`;
+          const docs: any[] = [];
+          for (const [path, stored] of sharedInMemoryFirestoreStore.entries()) {
+            if (path.startsWith(prefix)) {
+              const docId = path.slice(prefix.length);
+              if (!docId.includes('/')) {
+                const data = JSON.parse(JSON.stringify(stored.data));
+                let matches = true;
+                for (const f of filters) {
+                  const val = data?.[f.field];
+                  if (f.op === '==' && val !== f.value) matches = false;
+                  else if (f.op === '<=' && !(val <= f.value)) matches = false;
+                  else if (f.op === '>=' && !(val >= f.value)) matches = false;
+                  else if (f.op === '<' && !(val < f.value)) matches = false;
+                  else if (f.op === '>' && !(val > f.value)) matches = false;
+                  else if (f.op === 'in' && Array.isArray(f.value) && !f.value.includes(val)) matches = false;
+                }
+                if (matches) {
+                  docs.push({
+                    exists: true,
+                    id: docId,
+                    path,
+                    ref: { id: docId, path, parent: { id: colName } },
+                    data: () => data
+                  });
+                }
+              }
+            }
+          }
+          return {
+            docs,
+            empty: docs.length === 0,
+            size: docs.length
+          };
+        }
+      });
+
+      const queryObj = createQuery();
+
       return {
+        ...queryObj,
         doc(docId: string) {
           const docPath = `${colName}/${docId}`;
-          return {
+          const docRef = {
             id: docId,
             path: docPath,
-            parent: { id: colName }
+            parent: { id: colName },
+            async get() {
+              const existing = sharedInMemoryFirestoreStore.get(docPath);
+              if (!existing) {
+                return {
+                  exists: false,
+                  id: docId,
+                  path: docPath,
+                  ref: docRef,
+                  data: () => undefined
+                };
+              }
+              return {
+                exists: true,
+                id: docId,
+                path: docPath,
+                ref: docRef,
+                data: () => JSON.parse(JSON.stringify(existing.data))
+              };
+            },
+            async set(data: any, options: { merge?: boolean } = {}) {
+              const current = sharedInMemoryFirestoreStore.get(docPath);
+              const merged = options?.merge && current
+                ? { ...current.data, ...JSON.parse(JSON.stringify(data)) }
+                : JSON.parse(JSON.stringify(data));
+              const nextVersion = (current ? current.version : 0) + 1;
+              sharedInMemoryFirestoreStore.set(docPath, {
+                data: merged,
+                version: nextVersion
+              });
+              return { writeTime: Date.now() };
+            },
+            async delete() {
+              sharedInMemoryFirestoreStore.delete(docPath);
+              return { writeTime: Date.now() };
+            }
           };
+          return docRef;
         }
       };
     },
@@ -374,7 +460,8 @@ export function createSimulatedFirestoreInstance(): any {
       const maxRetries = 10;
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         const readVersions = new Map<string, number>();
-        const pendingMutations = new Map<string, QuotaRecord>();
+        const pendingMutations = new Map<string, any>();
+        const deletedInTransaction = new Set<string>();
 
         const transaction = {
           async get(docRef: any) {
@@ -386,6 +473,7 @@ export function createSimulatedFirestoreInstance(): any {
               return {
                 exists: false,
                 id: docRef.id,
+                path: docRef.path,
                 ref: docRef,
                 data: () => undefined
               };
@@ -394,12 +482,14 @@ export function createSimulatedFirestoreInstance(): any {
             return {
               exists: true,
               id: docRef.id,
+              path: docRef.path,
               ref: docRef,
               data: () => JSON.parse(JSON.stringify(existing.data))
             };
           },
           set(docRef: any, data: any, options: { merge?: boolean } = {}) {
             const path = docRef.path;
+            deletedInTransaction.delete(path);
             if (options.merge) {
               const current = pendingMutations.get(path) ||
                 (sharedInMemoryFirestoreStore.has(path)
@@ -411,8 +501,12 @@ export function createSimulatedFirestoreInstance(): any {
             }
             return transaction;
           },
+          update(docRef: any, data: any) {
+            return this.set(docRef, data, { merge: true });
+          },
           delete(docRef: any) {
             pendingMutations.delete(docRef.path);
+            deletedInTransaction.add(docRef.path);
             return transaction;
           }
         };
@@ -438,14 +532,19 @@ export function createSimulatedFirestoreInstance(): any {
             continue;
           }
 
-          // Commit mutations atomically
+          // Commit deletions and mutations atomically
+          for (const delPath of deletedInTransaction) {
+            sharedInMemoryFirestoreStore.delete(delPath);
+          }
           for (const [path, newData] of pendingMutations.entries()) {
-            const current = sharedInMemoryFirestoreStore.get(path);
-            const nextVersion = (current ? current.version : 0) + 1;
-            sharedInMemoryFirestoreStore.set(path, {
-              data: newData,
-              version: nextVersion
-            });
+            if (!deletedInTransaction.has(path)) {
+              const current = sharedInMemoryFirestoreStore.get(path);
+              const nextVersion = (current ? current.version : 0) + 1;
+              sharedInMemoryFirestoreStore.set(path, {
+                data: newData,
+                version: nextVersion
+              });
+            }
           }
 
           return result;

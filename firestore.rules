@@ -204,6 +204,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Internal server-side direct upload tickets: public client read and write strictly denied
+    match /uploadTickets/{ticketId} {
+      allow read, write: if false;
+    }
+
     // Default deny all other paths
     match /{document=**} {
       allow read, write: if false;

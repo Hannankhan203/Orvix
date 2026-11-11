@@ -675,15 +675,15 @@ async function runAllTests() {
       key: `auth_${hashedUid}`
     };
 
+    const t0 = new Date('2026-11-09T12:00:00.000Z');
+    setCustomDateHookForTesting(() => t0);
+
     // 1. Commit 4 uploads so 1 slot remains
     for (let i = 1; i <= 4; i++) {
       const res = await reserveUploadSlot(identity);
       assert.strictEqual(res.allowed, true);
       await commitUploadSlot(res.reservation);
     }
-
-    const t0 = new Date('2026-11-09T12:00:00.000Z');
-    setCustomDateHookForTesting(() => t0);
 
     // 2. Slow upload A reserves slot 5 at T=0
     const slowReserveA = await reserveUploadSlot(identity);

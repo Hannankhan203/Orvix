@@ -523,53 +523,33 @@ export const fileRegistry = new Map<string, UploadedFileRecord>();
 // Conversation to file IDs association mapping (strictly isolates documents per conversation)
 export const conversationDocuments = new Map<string, Set<string>>();
 
-export interface PendingDirectUploadTicket {
-  attachmentId: string;
-  userId: string;
-  chatId: string;
-  storagePath: string;
-  bucket: string;
-  fileName: string;
-  extension: string;
-  mimeType: string;
-  size: number;
-  quotaReservation: QuotaReservation;
-  expiresAt: number;
-  createdAt: number;
-  isPermanent?: boolean;
-}
+// Durable Direct-Upload Ticket Service integration (ORVIX-SUPABASE-FINAL-001)
+export {
+  pendingDirectUploads,
+  pruneExpiredDirectUploadTickets,
+  resetDirectUploadTicketsForTesting,
+  createDurableUploadTicket,
+  getDurableUploadTicket,
+  claimDirectUploadTicketForCompletion,
+  finalizeCompletedDirectUploadTicket,
+  failAndCleanupDurableUploadTicket,
+  cancelDurableUploadTicket,
+  opportunisticDirectUploadPrune,
+  type PendingDirectUploadTicket
+} from './directUploadTicketService.ts';
 
-// Map of pending direct uploads waiting for client completion
-export const pendingDirectUploads = new Map<string, PendingDirectUploadTicket>();
-
-/**
- * Sweeps expired or abandoned direct upload tickets, releasing quota slots
- * and removing any uncompleted objects from storage safely.
- */
-export async function pruneExpiredDirectUploadTickets(): Promise<number> {
-  const now = Date.now();
-  let pruned = 0;
-  for (const [attachmentId, ticket] of pendingDirectUploads.entries()) {
-    if (ticket.expiresAt <= now) {
-      pendingDirectUploads.delete(attachmentId);
-      pruned++;
-      try {
-        await releaseUploadSlot(ticket.quotaReservation);
-      } catch (_) {}
-      try {
-        await deleteAttachmentFromStorage(ticket.storagePath, {
-          requestingUserId: ticket.userId,
-          bucket: ticket.bucket
-        });
-      } catch (_) {}
-    }
-  }
-  return pruned;
-}
-
-export function resetDirectUploadTicketsForTesting(): void {
-  pendingDirectUploads.clear();
-}
+import {
+  pendingDirectUploads,
+  pruneExpiredDirectUploadTickets,
+  createDurableUploadTicket,
+  getDurableUploadTicket,
+  claimDirectUploadTicketForCompletion,
+  finalizeCompletedDirectUploadTicket,
+  failAndCleanupDurableUploadTicket,
+  cancelDurableUploadTicket,
+  opportunisticDirectUploadPrune,
+  type PendingDirectUploadTicket
+} from './directUploadTicketService.ts';
 
 /**
  * Automated lifecycle cleanup: Sweeps the temporary upload directory, registry,
@@ -1815,6 +1795,7 @@ export function registerUploadRoutes(app: express.Express) {
         : (ALLOWED_EXTENSIONS_MAP[ext]?.[0] || 'application/octet-stream');
 
     const ticket: PendingDirectUploadTicket = {
+      ticketId: attachmentId,
       attachmentId,
       userId: authenticatedUserId,
       chatId,
@@ -1827,9 +1808,11 @@ export function registerUploadRoutes(app: express.Express) {
       quotaReservation: quotaReservation.reservation,
       expiresAt: Date.now() + 15 * 60 * 1000,
       createdAt: Date.now(),
-      isPermanent: String(req.body?.isPermanent || req.body?.permanent || '').toLowerCase() === 'true'
+      isPermanent: String(req.body?.isPermanent || req.body?.permanent || '').toLowerCase() === 'true',
+      status: 'pending'
     };
-    pendingDirectUploads.set(attachmentId, ticket);
+    await createDurableUploadTicket(ticket);
+    opportunisticDirectUploadPrune();
 
     return res.status(200).json({
       success: true,
@@ -1871,37 +1854,18 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
 
-    const ticket = pendingDirectUploads.get(attachmentId);
-    if (!ticket) {
-      return res.status(404).json({
-        error: 'Upload ticket not found, expired, or already completed.',
-        code: 'TICKET_NOT_FOUND'
+    const claimResult = await claimDirectUploadTicketForCompletion(attachmentId, authenticatedUserId, chatId);
+    if (!claimResult.success) {
+      if (claimResult.isExpired && claimResult.ticket) {
+        await failAndCleanupDurableUploadTicket(claimResult.ticket, 'EXPIRED');
+      }
+      return res.status(claimResult.status).json({
+        error: claimResult.error,
+        code: claimResult.code
       });
     }
 
-    if (ticket.userId !== authenticatedUserId) {
-      return res.status(403).json({
-        error: 'Access denied: You cannot complete uploads belonging to another user.',
-        code: 'STORAGE_ACCESS_DENIED'
-      });
-    }
-
-    if (ticket.chatId !== chatId) {
-      return res.status(400).json({
-        error: 'Conversation ID mismatch.',
-        code: 'CONVERSATION_ID_MISMATCH'
-      });
-    }
-
-    // Verify ownership and structure of storage path
-    try {
-      assertUserOwnsStoragePath(ticket.storagePath, authenticatedUserId);
-    } catch (pathErr: any) {
-      return res.status(403).json({
-        error: pathErr?.message || 'Access denied: Invalid storage path.',
-        code: 'STORAGE_ACCESS_DENIED'
-      });
-    }
+    const ticket = claimResult.ticket!;
 
     // Verify object in Supabase Storage by downloading
     const downloadRes = await downloadAttachmentFromStorage(ticket.storagePath, {
@@ -1910,6 +1874,7 @@ export function registerUploadRoutes(app: express.Express) {
     });
 
     if (!downloadRes.success || !downloadRes.data) {
+      await failAndCleanupDurableUploadTicket(ticket, 'OBJECT_NOT_FOUND');
       return res.status(400).json({
         error: 'Uploaded object was not found in storage. Ensure the upload to the signed URL finished successfully before completing.',
         code: 'OBJECT_NOT_FOUND'
@@ -1920,9 +1885,7 @@ export function registerUploadRoutes(app: express.Express) {
     const verifiedSize = uploadedBuffer.length;
 
     if (verifiedSize === 0) {
-      await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
-      await releaseUploadSlot(ticket.quotaReservation);
-      pendingDirectUploads.delete(attachmentId);
+      await failAndCleanupDurableUploadTicket(ticket, 'EMPTY_FILE');
       return res.status(400).json({
         error: 'Uploaded file is empty (0 bytes).',
         code: 'EMPTY_FILE'
@@ -1930,9 +1893,7 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     if (verifiedSize > MAX_FILE_SIZE_BYTES) {
-      await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
-      await releaseUploadSlot(ticket.quotaReservation);
-      pendingDirectUploads.delete(attachmentId);
+      await failAndCleanupDurableUploadTicket(ticket, 'FILE_TOO_LARGE');
       return res.status(400).json({
         error: `Uploaded file exceeds maximum allowed size of ${formatBytes(MAX_FILE_SIZE_BYTES)}.`,
         code: 'FILE_TOO_LARGE'
@@ -1942,9 +1903,7 @@ export function registerUploadRoutes(app: express.Express) {
     const ext = '.' + ticket.extension.toLowerCase();
     const sigResult = await verifyFileSignature(uploadedBuffer, ext);
     if (!sigResult.valid) {
-      await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
-      await releaseUploadSlot(ticket.quotaReservation);
-      pendingDirectUploads.delete(attachmentId);
+      await failAndCleanupDurableUploadTicket(ticket, 'INVALID_FILE_SIGNATURE');
       return res.status(400).json({
         error: sigResult.reason || 'Invalid file signature.',
         code: 'INVALID_FILE_SIGNATURE'
@@ -1956,9 +1915,8 @@ export function registerUploadRoutes(app: express.Express) {
     try {
       committedStatus = await commitUploadSlot(ticket.quotaReservation);
     } catch (commitErr: any) {
+      await failAndCleanupDurableUploadTicket(ticket, 'QUOTA_EXCEEDED');
       if (commitErr?.code === 'QUOTA_EXCEEDED') {
-        await deleteAttachmentFromStorage(ticket.storagePath, { requestingUserId: authenticatedUserId, bucket: ticket.bucket });
-        pendingDirectUploads.delete(attachmentId);
         attachQuotaHeaders(
           res,
           {
@@ -2063,7 +2021,7 @@ export function registerUploadRoutes(app: express.Express) {
     }
     docSet.add(ticket.attachmentId);
 
-    pendingDirectUploads.delete(attachmentId);
+    await finalizeCompletedDirectUploadTicket(attachmentId);
 
     const serializedAtt = {
       id: record.id,
@@ -2102,18 +2060,12 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
     const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
-    const ticket = pendingDirectUploads.get(attachmentId);
-    if (ticket && ticket.userId === authStatus.userId) {
-      try {
-        await releaseUploadSlot(ticket.quotaReservation);
-      } catch (_) {}
-      try {
-        await deleteAttachmentFromStorage(ticket.storagePath, {
-          requestingUserId: authStatus.userId,
-          bucket: ticket.bucket
-        });
-      } catch (_) {}
-      pendingDirectUploads.delete(attachmentId);
+    const cancelRes = await cancelDurableUploadTicket(attachmentId, authStatus.userId);
+    if (!cancelRes.success && cancelRes.status === 403) {
+      return res.status(403).json({
+        error: cancelRes.error,
+        code: cancelRes.code
+      });
     }
     return res.status(200).json({ success: true, cancelled: true });
   });

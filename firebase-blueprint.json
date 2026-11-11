@@ -379,6 +379,83 @@
         }
       },
       "required": ["identityKey", "utcDay", "committed"]
+    },
+    "UploadTicket": {
+      "title": "UploadTicket",
+      "description": "Server-side durable upload ticket tracking direct-to-storage uploads. Client access is strictly denied.",
+      "type": "object",
+      "properties": {
+        "ticketId": {
+          "type": "string",
+          "description": "Unique identifier of the upload ticket matching attachmentId."
+        },
+        "attachmentId": {
+          "type": "string",
+          "description": "Unique identifier of the attachment."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase UID of the owner."
+        },
+        "chatId": {
+          "type": "string",
+          "description": "Conversation ID."
+        },
+        "storagePath": {
+          "type": "string",
+          "description": "Exact server-generated Supabase storage path."
+        },
+        "bucket": {
+          "type": "string",
+          "description": "Supabase storage bucket name."
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Sanitized original filename."
+        },
+        "extension": {
+          "type": "string",
+          "description": "File extension in uppercase."
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "Content MIME type."
+        },
+        "size": {
+          "type": "integer",
+          "description": "Permitted maximum file size in bytes."
+        },
+        "quotaReservation": {
+          "type": "object",
+          "description": "Quota reservation metadata for daily upload rate limiting."
+        },
+        "expiresAt": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds when the ticket expires."
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds of ticket issuance."
+        },
+        "isPermanent": {
+          "type": "boolean",
+          "description": "Whether the attachment should persist indefinitely."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "completing", "completed", "cancelled", "failed", "expired"],
+          "description": "Lifecycle state of the upload ticket."
+        },
+        "completedAt": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds when upload completed."
+        },
+        "lastUpdated": {
+          "type": "number",
+          "description": "Epoch timestamp in milliseconds of last state transition."
+        }
+      },
+      "required": ["ticketId", "attachmentId", "userId", "chatId", "storagePath", "bucket", "expiresAt", "createdAt", "status"]
     }
   },
   "firestore": {
@@ -417,6 +494,12 @@
         "$ref": "UploadQuota"
       },
       "description": "Server-side atomic upload quota tracking collection. Client access is strictly denied."
+    },
+    "/uploadTickets/{ticketId}": {
+      "schema": {
+        "$ref": "UploadTicket"
+      },
+      "description": "Server-side durable upload ticket collection tracking direct-to-storage uploads. Client access is strictly denied."
     }
   }
 }
