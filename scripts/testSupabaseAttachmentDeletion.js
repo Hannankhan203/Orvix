@@ -237,12 +237,15 @@ async function runAllTests() {
 
       const iterations = [];
       listHook = (folderPath, options) => {
-        iterations.push({
-          type: 'list',
-          offset: options.offset,
-          limit: options.limit,
-          storeSizeBefore: mockStorageStore.size
-        });
+        const cleanFolder = (folderPath || '').replace(/\/+$/, '');
+        if (cleanFolder === `${userAlice}/${testChatId}`) {
+          iterations.push({
+            type: 'list',
+            offset: options.offset,
+            limit: options.limit,
+            storeSizeBefore: mockStorageStore.size
+          });
+        }
         return undefined; // proceed with default mock behavior
       };
 
