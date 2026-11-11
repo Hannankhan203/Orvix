@@ -47,7 +47,8 @@ import {
   commitUploadSlot,
   releaseUploadSlot,
   getQuotaStatus,
-  getFirebaseServiceAccountCredentials
+  getFirebaseServiceAccountCredentials,
+  parseServiceAccountCredential
 } from '../server/uploadQuotaService.ts';
 
 import http from 'node:http';
@@ -1028,6 +1029,143 @@ async function runAllTests() {
       thrownError.message.includes('FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON') ||
         thrownError.message.includes('Failed to initialize Firebase Admin Firestore'),
       `Expected invalid JSON error mentioning FIREBASE_SERVICE_ACCOUNT_KEY, got: ${thrownError.message}`
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 23: parseServiceAccountCredential parses raw JSON for both variable names
+  // -------------------------------------------------------------------------
+  await test('parseServiceAccountCredential parses raw JSON for both variable names', async () => {
+    const rawJson = JSON.stringify({
+      type: 'service_account',
+      project_id: 'test-raw-json-project',
+      private_key: '-----BEGIN PRIVATE KEY-----\nMIIE...',
+      client_email: 'test@test-raw-json-project.iam.gserviceaccount.com'
+    });
+
+    const parsed1 = parseServiceAccountCredential(rawJson, 'FIREBASE_SERVICE_ACCOUNT');
+    assert.ok(parsed1);
+    assert.strictEqual(parsed1.type, 'service_account');
+    assert.strictEqual(parsed1.project_id, 'test-raw-json-project');
+
+    const parsed2 = parseServiceAccountCredential(rawJson, 'FIREBASE_SERVICE_ACCOUNT_KEY');
+    assert.ok(parsed2);
+    assert.strictEqual(parsed2.type, 'service_account');
+    assert.strictEqual(parsed2.project_id, 'test-raw-json-project');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 24: parseServiceAccountCredential parses Base64-encoded JSON (including ewog...)
+  // -------------------------------------------------------------------------
+  await test('parseServiceAccountCredential parses Base64-encoded JSON beginning with ewog', async () => {
+    // Formatted JSON with newline and spaces encodes to Base64 starting with ewog...
+    const formattedJson = '{\n  "type": "service_account",\n  "project_id": "test-b64-project",\n  "client_email": "sa@test-b64-project.iam.gserviceaccount.com"\n}';
+    const b64String = Buffer.from(formattedJson, 'utf8').toString('base64');
+    assert.ok(b64String.startsWith('ewog'), `Expected Base64 string to begin with 'ewog', got: ${b64String.slice(0, 10)}`);
+
+    const parsed1 = parseServiceAccountCredential(b64String, 'FIREBASE_SERVICE_ACCOUNT');
+    assert.ok(parsed1);
+    assert.strictEqual(parsed1.type, 'service_account');
+    assert.strictEqual(parsed1.project_id, 'test-b64-project');
+
+    const parsed2 = parseServiceAccountCredential(b64String, 'FIREBASE_SERVICE_ACCOUNT_KEY');
+    assert.ok(parsed2);
+    assert.strictEqual(parsed2.type, 'service_account');
+    assert.strictEqual(parsed2.project_id, 'test-b64-project');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 25: parseServiceAccountCredential rejects invalid Base64 and invalid JSON
+  // -------------------------------------------------------------------------
+  await test('parseServiceAccountCredential rejects invalid Base64 and invalid JSON with descriptive error', async () => {
+    // Invalid JSON that is also invalid Base64
+    let thrown1 = null;
+    try {
+      parseServiceAccountCredential('{ this_is: broken_json, not_base64: ', 'FIREBASE_SERVICE_ACCOUNT');
+    } catch (err) {
+      thrown1 = err;
+    }
+    assert.ok(thrown1);
+    assert.ok(thrown1.message.includes('FIREBASE_SERVICE_ACCOUNT contains invalid JSON'));
+
+    // Valid Base64 that decodes to invalid JSON
+    let thrown2 = null;
+    try {
+      const b64BrokenJson = Buffer.from('{ broken_json_payload: ', 'utf8').toString('base64');
+      parseServiceAccountCredential(b64BrokenJson, 'FIREBASE_SERVICE_ACCOUNT_KEY');
+    } catch (err) {
+      thrown2 = err;
+    }
+    assert.ok(thrown2);
+    assert.ok(thrown2.message.includes('FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON'));
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 26: parseServiceAccountCredential rejects non-service-account objects
+  // -------------------------------------------------------------------------
+  await test('parseServiceAccountCredential rejects non-service-account objects and primitives', async () => {
+    // 1. Primitive string encoded in Base64
+    let thrownPrim = null;
+    try {
+      const b64Prim = Buffer.from('"just_a_string"', 'utf8').toString('base64');
+      parseServiceAccountCredential(b64Prim, 'FIREBASE_SERVICE_ACCOUNT');
+    } catch (err) {
+      thrownPrim = err;
+    }
+    assert.ok(thrownPrim);
+    assert.ok(thrownPrim.message.includes('FIREBASE_SERVICE_ACCOUNT contains invalid JSON'));
+
+    // 2. Array encoded in Base64
+    let thrownArr = null;
+    try {
+      const b64Arr = Buffer.from('["not", "a", "service", "account"]', 'utf8').toString('base64');
+      parseServiceAccountCredential(b64Arr, 'FIREBASE_SERVICE_ACCOUNT_KEY');
+    } catch (err) {
+      thrownArr = err;
+    }
+    assert.ok(thrownArr);
+    assert.ok(thrownArr.message.includes('FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON'));
+
+    // 3. Object without service_account type or project_id
+    let thrownObj = null;
+    try {
+      const b64Obj = Buffer.from('{"random_field": "random_value"}', 'utf8').toString('base64');
+      parseServiceAccountCredential(b64Obj, 'FIREBASE_SERVICE_ACCOUNT');
+    } catch (err) {
+      thrownObj = err;
+    }
+    assert.ok(thrownObj);
+    assert.ok(thrownObj.message.includes('FIREBASE_SERVICE_ACCOUNT contains invalid JSON'));
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 27: Production fails closed when Base64 FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON
+  // -------------------------------------------------------------------------
+  await test('Production fails closed when Base64 FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON', async () => {
+    setForceProductionModeForTesting(true);
+    const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    process.env.FIREBASE_SERVICE_ACCOUNT_KEY = Buffer.from('{ broken_json_inside: ', 'utf8').toString('base64');
+
+    let thrownError = null;
+    try {
+      getFirestoreDb();
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (origSaKey) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+      setForceProductionModeForTesting(null);
+    }
+
+    assert.ok(thrownError, 'Must throw fatal error for invalid Base64 service account JSON');
+    assert.ok(
+      thrownError.message.includes('FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON') ||
+        thrownError.message.includes('Failed to initialize Firebase Admin Firestore'),
+      `Expected invalid JSON error, got: ${thrownError.message}`
     );
   });
 

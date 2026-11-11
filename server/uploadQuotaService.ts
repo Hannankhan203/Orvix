@@ -627,6 +627,66 @@ export function getFirebaseServiceAccountCredentials(): { raw: string; sourceVar
 }
 
 /**
+ * Safely parses a Firebase Service Account credential string.
+ * Supports:
+ * 1. Raw JSON string.
+ * 2. Base64-encoded JSON string (e.g., standard Vercel environment variable encoding starting with 'ewog...').
+ *
+ * Validates that the parsed credential is a service-account object before passing it to cert().
+ * SECURITY: Never logs or exposes credential contents.
+ */
+export function parseServiceAccountCredential(raw: string, sourceVar: string): any {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) {
+    throw new Error(`${sourceVar} is empty.`);
+  }
+
+  let parsed: any;
+  let rawJsonError: Error | null = null;
+
+  // 1. Attempt raw JSON parsing
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err: any) {
+    rawJsonError = err;
+  }
+
+  // 2. If raw JSON parsing fails, safely attempt Base64 decoding using Node.js Buffer
+  if (parsed === undefined) {
+    try {
+      const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+      parsed = JSON.parse(decoded);
+    } catch (_) {
+      throw new Error(
+        `${sourceVar} contains invalid JSON: ${rawJsonError?.message || 'Failed to parse JSON or Base64-encoded JSON.'}`
+      );
+    }
+  }
+
+  // 3. Validate that the parsed credential is a service-account object
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(
+      `${sourceVar} contains invalid JSON: Parsed credential must be an object.`
+    );
+  }
+
+  const isServiceAccount =
+    parsed.type === 'service_account' ||
+    Boolean(
+      (parsed.project_id || parsed.projectId) &&
+        (parsed.private_key || parsed.privateKey || parsed.client_email || parsed.clientEmail)
+    );
+
+  if (!isServiceAccount) {
+    throw new Error(
+      `${sourceVar} contains invalid JSON: Expected a service-account object with type "service_account" or project_id.`
+    );
+  }
+
+  return parsed;
+}
+
+/**
  * Resolves the Firestore database client to use.
  *
  * PRODUCTION REQUIREMENT:
@@ -676,23 +736,19 @@ export function getFirestoreDb(): any {
 
     try {
       if (saCred) {
-        let sa: any;
-        try {
-          sa = JSON.parse(saCred.raw);
-        } catch (parseErr: any) {
-          throw new Error(
-            `${saCred.sourceVar} contains invalid JSON: ${parseErr?.message || parseErr}`
-          );
-        }
+        const sa = parseServiceAccountCredential(saCred.raw, saCred.sourceVar);
         initializeApp({
           credential: cert(sa),
-          projectId: sa.project_id || projectId
+          projectId: sa.project_id || sa.projectId || projectId
         });
       } else {
         initializeApp({ projectId });
       }
       return getFirestore();
     } catch (initErr: any) {
+      if (initErr?.message && initErr.message.includes('contains invalid JSON')) {
+        throw initErr;
+      }
       throw new Error(
         `[UploadQuota] Fatal: Failed to initialize Firebase Admin Firestore in production: ${initErr?.message || initErr}`
       );
@@ -713,10 +769,10 @@ export function getFirestoreDb(): any {
       if (existingApps.length === 0) {
         if (saCred) {
           try {
-            const sa = JSON.parse(saCred.raw);
+            const sa = parseServiceAccountCredential(saCred.raw, saCred.sourceVar);
             initializeApp({
               credential: cert(sa),
-              projectId: sa.project_id || projectId
+              projectId: sa.project_id || sa.projectId || projectId
             });
           } catch (_) {
             initializeApp({ projectId });
