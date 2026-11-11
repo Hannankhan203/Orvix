@@ -46,7 +46,8 @@ import {
   reserveUploadSlot,
   commitUploadSlot,
   releaseUploadSlot,
-  getQuotaStatus
+  getQuotaStatus,
+  getFirebaseServiceAccountCredentials
 } from '../server/uploadQuotaService.ts';
 
 import http from 'node:http';
@@ -845,8 +846,10 @@ async function runAllTests() {
   await test('Production fails closed with fatal error when Firebase Admin credentials are missing', async () => {
     setForceProductionModeForTesting(true);
     const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     const origGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
     delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
     let thrownError = null;
@@ -856,7 +859,11 @@ async function runAllTests() {
       thrownError = err;
     } finally {
       if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (origSaKey) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
       if (origGac) process.env.GOOGLE_APPLICATION_CREDENTIALS = origGac;
+      else delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
       setForceProductionModeForTesting(null);
     }
 
@@ -877,6 +884,8 @@ async function runAllTests() {
   await test('Production fails closed when FIREBASE_SERVICE_ACCOUNT contains invalid JSON', async () => {
     setForceProductionModeForTesting(true);
     const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     process.env.FIREBASE_SERVICE_ACCOUNT = '{ this_is: invalid_json, broken: ';
 
     let thrownError = null;
@@ -887,6 +896,8 @@ async function runAllTests() {
     } finally {
       if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
       else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (origSaKey) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
       setForceProductionModeForTesting(null);
     }
 
@@ -904,8 +915,10 @@ async function runAllTests() {
   await test('Production fail-closed rejects live HTTP upload with 500 QUOTA_SERVICE_UNAVAILABLE', async () => {
     setForceProductionModeForTesting(true);
     const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     const origGac = process.env.GOOGLE_APPLICATION_CREDENTIALS;
     delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
     const uid = 'prod_failclosed_user_' + crypto.randomUUID();
@@ -916,7 +929,11 @@ async function runAllTests() {
       res = await uploadAttachment({ token, conversationId: 'conv_prod_fail', filename: 'prod_fail.txt' });
     } finally {
       if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (origSaKey) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
       if (origGac) process.env.GOOGLE_APPLICATION_CREDENTIALS = origGac;
+      else delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
       setForceProductionModeForTesting(null);
     }
 
@@ -938,6 +955,80 @@ async function runAllTests() {
     assert.strictEqual(typeof devDb.collection, 'function');
 
     setForceProductionModeForTesting(null);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 21: getFirebaseServiceAccountCredentials resolves both variable names with precedence
+  // -------------------------------------------------------------------------
+  await test('getFirebaseServiceAccountCredentials resolves FIREBASE_SERVICE_ACCOUNT and FIREBASE_SERVICE_ACCOUNT_KEY with precedence', async () => {
+    const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+
+    try {
+      // 1. Neither variable set -> returns null
+      delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+      assert.strictEqual(getFirebaseServiceAccountCredentials(), null);
+
+      // 2. Only FIREBASE_SERVICE_ACCOUNT set -> resolves FIREBASE_SERVICE_ACCOUNT
+      process.env.FIREBASE_SERVICE_ACCOUNT = '{"type":"service_account","project_id":"sa-test"}';
+      const res1 = getFirebaseServiceAccountCredentials();
+      assert.ok(res1);
+      assert.strictEqual(res1.sourceVar, 'FIREBASE_SERVICE_ACCOUNT');
+      assert.strictEqual(res1.raw, '{"type":"service_account","project_id":"sa-test"}');
+
+      // 3. Only FIREBASE_SERVICE_ACCOUNT_KEY set -> resolves FIREBASE_SERVICE_ACCOUNT_KEY
+      delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      process.env.FIREBASE_SERVICE_ACCOUNT_KEY = '{"type":"service_account","project_id":"key-test"}';
+      const res2 = getFirebaseServiceAccountCredentials();
+      assert.ok(res2);
+      assert.strictEqual(res2.sourceVar, 'FIREBASE_SERVICE_ACCOUNT_KEY');
+      assert.strictEqual(res2.raw, '{"type":"service_account","project_id":"key-test"}');
+
+      // 4. Both variables set -> prefers FIREBASE_SERVICE_ACCOUNT
+      process.env.FIREBASE_SERVICE_ACCOUNT = '{"type":"service_account","project_id":"preferred-sa"}';
+      process.env.FIREBASE_SERVICE_ACCOUNT_KEY = '{"type":"service_account","project_id":"ignored-key"}';
+      const res3 = getFirebaseServiceAccountCredentials();
+      assert.ok(res3);
+      assert.strictEqual(res3.sourceVar, 'FIREBASE_SERVICE_ACCOUNT');
+      assert.strictEqual(res3.raw, '{"type":"service_account","project_id":"preferred-sa"}');
+    } finally {
+      if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (origSaKey) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 22: Production fails closed when FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON
+  // -------------------------------------------------------------------------
+  await test('Production fails closed when FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON', async () => {
+    setForceProductionModeForTesting(true);
+    const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    process.env.FIREBASE_SERVICE_ACCOUNT_KEY = '{ broken_json_in_key: ';
+
+    let thrownError = null;
+    try {
+      getFirestoreDb();
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      if (origSa) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      if (origSaKey) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+      else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+      setForceProductionModeForTesting(null);
+    }
+
+    assert.ok(thrownError, 'Must throw fatal error for invalid FIREBASE_SERVICE_ACCOUNT_KEY JSON');
+    assert.ok(
+      thrownError.message.includes('FIREBASE_SERVICE_ACCOUNT_KEY contains invalid JSON') ||
+        thrownError.message.includes('Failed to initialize Firebase Admin Firestore'),
+      `Expected invalid JSON error mentioning FIREBASE_SERVICE_ACCOUNT_KEY, got: ${thrownError.message}`
+    );
   });
 
   // Clean up

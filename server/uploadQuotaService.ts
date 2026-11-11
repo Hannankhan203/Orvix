@@ -605,6 +605,28 @@ export function resetFirestoreForTesting(): void {
 }
 
 /**
+ * Resolves Firebase service account credentials from environment variables:
+ * Accepts both FIREBASE_SERVICE_ACCOUNT and FIREBASE_SERVICE_ACCOUNT_KEY.
+ * Prefers FIREBASE_SERVICE_ACCOUNT if both are set.
+ * Returns the raw string and source variable name, or null if neither is configured.
+ */
+export function getFirebaseServiceAccountCredentials(): { raw: string; sourceVar: string } | null {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT && process.env.FIREBASE_SERVICE_ACCOUNT.trim()) {
+    return {
+      raw: process.env.FIREBASE_SERVICE_ACCOUNT.trim(),
+      sourceVar: 'FIREBASE_SERVICE_ACCOUNT'
+    };
+  }
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY && process.env.FIREBASE_SERVICE_ACCOUNT_KEY.trim()) {
+    return {
+      raw: process.env.FIREBASE_SERVICE_ACCOUNT_KEY.trim(),
+      sourceVar: 'FIREBASE_SERVICE_ACCOUNT_KEY'
+    };
+  }
+  return null;
+}
+
+/**
  * Resolves the Firestore database client to use.
  *
  * PRODUCTION REQUIREMENT:
@@ -642,7 +664,8 @@ export function getFirestoreDb(): any {
       }
     }
 
-    const hasServiceAccount = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT);
+    const saCred = getFirebaseServiceAccountCredentials();
+    const hasServiceAccount = Boolean(saCred);
     const hasGoogleCredentials = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
     if (!hasServiceAccount && !hasGoogleCredentials) {
@@ -652,13 +675,13 @@ export function getFirestoreDb(): any {
     }
 
     try {
-      if (hasServiceAccount) {
+      if (saCred) {
         let sa: any;
         try {
-          sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!);
+          sa = JSON.parse(saCred.raw);
         } catch (parseErr: any) {
           throw new Error(
-            `FIREBASE_SERVICE_ACCOUNT contains invalid JSON: ${parseErr?.message || parseErr}`
+            `${saCred.sourceVar} contains invalid JSON: ${parseErr?.message || parseErr}`
           );
         }
         initializeApp({
@@ -685,11 +708,12 @@ export function getFirestoreDb(): any {
       return getFirestore();
     }
 
-    if (projectId && (process.env.FIREBASE_SERVICE_ACCOUNT || process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+    const saCred = getFirebaseServiceAccountCredentials();
+    if (projectId && (saCred || process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
       if (existingApps.length === 0) {
-        if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        if (saCred) {
           try {
-            const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            const sa = JSON.parse(saCred.raw);
             initializeApp({
               credential: cert(sa),
               projectId: sa.project_id || projectId
