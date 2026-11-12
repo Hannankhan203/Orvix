@@ -1761,16 +1761,34 @@ export default function ChatPage({
 
               if (!uploadRes.ok) {
                 let errorMsg = `Upload failed (${uploadRes.status})`;
+                let isQuotaExceeded = uploadRes.status === 429;
+                let errData = null;
                 try {
-                  const errData = await uploadRes.json();
+                  errData = await uploadRes.json();
                   if (errData?.error) {
                     errorMsg = errData.error;
+                  }
+                  if (
+                    uploadRes.status === 429 ||
+                    errData?.code === 'QUOTA_EXCEEDED' ||
+                    errData?.status === 'QUOTA_EXCEEDED' ||
+                    String(errData?.error || '').toLowerCase().includes('quota exceeded') ||
+                    String(errData?.error || '').toLowerCase().includes('upload limit')
+                  ) {
+                    isQuotaExceeded = true;
                   }
                 } catch (_) {}
 
                 if (!isPreflightActive()) return false;
 
-                // If Browser AI is selected and upload returned an error, attempt browser extraction fallback!
+                // Explicit quota rejection check: never execute extractBrowserDocument fallback on quota limits
+                if (isQuotaExceeded) {
+                  return failPreflightIfActive(
+                    errorMsg || 'Daily attachment upload limit of 5 uploads per day exceeded. Quota resets at midnight UTC.'
+                  );
+                }
+
+                // If Browser AI is selected and upload returned an error (unrelated to quota), attempt browser extraction fallback!
                 if (isWebLLM) {
                   console.warn('Server upload endpoint failed for Browser AI, attempting local browser extraction fallback...');
                   const fallbackLocalAttachments = [];
@@ -1882,7 +1900,19 @@ export default function ChatPage({
 
             console.error('File upload network error:', uploadErr);
 
-            // If selectedProvider is Browser AI, gracefully fallback to browser-side text extraction!
+            const isQuotaExceeded =
+              uploadErr?.status === 429 ||
+              uploadErr?.code === 'QUOTA_EXCEEDED' ||
+              String(uploadErr?.message || '').toLowerCase().includes('quota exceeded') ||
+              String(uploadErr?.message || '').toLowerCase().includes('upload limit');
+
+            if (isQuotaExceeded) {
+              return failPreflightIfActive(
+                uploadErr?.message || 'Daily attachment upload limit of 5 uploads per day exceeded. Quota resets at midnight UTC.'
+              );
+            }
+
+            // If selectedProvider is Browser AI, gracefully fallback to browser-side text extraction for non-quota errors!
             if (isWebLLM) {
               try {
                 console.warn('Network upload failed for Browser AI, attempting local browser extraction fallback...');
