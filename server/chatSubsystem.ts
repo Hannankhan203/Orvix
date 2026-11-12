@@ -52,6 +52,7 @@ import {
   UPLOAD_DIR,
   buildGeminiImageParts
 } from './uploadSubsystem.ts';
+import { authenticateRequest } from './firebaseAuthHelper.ts';
 
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
@@ -583,7 +584,144 @@ export function registerChatRoutes(app: express.Express) {
     }
     const validatedClientModel: string | null = modelValidation.model;
 
-    // Associate attachments sent in this turn with the conversation
+    // 1. Authenticate request to resolve identity for attachment authorization
+    const authStatus = await authenticateRequest(req);
+    if (authStatus.status === 'invalid') {
+      upstreamGuard.cleanup();
+      return res.status(401).json({
+        error: authStatus.error || 'Authentication token is invalid or expired.',
+        code: authStatus.code || 'UNAUTHENTICATED',
+        status: 'UNAUTHENTICATED',
+        provider: normalizedProvider,
+        retryable: false,
+        canFallback: false
+      });
+    }
+
+    // 2. Validate attachments: reject raw Base64/Data URLs, verify server registration, check user ownership
+    if (req.body.attachments !== undefined) {
+      if (!Array.isArray(req.body.attachments)) {
+        upstreamGuard.cleanup();
+        return res.status(400).json({
+          error: 'Attachments parameter must be an array of attachment objects.',
+          code: 'INVALID_ATTACHMENTS',
+          status: 'INVALID_ARGUMENT',
+          provider: normalizedProvider,
+          retryable: false,
+          canFallback: false
+        });
+      }
+
+      for (const att of req.body.attachments) {
+        if (!att || typeof att !== 'object') {
+          upstreamGuard.cleanup();
+          return res.status(400).json({
+            error: 'Each attachment must be a valid attachment object.',
+            code: 'INVALID_ATTACHMENT',
+            status: 'INVALID_ARGUMENT',
+            provider: normalizedProvider,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        const hasRawData = Boolean(
+          (typeof att.base64 === 'string' && att.base64.trim()) ||
+          (typeof att.dataUrl === 'string' && att.dataUrl.trim()) ||
+          (typeof att.data === 'string' && att.data.trim())
+        );
+
+        const attId = typeof att.id === 'string' ? att.id.trim() : '';
+
+        // Requirement 1 & 2: Reject direct raw Base64/Data URL injection and require valid ID
+        if (!attId) {
+          upstreamGuard.cleanup();
+          if (hasRawData) {
+            return res.status(400).json({
+              error: 'Direct Base64 or Data URL image injection is not permitted. All attachments must be uploaded through the authorized upload endpoint.',
+              code: 'DIRECT_IMAGE_INJECTION_REJECTED',
+              status: 'INVALID_ARGUMENT',
+              provider: normalizedProvider,
+              retryable: false,
+              canFallback: false
+            });
+          }
+          return res.status(400).json({
+            error: 'Attachment is missing a valid server-registered identifier (id).',
+            code: 'INVALID_ATTACHMENT_ID',
+            status: 'INVALID_ARGUMENT',
+            provider: normalizedProvider,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        // Validate attachment identifier format
+        if (!/^[a-zA-Z0-9_-]{8,128}$/.test(attId)) {
+          upstreamGuard.cleanup();
+          return res.status(400).json({
+            error: `Attachment identifier '${attId}' has an invalid format.`,
+            code: 'INVALID_ATTACHMENT_ID',
+            status: 'INVALID_ARGUMENT',
+            provider: normalizedProvider,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        // Requirement 4 & 5: Check registration in existing fileRegistry
+        const record = fileRegistry.get(attId);
+        if (!record) {
+          upstreamGuard.cleanup();
+          if (hasRawData) {
+            return res.status(400).json({
+              error: 'Direct Base64 or Data URL image injection is not permitted. All attachments must be uploaded through the authorized upload endpoint.',
+              code: 'DIRECT_IMAGE_INJECTION_REJECTED',
+              status: 'INVALID_ARGUMENT',
+              provider: normalizedProvider,
+              retryable: false,
+              canFallback: false
+            });
+          }
+          return res.status(400).json({
+            error: `Attachment '${att.name || att.originalName || attId}' has not been uploaded or has expired. All attachments must be uploaded through the authorized upload endpoint.`,
+            code: 'UNREGISTERED_ATTACHMENT',
+            status: 'INVALID_ARGUMENT',
+            provider: normalizedProvider,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        // Requirement 3 & 5: Ensure referenced attachments belong to the authenticated user and prevent cross-user access
+        if (record.userId) {
+          if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+            upstreamGuard.cleanup();
+            return res.status(403).json({
+              error: 'Access denied: Authentication is required to access this attachment.',
+              code: 'ATTACHMENT_ACCESS_DENIED',
+              status: 'FORBIDDEN',
+              provider: normalizedProvider,
+              retryable: false,
+              canFallback: false
+            });
+          }
+          if (record.userId !== authStatus.userId) {
+            upstreamGuard.cleanup();
+            return res.status(403).json({
+              error: 'Access denied: You do not have permission to reference attachments belonging to another user.',
+              code: 'ATTACHMENT_ACCESS_DENIED',
+              status: 'FORBIDDEN',
+              provider: normalizedProvider,
+              retryable: false,
+              canFallback: false
+            });
+          }
+        }
+      }
+    }
+
+    // Associate validated attachments sent in this turn with the conversation
     if (conversationId && Array.isArray(attachments)) {
       let docSet = conversationDocuments.get(conversationId);
       if (!docSet) {
@@ -596,21 +734,6 @@ export function registerChatRoutes(app: express.Express) {
           const existing = fileRegistry.get(att.id);
           if (existing) {
             existing.conversationId = conversationId;
-          } else if (att.extraction) {
-            fileRegistry.set(att.id, {
-              id: att.id,
-              originalName: att.originalName || att.name || 'document',
-              diskFilename: att.id,
-              mimeType: att.type || att.mimeType || 'application/octet-stream',
-              extension: att.extension || '',
-              size: att.size || 0,
-              formattedSize: att.formattedSize || '',
-              status: att.status || 'ready',
-              uploadedAt: att.uploadedAt || new Date().toISOString(),
-              expiresAt: Date.now() + 2 * 60 * 60 * 1000,
-              conversationId,
-              extraction: att.extraction
-            });
           }
         }
       }
@@ -720,9 +843,14 @@ export function registerChatRoutes(app: express.Express) {
           for (const hAtt of hMsg.attachments) {
             if (!hAtt?.id) continue;
             const record = fileRegistry.get(hAtt.id);
-            if (record?.extraction) {
-              addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
-            } else if (hAtt.extraction) {
+            if (record) {
+              if (record.userId && authStatus.userId && record.userId !== authStatus.userId) {
+                continue;
+              }
+              if (record.extraction) {
+                addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+              }
+            } else if (hAtt.extraction && !hAtt.base64 && !hAtt.dataUrl) {
               const docData: any = {
                 ...(hAtt.extraction as DocumentData),
                 id: hAtt.id,
@@ -733,8 +861,7 @@ export function registerChatRoutes(app: express.Express) {
                 type: hAtt.type || hAtt.mimeType || (hAtt.extraction as any)?.mimeType,
                 extension: hAtt.extension,
                 sizeBytes: Number(hAtt.size || (hAtt.extraction as any)?.sizeBytes || 0),
-                isImage: Boolean(hAtt.isImage || (hAtt.extraction as any)?.isImage),
-                base64: hAtt.base64 || hAtt.dataUrl
+                isImage: Boolean(hAtt.isImage || (hAtt.extraction as any)?.isImage)
               };
               addDocIfValid(docData, conversationId || undefined);
             }
