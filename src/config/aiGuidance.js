@@ -10,7 +10,7 @@
  * - Dynamic resolution based on active provider and active Browser AI model.
  */
 
-import {
+import { 
   DEFAULT_WEBLLM_MODEL_ID,
   FALLBACK_F32_WEBLLM_MODEL_ID,
   SMOLLM2_135M_WEBLLM_MODEL_ID,
