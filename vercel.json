@@ -15,14 +15,6 @@
       "destination": "/api/upload?__subpath=:subpath*"
     },
     {
-      "source": "/api/image/:subpath*",
-      "destination": "/api/image?__subpath=:subpath*"
-    },
-    {
-      "source": "/api/images/:subpath*",
-      "destination": "/api/image?__subpath=:subpath*"
-    },
-    {
       "source": "/share/:path*",
       "destination": "/index.html"
     },

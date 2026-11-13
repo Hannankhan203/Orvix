@@ -11,14 +11,12 @@ import {
   Loader2,
   Paperclip,
   ChevronDown,
-  Check,
-  ImagePlus
+  Check
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
 import BrowserAIStatusBar from './BrowserAIStatusBar.jsx';
 const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx'));
-import ImagePromptModal from './ImagePromptModal.jsx';
 import Button from '../ui/Button.jsx';
 import VoiceDictationDock from './VoiceDictationDock.jsx';
 import TranscriptPolishReview from './TranscriptPolishReview.jsx';
@@ -105,7 +103,6 @@ export default function ChatArea({
   sharedLoading = false,
   onSignInClick = undefined,
   onNavigateHome = undefined,
-  onGenerateImage = undefined,
   uploadQuota = null
 }) {
   const isComposerDisabled = isPublicSharedViewer || (isReadOnly && !isAuthenticatedSharedPreview);
@@ -121,9 +118,6 @@ export default function ChatArea({
   const langMenuRef = useRef(null);
   const scrollViewportRef = useRef(null);
   const fileInputRef = useRef(null);
-
-  // Multimodal AI Image Generation dialog state
-  const [imageModalOpen, setImageModalOpen] = useState(false);
 
   // Selected file attachments state (strictly capped at 1 attachment per user message)
   const [attachments, setAttachments] = useState([]);
@@ -1045,18 +1039,6 @@ export default function ChatArea({
       return;
     }
 
-    const trimmedText = textToSend.trim();
-    if ((trimmedText.startsWith('/image ') || trimmedText.startsWith('/imagine ')) && onGenerateImage) {
-      const promptOnly = trimmedText.replace(/^\/(?:image|imagine)\s+/, '').trim();
-      if (promptOnly) {
-        if (onInputChange) onInputChange('');
-        setAttachments([]);
-        setPreviewingComposerAttachment(null);
-        void onGenerateImage({ prompt: promptOnly });
-        return;
-      }
-    }
-
     if (!onSubmit) return;
     const currentAttachments = [...attachments];
     setPreviewingComposerAttachment(null);
@@ -1677,18 +1659,6 @@ Transcript:
                 icon={<Paperclip size={18} />}
               />
 
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-round"
-                disabled={isLoading || isReadOnly || isSharedView || isComposerDisabled}
-                onClick={() => setImageModalOpen(true)}
-                title="Generate AI image from descriptive prompt"
-                ariaLabel="Generate AI image"
-                className="composer-image-gen-btn"
-                icon={<ImagePlus size={18} />}
-              />
-
               <textarea
                 ref={textareaRef}
                 className="composer-textarea"
@@ -1894,23 +1864,6 @@ Transcript:
             attachment={previewingComposerAttachment}
           />
         </React.Suspense>
-      )}
-
-      {imageModalOpen && (
-        <ImagePromptModal
-          isOpen={imageModalOpen}
-          onClose={() => setImageModalOpen(false)}
-          onSubmit={(options) => {
-            if (onInputChange && inputValue.trim()) {
-              onInputChange('');
-            }
-            if (onGenerateImage) {
-              onGenerateImage(options);
-            }
-          }}
-          initialPrompt={inputValue.trim()}
-          providerConfig={providerConfig}
-        />
       )}
     </main>
   );

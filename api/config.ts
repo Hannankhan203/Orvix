@@ -31,10 +31,7 @@ export default function handler(req: Request, res: Response) {
       whisperConfigured: false,
       whisperProvider: null,
       websocketStreamingSupported: false,
-      websocketStreamingEndpoint: null,
-      imageGenerationSupported: false,
-      imageGenerationProviders: [],
-      imageGenerationDefaultProvider: null
+      websocketStreamingEndpoint: null
     });
   }
 }
