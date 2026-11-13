@@ -39,6 +39,7 @@ import {
   isFileDragEvent,
   formatFileSize
 } from './chatAreaUtils.js';
+import { formatDailyUploadQuotaText } from '../../services/uploadQuotaClientService.js';
 
 export { getProviderFootnote };
 
@@ -104,9 +105,17 @@ export default function ChatArea({
   sharedLoading = false,
   onSignInClick = undefined,
   onNavigateHome = undefined,
-  onGenerateImage = undefined
+  onGenerateImage = undefined,
+  uploadQuota = null
 }) {
   const isComposerDisabled = isPublicSharedViewer || (isReadOnly && !isAuthenticatedSharedPreview);
+  const uploadQuotaText = !isReadOnly && !isSharedView ? formatDailyUploadQuotaText(uploadQuota) : null;
+  const isUploadQuotaLoading =
+    !isReadOnly &&
+    !isSharedView &&
+    uploadQuota?.status === 'loading' &&
+    uploadQuota?.remaining === null &&
+    Boolean(uploadQuota?.userId);
 
   const textareaRef = useRef(null);
   const langMenuRef = useRef(null);
@@ -1611,7 +1620,33 @@ Transcript:
               attachments={attachments}
               onPreview={(att) => setPreviewingComposerAttachment(att)}
               onRemove={handleRemoveAttachment}
+              uploadQuotaText={uploadQuotaText}
             />
+
+            {(uploadQuotaText || isUploadQuotaLoading) && (
+              <div
+                className={`composer-upload-quota-bar ${
+                  typeof uploadQuota?.remaining === 'number'
+                    ? uploadQuota.remaining === 0
+                      ? 'is-exhausted'
+                      : uploadQuota.remaining === 1
+                      ? 'is-low'
+                      : 'is-available'
+                    : 'is-loading'
+                }`}
+                data-testid="upload-quota-indicator"
+                data-remaining={typeof uploadQuota?.remaining === 'number' ? String(uploadQuota.remaining) : undefined}
+                data-limit={typeof uploadQuota?.limit === 'number' ? String(uploadQuota.limit) : undefined}
+                role="status"
+                aria-live="polite"
+                aria-label={uploadQuotaText || 'Loading daily upload quota'}
+              >
+                <Paperclip size={11} className="composer-upload-quota-icon" aria-hidden="true" />
+                <span className="composer-upload-quota-text">
+                  {uploadQuotaText || 'Loading upload quota...'}
+                </span>
+              </div>
+            )}
 
             <div className="composer-input-row">
               <Button
@@ -1626,8 +1661,8 @@ Transcript:
                     : isReadOnly
                     ? 'Attachments are disabled in read-only shared mode'
                     : attachments.length > 0
-                    ? `Attached: ${attachments[0].name} (1 file max per message)`
-                    : 'Attach file or image (PDF, DOCX, TXT, CSV, PNG, JPG — max 25MB)'
+                    ? `Attached: ${attachments[0].name} (1 file max per message)${uploadQuotaText ? ` • ${uploadQuotaText}` : ''}`
+                    : `Attach file or image (PDF, DOCX, TXT, CSV, PNG, JPG — max 25MB)${uploadQuotaText ? ` • ${uploadQuotaText}` : ''}`
                 }
                 ariaLabel={
                   isSharedView
@@ -1635,8 +1670,8 @@ Transcript:
                     : isReadOnly
                     ? 'Attachments are disabled in read-only shared mode'
                     : attachments.length > 0
-                    ? `Attachment selected: ${attachments[0].name}. Maximum one attachment per message.`
-                    : 'Attach document or image'
+                    ? `Attachment selected: ${attachments[0].name}. Maximum one attachment per message.${uploadQuotaText ? ` ${uploadQuotaText}.` : ''}`
+                    : `Attach document or image.${uploadQuotaText ? ` ${uploadQuotaText}.` : ''}`
                 }
                 className={`composer-attach-btn ${attachments.length > 0 ? 'has-attachment' : ''}`}
                 icon={<Paperclip size={18} />}

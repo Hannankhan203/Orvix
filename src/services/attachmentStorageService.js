@@ -11,6 +11,33 @@ import {
   deleteChunksForDocuments,
   deleteChunksForConversation
 } from './semanticVectorStorage.js';
+import {
+  extractQuotaFromHeaders,
+  formatDailyUploadQuotaText,
+  getUploadQuotaState,
+  subscribeUploadQuotaState,
+  syncUploadQuotaUserAccount,
+  updateUploadQuotaFromResponse,
+  fetchAuthenticatedUploadQuota,
+  checkUploadQuotaUtcRollover,
+  resetClientUploadQuotaForTesting,
+  setClientQuotaDateHookForTesting,
+  setClientQuotaFetchForTesting
+} from './uploadQuotaClientService.js';
+
+export {
+  extractQuotaFromHeaders,
+  formatDailyUploadQuotaText,
+  getUploadQuotaState,
+  subscribeUploadQuotaState,
+  syncUploadQuotaUserAccount,
+  updateUploadQuotaFromResponse,
+  fetchAuthenticatedUploadQuota,
+  checkUploadQuotaUtcRollover,
+  resetClientUploadQuotaForTesting,
+  setClientQuotaDateHookForTesting,
+  setClientQuotaFetchForTesting
+};
 
 const DB_NAME = 'orvix_attachments_db';
 const DB_VERSION = 1;
@@ -2194,6 +2221,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
   });
 
   if (!signedUrlRes.ok) {
+    updateUploadQuotaFromResponse(signedUrlRes);
     let errData;
     try {
       errData = await signedUrlRes.json();
@@ -2204,6 +2232,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     throw err;
   }
 
+  updateUploadQuotaFromResponse(signedUrlRes);
   const signedUrlData = await signedUrlRes.json();
   const { signedUrl, attachmentId, storagePath } = signedUrlData;
 
@@ -2298,6 +2327,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
   });
 
   if (!completeRes.ok) {
+    updateUploadQuotaFromResponse(completeRes);
     let errData;
     try {
       errData = await completeRes.json();
@@ -2308,6 +2338,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     throw err;
   }
 
+  updateUploadQuotaFromResponse(completeRes);
   const completeData = await completeRes.json();
   const attachment = completeData.attachment || completeData.attachments?.[0];
 

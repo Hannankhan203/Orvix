@@ -13984,5 +13984,72 @@ body.theme-light .notice-retry-btn,
   color: #2563eb;
 }
 
+/* Daily Attachment Upload Quota Indicator (P4) */
+.composer-upload-quota-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 2px 8px;
+  margin: 0 0 4px 2px;
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  transition: color var(--transition-fast), border-color var(--transition-fast), background-color var(--transition-fast);
+  user-select: none;
+  max-width: 100%;
+}
 
+.composer-upload-quota-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
 
+.composer-upload-quota-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-upload-quota-bar.is-low {
+  color: #fbbf24;
+  background-color: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.composer-upload-quota-bar.is-exhausted {
+  color: #f87171;
+  background-color: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+:root[data-theme="light"] .composer-upload-quota-bar.is-low,
+html[data-theme="light"] .composer-upload-quota-bar.is-low,
+body.theme-light .composer-upload-quota-bar.is-low,
+[data-theme="light"] .composer-upload-quota-bar.is-low {
+  color: #b45309;
+  background-color: #fffbeb;
+  border-color: #fde68a;
+}
+
+:root[data-theme="light"] .composer-upload-quota-bar.is-exhausted,
+html[data-theme="light"] .composer-upload-quota-bar.is-exhausted,
+body.theme-light .composer-upload-quota-bar.is-exhausted,
+[data-theme="light"] .composer-upload-quota-bar.is-exhausted {
+  color: #b91c1c;
+  background-color: #fef2f2;
+  border-color: #fecaca;
+}
+
+@media (max-width: 640px) {
+  .composer-upload-quota-bar {
+    font-size: 0.68rem;
+    padding: 2px 7px;
+    margin-bottom: 3px;
+  }
+}

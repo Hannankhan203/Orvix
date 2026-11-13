@@ -8,12 +8,18 @@ import { Eye, X, FileImage } from 'lucide-react';
 export default function ComposerAttachmentTray({
   attachments = [],
   onPreview,
-  onRemove
+  onRemove,
+  uploadQuotaText = null
 }) {
   if (!attachments || attachments.length === 0) return null;
 
   return (
-    <div className="composer-attachments-preview" role="region" aria-label="Selected attachment">
+    <div
+      className="composer-attachments-preview"
+      role="region"
+      aria-label="Selected attachment"
+      data-quota-text={uploadQuotaText || undefined}
+    >
       {attachments.map((att) =>
         att.isImage ? (
           <div

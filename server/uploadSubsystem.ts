@@ -47,6 +47,7 @@ import {
   releaseUploadSlot,
   attachQuotaHeaders,
   getQuotaStatus,
+  getUtcDayString,
   getNextUtcMidnight,
   type QuotaIdentity,
   type QuotaReservation,
@@ -65,7 +66,8 @@ export {
   commitUploadSlot,
   releaseUploadSlot,
   attachQuotaHeaders,
-  getQuotaStatus
+  getQuotaStatus,
+  getUtcDayString
 };
 
 export type {
@@ -750,6 +752,43 @@ export function registerUploadRoutes(app: express.Express) {
       isServerless,
       directUploadSupported: isSupabaseConfigured(),
       directUploadThresholdBytes: 4 * 1024 * 1024
+    });
+  });
+
+  // Authenticated Read-Only Upload Quota Status Endpoint (does NOT consume or reserve an upload slot)
+  app.get(['/api/upload/quota', '/upload/quota'], async (req, res) => {
+    const authenticatedUserId = await requireUploadAuthentication(
+      req,
+      res,
+      'Authentication is required to view daily upload quota.'
+    );
+    if (!authenticatedUserId) {
+      return;
+    }
+
+    const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
+    let status: QuotaStatus;
+    try {
+      status = await getQuotaStatus(quotaIdentity);
+    } catch (quotaErr: any) {
+      console.error('[UploadQuota] Quota status lookup failed:', quotaErr?.message || quotaErr);
+      return res.status(500).json({
+        error: 'Upload quota status is temporarily unavailable.',
+        code: 'QUOTA_SERVICE_UNAVAILABLE',
+        status: 'SERVICE_UNAVAILABLE'
+      });
+    }
+
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    attachQuotaHeaders(res, status, quotaIdentity);
+
+    return res.status(200).json({
+      limit: status.limit,
+      remaining: status.remaining,
+      committed: status.committed,
+      activeReservations: status.activeReservations,
+      resetAt: status.resetAt,
+      utcDay: getUtcDayString()
     });
   });
 
@@ -1860,6 +1899,16 @@ export function registerUploadRoutes(app: express.Express) {
     };
     await createDurableUploadTicket(ticket);
     opportunisticDirectUploadPrune();
+
+    attachQuotaHeaders(
+      res,
+      {
+        limit: quotaReservation.limit,
+        remaining: quotaReservation.remaining,
+        resetAt: quotaReservation.resetAt
+      },
+      quotaIdentity
+    );
 
     return res.status(200).json({
       success: true,

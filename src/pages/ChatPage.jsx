@@ -56,7 +56,13 @@ import {
   isQuotaExceededError,
   getLastStorageError,
   isDirectUploadCandidate,
-  uploadFileDirectToSupabase
+  uploadFileDirectToSupabase,
+  getUploadQuotaState,
+  subscribeUploadQuotaState,
+  syncUploadQuotaUserAccount,
+  updateUploadQuotaFromResponse,
+  checkUploadQuotaUtcRollover,
+  fetchAuthenticatedUploadQuota
 } from '../services/attachmentStorageService.js';
 import { isVisionCapableProvider } from '../services/documentContextService.js';
 import { indexDocument } from '../services/semanticRetrievalService.js';
@@ -232,6 +238,7 @@ export default function ChatPage({
     status: 'idle',
     data: null
   });
+  const [uploadQuota, setUploadQuota] = useState(() => getUploadQuotaState());
 
   const isSubmittingRef = useRef(false);
   const persistedMessageIdsRef = useRef(new Set());
@@ -418,6 +425,48 @@ export default function ChatPage({
       );
     });
   }, []);
+
+  // Subscribe to authoritative daily attachment upload quota state
+  useEffect(() => {
+    return subscribeUploadQuotaState((snapshot) => {
+      setUploadQuota(snapshot);
+    });
+  }, []);
+
+  // Associate daily upload quota strictly with the authenticated Firebase account
+  useEffect(() => {
+    if (isSharedView) return undefined;
+    const authenticatedUid = !isGuestUser && currentUser?.uid ? currentUser.uid : null;
+    syncUploadQuotaUserAccount(authenticatedUid, { autoFetch: isBrowserOnline() });
+  }, [currentUser?.uid, isGuestUser, isSharedView]);
+
+  // Periodically check for UTC calendar day rollover and refresh on tab visibility/online
+  useEffect(() => {
+    if (isSharedView || isGuestUser || !currentUser?.uid) return undefined;
+
+    const handleVisibilityOrFocus = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        checkUploadQuotaUtcRollover({ triggerRefresh: isBrowserOnline() });
+      }
+    };
+
+    const rolloverIntervalId = setInterval(() => {
+      checkUploadQuotaUtcRollover({ triggerRefresh: isBrowserOnline() });
+    }, 15_000);
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', handleVisibilityOrFocus);
+      document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    }
+
+    return () => {
+      clearInterval(rolloverIntervalId);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', handleVisibilityOrFocus);
+        document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      }
+    };
+  }, [currentUser?.uid, isGuestUser, isSharedView]);
 
   // Load server provider configuration safely without exposing secrets or failing noisy when offline
   useEffect(() => {
@@ -1758,6 +1807,9 @@ export default function ChatPage({
               }
 
               if (!isPreflightActive()) return false;
+
+              // Update daily upload quota indicator strictly from authoritative backend X-RateLimit-Remaining header
+              updateUploadQuotaFromResponse(uploadRes, currentUser?.uid || null);
 
               if (!uploadRes.ok) {
                 let errorMsg = `Upload failed (${uploadRes.status})`;
@@ -3756,6 +3808,7 @@ export default function ChatPage({
         onSignInClick={() => setShowAuthModal(true)}
         onNavigateHome={onNavigateHome || handleNewChat}
         onGenerateImage={handleGenerateImage}
+        uploadQuota={uploadQuota}
       />
 
       <ShareChatModal
