@@ -336,9 +336,9 @@ async function main() {
     });
 
     // -------------------------------------------------------------------------
-    // Test 7: Guest upload without conversationId is preserved (local storage)
+    // Test 7: Unauthenticated guest upload without conversationId is rejected (P3)
     // -------------------------------------------------------------------------
-    await runTest('7. Guest upload without conversationId succeeds with local storageProvider', async () => {
+    await runTest('7. Unauthenticated guest upload without conversationId is rejected with 401 UNAUTHENTICATED', async () => {
       mockStorageStore.clear();
 
       const { body, contentType } = createMultipartPayload({
@@ -356,19 +356,16 @@ async function main() {
         body
       });
 
-      assert.equal(res.status, 200, 'Guest upload without conversationId must return 200 OK');
+      assert.equal(res.status, 401, 'Unauthenticated guest upload must return 401 UNAUTHENTICATED');
       const data = await res.json();
-      assert.equal(data.success, true);
-      const att = data.attachments[0];
-      assert.equal(att.storageProvider, 'local');
-      assert.equal(att.userId, undefined);
+      assert.equal(data.code, 'UNAUTHENTICATED');
       assert.equal(mockStorageStore.size, 0, 'Guest upload must not touch Supabase');
     });
 
     // -------------------------------------------------------------------------
-    // Test 8: Guest upload with valid conversationId is preserved (local storage)
+    // Test 8: Unauthenticated guest upload with conversationId is rejected (P3)
     // -------------------------------------------------------------------------
-    await runTest('8. Guest upload with conversationId succeeds with local storageProvider', async () => {
+    await runTest('8. Unauthenticated guest upload with conversationId is rejected with 401 UNAUTHENTICATED', async () => {
       mockStorageStore.clear();
 
       const guestChatId = 'guest_chat_12345';
@@ -387,11 +384,9 @@ async function main() {
         body
       });
 
-      assert.equal(res.status, 200, 'Guest upload with conversationId must return 200 OK');
+      assert.equal(res.status, 401, 'Unauthenticated guest upload with conversationId must return 401 UNAUTHENTICATED');
       const data = await res.json();
-      assert.equal(data.success, true);
-      const att = data.attachments[0];
-      assert.equal(att.storageProvider, 'local');
+      assert.equal(data.code, 'UNAUTHENTICATED');
       assert.equal(mockStorageStore.size, 0, 'Guest upload must not touch Supabase');
     });
 

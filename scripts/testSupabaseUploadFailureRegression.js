@@ -450,9 +450,9 @@ async function main() {
     });
 
     // -------------------------------------------------------------------------
-    // Test 7: Guest / unauthenticated upload preservation -> succeeds locally with 200 OK
+    // Test 7: Unauthenticated guest upload rejection (P3) -> rejected with 401 UNAUTHENTICATED
     // -------------------------------------------------------------------------
-    await runTest('7. Unauthenticated guest upload succeeds with 200 OK and storageProvider: "local"', async () => {
+    await runTest('7. Unauthenticated guest upload is rejected with 401 UNAUTHENTICATED without calling Supabase', async () => {
       mockStorageStore.clear();
       uploadBehavior = async () => {
         throw new Error('Supabase should not be called for unauthenticated guest upload');
@@ -471,10 +471,9 @@ async function main() {
         body
       });
 
-      assert.equal(res.status, 200, `Expected 200 OK for guest upload, got ${res.status}`);
+      assert.equal(res.status, 401, `Expected 401 UNAUTHENTICATED for guest upload, got ${res.status}`);
       const data = await res.json();
-      assert.equal(data.success, true);
-      assert.equal(data.attachments[0].storageProvider, 'local');
+      assert.equal(data.code, 'UNAUTHENTICATED');
       assert.equal(mockStorageStore.size, 0, 'Supabase must not have received any uploads');
     });
 

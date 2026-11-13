@@ -273,9 +273,39 @@ export function createExpiringGuestToken(
 }
 
 /**
+ * Builds a QuotaIdentity exclusively from a cryptographically verified Firebase UID.
+ * Never trusts client-provided user IDs, guest tokens, cookies, or identity headers.
+ */
+export function buildAuthenticatedQuotaIdentity(verifiedUid: string): QuotaIdentity {
+  const cleanUid = typeof verifiedUid === 'string' ? verifiedUid.trim() : '';
+  if (!cleanUid) {
+    throw new Error('A verified Firebase UID is required to construct upload quota identity.');
+  }
+  const hashedUid = crypto.createHash('sha256').update(`auth:${cleanUid}`).digest('hex').slice(0, 32);
+  return {
+    type: 'auth',
+    id: cleanUid,
+    key: `auth_${hashedUid}`
+  };
+}
+
+/**
+ * Resolves upload quota identity exclusively from a verified Firebase ID token on the request.
+ * Returns null if the request is unauthenticated, missing a token, expired, or forged.
+ * Never falls back to guest identity, guest cookies, or client headers.
+ */
+export async function resolveAuthenticatedUploadIdentity(req: express.Request): Promise<QuotaIdentity | null> {
+  const authStatus: AuthRequestResult = await authenticateRequest(req);
+  if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+    return null;
+  }
+  return buildAuthenticatedQuotaIdentity(authStatus.userId);
+}
+
+/**
  * Resolves request identity according to strict security rules:
  * 1. Authenticated users: Cryptographically verified Firebase ID token -> verified UID.
- * 2. Guests: Server-issued signed guest token from cookies or X-Guest-Token header.
+ * 2. Guests: Server-issued signed guest token from cookies or X-Guest-Token header (used only for non-upload guest subsystems).
  * 3. Never trusts arbitrary client-supplied user IDs or IP headers!
  */
 export async function resolveUploadIdentity(req: express.Request): Promise<QuotaIdentity> {
@@ -283,13 +313,7 @@ export async function resolveUploadIdentity(req: express.Request): Promise<Quota
 
   // Authenticated user with verified Firebase UID
   if (authStatus.status === 'authenticated' && authStatus.userId) {
-    const verifiedUid = authStatus.userId;
-    const hashedUid = crypto.createHash('sha256').update(`auth:${verifiedUid}`).digest('hex').slice(0, 32);
-    return {
-      type: 'auth',
-      id: verifiedUid,
-      key: `auth_${hashedUid}`
-    };
+    return buildAuthenticatedQuotaIdentity(authStatus.userId);
   }
 
   // Guest user: Inspect signed cookie or X-Guest-Token header

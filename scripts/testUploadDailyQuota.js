@@ -345,42 +345,32 @@ async function runAllTests() {
   });
 
   // -------------------------------------------------------------------------
-  // Test 5: Guest Identity Isolation & Persistence
+  // Test 5: Guest Upload Rejection & Identity Rotation Prevention (P3)
   // -------------------------------------------------------------------------
-  await test('Guest identity isolation & persistence: Server-issued token persists quota across requests', async () => {
-    // 1. Initial guest upload receives server-issued guest token
-    const firstGuestUpload = await uploadAttachment({ conversationId: undefined, filename: 'guest_1.txt' });
-    assert.strictEqual(firstGuestUpload.status, 200);
+  await test('Guest attachment uploads and guest token rotation attempts are rejected with HTTP 401 UNAUTHENTICATED', async () => {
+    // 1. Unauthenticated guest upload attempt without token is rejected with 401 UNAUTHENTICATED
+    const firstGuestUpload = await uploadAttachment({ conversationId: 'conv_guest_1', filename: 'guest_1.txt' });
+    assert.strictEqual(firstGuestUpload.status, 401, 'Unauthenticated guest upload must be rejected with 401');
+    assert.strictEqual(firstGuestUpload.data.code, 'UNAUTHENTICATED');
+    assert.strictEqual(firstGuestUpload.headers.get('x-guest-token'), null, 'Must never issue X-Guest-Token on upload endpoints');
 
-    const guestToken = firstGuestUpload.headers.get('x-guest-token');
-    assert.ok(guestToken, 'Server must return X-Guest-Token header for guests');
-    assert.ok(guestToken.startsWith('guest_'), 'Guest token must be server-issued');
-
-    // 2. Consume remaining 4 uploads with this guest token
-    for (let i = 2; i <= 5; i++) {
-      const r = await uploadAttachment({
-        guestToken,
-        conversationId: undefined,
-        filename: `guest_${i}.txt`
-      });
-      assert.strictEqual(r.status, 200, `Guest upload ${i} should succeed`);
-    }
-
-    // 3. 6th upload with same guest token is blocked
-    const r6 = await uploadAttachment({
+    // 2. Guest upload attempt with a valid server-issued guest token in header or cookie is still rejected with 401
+    const { guestToken } = createServerIssuedGuestToken();
+    const headerGuestAttempt = await uploadAttachment({
       guestToken,
-      conversationId: undefined,
-      filename: 'guest_6.txt'
+      conversationId: 'conv_guest_2',
+      filename: 'guest_2.txt'
     });
-    assert.strictEqual(r6.status, 429, 'Guest exceeding limit must receive 429');
-    assert.strictEqual(r6.data.code, 'QUOTA_EXCEEDED');
+    assert.strictEqual(headerGuestAttempt.status, 401, 'Guest upload with X-Guest-Token must be rejected with 401');
+    assert.strictEqual(headerGuestAttempt.data.code, 'UNAUTHENTICATED');
 
-    // 4. A different guest (with fresh identity) is not affected
-    const otherGuestUpload = await uploadAttachment({
-      conversationId: undefined,
-      filename: 'other_guest.txt'
+    const cookieGuestAttempt = await uploadAttachment({
+      cookie: `orvix_guest_token=${encodeURIComponent(guestToken)}`,
+      conversationId: 'conv_guest_3',
+      filename: 'guest_3.txt'
     });
-    assert.strictEqual(otherGuestUpload.status, 200, 'Different guest should succeed');
+    assert.strictEqual(cookieGuestAttempt.status, 401, 'Guest upload with orvix_guest_token cookie must be rejected with 401');
+    assert.strictEqual(cookieGuestAttempt.data.code, 'UNAUTHENTICATED');
   });
 
   // -------------------------------------------------------------------------
@@ -554,7 +544,7 @@ async function runAllTests() {
   // Test 10: Invalid or Forged Identity Cannot Bypass Enforcement
   // -------------------------------------------------------------------------
   await test('Invalid or forged identity cannot bypass quota enforcement', async () => {
-    // 1. Forged Firebase token with wrong signature -> rejected with 401
+    // 1. Forged Firebase token with wrong signature -> rejected with 401 UNAUTHENTICATED
     const forgedToken = createSignedJwt('victim_user_999', {}, attackerPrivateKey);
     const resForgedAuth = await uploadAttachment({
       token: forgedToken,
@@ -562,29 +552,26 @@ async function runAllTests() {
       filename: 'forged.txt'
     });
     assert.strictEqual(resForgedAuth.status, 401, 'Forged JWT must be rejected with 401');
+    assert.strictEqual(resForgedAuth.data.code, 'UNAUTHENTICATED');
 
-    // 2. Client-supplied userId in body is ignored
+    // 2. Client-supplied userId in header without valid Firebase token is rejected with 401 UNAUTHENTICATED
     const resSpoofedBody = await uploadAttachment({
       extraHeaders: { 'x-user-id': 'victim_admin' },
-      conversationId: undefined,
+      conversationId: 'conv_spoof',
       filename: 'spoof.txt'
     });
-    assert.strictEqual(resSpoofedBody.status, 200);
-    // Must be assigned a guest identity, NOT victim_admin
-    const guestToken = resSpoofedBody.headers.get('x-guest-token');
-    assert.ok(guestToken, 'Must receive server-issued guest token');
+    assert.strictEqual(resSpoofedBody.status, 401, 'Unauthenticated request with spoofed x-user-id must be rejected with 401');
+    assert.strictEqual(resSpoofedBody.data.code, 'UNAUTHENTICATED');
 
-    // 3. Forged guest token with tampered signature
+    // 3. Forged guest token with tampered signature is rejected with 401 UNAUTHENTICATED
     const forgedGuestToken = 'guest_1234567890abcdef.deadbeefcafebabe';
     const resForgedGuest = await uploadAttachment({
       guestToken: forgedGuestToken,
-      conversationId: undefined,
+      conversationId: 'conv_forged_guest',
       filename: 'forged_guest.txt'
     });
-    assert.strictEqual(resForgedGuest.status, 200);
-    const newGuestToken = resForgedGuest.headers.get('x-guest-token');
-    // Must issue a NEW token, not adopt the forged guest ID
-    assert.notStrictEqual(newGuestToken, forgedGuestToken);
+    assert.strictEqual(resForgedGuest.status, 401, 'Forged guest token must be rejected with 401');
+    assert.strictEqual(resForgedGuest.data.code, 'UNAUTHENTICATED');
   });
 
   // -------------------------------------------------------------------------

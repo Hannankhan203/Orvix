@@ -39,6 +39,8 @@ import {
 } from './firebaseAuthHelper.ts';
 import {
   DAILY_UPLOAD_LIMIT,
+  buildAuthenticatedQuotaIdentity,
+  resolveAuthenticatedUploadIdentity,
   resolveUploadIdentity,
   reserveUploadSlot,
   commitUploadSlot,
@@ -56,6 +58,8 @@ export {
   resolveVerifiedUserId,
   authenticateRequest,
   DAILY_UPLOAD_LIMIT,
+  buildAuthenticatedQuotaIdentity,
+  resolveAuthenticatedUploadIdentity,
   resolveUploadIdentity,
   reserveUploadSlot,
   commitUploadSlot,
@@ -81,6 +85,37 @@ export type {
  */
 export async function resolveRequestUserId(req: express.Request): Promise<string | null> {
   return resolveVerifiedUserId(req);
+}
+
+/**
+ * Enforces mandatory Firebase authentication for attachment upload endpoints.
+ * Rejects unauthenticated, missing, expired, malformed, or forged tokens with
+ * HTTP 401 and a consistent UNAUTHENTICATED error code.
+ * Never trusts client-provided user IDs, guest tokens, cookies, or identity headers,
+ * and never falls back to guest identity.
+ */
+async function requireUploadAuthentication(
+  req: express.Request,
+  res: express.Response,
+  defaultMessage = 'Authentication is required to upload attachments. Please sign in to continue.'
+): Promise<string | null> {
+  const authStatus = await authenticateRequest(req);
+  if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+    const errorMessage =
+      authStatus.status === 'invalid' && authStatus.error
+        ? `Authentication failed: ${authStatus.error}`
+        : defaultMessage;
+    res.status(401).json({
+      error: errorMessage,
+      code: 'UNAUTHENTICATED',
+      status: 'UNAUTHENTICATED',
+      ...(authStatus.status === 'invalid' && authStatus.code
+        ? { authErrorCode: authStatus.code }
+        : {})
+    });
+    return null;
+  }
+  return authStatus.userId;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1651,18 +1686,30 @@ export function registerUploadRoutes(app: express.Express) {
     return res.status(200).json({ success: true, id: fileId });
   });
 
+  // Enforce authentication across all /api/upload/direct/* and /upload/direct/* endpoints
+  app.use(['/api/upload/direct', '/upload/direct'], async (req, res, next) => {
+    const authenticatedUserId = await requireUploadAuthentication(
+      req,
+      res,
+      'Authentication required for direct cloud upload.'
+    );
+    if (!authenticatedUserId) {
+      return;
+    }
+    (req as any).authenticatedUploadUserId = authenticatedUserId;
+    next();
+  });
+
   // Direct Supabase Upload: Create Short-Lived Signed Upload URL
   app.post(['/api/upload/direct/signed-url', '/upload/direct/signed-url'], async (req, res) => {
     void pruneExpiredDirectUploadTickets();
 
-    const authStatus = await authenticateRequest(req);
-    if (authStatus.status !== 'authenticated' || !authStatus.userId) {
-      return res.status(401).json({
-        error: 'Authentication required for direct cloud upload.',
-        code: 'UNAUTHENTICATED'
-      });
+    const authenticatedUserId =
+      (req as any).authenticatedUploadUserId ||
+      (await requireUploadAuthentication(req, res, 'Authentication required for direct cloud upload.'));
+    if (!authenticatedUserId) {
+      return;
     }
-    const authenticatedUserId = authStatus.userId;
 
     if (!isSupabaseConfigured()) {
       return res.status(503).json({
@@ -1732,7 +1779,7 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
 
-    const quotaIdentity = await resolveUploadIdentity(req);
+    const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
     let quotaReservation: any;
     try {
       quotaReservation = await reserveUploadSlot(quotaIdentity);
@@ -1827,14 +1874,12 @@ export function registerUploadRoutes(app: express.Express) {
 
   // Direct Supabase Upload: Authenticated Completion & Object Verification
   app.post(['/api/upload/direct/complete', '/upload/direct/complete'], async (req, res) => {
-    const authStatus = await authenticateRequest(req);
-    if (authStatus.status !== 'authenticated' || !authStatus.userId) {
-      return res.status(401).json({
-        error: 'Authentication required to complete upload.',
-        code: 'UNAUTHENTICATED'
-      });
+    const authenticatedUserId =
+      (req as any).authenticatedUploadUserId ||
+      (await requireUploadAuthentication(req, res, 'Authentication required to complete upload.'));
+    if (!authenticatedUserId) {
+      return;
     }
-    const authenticatedUserId = authStatus.userId;
 
     const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
     const rawChatId = req.body?.chatId ?? req.body?.conversationId;
@@ -1910,7 +1955,7 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
 
-    const quotaIdentity = await resolveUploadIdentity(req);
+    const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
     let committedStatus: QuotaStatus;
     try {
       committedStatus = await commitUploadSlot(ticket.quotaReservation);
@@ -2052,15 +2097,14 @@ export function registerUploadRoutes(app: express.Express) {
 
   // Direct Supabase Upload: Cancel & Rollback Upload Ticket
   app.post(['/api/upload/direct/cancel', '/upload/direct/cancel'], async (req, res) => {
-    const authStatus = await authenticateRequest(req);
-    if (authStatus.status !== 'authenticated' || !authStatus.userId) {
-      return res.status(401).json({
-        error: 'Authentication required to cancel upload.',
-        code: 'UNAUTHENTICATED'
-      });
+    const authenticatedUserId =
+      (req as any).authenticatedUploadUserId ||
+      (await requireUploadAuthentication(req, res, 'Authentication required to cancel upload.'));
+    if (!authenticatedUserId) {
+      return;
     }
     const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
-    const cancelRes = await cancelDurableUploadTicket(attachmentId, authStatus.userId);
+    const cancelRes = await cancelDurableUploadTicket(attachmentId, authenticatedUserId);
     if (!cancelRes.success && cancelRes.status === 403) {
       return res.status(403).json({
         error: cancelRes.error,
@@ -2069,7 +2113,19 @@ export function registerUploadRoutes(app: express.Express) {
     }
     return res.status(200).json({ success: true, cancelled: true });
   });
-  app.post(['/api/upload', '/upload'], (req, res) => {
+
+  app.post(['/api/upload', '/upload'], async (req, res) => {
+    // P3 Security Enforcement: Require valid Firebase authentication BEFORE parsing multipart upload payload.
+    // Never trust client-provided userIds, guest tokens, cookies, or identity headers.
+    const authenticatedUserId = await requireUploadAuthentication(
+      req,
+      res,
+      'Authentication is required to upload attachments. Please sign in to continue.'
+    );
+    if (!authenticatedUserId) {
+      return;
+    }
+
     uploadMiddleware.array('files', MAX_ATTACHMENTS_PER_UPLOAD)(req as any, res as any, async (err: any) => {
       if (err) {
         if (err instanceof multer.MulterError) {
@@ -2115,34 +2171,24 @@ export function registerUploadRoutes(app: express.Express) {
 
       const rawConvId = req.body?.conversationId !== undefined ? String(req.body.conversationId).trim() : undefined;
       const conversationId = rawConvId && rawConvId.length > 0 ? rawConvId : undefined;
-      const authStatus = await authenticateRequest(req);
-      if (authStatus.status === 'invalid') {
-        return res.status(401).json({
-          error: `Authentication failed: ${authStatus.error}`,
-          code: authStatus.code || 'INVALID_TOKEN'
-        });
-      }
-      const authenticatedUserId = authStatus.userId;
       const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
 
-      // Authenticated cloud uploads require a valid conversation ID to prevent orphaned staging storage
-      if (authenticatedUserId) {
-        if (!conversationId) {
-          return res.status(400).json({
-            error: 'A valid conversationId is required for authenticated uploads.',
-            code: 'MISSING_CONVERSATION_ID'
-          });
-        }
-        if (!isValidPathSegment(conversationId) || conversationId.toLowerCase() === 'staging') {
-          return res.status(400).json({
-            error: 'Invalid conversationId provided. Must contain only alphanumeric characters, dashes, and underscores.',
-            code: 'INVALID_CONVERSATION_ID'
-          });
-        }
+      // Authenticated uploads require a valid conversation ID to prevent orphaned staging storage
+      if (!conversationId) {
+        return res.status(400).json({
+          error: 'A valid conversationId is required for authenticated uploads.',
+          code: 'MISSING_CONVERSATION_ID'
+        });
+      }
+      if (!isValidPathSegment(conversationId) || conversationId.toLowerCase() === 'staging') {
+        return res.status(400).json({
+          error: 'Invalid conversationId provided. Must contain only alphanumeric characters, dashes, and underscores.',
+          code: 'INVALID_CONVERSATION_ID'
+        });
       }
 
-      // Enforce secure, persistent daily upload quota of 5 per identity per UTC calendar day
-      const quotaIdentity = await resolveUploadIdentity(req);
+      // Enforce secure, persistent daily upload quota of 5 per verified Firebase UID per UTC calendar day
+      const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
       let quotaReservation: any;
       try {
         quotaReservation = await reserveUploadSlot(quotaIdentity);

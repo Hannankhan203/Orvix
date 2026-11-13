@@ -351,9 +351,9 @@ async function runAllTests() {
     });
 
     // -------------------------------------------------------------------------
-    // Test 6: Guest User First-Turn Upload and Conversation Alignment
+    // Test 6: Guest User First-Turn Upload Rejection (P3)
     // -------------------------------------------------------------------------
-    await runTest('Guest first-turn upload uses guest chatId and stores file locally with matching ID', async () => {
+    await runTest('Guest unauthenticated first-turn upload is rejected with 401 UNAUTHENTICATED', async () => {
       const activeChatId = null;
       const isCloudEnabled = false;
       const currentUser = null;
@@ -376,15 +376,9 @@ async function runAllTests() {
         body: form
       });
 
-      assert.equal(uploadRes.status, 200);
+      assert.equal(uploadRes.status, 401);
       const uploadData = await uploadRes.json();
-      const uploadedAtt = uploadData.attachments[0];
-
-      assert.equal(uploadedAtt.storageProvider, 'local');
-      const reg = fileRegistry.get(uploadedAtt.id);
-      assert.ok(reg);
-      assert.equal(reg.conversationId, effectiveChatId);
-      assert.equal(conversationDocuments.get(effectiveChatId)?.has(uploadedAtt.id), true);
+      assert.equal(uploadData.code, 'UNAUTHENTICATED');
     });
 
     console.log('\n================================================================');
