@@ -668,6 +668,34 @@ export function serializeAttachmentForStorage(att) {
     serialized.storageProvider = resolvedStorageProvider;
   }
 
+  if (typeof att.storagePath === 'string' && att.storagePath.trim()) {
+    serialized.storagePath = att.storagePath.trim();
+  }
+
+  const resolvedBucket = att.bucket || att.storageBucket;
+  if (typeof resolvedBucket === 'string' && resolvedBucket.trim()) {
+    serialized.bucket = resolvedBucket.trim();
+    serialized.storageBucket = resolvedBucket.trim();
+  }
+
+  const resolvedChatId = att.chatId || att.conversationId;
+  if (typeof resolvedChatId === 'string' && resolvedChatId.trim()) {
+    serialized.chatId = resolvedChatId.trim();
+    serialized.conversationId = resolvedChatId.trim();
+  }
+
+  if (typeof att.userId === 'string' && att.userId.trim()) {
+    serialized.userId = att.userId.trim();
+  }
+
+  if (att.uploadedAt !== undefined && att.uploadedAt !== null) {
+    serialized.uploadedAt = att.uploadedAt;
+  }
+
+  if (typeof att.expiresAt === 'number' && Number.isFinite(att.expiresAt)) {
+    serialized.expiresAt = att.expiresAt;
+  }
+
   if (resolvedStorageProvider === 'supabase' || att.isCloud === true) {
     serialized.isCloud = true;
   } else if (typeof att.isCloud === 'boolean' || resolvedStorageProvider === 'local') {

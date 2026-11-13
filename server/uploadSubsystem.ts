@@ -27,8 +27,10 @@ import {
   deleteAttachmentsForChatInStorage,
   findAttachmentPathInStorage,
   buildAttachmentStoragePath,
+  parseStoragePath,
   assertUserOwnsStoragePath,
   saveDurableAttachmentExpiry,
+  checkDurableAttachmentExpiry,
   isValidPathSegment
 } from './supabaseStorageService.ts';
 import { isSupabaseConfigured, getSupabaseBucket } from './supabaseClient.ts';
@@ -625,6 +627,321 @@ export function cleanupExpiredUploads() {
 const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const cleanupTimer = setInterval(cleanupExpiredUploads, CLEANUP_INTERVAL_MS);
 if (cleanupTimer.unref) cleanupTimer.unref();
+
+/**
+ * Serializes an UploadedFileRecord into the canonical client-facing attachment contract
+ * shared by both standard (`POST /api/upload`) and direct (`POST /api/upload/direct/complete`) uploads.
+ */
+export function serializeRegisteredAttachment(r: UploadedFileRecord) {
+  const ext = path.extname(r.diskFilename || r.originalName || '').toLowerCase();
+  const isImg =
+    Boolean(r.isImage) ||
+    ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
+    (r.mimeType || '').toLowerCase().startsWith('image/');
+
+  return {
+    id: r.id,
+    originalName: r.originalName,
+    name: r.originalName,
+    extension: r.extension,
+    format: r.extraction?.format || r.extension,
+    mimeType: r.mimeType,
+    type: r.mimeType,
+    size: r.size,
+    formattedSize: r.formattedSize,
+    status: r.status,
+    isImage: isImg,
+    dimensions: r.dimensions,
+    url: `/api/upload/${r.id}/file`,
+    uploadedAt: r.uploadedAt,
+    expiresAt: r.expiresAt,
+    storageProvider: r.storageProvider || 'local',
+    storagePath: r.storagePath || null,
+    storageBucket: r.storageBucket || null,
+    bucket: r.storageBucket || null,
+    userId: r.userId || null,
+    chatId: r.conversationId || null,
+    conversationId: r.conversationId || null,
+    extraction: r.extraction
+      ? {
+          id: r.id,
+          fileId: r.id,
+          filename: r.diskFilename,
+          originalName: r.originalName,
+          name: r.originalName,
+          status: r.extraction.status,
+          success: r.extraction.success,
+          format: r.extraction.format || r.extension,
+          isImage: Boolean(r.extraction.isImage || isImg),
+          hasText: Boolean(r.extraction.hasText),
+          text: r.extraction.text || '',
+          message: r.extraction.message,
+          totalCharacters: r.extraction.totalCharacters ?? 0,
+          totalWords: r.extraction.totalWords ?? 0,
+          lineCount: r.extraction.lineCount,
+          confidence: r.extraction.confidence,
+          summaryText: r.extraction.summaryText,
+          pageCount: r.extraction.pageCount,
+          pages: r.extraction.pages,
+          slideCount: r.extraction.slideCount,
+          slides: r.extraction.slides,
+          sectionCount: r.extraction.sectionCount,
+          sections: r.extraction.sections,
+          table: r.extraction.table,
+          headings: (r.extraction as any).headings,
+          metadata: (r.extraction as any).metadata,
+          isScanned: r.extraction.isScanned,
+          isTruncated: r.extraction.isTruncated,
+          warning: r.extraction.warning,
+          error: r.extraction.error
+        }
+      : undefined
+  };
+}
+
+export interface AttachmentResolutionResult {
+  status: 'ok' | 'expired' | 'not_found' | 'unauthenticated' | 'forbidden';
+  record: UploadedFileRecord | null;
+}
+
+/**
+ * Resolves an attachment reference for `/api/chat` by checking `fileRegistry` first,
+ * enforcing expiration and Firebase UID ownership, and falling back to durable Supabase Storage
+ * re-hydration when `fileRegistry` misses (e.g., across serverless function boundaries or restarts).
+ */
+export async function resolveRegisteredAttachmentForChat(
+  att: any,
+  options: {
+    authenticatedUserId: string | null;
+    conversationId?: string | null;
+    offline?: boolean;
+  }
+): Promise<AttachmentResolutionResult> {
+  const attId = typeof att?.id === 'string' ? att.id.trim() : '';
+  const authenticatedUserId = options?.authenticatedUserId ? String(options.authenticatedUserId).trim() : null;
+  const nowMs = Date.now();
+
+  if (!attId) {
+    return { status: 'not_found', record: null };
+  }
+
+  // 1. Check in-memory fileRegistry first
+  const existing = fileRegistry.get(attId);
+  if (existing) {
+    // Deterministically enforce expiration before allowing chat submission
+    if (
+      !existing.isPermanent &&
+      typeof existing.expiresAt === 'number' &&
+      Number.isFinite(existing.expiresAt) &&
+      existing.expiresAt <= nowMs
+    ) {
+      fileRegistry.delete(attId);
+      if (existing.conversationId && conversationDocuments.has(existing.conversationId)) {
+        conversationDocuments.get(existing.conversationId)!.delete(attId);
+      }
+      if (existing.diskFilename) {
+        fs.promises.unlink(path.join(UPLOAD_DIR, existing.diskFilename)).catch(() => {});
+      }
+      if (existing.storageProvider === 'supabase' && existing.storagePath) {
+        deleteAttachmentFromStorage(existing.storagePath, {
+          requestingUserId: existing.userId,
+          bucket: existing.storageBucket
+        }).catch(() => {});
+      }
+      return { status: 'expired', record: null };
+    }
+
+    // Enforce Firebase UID ownership verification
+    if (existing.userId) {
+      if (!authenticatedUserId) {
+        return { status: 'unauthenticated', record: existing };
+      }
+      if (existing.userId !== authenticatedUserId) {
+        return { status: 'forbidden', record: existing };
+      }
+    }
+
+    return { status: 'ok', record: existing };
+  }
+
+  // 2. When missing from in-memory fileRegistry (e.g., serverless /api/upload -> /api/chat boundary),
+  //    check explicit ownership hints first to reject cross-user tampering with 403.
+  if (typeof att?.storagePath === 'string' && att.storagePath.trim()) {
+    const parsedClientPath = parseStoragePath(att.storagePath);
+    if (parsedClientPath.valid && parsedClientPath.userId) {
+      if (!authenticatedUserId) {
+        return { status: 'unauthenticated', record: null };
+      }
+      if (parsedClientPath.userId !== authenticatedUserId) {
+        return { status: 'forbidden', record: null };
+      }
+    }
+  }
+
+  if (typeof att?.userId === 'string' && att.userId.trim()) {
+    if (!authenticatedUserId) {
+      return { status: 'unauthenticated', record: null };
+    }
+    if (att.userId.trim() !== authenticatedUserId) {
+      return { status: 'forbidden', record: null };
+    }
+  }
+
+  // 3. Re-hydrate from Supabase Storage for authenticated user
+  if (authenticatedUserId && isSupabaseConfigured()) {
+    const rawChatCandidate =
+      (typeof att?.chatId === 'string' && att.chatId.trim()) ||
+      (typeof att?.conversationId === 'string' && att.conversationId.trim()) ||
+      (typeof options?.conversationId === 'string' && options.conversationId.trim()) ||
+      '';
+    const cleanChatId = isValidPathSegment(rawChatCandidate) ? rawChatCandidate : '';
+
+    let resolvedStoragePath: string | null = null;
+    let resolvedChatId = cleanChatId;
+    let resolvedExt = '';
+
+    if (typeof att?.storagePath === 'string' && att.storagePath.trim()) {
+      const parsed = parseStoragePath(att.storagePath);
+      if (
+        parsed.valid &&
+        parsed.userId === authenticatedUserId &&
+        parsed.attachmentId === attId &&
+        parsed.normalizedPath
+      ) {
+        resolvedStoragePath = parsed.normalizedPath;
+        resolvedChatId = parsed.chatId || resolvedChatId;
+        resolvedExt = parsed.extension || '';
+      }
+    }
+
+    if (!resolvedStoragePath && resolvedChatId) {
+      const found = await findAttachmentPathInStorage(authenticatedUserId, resolvedChatId, attId);
+      if (found.found && found.path) {
+        const parsed = parseStoragePath(found.path);
+        if (parsed.valid && parsed.userId === authenticatedUserId && parsed.attachmentId === attId) {
+          resolvedStoragePath = parsed.normalizedPath || found.path;
+          resolvedExt = parsed.extension || '';
+        }
+      }
+    }
+
+    if (resolvedStoragePath) {
+      const expiryStatus = await checkDurableAttachmentExpiry({
+        userId: authenticatedUserId,
+        chatId: resolvedChatId || undefined,
+        attachmentId: attId,
+        nowMs
+      });
+
+      if (expiryStatus.expired) {
+        return { status: 'expired', record: null };
+      }
+
+      const downloadRes = await downloadAttachmentFromStorage(resolvedStoragePath, {
+        requestingUserId: authenticatedUserId
+      });
+
+      if (downloadRes.success && downloadRes.data && downloadRes.data.length > 0) {
+        const buffer = downloadRes.data;
+        const extFromName = path.extname(att?.originalName || att?.name || '').replace(/^\.+/, '').toLowerCase();
+        const cleanExt = (resolvedExt || (typeof att?.extension === 'string' ? att.extension.replace(/^\.+/, '').toLowerCase() : '') || extFromName || 'pdf').toLowerCase();
+        const dotExt = `.${cleanExt}`;
+
+        const sigResult = await verifyFileSignature(buffer, dotExt);
+        if (!sigResult.valid) {
+          return { status: 'not_found', record: null };
+        }
+
+        const isImg =
+          ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(dotExt) ||
+          Boolean(att?.isImage) ||
+          (downloadRes.mimeType || '').toLowerCase().startsWith('image/');
+
+        const originalName =
+          (typeof att?.originalName === 'string' && att.originalName.trim()) ||
+          (typeof att?.name === 'string' && att.name.trim()) ||
+          `${attId}${dotExt}`;
+        const mimeType =
+          (typeof att?.mimeType === 'string' && att.mimeType.trim()) ||
+          (typeof att?.type === 'string' && att.type.trim()) ||
+          downloadRes.mimeType ||
+          (isImg ? `image/${cleanExt === 'jpg' ? 'jpeg' : cleanExt}` : cleanExt === 'pdf' ? 'application/pdf' : 'application/octet-stream');
+
+        const diskFilename = `${attId}${dotExt}`;
+        let extraction: any =
+          att?.extraction && typeof att.extraction === 'object' && (att.extraction.text || att.extraction.pages || att.extraction.slides || att.extraction.sections || att.extraction.isImage)
+            ? att.extraction
+            : undefined;
+
+        if (!extraction) {
+          const geminiKey = process.env.GEMINI_API_KEY || null;
+          try {
+            if (isImg) {
+              extraction = await extractImageText(
+                buffer,
+                originalName,
+                dotExt,
+                mimeType,
+                attId,
+                sigResult.dimensions,
+                geminiKey,
+                { offline: Boolean(options?.offline) }
+              );
+            } else {
+              extraction = await extractDocumentContent(
+                buffer,
+                originalName,
+                dotExt,
+                mimeType,
+                attId,
+                { offline: Boolean(options?.offline), apiKey: geminiKey }
+              );
+            }
+          } catch (extErr) {
+            console.warn('[Upload Rehydration] Extraction error:', extErr);
+          }
+        }
+
+        const rehydratedRecord: UploadedFileRecord = {
+          id: attId,
+          originalName,
+          diskFilename,
+          mimeType,
+          extension: cleanExt.toUpperCase(),
+          size: buffer.length,
+          formattedSize: formatBytes(buffer.length),
+          status: isImg ? 'ready' : (extraction?.success || extraction?.status === 'ready' || extraction?.status === 'scanned_or_image_only' || extraction?.status === 'NO_TEXT_DETECTED' ? 'ready' : 'uploaded'),
+          uploadedAt: typeof att?.uploadedAt === 'string' ? att.uploadedAt : new Date(nowMs).toISOString(),
+          expiresAt: typeof expiryStatus.expiresAt === 'number' ? expiryStatus.expiresAt : nowMs + TEMP_FILE_TTL_MS,
+          conversationId: resolvedChatId || undefined,
+          userId: authenticatedUserId,
+          isPermanent: false,
+          storageProvider: 'supabase',
+          storagePath: resolvedStoragePath,
+          storageBucket: getSupabaseBucket(),
+          isImage: isImg,
+          dimensions: sigResult.dimensions,
+          extraction,
+          buffer
+        };
+
+        fileRegistry.set(attId, rehydratedRecord);
+        if (resolvedChatId) {
+          let docSet = conversationDocuments.get(resolvedChatId);
+          if (!docSet) {
+            docSet = new Set<string>();
+            conversationDocuments.set(resolvedChatId, docSet);
+          }
+          docSet.add(attId);
+        }
+
+        return { status: 'ok', record: rehydratedRecord };
+      }
+    }
+  }
+
+  return { status: 'not_found', record: null };
+}
 
 export function buildGeminiImageParts({
   attachments = [],
@@ -2117,24 +2434,7 @@ export function registerUploadRoutes(app: express.Express) {
 
     await finalizeCompletedDirectUploadTicket(attachmentId);
 
-    const serializedAtt = {
-      id: record.id,
-      name: record.originalName,
-      originalName: record.originalName,
-      size: record.size,
-      formattedSize: record.formattedSize,
-      type: record.mimeType,
-      mimeType: record.mimeType,
-      extension: record.extension,
-      isImage: record.isImage,
-      status: record.status,
-      storageProvider: 'supabase' as const,
-      storagePath: record.storagePath,
-      storageBucket: record.storageBucket,
-      conversationId: record.conversationId,
-      userId: record.userId,
-      extraction: record.extraction
-    };
+    const serializedAtt = serializeRegisteredAttachment(record);
 
     return res.status(200).json({
       success: true,
@@ -2541,68 +2841,13 @@ export function registerUploadRoutes(app: express.Express) {
       }
       attachQuotaHeaders(res, committedStatus, quotaIdentity);
 
+      const serializedAttachments = uploadedResults.map((r) => serializeRegisteredAttachment(r));
+
       return res.status(200).json({
         success: true,
-        count: uploadedResults.length,
-        attachments: uploadedResults.map((r) => {
-          const ext = path.extname(r.diskFilename).toLowerCase();
-          const isImg =
-            ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
-            r.mimeType.startsWith('image/');
-          return {
-            id: r.id,
-            originalName: r.originalName,
-            name: r.originalName,
-            extension: r.extension,
-            format: r.extraction?.format || r.extension,
-            mimeType: r.mimeType,
-            type: r.mimeType,
-            size: r.size,
-            formattedSize: r.formattedSize,
-            status: r.status,
-            isImage: isImg,
-            dimensions: r.dimensions,
-            url: `/api/upload/${r.id}/file`,
-            uploadedAt: r.uploadedAt,
-            storageProvider: r.storageProvider || 'local',
-            storagePath: r.storagePath || null,
-            bucket: r.storageBucket || null,
-            extraction: r.extraction
-              ? {
-                  id: r.id,
-                  fileId: r.id,
-                  filename: r.diskFilename,
-                  originalName: r.originalName,
-                  name: r.originalName,
-                  status: r.extraction.status,
-                  success: r.extraction.success,
-                  format: r.extraction.format || r.extension,
-                  isImage: Boolean(r.extraction.isImage || isImg),
-                  hasText: Boolean(r.extraction.hasText),
-                  text: r.extraction.text || '',
-                  message: r.extraction.message,
-                  totalCharacters: r.extraction.totalCharacters ?? 0,
-                  totalWords: r.extraction.totalWords ?? 0,
-                  lineCount: r.extraction.lineCount,
-                  confidence: r.extraction.confidence,
-                  summaryText: r.extraction.summaryText,
-                  pageCount: r.extraction.pageCount,
-                  pages: r.extraction.pages,
-                  slideCount: r.extraction.slideCount,
-                  slides: r.extraction.slides,
-                  sectionCount: r.extraction.sectionCount,
-                  sections: r.extraction.sections,
-                  table: r.extraction.table,
-                  headings: (r.extraction as any).headings,
-                  metadata: (r.extraction as any).metadata,
-                  isScanned: r.extraction.isScanned,
-                  isTruncated: r.extraction.isTruncated,
-                  warning: r.extraction.warning,
-                  error: r.extraction.error
-                }
-              : undefined
-          };
-        })
+        count: serializedAttachments.length,
+        attachments: serializedAttachments,
+        attachment: serializedAttachments[0] || null
       });
     });
   });

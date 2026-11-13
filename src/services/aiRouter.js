@@ -16,6 +16,7 @@ import {
   sanitizeAttachmentForNetwork,
   hydrateAttachmentsWithImageBytes
 } from './attachmentStorageService.js';
+import { getAuthHeaders } from './authService.js';
 import { isVisionCapableProvider, isImageAttachment } from './documentContextService.js';
 import {
   normalizeProviderId,
@@ -708,15 +709,33 @@ export async function streamAIMessage(params = {}) {
 
       let res;
       try {
+        const baseChatHeaders = {
+          'Content-Type': 'application/json',
+          ...(shouldStream ? { Accept: 'text/event-stream' } : {})
+        };
+        let chatHeaders = await getAuthHeaders(baseChatHeaders);
         res = await fetch(chatEndpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(shouldStream ? { Accept: 'text/event-stream' } : {})
-          },
+          headers: chatHeaders,
           body: requestBody,
           signal: fetchController.signal
         });
+
+        if (res.status === 401) {
+          try {
+            const clone = res.clone();
+            const errBody = await clone.json().catch(() => null);
+            if (errBody?.code === 'TOKEN_EXPIRED') {
+              chatHeaders = await getAuthHeaders(baseChatHeaders, true);
+              res = await fetch(chatEndpoint, {
+                method: 'POST',
+                headers: chatHeaders,
+                body: requestBody,
+                signal: fetchController.signal
+              });
+            }
+          } catch (_) {}
+        }
       } catch (fetchErr) {
         if (fetchTimer) clearTimeout(fetchTimer);
         if (signal) signal.removeEventListener('abort', onCallerAbortForFetch);

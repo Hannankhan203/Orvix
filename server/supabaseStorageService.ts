@@ -1410,3 +1410,71 @@ export async function listDurableExpiredAttachments(
   return expiredItems;
 }
 
+/**
+ * Checks whether a specific attachment has a durable expiry marker in Supabase Storage
+ * and whether it has expired relative to `nowMs`. If expired, proactively deletes the object
+ * and its expiry marker.
+ */
+export async function checkDurableAttachmentExpiry(options: {
+  userId: string;
+  chatId?: string;
+  attachmentId: string;
+  nowMs?: number;
+  bucket?: string;
+  client?: any;
+}): Promise<{ expired: boolean; expiresAt?: number }> {
+  try {
+    const client = options.client || getSupabaseServerClient();
+    if (!client || typeof client.storage?.from !== 'function') {
+      return { expired: false };
+    }
+
+    const activeBucket = options.bucket || getSupabaseBucket();
+    const bucketInstance = client.storage.from(activeBucket);
+    if (!bucketInstance || typeof bucketInstance.list !== 'function') {
+      return { expired: false };
+    }
+
+    const cleanUser = String(options.userId || '').trim();
+    const cleanAtt = String(options.attachmentId || '').trim();
+    const cleanChat = options.chatId ? String(options.chatId).trim() : '';
+    const nowMs = typeof options.nowMs === 'number' ? options.nowMs : Date.now();
+
+    const { data: fileList, error: listErr } = await bucketInstance.list(EXPIRY_RECORDS_PREFIX, {
+      limit: 1000
+    });
+
+    if (listErr || !Array.isArray(fileList) || fileList.length === 0) {
+      return { expired: false };
+    }
+
+    for (const item of fileList) {
+      if (!item?.name) continue;
+      const parsed = parseDurableExpiryRecordPath(item.name);
+      if (!parsed.valid || typeof parsed.expiresAt !== 'number') continue;
+      if (parsed.userId !== cleanUser || parsed.attachmentId !== cleanAtt) continue;
+      if (cleanChat && parsed.chatId && parsed.chatId !== cleanChat) continue;
+
+      if (parsed.expiresAt <= nowMs) {
+        try {
+          const pathsToRemove = [
+            parsed.storagePath,
+            parsed.expiryRecordPath
+          ].filter((p): p is string => Boolean(p));
+          if (pathsToRemove.length > 0) {
+            await bucketInstance.remove(pathsToRemove);
+          }
+        } catch (_) {}
+        return { expired: true, expiresAt: parsed.expiresAt };
+      }
+
+      return { expired: false, expiresAt: parsed.expiresAt };
+    }
+
+    return { expired: false };
+  } catch (_) {
+    return { expired: false };
+  }
+}
+
+

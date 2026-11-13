@@ -1770,18 +1770,36 @@ export default function ChatPage({
               isBrowserOnline() &&
               isDirectUploadCandidate(filesToUpload[0].file);
 
+            let usedDirectUpload = false;
             if (directCandidate) {
               try {
                 const directResult = await uploadFileDirectToSupabase(filesToUpload[0].file, {
                   chatId: effectiveChatId,
                   signal: uploadController.signal
                 });
-                rawUploaded = directResult.attachment ? [directResult.attachment] : [];
-              } finally {
+                rawUploaded = directResult.attachment
+                  ? [directResult.attachment]
+                  : Array.isArray(directResult.attachments)
+                  ? directResult.attachments
+                  : [];
+                usedDirectUpload = true;
                 clearTimeout(uploadTimeoutId);
                 preflightEntry.signal.removeEventListener('abort', onRequestCancelled);
+              } catch (directErr) {
+                const shouldFallbackToStandardUpload =
+                  directErr?.status === 503 ||
+                  directErr?.code === 'STORAGE_UNCONFIGURED' ||
+                  directErr?.code === 'METHOD_NOT_SUPPORTED';
+                if (!shouldFallbackToStandardUpload) {
+                  clearTimeout(uploadTimeoutId);
+                  preflightEntry.signal.removeEventListener('abort', onRequestCancelled);
+                  throw directErr;
+                }
+                console.warn('Direct Supabase upload unavailable, falling back to standard upload:', directErr?.message);
               }
-            } else {
+            }
+
+            if (!usedDirectUpload) {
               const formData = new FormData();
               if (effectiveChatId) {
                 formData.append('conversationId', effectiveChatId);
@@ -1893,6 +1911,8 @@ export default function ChatPage({
 
                 rawUploaded = Array.isArray(uploadData?.attachments)
                   ? uploadData.attachments
+                  : uploadData?.attachment
+                  ? [uploadData.attachment]
                   : [];
               }
             }
@@ -1936,6 +1956,8 @@ export default function ChatPage({
 
                   return {
                     ...cleanProc,
+                    chatId: cleanProc.chatId || cleanProc.conversationId || effectiveChatId || null,
+                    conversationId: cleanProc.conversationId || cleanProc.chatId || effectiveChatId || null,
                     ...(savedInIdb ? {} : orig?.file ? { file: orig.file } : {}),
                     ...(safePreviewUrl ? { previewUrl: safePreviewUrl } : {}),
                     isImage: Boolean(cleanProc.isImage || orig?.isImage)
@@ -2066,9 +2088,22 @@ export default function ChatPage({
           size: att.size,
           formattedSize: att.formattedSize,
           type: att.type || att.mimeType,
+          mimeType: att.mimeType || att.type,
           extension: att.extension,
+          format: att.format,
           isImage: Boolean(att.isImage),
+          dimensions: att.dimensions || null,
+          url: att.url || null,
           status: att.status || 'uploaded',
+          storageProvider: att.storageProvider || undefined,
+          storagePath: att.storagePath || null,
+          bucket: att.bucket || att.storageBucket || null,
+          storageBucket: att.storageBucket || att.bucket || null,
+          chatId: att.chatId || att.conversationId || effectiveChatId || null,
+          conversationId: att.conversationId || att.chatId || effectiveChatId || null,
+          userId: att.userId || currentUser?.uid || null,
+          uploadedAt: att.uploadedAt || null,
+          expiresAt: att.expiresAt || null,
           extraction: att.extraction
         }));
       }
@@ -2214,7 +2249,7 @@ export default function ChatPage({
 
       // Check if current message has attachments, or if we should carry forward attachments from the conversation
       // or from the multi-part sequence so follow-up questions and continuations maintain context
-      let activeAttachments = processedAttachments;
+      let activeAttachments = userMessage.attachments;
       if ((!activeAttachments || activeAttachments.length === 0) && isContinuation && Array.isArray(multiPartContext.referencedAttachments) && multiPartContext.referencedAttachments.length > 0) {
         activeAttachments = multiPartContext.referencedAttachments;
       } else if ((!activeAttachments || activeAttachments.length === 0) && currentMessagesSnapshot.length > 0) {
@@ -2228,10 +2263,17 @@ export default function ChatPage({
             ? m.referencedAttachments
             : [];
           for (const a of atts) {
+            if (submitProvider !== 'webllm' && String(a?.id || '').startsWith('att-') && !a?.storageProvider) {
+              continue;
+            }
             const key = a.id || a.name || a.originalName;
             if (key && !seenIds.has(key)) {
               seenIds.add(key);
-              found.push(a);
+              found.push({
+                ...a,
+                chatId: a?.chatId || a?.conversationId || currentChatId,
+                conversationId: a?.conversationId || a?.chatId || currentChatId
+              });
             }
           }
         }

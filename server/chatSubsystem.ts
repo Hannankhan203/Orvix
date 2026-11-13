@@ -50,7 +50,8 @@ import {
   fileRegistry,
   conversationDocuments,
   UPLOAD_DIR,
-  buildGeminiImageParts
+  buildGeminiImageParts,
+  resolveRegisteredAttachmentForChat
 } from './uploadSubsystem.ts';
 import { authenticateRequest } from './firebaseAuthHelper.ts';
 
@@ -669,11 +670,41 @@ export function registerChatRoutes(app: express.Express) {
           });
         }
 
-        // Requirement 4 & 5: Check registration in existing fileRegistry
-        const record = fileRegistry.get(attId);
-        if (!record) {
+        // Requirement 3, 4 & 5: Verify registration (in-memory or durable Supabase Storage re-hydration),
+        // enforce expiration, and verify Firebase UID ownership to prevent cross-user access.
+        const resolution = await resolveRegisteredAttachmentForChat(att, {
+          authenticatedUserId: authStatus.status === 'authenticated' ? authStatus.userId : null,
+          conversationId: typeof req.body?.conversationId === 'string' ? req.body.conversationId : null,
+          offline: Boolean(req.body?.offline)
+        });
+
+        if (resolution.status === 'unauthenticated') {
           upstreamGuard.cleanup();
-          if (hasRawData) {
+          return res.status(403).json({
+            error: 'Access denied: Authentication is required to access this attachment.',
+            code: 'ATTACHMENT_ACCESS_DENIED',
+            status: 'FORBIDDEN',
+            provider: normalizedProvider,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        if (resolution.status === 'forbidden') {
+          upstreamGuard.cleanup();
+          return res.status(403).json({
+            error: 'Access denied: You do not have permission to reference attachments belonging to another user.',
+            code: 'ATTACHMENT_ACCESS_DENIED',
+            status: 'FORBIDDEN',
+            provider: normalizedProvider,
+            retryable: false,
+            canFallback: false
+          });
+        }
+
+        if (resolution.status !== 'ok' || !resolution.record) {
+          upstreamGuard.cleanup();
+          if (hasRawData && resolution.status === 'not_found') {
             return res.status(400).json({
               error: 'Direct Base64 or Data URL image injection is not permitted. All attachments must be uploaded through the authorized upload endpoint.',
               code: 'DIRECT_IMAGE_INJECTION_REJECTED',
@@ -691,32 +722,6 @@ export function registerChatRoutes(app: express.Express) {
             retryable: false,
             canFallback: false
           });
-        }
-
-        // Requirement 3 & 5: Ensure referenced attachments belong to the authenticated user and prevent cross-user access
-        if (record.userId) {
-          if (authStatus.status !== 'authenticated' || !authStatus.userId) {
-            upstreamGuard.cleanup();
-            return res.status(403).json({
-              error: 'Access denied: Authentication is required to access this attachment.',
-              code: 'ATTACHMENT_ACCESS_DENIED',
-              status: 'FORBIDDEN',
-              provider: normalizedProvider,
-              retryable: false,
-              canFallback: false
-            });
-          }
-          if (record.userId !== authStatus.userId) {
-            upstreamGuard.cleanup();
-            return res.status(403).json({
-              error: 'Access denied: You do not have permission to reference attachments belonging to another user.',
-              code: 'ATTACHMENT_ACCESS_DENIED',
-              status: 'FORBIDDEN',
-              provider: normalizedProvider,
-              retryable: false,
-              canFallback: false
-            });
-          }
         }
       }
     }
