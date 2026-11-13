@@ -2252,7 +2252,11 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ attachmentId, chatId })
-      }).catch(() => {});
+      })
+        .then((cancelRes) => {
+          updateUploadQuotaFromResponse(cancelRes);
+        })
+        .catch(() => {});
       const abortErr = new DOMException('Direct upload cancelled by user.', 'AbortError');
       reject(abortErr);
     };

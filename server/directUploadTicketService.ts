@@ -20,7 +20,8 @@
 import {
   getFirestoreDb,
   releaseUploadSlot,
-  type QuotaReservation
+  type QuotaReservation,
+  type QuotaStatus
 } from './uploadQuotaService.ts';
 import {
   deleteAttachmentFromStorage,
@@ -72,6 +73,11 @@ export interface CancelTicketResult {
   status?: number;
   code?: string;
   error?: string;
+  quotaStatus?: QuotaStatus | null;
+}
+
+export interface CleanupTicketResult {
+  quotaStatus: QuotaStatus | null;
 }
 
 // In-memory secondary cache for performance and backward compatibility with synchronous callers.
@@ -343,12 +349,13 @@ export async function finalizeCompletedDirectUploadTicket(
 export async function failAndCleanupDurableUploadTicket(
   ticket: PendingDirectUploadTicket,
   reason: string = 'FAILED_VALIDATION'
-): Promise<void> {
+): Promise<CleanupTicketResult> {
   const now = Date.now();
 
-  // 1. Release reserved quota slot safely
+  // 1. Release reserved quota slot safely and capture current PKT day status
+  let quotaStatus: QuotaStatus | null = null;
   try {
-    await releaseUploadSlot(ticket.quotaReservation);
+    quotaStatus = await releaseUploadSlot(ticket.quotaReservation);
   } catch (_) {}
 
   // 2. Remove partial or corrupt object from Supabase Storage
@@ -377,6 +384,8 @@ export async function failAndCleanupDurableUploadTicket(
 
   // 4. Remove from in-memory pending map
   pendingDirectUploads.delete(ticket.attachmentId);
+
+  return { quotaStatus };
 }
 
 /**
@@ -426,9 +435,10 @@ export async function cancelDurableUploadTicket(
       };
     }
 
-    // Release reserved quota slot
+    // Release reserved quota slot and capture current PKT day status
+    let quotaStatus: QuotaStatus | null = null;
     try {
-      await releaseUploadSlot(ticket.quotaReservation);
+      quotaStatus = await releaseUploadSlot(ticket.quotaReservation);
     } catch (_) {}
 
     // Delete partial Supabase storage object
@@ -456,7 +466,7 @@ export async function cancelDurableUploadTicket(
     // Remove from in-memory cache
     pendingDirectUploads.delete(attachmentId);
 
-    return { success: true, cancelled: true };
+    return { success: true, cancelled: true, quotaStatus };
   } catch (err: any) {
     console.error('[DirectUploadTicket] Error cancelling ticket:', err?.message || err);
     return {

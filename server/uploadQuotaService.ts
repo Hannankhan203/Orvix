@@ -40,6 +40,7 @@ export interface QuotaStatus {
   activeReservations: number;
   remaining: number;
   resetAt: string;
+  utcDay?: string;
 }
 
 export interface QuotaRecord {
@@ -89,18 +90,107 @@ export function getCurrentDate(): Date {
   return new Date();
 }
 
-/**
- * Returns YYYY-MM-DD UTC date string.
- */
-export function getUtcDayString(date: Date = getCurrentDate()): string {
-  return date.toISOString().slice(0, 10);
+export const PKT_TIMEZONE = 'Asia/Karachi';
+
+const PKT_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: PKT_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+});
+
+interface PktDateParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+function getPktDateParts(date: Date): PktDateParts {
+  const parts = PKT_DATE_TIME_FORMATTER.formatToParts(date);
+  let year = 0;
+  let month = 0;
+  let day = 0;
+  let hour = 0;
+  let minute = 0;
+  let second = 0;
+
+  for (const part of parts) {
+    if (part.type === 'year') year = Number(part.value);
+    else if (part.type === 'month') month = Number(part.value);
+    else if (part.type === 'day') day = Number(part.value);
+    else if (part.type === 'hour') hour = Number(part.value);
+    else if (part.type === 'minute') minute = Number(part.value);
+    else if (part.type === 'second') second = Number(part.value);
+  }
+
+  return {
+    year,
+    month,
+    day,
+    hour: hour === 24 ? 0 : hour,
+    minute,
+    second
+  };
 }
 
 /**
- * Returns the exact Date of the next UTC midnight.
+ * Returns YYYY-MM-DD calendar date string in Asia/Karachi (PKT).
+ */
+export function getPktDayString(date: Date = getCurrentDate()): string {
+  const { year, month, day } = getPktDateParts(date);
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Returns YYYY-MM-DD quota day string (Asia/Karachi PKT).
+ * Preserved export name for backwards compatibility across server routes and tests.
+ */
+export function getUtcDayString(date: Date = getCurrentDate()): string {
+  return getPktDayString(date);
+}
+
+/**
+ * Returns the exact Date (UTC instant) of the next midnight in Asia/Karachi (00:00:00.000 PKT).
+ */
+export function getNextPktMidnight(date: Date = getCurrentDate()): Date {
+  const { year, month, day } = getPktDateParts(date);
+  const nextWallMidnightUtcMs = Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0);
+
+  let guessMs = nextWallMidnightUtcMs;
+  for (let i = 0; i < 4; i++) {
+    const guessParts = getPktDateParts(new Date(guessMs));
+    const guessWallMs = Date.UTC(
+      guessParts.year,
+      guessParts.month - 1,
+      guessParts.day,
+      guessParts.hour,
+      guessParts.minute,
+      guessParts.second,
+      0
+    );
+    const deltaMs = nextWallMidnightUtcMs - guessWallMs;
+    if (deltaMs === 0) {
+      break;
+    }
+    guessMs += deltaMs;
+  }
+
+  return new Date(guessMs);
+}
+
+/**
+ * Returns the exact Date of the next quota reset midnight (00:00:00.000 PKT).
+ * Preserved export name for backwards compatibility across server routes and tests.
  */
 export function getNextUtcMidnight(date: Date = getCurrentDate()): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 0, 0, 0));
+  return getNextPktMidnight(date);
 }
 
 /**
@@ -883,7 +973,7 @@ export async function reserveUploadSlot(
         limit: DAILY_UPLOAD_LIMIT,
         remaining,
         resetAt,
-        error: `Daily attachment upload limit of ${DAILY_UPLOAD_LIMIT} uploads per day exceeded. Quota resets at midnight UTC.`
+        error: `Daily attachment upload limit of ${DAILY_UPLOAD_LIMIT} uploads per day exceeded. Quota resets at midnight PKT.`
       };
     }
 
@@ -916,6 +1006,42 @@ export async function reserveUploadSlot(
   });
 }
 
+function computeCurrentDayStatusFromSnapshot(
+  snap: any,
+  nowMs: number,
+  resetAt: string,
+  currentDay: string
+): QuotaStatus {
+  if (!snap || !snap.exists || !snap.data()) {
+    return {
+      limit: DAILY_UPLOAD_LIMIT,
+      committed: 0,
+      activeReservations: 0,
+      remaining: DAILY_UPLOAD_LIMIT,
+      resetAt,
+      utcDay: currentDay
+    };
+  }
+
+  const raw = snap.data() as QuotaRecord;
+  const clonedRecord: QuotaRecord = {
+    ...raw,
+    reservations: raw.reservations && typeof raw.reservations === 'object' ? { ...raw.reservations } : {}
+  };
+  const activeCount = pruneExpiredReservations(clonedRecord, nowMs);
+  const committed = typeof clonedRecord.committed === 'number' ? clonedRecord.committed : 0;
+  const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (committed + activeCount));
+
+  return {
+    limit: DAILY_UPLOAD_LIMIT,
+    committed,
+    activeReservations: activeCount,
+    remaining,
+    resetAt,
+    utcDay: currentDay
+  };
+}
+
 /**
  * Commits a reservation upon successful upload completion within an atomic Firestore transaction.
  *
@@ -925,6 +1051,11 @@ export async function reserveUploadSlot(
  * - If committed + other active reservations >= DAILY_UPLOAD_LIMIT, the expired reservation CANNOT commit
  *   and throws QUOTA_EXCEEDED, ensuring expired reservations never cause active uploads to exceed quota.
  * - Otherwise, it safely commits the upload without exceeding the quota.
+ *
+ * Cross-Midnight PKT Handling:
+ * If a reservation was created before midnight PKT and completes after midnight PKT,
+ * accounting stays on the original reservation day (`reservation.utcDay`), while the
+ * returned QuotaStatus reflects the current PKT day.
  */
 export async function commitUploadSlot(
   reservation: QuotaReservation,
@@ -932,13 +1063,20 @@ export async function commitUploadSlot(
 ): Promise<QuotaStatus> {
   const now = options.customNow || getCurrentDate();
   const nowMs = now.getTime();
+  const currentDay = getUtcDayString(now);
   const resetAt = getNextUtcMidnight(now).toISOString();
   const docId = `${reservation.identityKey}_${reservation.utcDay}`;
+  const isCrossMidnight = reservation.utcDay !== currentDay;
   const db = getFirestoreDb();
 
   return await db.runTransaction(async (transaction: any) => {
     const docRef = db.collection('uploadQuotas').doc(docId);
+    const currentDocRef = isCrossMidnight
+      ? db.collection('uploadQuotas').doc(`${reservation.identityKey}_${currentDay}`)
+      : docRef;
+
     const snap = await transaction.get(docRef);
+    const currentSnap = isCrossMidnight ? await transaction.get(currentDocRef) : snap;
 
     const record: QuotaRecord = (snap.exists && snap.data())
       ? (snap.data() as QuotaRecord)
@@ -979,13 +1117,18 @@ export async function commitUploadSlot(
 
       transaction.set(docRef, record, { merge: true });
 
+      if (isCrossMidnight) {
+        return computeCurrentDayStatusFromSnapshot(currentSnap, nowMs, resetAt, currentDay);
+      }
+
       const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + otherActiveCount));
       return {
         limit: DAILY_UPLOAD_LIMIT,
         committed: record.committed,
         activeReservations: otherActiveCount,
         remaining,
-        resetAt
+        resetAt,
+        utcDay: currentDay
       };
     }
 
@@ -997,23 +1140,40 @@ export async function commitUploadSlot(
       record.lastUpdated = nowMs;
       transaction.set(docRef, record, { merge: true });
 
+      const responseStatus = isCrossMidnight
+        ? computeCurrentDayStatusFromSnapshot(currentSnap, nowMs, resetAt, currentDay)
+        : {
+            limit: DAILY_UPLOAD_LIMIT,
+            committed: record.committed,
+            activeReservations: otherActiveCount,
+            remaining: 0,
+            resetAt,
+            utcDay: currentDay
+          };
+
       const error: any = new Error(
         `Upload reservation ${reservation.reservationId} expired and daily quota is exhausted.`
       );
       error.code = 'QUOTA_EXCEEDED';
       error.status = 'QUOTA_EXCEEDED';
       error.limit = DAILY_UPLOAD_LIMIT;
-      error.remaining = 0;
+      error.remaining = responseStatus.remaining;
       error.resetAt = resetAt;
+      error.utcDay = currentDay;
+      error.currentDayStatus = responseStatus;
       throw error;
     }
 
-    // Unclaimed slot exists: safely commit
+    // Unclaimed slot exists: safely commit on the reservation's original day
     delete record.reservations[reservation.reservationId];
     record.committed = Math.min(DAILY_UPLOAD_LIMIT, record.committed + 1);
     record.lastUpdated = nowMs;
 
     transaction.set(docRef, record, { merge: true });
+
+    if (isCrossMidnight) {
+      return computeCurrentDayStatusFromSnapshot(currentSnap, nowMs, resetAt, currentDay);
+    }
 
     const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + otherActiveCount));
     return {
@@ -1021,7 +1181,8 @@ export async function commitUploadSlot(
       committed: record.committed,
       activeReservations: otherActiveCount,
       remaining,
-      resetAt
+      resetAt,
+      utcDay: currentDay
     };
   });
 }
@@ -1029,6 +1190,10 @@ export async function commitUploadSlot(
 /**
  * Releases a reserved slot when an upload fails or is cancelled within an atomic Firestore transaction.
  * Does NOT increment committed count, ensuring failed uploads never consume quota.
+ *
+ * Cross-Midnight PKT Handling:
+ * Removes the reservation from its original day (`reservation.utcDay`), while returning
+ * the current PKT day's quota status.
  */
 export async function releaseUploadSlot(
   reservation: QuotaReservation,
@@ -1036,21 +1201,32 @@ export async function releaseUploadSlot(
 ): Promise<QuotaStatus> {
   const now = options.customNow || getCurrentDate();
   const nowMs = now.getTime();
+  const currentDay = getUtcDayString(now);
   const resetAt = getNextUtcMidnight(now).toISOString();
   const docId = `${reservation.identityKey}_${reservation.utcDay}`;
+  const isCrossMidnight = reservation.utcDay !== currentDay;
   const db = getFirestoreDb();
 
   return await db.runTransaction(async (transaction: any) => {
     const docRef = db.collection('uploadQuotas').doc(docId);
+    const currentDocRef = isCrossMidnight
+      ? db.collection('uploadQuotas').doc(`${reservation.identityKey}_${currentDay}`)
+      : docRef;
+
     const snap = await transaction.get(docRef);
+    const currentSnap = isCrossMidnight ? await transaction.get(currentDocRef) : snap;
 
     if (!snap.exists || !snap.data()) {
+      if (isCrossMidnight) {
+        return computeCurrentDayStatusFromSnapshot(currentSnap, nowMs, resetAt, currentDay);
+      }
       return {
         limit: DAILY_UPLOAD_LIMIT,
         committed: 0,
         activeReservations: 0,
         remaining: DAILY_UPLOAD_LIMIT,
-        resetAt
+        resetAt,
+        utcDay: currentDay
       };
     }
 
@@ -1065,13 +1241,18 @@ export async function releaseUploadSlot(
     record.lastUpdated = nowMs;
     transaction.set(docRef, record, { merge: true });
 
+    if (isCrossMidnight) {
+      return computeCurrentDayStatusFromSnapshot(currentSnap, nowMs, resetAt, currentDay);
+    }
+
     const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - ((record.committed || 0) + activeCount));
     return {
       limit: DAILY_UPLOAD_LIMIT,
       committed: record.committed || 0,
       activeReservations: activeCount,
       remaining,
-      resetAt
+      resetAt,
+      utcDay: currentDay
     };
   });
 }
@@ -1094,28 +1275,7 @@ export async function getQuotaStatus(
     const docRef = db.collection('uploadQuotas').doc(docId);
     const snap = await transaction.get(docRef);
 
-    if (!snap.exists || !snap.data()) {
-      return {
-        limit: DAILY_UPLOAD_LIMIT,
-        committed: 0,
-        activeReservations: 0,
-        remaining: DAILY_UPLOAD_LIMIT,
-        resetAt
-      };
-    }
-
-    const record = snap.data() as QuotaRecord;
-    const activeCount = pruneExpiredReservations(record, nowMs);
-    const committed = typeof record.committed === 'number' ? record.committed : 0;
-    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (committed + activeCount));
-
-    return {
-      limit: DAILY_UPLOAD_LIMIT,
-      committed,
-      activeReservations: activeCount,
-      remaining,
-      resetAt
-    };
+    return computeCurrentDayStatusFromSnapshot(snap, nowMs, resetAt, utcDay);
   });
 }
 

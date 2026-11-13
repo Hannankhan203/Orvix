@@ -1105,7 +1105,7 @@ export function registerUploadRoutes(app: express.Express) {
       committed: status.committed,
       activeReservations: status.activeReservations,
       resetAt: status.resetAt,
-      utcDay: getUtcDayString()
+      utcDay: status.utcDay || getUtcDayString()
     });
   });
 
@@ -2183,9 +2183,13 @@ export function registerUploadRoutes(app: express.Express) {
     });
 
     if (!signRes.success || !signRes.signedUrl) {
+      let releasedStatus: QuotaStatus | null = null;
       try {
-        await releaseUploadSlot(quotaReservation.reservation);
+        releasedStatus = await releaseUploadSlot(quotaReservation.reservation);
       } catch (_) {}
+      if (releasedStatus) {
+        attachQuotaHeaders(res, releasedStatus, quotaIdentity);
+      }
       return res.status(503).json({
         error: signRes.error || 'Failed to generate signed upload URL.',
         code: signRes.code || 'SIGNED_URL_FAILED'
@@ -2265,10 +2269,15 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
 
+    const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
+
     const claimResult = await claimDirectUploadTicketForCompletion(attachmentId, authenticatedUserId, chatId);
     if (!claimResult.success) {
       if (claimResult.isExpired && claimResult.ticket) {
-        await failAndCleanupDurableUploadTicket(claimResult.ticket, 'EXPIRED');
+        const cleanupRes = await failAndCleanupDurableUploadTicket(claimResult.ticket, 'EXPIRED');
+        if (cleanupRes.quotaStatus) {
+          attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+        }
       }
       return res.status(claimResult.status).json({
         error: claimResult.error,
@@ -2285,7 +2294,10 @@ export function registerUploadRoutes(app: express.Express) {
     });
 
     if (!downloadRes.success || !downloadRes.data) {
-      await failAndCleanupDurableUploadTicket(ticket, 'OBJECT_NOT_FOUND');
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'OBJECT_NOT_FOUND');
+      if (cleanupRes.quotaStatus) {
+        attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+      }
       return res.status(400).json({
         error: 'Uploaded object was not found in storage. Ensure the upload to the signed URL finished successfully before completing.',
         code: 'OBJECT_NOT_FOUND'
@@ -2296,7 +2308,10 @@ export function registerUploadRoutes(app: express.Express) {
     const verifiedSize = uploadedBuffer.length;
 
     if (verifiedSize === 0) {
-      await failAndCleanupDurableUploadTicket(ticket, 'EMPTY_FILE');
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'EMPTY_FILE');
+      if (cleanupRes.quotaStatus) {
+        attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+      }
       return res.status(400).json({
         error: 'Uploaded file is empty (0 bytes).',
         code: 'EMPTY_FILE'
@@ -2304,7 +2319,10 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     if (verifiedSize > MAX_FILE_SIZE_BYTES) {
-      await failAndCleanupDurableUploadTicket(ticket, 'FILE_TOO_LARGE');
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'FILE_TOO_LARGE');
+      if (cleanupRes.quotaStatus) {
+        attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+      }
       return res.status(400).json({
         error: `Uploaded file exceeds maximum allowed size of ${formatBytes(MAX_FILE_SIZE_BYTES)}.`,
         code: 'FILE_TOO_LARGE'
@@ -2314,32 +2332,35 @@ export function registerUploadRoutes(app: express.Express) {
     const ext = '.' + ticket.extension.toLowerCase();
     const sigResult = await verifyFileSignature(uploadedBuffer, ext);
     if (!sigResult.valid) {
-      await failAndCleanupDurableUploadTicket(ticket, 'INVALID_FILE_SIGNATURE');
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'INVALID_FILE_SIGNATURE');
+      if (cleanupRes.quotaStatus) {
+        attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+      }
       return res.status(400).json({
         error: sigResult.reason || 'Invalid file signature.',
         code: 'INVALID_FILE_SIGNATURE'
       });
     }
 
-    const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
     let committedStatus: QuotaStatus;
     try {
       committedStatus = await commitUploadSlot(ticket.quotaReservation);
     } catch (commitErr: any) {
-      await failAndCleanupDurableUploadTicket(ticket, 'QUOTA_EXCEEDED');
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'QUOTA_EXCEEDED');
       if (commitErr?.code === 'QUOTA_EXCEEDED') {
-        attachQuotaHeaders(
-          res,
-          {
-            limit: DAILY_UPLOAD_LIMIT,
-            remaining: 0,
-            resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
-          },
-          quotaIdentity
-        );
+        const statusForHeader = commitErr.currentDayStatus || cleanupRes.quotaStatus || {
+          limit: DAILY_UPLOAD_LIMIT,
+          remaining: typeof commitErr.remaining === 'number' ? commitErr.remaining : 0,
+          resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+        };
+        attachQuotaHeaders(res, statusForHeader, quotaIdentity);
         return res.status(429).json({
           error: commitErr.message || 'Daily attachment upload limit exceeded.',
-          code: 'QUOTA_EXCEEDED'
+          code: 'QUOTA_EXCEEDED',
+          status: 'QUOTA_EXCEEDED',
+          limit: statusForHeader.limit,
+          remaining: statusForHeader.remaining,
+          resetAt: statusForHeader.resetAt
         });
       }
       throw commitErr;
@@ -2440,7 +2461,8 @@ export function registerUploadRoutes(app: express.Express) {
       success: true,
       count: 1,
       attachments: [serializedAtt],
-      attachment: serializedAtt
+      attachment: serializedAtt,
+      quota: committedStatus
     });
   });
 
@@ -2460,7 +2482,34 @@ export function registerUploadRoutes(app: express.Express) {
         code: cancelRes.code
       });
     }
-    return res.status(200).json({ success: true, cancelled: true });
+
+    const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
+    let quotaStatus: QuotaStatus | null | undefined = cancelRes.quotaStatus;
+    if (!quotaStatus) {
+      try {
+        quotaStatus = await getQuotaStatus(quotaIdentity);
+      } catch (_) {}
+    }
+
+    if (quotaStatus) {
+      attachQuotaHeaders(res, quotaStatus, quotaIdentity);
+    }
+
+    return res.status(200).json({
+      success: true,
+      cancelled: true,
+      ...(quotaStatus
+        ? {
+            quota: quotaStatus,
+            limit: quotaStatus.limit,
+            remaining: quotaStatus.remaining,
+            committed: quotaStatus.committed,
+            activeReservations: quotaStatus.activeReservations,
+            resetAt: quotaStatus.resetAt,
+            utcDay: quotaStatus.utcDay || getUtcDayString()
+          }
+        : {})
+    });
   });
 
   app.post(['/api/upload', '/upload'], async (req, res) => {
@@ -2573,13 +2622,14 @@ export function registerUploadRoutes(app: express.Express) {
       const reservation = quotaReservation.reservation;
       let isReservationSettled = false;
 
-      const releaseQuotaReservationSafely = async () => {
+      const releaseQuotaReservationSafely = async (): Promise<QuotaStatus | null> => {
         if (!isReservationSettled) {
           isReservationSettled = true;
           try {
-            await releaseUploadSlot(reservation);
+            return await releaseUploadSlot(reservation);
           } catch (_) {}
         }
+        return null;
       };
 
       res.on('close', () => {
@@ -2660,7 +2710,10 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       if (validationErrors.length > 0) {
-        await releaseQuotaReservationSafely();
+        const releasedStatus = await releaseQuotaReservationSafely();
+        if (releasedStatus) {
+          attachQuotaHeaders(res, releasedStatus, quotaIdentity);
+        }
         for (const rec of uploadedResults) {
           fileRegistry.delete(rec.id);
           if (conversationId && conversationDocuments.has(conversationId)) {
@@ -2793,7 +2846,10 @@ export function registerUploadRoutes(app: express.Express) {
               }
 
               // 3. Fail securely: Return HTTP 503 without silent fallback to local disk
-              await releaseQuotaReservationSafely();
+              const releasedStatus = await releaseQuotaReservationSafely();
+              if (releasedStatus) {
+                attachQuotaHeaders(res, releasedStatus, quotaIdentity);
+              }
               return res.status(503).json({
                 error: errorMessage,
                 code: 'STORAGE_UPLOAD_FAILED',
@@ -2819,22 +2875,19 @@ export function registerUploadRoutes(app: express.Express) {
         committedStatus = await commitUploadSlot(reservation);
       } catch (commitErr: any) {
         if (commitErr?.code === 'QUOTA_EXCEEDED') {
-          attachQuotaHeaders(
-            res,
-            {
-              limit: DAILY_UPLOAD_LIMIT,
-              remaining: 0,
-              resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
-            },
-            quotaIdentity
-          );
+          const statusForHeader = commitErr.currentDayStatus || {
+            limit: DAILY_UPLOAD_LIMIT,
+            remaining: typeof commitErr.remaining === 'number' ? commitErr.remaining : 0,
+            resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+          };
+          attachQuotaHeaders(res, statusForHeader, quotaIdentity);
           return res.status(429).json({
             error: commitErr.message || 'Daily attachment upload limit exceeded.',
             code: 'QUOTA_EXCEEDED',
             status: 'QUOTA_EXCEEDED',
-            limit: DAILY_UPLOAD_LIMIT,
-            remaining: 0,
-            resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+            limit: statusForHeader.limit,
+            remaining: statusForHeader.remaining,
+            resetAt: statusForHeader.resetAt
           });
         }
         throw commitErr;
@@ -2847,7 +2900,8 @@ export function registerUploadRoutes(app: express.Express) {
         success: true,
         count: serializedAttachments.length,
         attachments: serializedAttachments,
-        attachment: serializedAttachments[0] || null
+        attachment: serializedAttachments[0] || null,
+        quota: committedStatus
       });
     });
   });

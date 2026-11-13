@@ -516,22 +516,26 @@ try {
   });
 
   // -------------------------------------------------------------------------
-  // Test 5: UTC midnight reset
+  // Test 5: PKT midnight reset (and NO reset at UTC midnight)
   // -------------------------------------------------------------------------
-  await test('5. UTC midnight reset: advancing past UTC midnight resets displayed quota from "0 of 5" to "5 of 5 uploads remaining today"', async () => {
+  await test('5. PKT midnight reset: advancing past 00:00 PKT resets displayed quota to "5 of 5 uploads remaining today" and does NOT reset at midnight UTC', async () => {
     resetUploadQuotaClientStateForTesting();
-    const day1Date = new Date('2026-05-10T23:58:00.000Z');
-    const day2Date = new Date('2026-05-11T00:00:05.000Z');
+    // 2026-05-10 23:59:59.999 PKT == 2026-05-10T18:59:59.999Z
+    const day1Date = new Date('2026-05-10T18:59:59.999Z');
+    // 2026-05-11 00:00:00.000 PKT == 2026-05-10T19:00:00.000Z
+    const day2Date = new Date('2026-05-10T19:00:00.000Z');
+    // 2026-05-11 00:00:00.000 UTC == 2026-05-11 05:00:00.000 PKT (still 2026-05-11 PKT)
+    const utcMidnightDate = new Date('2026-05-11T00:00:00.000Z');
 
     setCustomDateHookForTesting(() => day1Date);
     setClientQuotaDateHookForTesting(() => day1Date);
 
     try {
-      const studentUid = 'student_p4_utc_reset_' + crypto.randomUUID();
+      const studentUid = 'student_p4_pkt_reset_' + crypto.randomUUID();
       const studentToken = createSignedJwt(studentUid);
       syncUploadQuotaUserAccount(studentUid, { autoFetch: false });
 
-      // Exhaust all 5 uploads on Day 1 (2026-05-10 UTC)
+      // Exhaust all 5 uploads on Day 1 PKT (2026-05-10 PKT)
       for (let i = 1; i <= 5; i++) {
         const res = await sendMultipartUpload({
           endpoint: '/api/upload',
@@ -543,21 +547,23 @@ try {
       }
 
       assert.strictEqual(getUploadQuotaState().utcDay, '2026-05-10');
+      assert.strictEqual(getUploadQuotaState().resetAt, '2026-05-10T19:00:00.000Z');
       assert.strictEqual(formatDailyUploadQuotaText(getUploadQuotaState()), '0 of 5 uploads remaining today');
 
-      // Advance clock to Day 2 (2026-05-11T00:00:05.000Z)
+      // Advance clock to Day 2 PKT (2026-05-10T19:00:00.000Z == 2026-05-11 00:00:00 PKT)
       setCustomDateHookForTesting(() => day2Date);
       setClientQuotaDateHookForTesting(() => day2Date);
 
-      // 1. Client-side rollover detection resets displayed quota immediately at UTC midnight
+      // 1. Client-side rollover detection resets displayed quota immediately at midnight PKT
       const didRollover = checkUploadQuotaUtcRollover({ autoRefetch: false });
-      assert.strictEqual(didRollover, true, 'checkUploadQuotaUtcRollover must detect UTC calendar day change');
+      assert.strictEqual(didRollover, true, 'checkUploadQuotaUtcRollover must detect PKT calendar day change');
       const rolledState = getUploadQuotaState();
       assert.strictEqual(rolledState.utcDay, '2026-05-11');
+      assert.strictEqual(rolledState.resetAt, '2026-05-11T19:00:00.000Z');
       assert.strictEqual(rolledState.remaining, 5);
       assert.strictEqual(formatDailyUploadQuotaText(rolledState), '5 of 5 uploads remaining today');
 
-      // 2. Backend GET /api/upload/quota also confirms 5 of 5 for the new UTC day
+      // 2. Backend GET /api/upload/quota also confirms 5 of 5 for the new PKT day
       const backendConfirmedState = await fetchAuthenticatedUploadQuota({
         userId: studentUid,
         endpoint: `${baseUrl}/api/upload/quota`,
@@ -566,6 +572,25 @@ try {
       assert.strictEqual(backendConfirmedState.utcDay, '2026-05-11');
       assert.strictEqual(backendConfirmedState.remaining, 5);
       assert.strictEqual(formatDailyUploadQuotaText(backendConfirmedState), '5 of 5 uploads remaining today');
+
+      // 3. Consume 2 slots on Day 2 PKT (3 remaining), then advance across midnight UTC -> must NOT reset
+      for (let i = 1; i <= 2; i++) {
+        const res = await sendMultipartUpload({
+          endpoint: '/api/upload',
+          token: studentToken,
+          filename: `day2_${i}.txt`
+        });
+        assert.strictEqual(res.status, 200);
+        updateUploadQuotaFromResponse(res, studentUid);
+      }
+      assert.strictEqual(formatDailyUploadQuotaText(getUploadQuotaState()), '3 of 5 uploads remaining today');
+
+      setCustomDateHookForTesting(() => utcMidnightDate);
+      setClientQuotaDateHookForTesting(() => utcMidnightDate);
+      const didUtcMidnightRollover = checkUploadQuotaUtcRollover({ triggerRefresh: false });
+      assert.strictEqual(didUtcMidnightRollover, false, 'Must NOT roll over at midnight UTC');
+      assert.strictEqual(getUploadQuotaState().utcDay, '2026-05-11');
+      assert.strictEqual(getUploadQuotaState().remaining, 3);
     } finally {
       setCustomDateHookForTesting(null);
       setClientQuotaDateHookForTesting(null);
@@ -789,6 +814,52 @@ try {
       'uploadQuotaClientService.js must never calculate quota using frontend decrement counters'
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Test 9: Late/stale response from previous PKT day cannot overwrite current PKT day indicator
+  // -------------------------------------------------------------------------
+  await test('9. Stale-response protection: late previous-PKT-day responses do not overwrite current PKT day quota indicator', async () => {
+    resetUploadQuotaClientStateForTesting();
+    const day1BeforeMidnight = new Date('2026-05-10T18:59:58.000Z'); // 23:59:58 PKT
+    const day2AfterMidnight = new Date('2026-05-10T19:00:02.000Z');  // 00:00:02 PKT
+
+    try {
+      const studentUid = 'student_p4_stale_pkt_' + crypto.randomUUID();
+      setClientQuotaDateHookForTesting(() => day1BeforeMidnight);
+      syncUploadQuotaUserAccount(studentUid, { autoFetch: false });
+
+      // Day 1 state had 0 remaining, resetAt 2026-05-10T19:00:00.000Z
+      updateUploadQuotaFromResponse(
+        new Headers({
+          'X-RateLimit-Limit': '5',
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset-UTC': '2026-05-10T19:00:00.000Z'
+        }),
+        studentUid
+      );
+      assert.strictEqual(getUploadQuotaState().remaining, 0);
+
+      // Clock crosses midnight PKT into Day 2 -> rolls over to 5 of 5
+      setClientQuotaDateHookForTesting(() => day2AfterMidnight);
+      assert.strictEqual(getUploadQuotaState().remaining, 5);
+      assert.strictEqual(getUploadQuotaState().utcDay, '2026-05-11');
+
+      // Now a late response from Day 1 (remaining: 0, resetAt: 2026-05-10T19:00:00.000Z) arrives!
+      const afterStaleUpdate = updateUploadQuotaFromResponse(
+        new Headers({
+          'X-RateLimit-Limit': '5',
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset-UTC': '2026-05-10T19:00:00.000Z'
+        }),
+        studentUid
+      );
+      assert.strictEqual(afterStaleUpdate.remaining, 5, 'Late Day 1 response must NOT overwrite Day 2 quota indicator back to 0');
+      assert.strictEqual(afterStaleUpdate.utcDay, '2026-05-11');
+      assert.strictEqual(formatDailyUploadQuotaText(afterStaleUpdate), '5 of 5 uploads remaining today');
+    } finally {
+      setClientQuotaDateHookForTesting(null);
+    }
+  });
 } finally {
   if (server) {
     await new Promise((resolve) => server.close(resolve));
@@ -810,4 +881,6 @@ console.log('================================================================\n'
 
 if (failed > 0) {
   process.exit(1);
+} else {
+  process.exit(0);
 }

@@ -1852,7 +1852,7 @@ export default function ChatPage({
                 // Explicit quota rejection check: never execute extractBrowserDocument fallback on quota limits
                 if (isQuotaExceeded) {
                   return failPreflightIfActive(
-                    errorMsg || 'Daily attachment upload limit of 5 uploads per day exceeded. Quota resets at midnight UTC.'
+                    errorMsg || 'Daily attachment upload limit of 5 uploads per day exceeded. Quota resets at midnight PKT.'
                   );
                 }
 
@@ -1980,7 +1980,7 @@ export default function ChatPage({
 
             if (isQuotaExceeded) {
               return failPreflightIfActive(
-                uploadErr?.message || 'Daily attachment upload limit of 5 uploads per day exceeded. Quota resets at midnight UTC.'
+                uploadErr?.message || 'Daily attachment upload limit of 5 uploads per day exceeded. Quota resets at midnight PKT.'
               );
             }
 

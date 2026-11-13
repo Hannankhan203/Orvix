@@ -287,34 +287,44 @@ async function runAllTests() {
   });
 
   // -------------------------------------------------------------------------
-  // Test 3: UTC Midnight Reset
+  // Test 3: PKT Midnight Reset & No Reset at UTC Midnight
   // -------------------------------------------------------------------------
-  await test('UTC midnight reset automatically clears quota on new calendar day', async () => {
+  await test('PKT midnight reset (00:00:00 PKT) clears quota while UTC midnight does NOT reset quota', async () => {
     const uid = 'quota_user_3_' + crypto.randomUUID();
     const token = createSignedJwt(uid);
     const convId = 'conv_user_3';
 
-    // Day 1: 2026-11-09 23:45:00 UTC
-    const day1 = new Date('2026-11-09T23:45:00.000Z');
-    setCustomDateHookForTesting(() => day1);
+    // Day 1 PKT (2026-11-09 23:59:59.999 PKT == 2026-11-09T18:59:59.999Z)
+    const day1LatePkt = new Date('2026-11-09T18:59:59.999Z');
+    setCustomDateHookForTesting(() => day1LatePkt);
 
     for (let i = 1; i <= 5; i++) {
       const r = await uploadAttachment({ token, conversationId: convId, filename: `d1_${i}.txt` });
       assert.strictEqual(r.status, 200);
     }
 
-    // Attempt on Day 1 is blocked
+    // Attempt on Day 1 PKT (23:59:59.999 PKT) is blocked
     const blocked = await uploadAttachment({ token, conversationId: convId, filename: 'd1_6.txt' });
     assert.strictEqual(blocked.status, 429);
+    assert.ok(blocked.data.error.includes('midnight PKT'), `Expected midnight PKT message, got: ${blocked.data.error}`);
 
-    // Day 2: 2026-11-10 00:00:05 UTC (midnight rolled over)
-    const day2 = new Date('2026-11-10T00:00:05.000Z');
-    setCustomDateHookForTesting(() => day2);
+    // Day 2 PKT (2026-11-10 00:00:00.000 PKT == 2026-11-09T19:00:00.000Z)
+    const day2StartPkt = new Date('2026-11-09T19:00:00.000Z');
+    setCustomDateHookForTesting(() => day2StartPkt);
 
-    // Upload on Day 2 must succeed immediately
-    const resDay2 = await uploadAttachment({ token, conversationId: convId, filename: 'd2_1.txt' });
-    assert.strictEqual(resDay2.status, 200, `Upload on new UTC day should succeed with 200, got ${resDay2.status}`);
-    assert.strictEqual(resDay2.headers.get('x-ratelimit-remaining'), '4');
+    // Exhaust all 5 slots on Day 2 PKT (starting before midnight UTC)
+    for (let i = 1; i <= 5; i++) {
+      const resDay2 = await uploadAttachment({ token, conversationId: convId, filename: `d2_${i}.txt` });
+      assert.strictEqual(resDay2.status, 200, `Upload ${i} on new PKT day should succeed with 200, got ${resDay2.status}`);
+      assert.strictEqual(resDay2.headers.get('x-ratelimit-remaining'), String(5 - i));
+    }
+
+    // Midnight UTC (2026-11-10T00:00:00.000Z == 05:00:00 PKT) must NOT reset quota!
+    const utcMidnight = new Date('2026-11-10T00:00:00.000Z');
+    setCustomDateHookForTesting(() => utcMidnight);
+    const blockedAtUtcMidnight = await uploadAttachment({ token, conversationId: convId, filename: 'd2_utc_midnight_6.txt' });
+    assert.strictEqual(blockedAtUtcMidnight.status, 429, 'Quota must NOT reset at midnight UTC (05:00 PKT)');
+    assert.strictEqual(blockedAtUtcMidnight.headers.get('x-ratelimit-remaining'), '0');
 
     setCustomDateHookForTesting(null);
   });
@@ -595,12 +605,13 @@ async function runAllTests() {
     const resetHeader = res.headers.get('x-ratelimit-reset-utc');
     assert.ok(resetHeader, 'X-RateLimit-Reset-UTC header must be present');
 
-    // Validate that resetHeader is a valid ISO date representing UTC midnight
+    // Validate that resetHeader is a valid ISO date representing midnight PKT (19:00:00 UTC)
     const resetDate = new Date(resetHeader);
     assert.ok(!isNaN(resetDate.getTime()), 'Reset date must be valid ISO timestamp');
-    assert.strictEqual(resetDate.getUTCHours(), 0);
+    assert.strictEqual(resetDate.getUTCHours(), 19, 'Midnight PKT (00:00 PKT) must be 19:00 UTC');
     assert.strictEqual(resetDate.getUTCMinutes(), 0);
     assert.strictEqual(resetDate.getUTCSeconds(), 0);
+    assert.ok(res.data.error.includes('midnight PKT'), `Expected midnight PKT message, got: ${res.data.error}`);
   });
 
   // -------------------------------------------------------------------------
@@ -751,9 +762,9 @@ async function runAllTests() {
   });
 
   // -------------------------------------------------------------------------
-  // Test 15: UTC midnight rollover isolation under active load
+  // Test 15: PKT midnight rollover isolation under active load
   // -------------------------------------------------------------------------
-  await test('UTC midnight rollover maintains complete date isolation in Firestore', async () => {
+  await test('PKT midnight rollover maintains complete date isolation in Firestore', async () => {
     const uid = 'rollover_user_' + crypto.randomUUID();
     const token = createSignedJwt(uid);
     const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
@@ -763,8 +774,8 @@ async function runAllTests() {
       key: `auth_${hashedUid}`
     };
 
-    // Day 1: 23:59:50 UTC
-    const day1Time = new Date('2026-11-09T23:59:50.000Z');
+    // Day 1 PKT: 2026-11-09 23:59:50 PKT == 2026-11-09T18:59:50.000Z
+    const day1Time = new Date('2026-11-09T18:59:50.000Z');
     setCustomDateHookForTesting(() => day1Time);
 
     for (let i = 1; i <= 5; i++) {
@@ -776,13 +787,13 @@ async function runAllTests() {
     assert.strictEqual(day1Status.committed, 5);
     assert.strictEqual(day1Status.remaining, 0);
 
-    // Day 2: 00:00:05 UTC (Midnight rollover)
-    const day2Time = new Date('2026-11-10T00:00:05.000Z');
+    // Day 2 PKT: 2026-11-10 00:00:05 PKT == 2026-11-09T19:00:05.000Z (Midnight PKT rollover)
+    const day2Time = new Date('2026-11-09T19:00:05.000Z');
     setCustomDateHookForTesting(() => day2Time);
 
     const day2Status = await getQuotaStatus(identity);
-    assert.strictEqual(day2Status.committed, 0, 'New UTC day must start with 0 committed');
-    assert.strictEqual(day2Status.remaining, 5, 'New UTC day must start with 5 remaining');
+    assert.strictEqual(day2Status.committed, 0, 'New PKT day must start with 0 committed');
+    assert.strictEqual(day2Status.remaining, 5, 'New PKT day must start with 5 remaining');
 
     // Complete Day 2 upload
     const resDay2 = await uploadAttachment({ token, conversationId: 'conv_roll', filename: 'roll2_1.txt' });
@@ -1154,6 +1165,61 @@ async function runAllTests() {
         thrownError.message.includes('Failed to initialize Firebase Admin Firestore'),
       `Expected invalid JSON error, got: ${thrownError.message}`
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 28: Cross-midnight reservation committed/released after midnight PKT
+  // -------------------------------------------------------------------------
+  await test('Reservation before midnight PKT committed/released after midnight PKT keeps Day 1 accounting and returns Day 2 quota status', async () => {
+    const uid = 'cross_midnight_user_' + crypto.randomUUID();
+    const hashedUid = crypto.createHash('sha256').update(`auth:${uid}`).digest('hex').slice(0, 32);
+    const identity = {
+      type: 'auth',
+      id: uid,
+      key: `auth_${hashedUid}`
+    };
+
+    // 23:59:55 PKT on 2026-11-09 == 2026-11-09T18:59:55.000Z
+    const beforeMidnightPkt = new Date('2026-11-09T18:59:55.000Z');
+    setCustomDateHookForTesting(() => beforeMidnightPkt);
+
+    // Commit 3 slots and reserve 2 slots on Day 1 PKT (5 total)
+    for (let i = 1; i <= 3; i++) {
+      const r = await reserveUploadSlot(identity);
+      assert.strictEqual(r.allowed, true);
+      await commitUploadSlot(r.reservation);
+    }
+    const resCommitAfterMidnight = await reserveUploadSlot(identity);
+    assert.strictEqual(resCommitAfterMidnight.allowed, true);
+    assert.strictEqual(resCommitAfterMidnight.reservation.utcDay, '2026-11-09');
+
+    const resReleaseAfterMidnight = await reserveUploadSlot(identity);
+    assert.strictEqual(resReleaseAfterMidnight.allowed, true);
+    assert.strictEqual(resReleaseAfterMidnight.reservation.utcDay, '2026-11-09');
+
+    // Cross midnight PKT -> 00:00:05 PKT on 2026-11-10 == 2026-11-09T19:00:05.000Z
+    const afterMidnightPkt = new Date('2026-11-09T19:00:05.000Z');
+    setCustomDateHookForTesting(() => afterMidnightPkt);
+
+    const committedAfter = await commitUploadSlot(resCommitAfterMidnight.reservation);
+    assert.strictEqual(committedAfter.remaining, 5, 'Returned status must reflect new PKT day (5 remaining)');
+    assert.strictEqual(committedAfter.committed, 0, 'New PKT day committed count must be 0');
+    assert.strictEqual(committedAfter.resetAt, '2026-11-10T19:00:00.000Z');
+
+    const releasedAfter = await releaseUploadSlot(resReleaseAfterMidnight.reservation);
+    assert.strictEqual(releasedAfter.remaining, 5, 'Released status must reflect new PKT day (5 remaining)');
+    assert.strictEqual(releasedAfter.resetAt, '2026-11-10T19:00:00.000Z');
+
+    // Verify Day 1 doc recorded committed: 4 (3 + 1 committed, released not counted) and 0 active reservations
+    const db = getFirestoreDb();
+    const day1DocRef = db.collection('uploadQuotas').doc(`auth_${hashedUid}_2026-11-09`);
+    await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(day1DocRef);
+      assert.strictEqual(snap.data().committed, 4);
+      assert.strictEqual(Object.keys(snap.data().reservations || {}).length, 0);
+    });
+
+    setCustomDateHookForTesting(null);
   });
 
   // Clean up

@@ -44,24 +44,110 @@ export function getClientQuotaCurrentDate() {
   return new Date();
 }
 
+export const PKT_TIMEZONE = 'Asia/Karachi';
+
+const PKT_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: PKT_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+});
+
 /**
- * Returns YYYY-MM-DD UTC calendar day string for a Date.
+ * Extracts calendar and wall-clock parts in Asia/Karachi (PKT) independently of browser timezone.
+ * @param {Date} date
+ */
+function getPktDateParts(date) {
+  const parts = PKT_DATE_TIME_FORMATTER.formatToParts(date);
+  let year = 0;
+  let month = 0;
+  let day = 0;
+  let hour = 0;
+  let minute = 0;
+  let second = 0;
+
+  for (const part of parts) {
+    if (part.type === 'year') year = Number(part.value);
+    else if (part.type === 'month') month = Number(part.value);
+    else if (part.type === 'day') day = Number(part.value);
+    else if (part.type === 'hour') hour = Number(part.value);
+    else if (part.type === 'minute') minute = Number(part.value);
+    else if (part.type === 'second') second = Number(part.value);
+  }
+
+  return {
+    year,
+    month,
+    day,
+    hour: hour === 24 ? 0 : hour,
+    minute,
+    second
+  };
+}
+
+/**
+ * Returns YYYY-MM-DD calendar day string in Asia/Karachi (PKT).
+ * @param {Date} [date]
+ * @returns {string}
+ */
+export function getClientPktDayString(date = getClientQuotaCurrentDate()) {
+  const { year, month, day } = getPktDateParts(date);
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Returns YYYY-MM-DD quota calendar day string (Asia/Karachi PKT).
+ * Preserved export name for backwards compatibility.
  * @param {Date} [date]
  * @returns {string}
  */
 export function getClientUtcDayString(date = getClientQuotaCurrentDate()) {
-  return date.toISOString().slice(0, 10);
+  return getClientPktDayString(date);
 }
 
 /**
- * Returns the ISO string of the next UTC midnight for a Date.
+ * Returns the UTC ISO timestamp string of the next midnight in Asia/Karachi (00:00:00.000 PKT).
+ * @param {Date} [date]
+ * @returns {string}
+ */
+export function getClientNextPktMidnightIso(date = getClientQuotaCurrentDate()) {
+  const { year, month, day } = getPktDateParts(date);
+  const nextWallMidnightUtcMs = Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0);
+
+  let guessMs = nextWallMidnightUtcMs;
+  for (let i = 0; i < 4; i++) {
+    const guessParts = getPktDateParts(new Date(guessMs));
+    const guessWallMs = Date.UTC(
+      guessParts.year,
+      guessParts.month - 1,
+      guessParts.day,
+      guessParts.hour,
+      guessParts.minute,
+      guessParts.second,
+      0
+    );
+    const deltaMs = nextWallMidnightUtcMs - guessWallMs;
+    if (deltaMs === 0) {
+      break;
+    }
+    guessMs += deltaMs;
+  }
+
+  return new Date(guessMs).toISOString();
+}
+
+/**
+ * Returns the UTC ISO string of the next quota reset midnight (00:00:00.000 PKT).
+ * Preserved export name for backwards compatibility.
  * @param {Date} [date]
  * @returns {string}
  */
 export function getClientNextUtcMidnightIso(date = getClientQuotaCurrentDate()) {
-  return new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 0, 0, 0)
-  ).toISOString();
+  return getClientNextPktMidnightIso(date);
 }
 
 /**
@@ -215,12 +301,12 @@ function notifyQuotaStateListeners() {
 }
 
 /**
- * Checks whether the UTC calendar day has rolled over since the current quota snapshot was recorded.
- * If the UTC day has changed for an authenticated user with an active quota snapshot,
- * resets the displayed quota to the daily limit (`5 of 5 uploads remaining today`) for the new UTC day.
+ * Checks whether the Asia/Karachi (PKT) calendar day has rolled over since the current quota snapshot was recorded.
+ * If midnight PKT has passed for an authenticated user with an active quota snapshot,
+ * resets the displayed quota to the daily limit (`5 of 5 uploads remaining today`) for the new PKT day.
  *
  * @param {{ triggerRefresh?: boolean }} [options]
- * @returns {boolean} True if a UTC day rollover reset occurred
+ * @returns {boolean} True if a PKT day rollover reset occurred
  */
 export function checkUploadQuotaUtcRollover(options = {}) {
   if (!currentQuotaState.userId || !isEligibleQuotaUserId(currentQuotaState.userId)) {
@@ -232,18 +318,18 @@ export function checkUploadQuotaUtcRollover(options = {}) {
   }
 
   const now = getClientQuotaCurrentDate();
-  const currentUtcDay = getClientUtcDayString(now);
+  const currentPktDay = getClientPktDayString(now);
   const resetAtMs = currentQuotaState.resetAt ? Date.parse(currentQuotaState.resetAt) : NaN;
   const hasResetTimePassed = !Number.isNaN(resetAtMs) && now.getTime() >= resetAtMs;
 
-  if (currentUtcDay !== currentQuotaState.utcDay || hasResetTimePassed) {
+  if (currentPktDay !== currentQuotaState.utcDay || hasResetTimePassed) {
     const limit = currentQuotaState.limit || DEFAULT_DAILY_UPLOAD_LIMIT;
     currentQuotaState = {
       ...currentQuotaState,
       remaining: limit,
       limit,
-      utcDay: currentUtcDay,
-      resetAt: getClientNextUtcMidnightIso(now),
+      utcDay: currentPktDay,
+      resetAt: getClientNextPktMidnightIso(now),
       status: 'ready',
       lastUpdatedAt: now.getTime()
     };
@@ -257,6 +343,8 @@ export function checkUploadQuotaUtcRollover(options = {}) {
 
   return false;
 }
+
+export const checkUploadQuotaPktRollover = checkUploadQuotaUtcRollover;
 
 /**
  * Returns a copy of the current upload quota state, automatically applying UTC day rollover if needed.
@@ -338,12 +426,18 @@ export function syncUploadQuotaUserAccount(userId, options = { autoFetch: true }
  *    (or marks unavailable if no state was ever loaded) without fabricating numbers.
  * 3. Works identically for HTTP 200 (successful upload) and HTTP 429 (quota exceeded).
  * 4. Enforces account isolation: ignores responses belonging to a different userId.
+ * 5. Protects against stale/late responses from a previous PKT day overwriting the current day's indicator.
  *
  * @param {Response | Headers | Record<string, any> | null | undefined} responseOrHeaders
  * @param {string | null} [expectedUserId]
+ * @param {{ requestStartedAt?: number, requestStartedPktDay?: string }} [responseOptions]
  * @returns {ReturnType<typeof getUploadQuotaState>}
  */
-export function updateUploadQuotaFromResponse(responseOrHeaders, expectedUserId = undefined) {
+export function updateUploadQuotaFromResponse(
+  responseOrHeaders,
+  expectedUserId = undefined,
+  responseOptions = undefined
+) {
   const activeUid =
     expectedUserId !== undefined
       ? (isEligibleQuotaUserId(expectedUserId) ? expectedUserId.trim() : null)
@@ -380,12 +474,35 @@ export function updateUploadQuotaFromResponse(responseOrHeaders, expectedUserId 
   }
 
   const now = getClientQuotaCurrentDate();
+  const currentPktDay = getClientPktDayString(now);
+
+  // Stale-response protection: ignore responses whose reset timestamp has already passed
+  // (e.g., initiated before midnight PKT and resolved after midnight PKT), or requests
+  // initiated on an earlier PKT day when no explicit reset timestamp was returned.
+  const rawResetAt = readHeaderValue(responseOrHeaders, 'X-RateLimit-Reset-UTC');
+  const parsedResetAtMs = rawResetAt ? Date.parse(rawResetAt) : NaN;
+  const isResetAtExpired = !Number.isNaN(parsedResetAtMs) && parsedResetAtMs <= now.getTime();
+  const requestStartedPktDay =
+    responseOptions?.requestStartedPktDay ||
+    (typeof responseOptions?.requestStartedAt === 'number'
+      ? getClientPktDayString(new Date(responseOptions.requestStartedAt))
+      : null);
+  const crossedPktDayWithoutResetHeader =
+    Number.isNaN(parsedResetAtMs) &&
+    Boolean(requestStartedPktDay) &&
+    requestStartedPktDay !== currentPktDay;
+
+  if (isResetAtExpired || crossedPktDayWithoutResetHeader) {
+    checkUploadQuotaUtcRollover({ triggerRefresh: false });
+    return getUploadQuotaState();
+  }
+
   currentQuotaState = {
     userId: activeUid,
     remaining: parsed.remaining,
     limit: parsed.limit,
     resetAt: parsed.resetAt,
-    utcDay: getClientUtcDayString(now),
+    utcDay: currentPktDay,
     status: 'ready',
     lastUpdatedAt: now.getTime()
   };
@@ -464,6 +581,7 @@ export async function fetchAuthenticatedUploadQuota(options = {}) {
       return getUploadQuotaState();
     }
 
+    const requestStartedPktDay = getClientPktDayString(getClientQuotaCurrentDate());
     const endpoint = options.endpoint || '/api/upload/quota';
     const response = await fetchFn(endpoint, {
       method: 'GET',
@@ -478,9 +596,37 @@ export async function fetchAuthenticatedUploadQuota(options = {}) {
       return getUploadQuotaState();
     }
 
+    const responseNow = getClientQuotaCurrentDate();
+    const responsePktDay = getClientPktDayString(responseNow);
+    const rawResetAt = readHeaderValue(response, 'X-RateLimit-Reset-UTC');
+    const parsedResetAtMs = rawResetAt ? Date.parse(rawResetAt) : NaN;
+    const isStaleResetAt = !Number.isNaN(parsedResetAtMs) && parsedResetAtMs <= responseNow.getTime();
+    const isStaleMissingHeaderCrossDay =
+      Number.isNaN(parsedResetAtMs) && requestStartedPktDay !== responsePktDay;
+
+    if (isStaleResetAt || isStaleMissingHeaderCrossDay) {
+      checkUploadQuotaUtcRollover({ triggerRefresh: false });
+      if (!options._retriedStalePktDay && typeof currentQuotaState.remaining !== 'number') {
+        return fetchAuthenticatedUploadQuota({
+          ...options,
+          userId: targetUid,
+          _retriedStalePktDay: true
+        });
+      }
+      if (typeof currentQuotaState.remaining !== 'number') {
+        currentQuotaState = {
+          ...currentQuotaState,
+          userId: targetUid,
+          status: 'unavailable'
+        };
+        notifyQuotaStateListeners();
+      }
+      return getUploadQuotaState();
+    }
+
     const parsedHeaders = extractQuotaFromHeaders(response);
     if (parsedHeaders) {
-      return updateUploadQuotaFromResponse(response, targetUid);
+      return updateUploadQuotaFromResponse(response, targetUid, { requestStartedPktDay });
     }
 
     // Response lacked authoritative X-RateLimit-Remaining header or failed without quota headers
