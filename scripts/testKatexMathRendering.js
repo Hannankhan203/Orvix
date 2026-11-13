@@ -198,18 +198,44 @@ test('renders tables, lists, blockquotes, and all 4 chat modes properly alongsid
   }
 });
 
+test('preserves blockquotes and indented lists containing display math', () => {
+  const bqBracket = renderMd('> **Formula:**\n> \\[\n> E = mc^2\n> \\]');
+  assert.match(bqBracket, /<blockquote[^>]*>[\s\S]*class="katex-display"[\s\S]*<\/blockquote>/);
+  assert.doesNotMatch(bqBracket, /<mi>&gt;<\/mi>|<span class="mrel">&gt;<\/span>/);
+
+  const bqDollar = renderMd('> $$E = mc^2$$');
+  assert.match(bqDollar, /<blockquote[^>]*>[\s\S]*class="katex-display"[\s\S]*<\/blockquote>/);
+
+  const listIndented = renderMd('1. Formula:\n   $$x = \\frac{1}{2}$$');
+  assert.match(listIndented, /<ol[^>]*>[\s\S]*<li[^>]*>[\s\S]*class="katex-display"[\s\S]*<\/li>[\s\S]*<\/ol>/);
+});
+
+test('renders short numeric fractions like $1/2$ while keeping currency rates like $5/month literal', () => {
+  const fracHtml = renderMd('Half is $1/2$ and three quarters is $3/4$.');
+  assert.equal((fracHtml.match(/class="katex"/g) || []).length, 2);
+
+  const rateHtml = renderMd('Plans cost $5/month or $10/user.');
+  assert.doesNotMatch(rateHtml, /class="katex"/);
+  assert.doesNotMatch(rateHtml, /\\\$/);
+});
+
 // ----------------------------------------------------------------------------
-// 6. CSS, Layout Swipe Exclusion, PWA & Bundle Checks
+// 6. CSS, Layout Swipe Exclusion, ChatMessage Integration, PWA & Bundle Checks
 // ----------------------------------------------------------------------------
-test('CSS rules, streaming cursor exclusions, mobile swipe exclusion, and PWA font precaching are configured', () => {
+test('CSS rules, streaming cursor exclusions, mobile swipe exclusion, ChatMessage wrapper, and PWA font precaching are configured', () => {
   const stylesCss = fs.readFileSync('src/styles/index.css', 'utf8');
   assert.match(stylesCss, /\.ai-markdown-container \.katex\s*\{/);
   assert.match(stylesCss, /\.ai-markdown-container \.katex-display\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(stylesCss, /\.ai-markdown-container \.katex-display\s*>\s*\.katex\s*\{[^}]*max-width:\s*none/);
   assert.match(stylesCss, /\[data-theme="light"\] \.ai-markdown-container \.katex-error/);
   assert.match(stylesCss, /@media \(max-width:\s*640px\)[\s\S]*\.ai-markdown-container \.katex-display/);
 
   const cursorNotKatexCount = (stylesCss.match(/:not\(\.katex-display\)/g) || []).length;
-  assert.equal(cursorNotKatexCount, 5, 'All 5 streaming cursor selectors must exclude .katex-display');
+  assert.equal(cursorNotKatexCount, 6, 'All 6 streaming cursor selectors must exclude .katex-display');
+
+  const chatMsgJsx = fs.readFileSync('src/components/chat/ChatMessage.jsx', 'utf8');
+  assert.match(chatMsgJsx, /ai-markdown-container mode-\$\{effectiveMode\}/);
+  assert.match(chatMsgJsx, /<MarkdownContent/);
 
   const layoutJsx = fs.readFileSync('src/components/layout/Layout.jsx', 'utf8');
   assert.match(layoutJsx, /\.katex-display/, 'Layout.jsx must exclude .katex-display from swipe navigation');

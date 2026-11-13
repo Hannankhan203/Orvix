@@ -141,8 +141,14 @@ function isCurrencyDollar(text, dollarIdx) {
     return false;
   }
 
-  // Whitespace + math operator leading to a non-currency closing '$' (e.g. $5 + 3 = 8$)
+  // Short inline numeric/variable fraction closed by '$' (e.g. $1/2$, $3/4$, $1/n$),
+  // while keeping currency rates like $5/month or $10/user escaped as literal currency.
   const rest = text.slice(afterNumIdx);
+  if (/^\/(?:\d+(?:\.\d+)?|[a-zA-Z])\$(?!\d)/.test(rest)) {
+    return false;
+  }
+
+  // Whitespace + math operator leading to a non-currency closing '$' (e.g. $5 + 3 = 8$)
   if (/^[ \t]+(?:[+\-*\/=<>^_\\|×÷≤≥≠≈±·])/.test(rest)) {
     const nextDollar = findNextSingleDollarInParagraph(text, afterNumIdx);
     if (nextDollar !== -1) {
@@ -229,11 +235,31 @@ export function preprocessMathMarkdown(markdown, { isStreaming = false } = {}) {
       if (next === '[') {
         const closeIdx = findClosingDelimiter(text, i + 2, '\\]', false);
         if (closeIdx !== -1) {
-          const inner = text.slice(i + 2, closeIdx).trim();
-          const needsLeadingNl = out.length > 0 && !out.endsWith('\n');
+          const lineStart = out.lastIndexOf('\n') + 1;
+          const beforeOnLine = out.slice(lineStart);
+          const containerPrefix = /^(?:[ \t]*>[ \t]?)+[ \t]*$|^[ \t]*$/.test(beforeOnLine)
+            ? beforeOnLine
+            : null;
+          let rawInner = text.slice(i + 2, closeIdx);
+          if (containerPrefix && containerPrefix.includes('>')) {
+            rawInner = rawInner
+              .split('\n')
+              .map((ln, idx) => (idx === 0 ? ln : ln.replace(/^(?:[ \t]*>[ \t]?)+/, '')))
+              .join('\n');
+          }
+          const innerLines = rawInner.trim().split('\n');
           const afterClose = text[closeIdx + 2] || '';
           const needsTrailingNl = afterClose !== '' && afterClose !== '\n';
-          out += `${needsLeadingNl ? '\n' : ''}$$\n${inner}\n$$${needsTrailingNl ? '\n' : ''}`;
+
+          if (containerPrefix !== null) {
+            const prefixedInner = innerLines
+              .map((ln) => `${containerPrefix}${ln}`)
+              .join('\n');
+            out += `$$\n${prefixedInner}\n${containerPrefix}$$${needsTrailingNl ? `\n${containerPrefix}` : ''}`;
+          } else {
+            const needsLeadingNl = out.length > 0 && !out.endsWith('\n');
+            out += `${needsLeadingNl ? '\n' : ''}$$\n${innerLines.join('\n')}\n$$${needsTrailingNl ? '\n' : ''}`;
+          }
           i = closeIdx + 2;
           continue;
         }
@@ -265,9 +291,10 @@ export function preprocessMathMarkdown(markdown, { isStreaming = false } = {}) {
           closeIdx + 2,
           afterEndIdx === -1 ? text.length : afterEndIdx
         );
+        const isContainerPrefix = /^(?:[ \t]*>[ \t]?)+[ \t]*$|^[ \t]*$/.test(beforeOnLine);
 
-        if (!inner.includes('\n') && /^[ \t]*$/.test(beforeOnLine) && /^[ \t]*$/.test(afterOnLine)) {
-          out += `$$\n${inner.trim()}\n$$`;
+        if (!inner.includes('\n') && isContainerPrefix && /^[ \t]*$/.test(afterOnLine)) {
+          out += `$$\n${beforeOnLine}${inner.trim()}\n${beforeOnLine}$$`;
         } else {
           out += `$$${inner}$$`;
         }
