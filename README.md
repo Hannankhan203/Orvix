@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: V 0.3.2**
+**Version: V 0.4.1**
 
 An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
 
@@ -499,6 +499,8 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 
 - **Three Staging Methods**: File picker dialog, clipboard paste (`Ctrl+V`), or drag-and-drop onto the chat area.
 - **Constraints**: Strictly 1 attachment per message; maximum file size of 25 MB.
+- **Authenticated Cloud Storage (v0.4.0)**: Attachment uploads require a verified Firebase account (guest/unauthenticated uploads return HTTP `401 UNAUTHENTICATED`) and persist in private per-user Supabase Storage (`{userId}/{conversationId}/{attachmentId}.{ext}`). Files `>= 4 MB` use signed direct-to-Supabase uploads to bypass serverless body limits, with IndexedDB caching for offline preview and a 2-hour TTL cleanup lifecycle for temporary attachments.
+- **Daily Upload Quota & Midnight PKT Reset (v0.4.1)**: Each authenticated student account is limited to **5 attachment uploads per PKT calendar day** across both standard (`/api/upload`) and direct (`/api/upload/direct/*`) upload flows. The daily quota resets automatically at **midnight Pakistan Standard Time (`12:00 AM Asia/Karachi`, UTC+05:00 — `19:00:00.000Z`)**, independent of server host or browser local timezones. Remaining uploads display live in the composer (`"5 of 5 uploads remaining today"` to `"0 of 5 uploads remaining today"`) synchronized strictly with backend `X-RateLimit-*` headers and `GET /api/upload/quota`.
 - **Docked Preview**: Staged files display a format icon, filename, size, and remove button (`✕`).
 
 ### Supported Formats & Targeted Questioning
@@ -686,6 +688,7 @@ Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, an
 3. **Cloud Firestore**: Authenticated users sync chats and preferences under `users/{uid}/chats/{chatId}/messages/{messageId}`.
 4. **Guest Mode**: Full functionality for unauthenticated visitors with persistence in `localStorage`.
 5. **Immutable Shared Snapshots (`sharedChats/{shareId}`)**: Public conversation snapshots are stored separately from private user partitions. Forked conversations are imported to `users/{uid}/chats/{newChatId}` only after the recipient's first prompt and assistant response complete successfully.
+6. **Private Supabase Attachment Storage & Quota State**: Authenticated user attachments persist in private Supabase Storage (`{userId}/{conversationId}/{attachmentId}.{ext}`), while server-only Firestore collections (`uploadQuotas` and `uploadTickets`) enforce atomic 5-upload/day PKT quota transactions and durable direct-upload ticket verification.
 
 ---
 
@@ -942,6 +945,18 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 ---
 
 ## Version History & Release Changelog
+
+### V 0.4.1 — Daily Attachment Upload Quota & Midnight PKT Reset
+- **5 Uploads per PKT Calendar Day**: Enforced a strict daily limit of **5 attachment uploads per authenticated student account** across both standard multipart uploads (`POST /api/upload`) and signed direct cloud uploads (`POST /api/upload/direct/signed-url` and `/complete`).
+- **Automatic Midnight PKT Reset (`Asia/Karachi`, UTC+05:00)**: Configured daily quota counters and next-reset timestamps (`X-RateLimit-Reset-UTC` ending in `T19:00:00.000Z`) to reset automatically at **12:00 AM Pakistan Standard Time (`Asia/Karachi`)** on both backend (`server/uploadQuotaService.ts`) and frontend (`src/services/uploadQuotaClientService.js`), remaining invariant across server and browser local timezones.
+- **Atomic Firestore Quota Transactions**: Implemented atomic reservation, commit, and rollback/release transactions in the server-only `uploadQuotas` collection with 120-second reservation TTL reclamation and safe cross-midnight accounting (reservations created before midnight PKT finalize on their originating PKT day while returning updated current-day quota status).
+- **Live Composer Quota Indicator & Header Synchronization**: Added an accessible composer quota indicator synchronized strictly with authoritative backend `X-RateLimit-Remaining`, `X-RateLimit-Limit`, and `X-RateLimit-Reset-UTC` headers plus `GET /api/upload/quota`, including rollover detection and stale previous-day response protection.
+- **Authentication & Bypass Protection**: Enforced mandatory Firebase authentication on upload and quota status endpoints (HTTP `401 UNAUTHENTICATED` for guests), blocked local Browser AI extraction fallback on HTTP `429 QUOTA_EXCEEDED`, and prevented direct base64 image quota bypasses.
+
+### V 0.4.0 — Supabase Private Cloud Storage & Attachment Lifecycle
+- **Supabase Cloud Attachment Storage**: Introduced Supabase Storage integration (`server/supabaseStorageService.ts`, `server/supabaseClient.ts`) storing authenticated users' attachments privately under `{userId}/{conversationId}/{attachmentId}.{ext}` with automatic bucket provisioning and per-user path ownership validation.
+- **Durable Direct Cloud Uploads**: Added signed upload URL initiation, completion verification, and cancellation routes (`POST /api/upload/direct/signed-url`, `/complete`, `/cancel`) backed by durable Firestore tickets (`uploadTickets`) so files `>= 4 MB` upload directly to Supabase Storage without hitting serverless payload limits.
+- **Orphan Prevention & Automated Cleanup**: Enforced `conversationId` validation on uploads, added binary magic-number verification on direct upload completion, preserved 2-hour TTL expiry cleanup (`supabaseAttachmentCleanupService.ts`), and integrated durable attachment cleanup queues for conversation deletion and edit/resend branch truncation.
 
 ### V 0.3.2 — Security, Performance & Architecture Improvements
 - **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered complete remediation for all reported security, performance, storage, and architectural findings.
