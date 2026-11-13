@@ -891,18 +891,58 @@ export default function ChatPage({
           setMessages((prevMessages) => {
             // If a prompt is actively generating or streaming in this tab, preserve the in-progress assistant message
             if (requestControllerRef.current?.hasActiveRequest()) {
-              const activeMsgs = prevMessages.filter(
-                (m) => m.id && !safeMessages.some((sm) => sm.id === m.id)
+              const activeRequest = requestControllerRef.current.getActiveRequest();
+              const activeAssistantId =
+                activeRequest &&
+                (!activeRequest.chatId || activeRequest.chatId === activeChatId)
+                  ? activeRequest.assistantMessageId
+                  : null;
+              const activePrevMsg = activeAssistantId
+                ? prevMessages.find((m) => m.id === activeAssistantId)
+                : null;
+
+              let merged = safeMessages;
+              let didPreserve = false;
+
+              if (activePrevMsg) {
+                const existsInSafe = safeMessages.some((sm) => sm.id === activeAssistantId);
+                merged = existsInSafe
+                  ? safeMessages.map((sm) =>
+                      sm.id === activeAssistantId ? activePrevMsg : sm
+                    )
+                  : [...safeMessages, activePrevMsg];
+                didPreserve = true;
+              }
+
+              const missingActiveMsgs = prevMessages.filter(
+                (m) =>
+                  m.id &&
+                  m.id !== activeAssistantId &&
+                  !merged.some((sm) => sm.id === m.id)
               );
-              if (activeMsgs.length > 0) {
-                return messageOrderMemoRef.current([...safeMessages, ...activeMsgs]);
+              if (missingActiveMsgs.length > 0) {
+                merged = [...merged, ...missingActiveMsgs];
+                didPreserve = true;
+              }
+
+              if (didPreserve) {
+                return messageOrderMemoRef.current(merged);
               }
             }
             return safeMessages;
           });
 
+          const activeReqDuringSnapshot = requestControllerRef.current?.hasActiveRequest()
+            ? requestControllerRef.current.getActiveRequest()
+            : null;
+          const activeSnapshotSkipId =
+            activeReqDuringSnapshot &&
+            (!activeReqDuringSnapshot.chatId || activeReqDuringSnapshot.chatId === activeChatId)
+              ? activeReqDuringSnapshot.assistantMessageId
+              : null;
+
           safeMessages.forEach((message) => {
-            if (message.id) {
+            if (message.id && message.id !== activeSnapshotSkipId) {
               persistedMessageIdsRef.current.add(message.id);
             }
           });
@@ -2398,6 +2438,20 @@ export default function ChatPage({
     }
   };
 
+  const getSuccessfulAlternatives = (assistantMessage) => {
+    if (!assistantMessage || !Array.isArray(assistantMessage.alternatives)) {
+      return [];
+    }
+    const rootHasError = Boolean(assistantMessage.isError || assistantMessage.isInterrupted);
+    const activeId = assistantMessage.activeAlternativeId;
+    return assistantMessage.alternatives.filter((alt) => {
+      if (!alt) return false;
+      if (alt.isError || alt.isInterrupted) return false;
+      if (rootHasError && alt.id === activeId) return false;
+      return typeof alt.content === 'string' && alt.content.trim().length > 0;
+    });
+  };
+
   // Retry a failed AI response with the same provider.
   const handleRetry = async (failedMessage) => {
     if (isPublicSharedViewer) return;
@@ -2428,14 +2482,16 @@ export default function ChatPage({
     const currentMessagesSnapshot = messagesRef.current;
 
     const failedIdx = currentMessagesSnapshot.findIndex((m) => m.id === failedMessage.id);
-    const parentUser = failedMessage.parentMessageId
-      ? currentMessagesSnapshot.find((m) => m.id === failedMessage.parentMessageId)
+    const latestFailedMessage =
+      (failedIdx >= 0 ? currentMessagesSnapshot[failedIdx] : null) || failedMessage;
+    const parentUser = latestFailedMessage.parentMessageId
+      ? currentMessagesSnapshot.find((m) => m.id === latestFailedMessage.parentMessageId)
       : (failedIdx > 0 ? currentMessagesSnapshot[failedIdx - 1] : null);
-    const parentMessageId = parentUser?.id || failedMessage.parentMessageId || null;
-    const interactionId = parentUser?.interactionId || failedMessage.interactionId || null;
+    const parentMessageId = parentUser?.id || latestFailedMessage.parentMessageId || null;
+    const interactionId = parentUser?.interactionId || latestFailedMessage.interactionId || null;
 
     let retryAttachments =
-      failedMessage.referencedAttachments ||
+      latestFailedMessage.referencedAttachments ||
       parentUser?.attachments ||
       [];
     if ((!retryAttachments || retryAttachments.length === 0) && currentMessagesSnapshot.length > 0) {
@@ -2454,46 +2510,99 @@ export default function ChatPage({
 
     const requestStartTime = performance.now();
 
-    const assistantMessageId =
-      `${providerToUse}-${Date.now()}-retry`;
+    const normalizedFailed = normalizeAssistantMessage(latestFailedMessage, parentUser);
+    const successfulAlts = getSuccessfulAlternatives(normalizedFailed);
+    const hasSuccessfulAlternatives = successfulAlts.length > 0;
 
-    const initialAssistantMessage = normalizeAssistantMessage(
-      {
-        id: assistantMessageId,
-        sender: 'assistant',
+    let assistantMessageId;
+    let nextAssistantMessage;
+    let retryModelOverride = null;
+
+    if (hasSuccessfulAlternatives) {
+      assistantMessageId = normalizedFailed.id;
+      persistedMessageIdsRef.current.delete(assistantMessageId);
+
+      const activeFailedAlt = getActiveAlternative(normalizedFailed);
+      retryModelOverride = sanitizeModelForProvider(
+        providerToUse,
+        activeFailedAlt?.modelUsed || null
+      );
+
+      const newRetryAlternative = createAlternativeRecord({
         parentMessageId,
-        interactionId,
+        interactionId: interactionId || normalizedFailed.interactionId || null,
         provider: providerToUse,
-        modelUsed: null,
+        modelUsed: retryModelOverride,
+        content: '',
+        isStreaming: true,
         timestamp: new Date().toLocaleTimeString([], {
           hour: '2-digit',
           minute: '2-digit'
         }),
-        createdAt: Date.now(),
-        createdAtMs: Date.now(),
-        content: '',
-        isStreaming: true,
-        requestStartTime,
         referencedAttachments: undefined
-      },
-      parentUser
-    );
+      });
+
+      const latestValidAlt = successfulAlts[successfulAlts.length - 1];
+      const basePreserved = {
+        ...normalizedFailed,
+        alternatives: successfulAlts,
+        activeAlternativeId: latestValidAlt.id
+      };
+
+      nextAssistantMessage = {
+        ...addAlternativeToAssistantMessage(basePreserved, newRetryAlternative),
+        requestStartTime,
+        isStreaming: true,
+        isError: false,
+        isInterrupted: false,
+        failedPrompt: undefined,
+        failedProvider: undefined,
+        canSwitchProvider: undefined,
+        errorCode: undefined,
+        status: undefined,
+        httpStatus: undefined,
+        suggestedProviders: undefined
+      };
+    } else {
+      assistantMessageId = `${providerToUse}-${Date.now()}-retry`;
+      nextAssistantMessage = normalizeAssistantMessage(
+        {
+          id: assistantMessageId,
+          sender: 'assistant',
+          parentMessageId,
+          interactionId,
+          provider: providerToUse,
+          modelUsed: null,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          createdAt: Date.now(),
+          createdAtMs: Date.now(),
+          content: '',
+          isStreaming: true,
+          requestStartTime,
+          referencedAttachments: undefined
+        },
+        parentUser
+      );
+    }
 
     let updatedMessages;
     if (failedIdx >= 0) {
       updatedMessages = currentMessagesSnapshot.map((m, idx) =>
-        idx === failedIdx ? initialAssistantMessage : m
+        idx === failedIdx ? nextAssistantMessage : m
       );
     } else {
       const parentIdx = currentMessagesSnapshot.findIndex((m) => m.id === parentMessageId);
       if (parentIdx >= 0) {
         updatedMessages = [
           ...currentMessagesSnapshot.slice(0, parentIdx + 1),
-          initialAssistantMessage,
+          nextAssistantMessage,
           ...currentMessagesSnapshot.slice(parentIdx + 1)
         ];
       } else {
-        updatedMessages = [...currentMessagesSnapshot, initialAssistantMessage];
+        updatedMessages = [...currentMessagesSnapshot, nextAssistantMessage];
       }
     }
 
@@ -2502,25 +2611,26 @@ export default function ChatPage({
     const parentIdx = parentUser ? currentMessagesSnapshot.findIndex((m) => m.id === parentUser.id) : -1;
     const historySlice = parentIdx >= 0
       ? currentMessagesSnapshot.slice(0, parentIdx)
-      : updatedMessages.filter((m) => m.id !== initialAssistantMessage.id);
+      : updatedMessages.filter((m) => m.id !== nextAssistantMessage.id);
     const validHistory = historySlice.filter(
       (message) => !message.isError && !message.isInterrupted
     );
 
-    const isRetryContinuation = isContinuationRequest(failedMessage.failedPrompt);
+    const isRetryContinuation = isContinuationRequest(latestFailedMessage.failedPrompt);
     const retryMultiPart = isRetryContinuation
-      ? resolveMultiPartContext(validHistory, failedMessage.failedPrompt)
-      : { isContinuation: false, partNumber: 1, originalPrompt: failedMessage.failedPrompt, previousContentSummary: '' };
+      ? resolveMultiPartContext(validHistory, latestFailedMessage.failedPrompt)
+      : { isContinuation: false, partNumber: 1, originalPrompt: latestFailedMessage.failedPrompt, previousContentSummary: '' };
 
     const promptResult = await executePrompt(
-      failedMessage.failedPrompt,
+      latestFailedMessage.failedPrompt,
       validHistory,
       currentChatId,
       assistantMessageId,
       providerToUse,
       retryAttachments,
       retryMultiPart,
-      requestStartTime
+      requestStartTime,
+      retryModelOverride
     );
 
     if (isAuthenticatedSharedPreview) {
@@ -2569,14 +2679,16 @@ export default function ChatPage({
     const currentMessagesSnapshot = messagesRef.current;
 
     const failedSwitchIdx = currentMessagesSnapshot.findIndex((m) => m.id === failedMessage.id);
-    const parentSwitchUser = failedMessage.parentMessageId
-      ? currentMessagesSnapshot.find((m) => m.id === failedMessage.parentMessageId)
+    const latestFailedMessage =
+      (failedSwitchIdx >= 0 ? currentMessagesSnapshot[failedSwitchIdx] : null) || failedMessage;
+    const parentSwitchUser = latestFailedMessage.parentMessageId
+      ? currentMessagesSnapshot.find((m) => m.id === latestFailedMessage.parentMessageId)
       : (failedSwitchIdx > 0 ? currentMessagesSnapshot[failedSwitchIdx - 1] : null);
-    const parentMessageId = parentSwitchUser?.id || failedMessage.parentMessageId || null;
-    const interactionId = parentSwitchUser?.interactionId || failedMessage.interactionId || null;
+    const parentMessageId = parentSwitchUser?.id || latestFailedMessage.parentMessageId || null;
+    const interactionId = parentSwitchUser?.interactionId || latestFailedMessage.interactionId || null;
 
     let switchAttachments =
-      failedMessage.referencedAttachments ||
+      latestFailedMessage.referencedAttachments ||
       parentSwitchUser?.attachments ||
       [];
     if ((!switchAttachments || switchAttachments.length === 0) && currentMessagesSnapshot.length > 0) {
@@ -2593,46 +2705,92 @@ export default function ChatPage({
       }
     }
 
-    const assistantMessageId =
-      `${newProviderId}-${Date.now()}-fallback`;
+    const normalizedFailed = normalizeAssistantMessage(latestFailedMessage, parentSwitchUser);
+    const successfulAlts = getSuccessfulAlternatives(normalizedFailed);
+    const hasSuccessfulAlternatives = successfulAlts.length > 0;
 
-    const initialAssistantMessage = normalizeAssistantMessage(
-      {
-        id: assistantMessageId,
-        sender: 'assistant',
+    let assistantMessageId;
+    let nextAssistantMessage;
+
+    if (hasSuccessfulAlternatives) {
+      assistantMessageId = normalizedFailed.id;
+      persistedMessageIdsRef.current.delete(assistantMessageId);
+
+      const newSwitchAlternative = createAlternativeRecord({
         parentMessageId,
-        interactionId,
+        interactionId: interactionId || normalizedFailed.interactionId || null,
         provider: newProviderId,
-        modelUsed: null,
+        modelUsed: newProviderId === 'webllm' ? webllmModelId : null,
+        content: '',
+        isStreaming: true,
         timestamp: new Date().toLocaleTimeString([], {
           hour: '2-digit',
           minute: '2-digit'
         }),
-        createdAt: Date.now(),
-        createdAtMs: Date.now(),
-        content: '',
-        isStreaming: true,
-        requestStartTime,
         referencedAttachments: undefined
-      },
-      parentSwitchUser
-    );
+      });
+
+      const latestValidAlt = successfulAlts[successfulAlts.length - 1];
+      const basePreserved = {
+        ...normalizedFailed,
+        alternatives: successfulAlts,
+        activeAlternativeId: latestValidAlt.id
+      };
+
+      nextAssistantMessage = {
+        ...addAlternativeToAssistantMessage(basePreserved, newSwitchAlternative),
+        requestStartTime,
+        isStreaming: true,
+        isError: false,
+        isInterrupted: false,
+        failedPrompt: undefined,
+        failedProvider: undefined,
+        canSwitchProvider: undefined,
+        errorCode: undefined,
+        status: undefined,
+        httpStatus: undefined,
+        suggestedProviders: undefined
+      };
+    } else {
+      assistantMessageId = `${newProviderId}-${Date.now()}-fallback`;
+      nextAssistantMessage = normalizeAssistantMessage(
+        {
+          id: assistantMessageId,
+          sender: 'assistant',
+          parentMessageId,
+          interactionId,
+          provider: newProviderId,
+          modelUsed: null,
+          timestamp: new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          createdAt: Date.now(),
+          createdAtMs: Date.now(),
+          content: '',
+          isStreaming: true,
+          requestStartTime,
+          referencedAttachments: undefined
+        },
+        parentSwitchUser
+      );
+    }
 
     let updatedMessages;
     if (failedSwitchIdx >= 0) {
       updatedMessages = currentMessagesSnapshot.map((m, idx) =>
-        idx === failedSwitchIdx ? initialAssistantMessage : m
+        idx === failedSwitchIdx ? nextAssistantMessage : m
       );
     } else {
       const parentIdx = currentMessagesSnapshot.findIndex((m) => m.id === parentMessageId);
       if (parentIdx >= 0) {
         updatedMessages = [
           ...currentMessagesSnapshot.slice(0, parentIdx + 1),
-          initialAssistantMessage,
+          nextAssistantMessage,
           ...currentMessagesSnapshot.slice(parentIdx + 1)
         ];
       } else {
-        updatedMessages = [...currentMessagesSnapshot, initialAssistantMessage];
+        updatedMessages = [...currentMessagesSnapshot, nextAssistantMessage];
       }
     }
 
@@ -2641,18 +2799,18 @@ export default function ChatPage({
     const parentIdx = parentSwitchUser ? currentMessagesSnapshot.findIndex((m) => m.id === parentSwitchUser.id) : -1;
     const historySlice = parentIdx >= 0
       ? currentMessagesSnapshot.slice(0, parentIdx)
-      : updatedMessages.filter((m) => m.id !== initialAssistantMessage.id);
+      : updatedMessages.filter((m) => m.id !== nextAssistantMessage.id);
     const validHistory = historySlice.filter(
       (message) => !message.isError && !message.isInterrupted
     );
 
-    const isSwitchContinuation = isContinuationRequest(failedMessage.failedPrompt);
+    const isSwitchContinuation = isContinuationRequest(latestFailedMessage.failedPrompt);
     const switchMultiPart = isSwitchContinuation
-      ? resolveMultiPartContext(validHistory, failedMessage.failedPrompt)
-      : { isContinuation: false, partNumber: 1, originalPrompt: failedMessage.failedPrompt, previousContentSummary: '' };
+      ? resolveMultiPartContext(validHistory, latestFailedMessage.failedPrompt)
+      : { isContinuation: false, partNumber: 1, originalPrompt: latestFailedMessage.failedPrompt, previousContentSummary: '' };
 
     const promptResult = await executePrompt(
-      failedMessage.failedPrompt,
+      latestFailedMessage.failedPrompt,
       validHistory,
       currentChatId,
       assistantMessageId,
@@ -2675,16 +2833,71 @@ export default function ChatPage({
     }
   };
 
-  // Restore a failed prompt to the input field.
+  // Restore a failed prompt to the input field while preserving any previously successful alternatives.
   const handleRestorePrompt = (promptText) => {
     if (isPublicSharedViewer) return;
     setInputValue(promptText);
 
-    updateMessagesState((previous) =>
-      previous.filter(
-        (message) => message.failedPrompt !== promptText
-      )
-    );
+    const currentChatId = activeChatIdRef.current;
+
+    const restoreMessageIfFailed = (message) => {
+      if (message.failedPrompt !== promptText) {
+        return { keep: true, message, restored: false };
+      }
+
+      const normalized =
+        message.sender === 'assistant' ? normalizeAssistantMessage(message) : message;
+      const validAlts = getSuccessfulAlternatives(normalized);
+
+      if (validAlts.length === 0) {
+        // Preserve existing behavior when no successful alternatives exist
+        return { keep: false, message: null, restored: false };
+      }
+
+      const latestValidAlt = validAlts[validAlts.length - 1];
+      const cleaned = switchActiveAlternativeInMessage(
+        {
+          ...normalized,
+          alternatives: validAlts,
+          activeAlternativeId: latestValidAlt.id,
+          isStreaming: false,
+          isError: false,
+          isInterrupted: false,
+          isStopped: Boolean(latestValidAlt.isStopped),
+          failedPrompt: undefined,
+          failedProvider: undefined,
+          canSwitchProvider: undefined,
+          errorCode: undefined,
+          status: undefined,
+          httpStatus: undefined,
+          suggestedProviders: undefined
+        },
+        latestValidAlt.id
+      );
+      return { keep: true, message: cleaned, restored: true };
+    };
+
+    const restoredToPersist = (messagesRef.current || [])
+      .map(restoreMessageIfFailed)
+      .filter((entry) => entry.keep && entry.restored && entry.message)
+      .map((entry) => entry.message);
+
+    updateMessagesState((previous) => {
+      const next = [];
+      for (const message of previous) {
+        const res = restoreMessageIfFailed(message);
+        if (res.keep && res.message) {
+          next.push(res.message);
+        }
+      }
+      return next;
+    });
+
+    if (currentChatId && restoredToPersist.length > 0) {
+      for (const restoredMsg of restoredToPersist) {
+        void persistMessageSafe(currentChatId, restoredMsg, true);
+      }
+    }
   };
 
   // Regenerate an assistant response as a new alternative using the model of the response currently being viewed
