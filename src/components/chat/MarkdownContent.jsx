@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import {
   AlertCircle,
   AlertTriangle,
@@ -23,6 +25,273 @@ export function extractNodeText(node) {
   if (Array.isArray(node)) return node.map(extractNodeText).join('');
   if (node.props?.children) return extractNodeText(node.props.children);
   return '';
+}
+
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [
+  [
+    rehypeKatex,
+    {
+      throwOnError: false,
+      strict: 'ignore',
+      errorColor: 'var(--status-danger, #ef4444)'
+    }
+  ]
+];
+
+function isFenceStart(line) {
+  const match = line.match(/^( {0,3})(`{3,}|~{3,})(.*)$/);
+  if (!match) return null;
+  const fenceChar = match[2][0];
+  const fenceLen = match[2].length;
+  const info = match[3] || '';
+  if (fenceChar === '`' && info.includes('`')) return null;
+  return { fenceChar, fenceLen };
+}
+
+function isFenceClose(line, fenceChar, fenceLen) {
+  const match = line.match(/^( {0,3})(`{3,}|~{3,})\s*$/);
+  if (!match) return false;
+  return match[2][0] === fenceChar && match[2].length >= fenceLen;
+}
+
+function findClosingInlineCode(text, startIdx, tickLen) {
+  let i = startIdx;
+  while (i < text.length) {
+    if (text[i] === '\n' && text[i + 1] === '\n') return -1;
+    if (text[i] === '`') {
+      let count = 0;
+      while (i + count < text.length && text[i + count] === '`') count++;
+      if (count === tickLen) return i;
+      i += count;
+      continue;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function findClosingDelimiter(text, startIdx, closeSeq, stopOnDoubleNewline = false) {
+  let i = startIdx;
+  while (i < text.length) {
+    if (stopOnDoubleNewline && text[i] === '\n' && text[i + 1] === '\n') {
+      return -1;
+    }
+    if (text[i] === '\\' && i + 1 < text.length) {
+      if (text.startsWith(closeSeq, i)) {
+        return i;
+      }
+      i += 2;
+      continue;
+    }
+    if (text.startsWith(closeSeq, i)) {
+      return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function findNextSingleDollarInParagraph(text, startIdx) {
+  let i = startIdx;
+  while (i < text.length) {
+    if (text[i] === '\n' && text[i + 1] === '\n') return -1;
+    if (text[i] === '\\' && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (text[i] === '`') {
+      let tickLen = 0;
+      while (i + tickLen < text.length && text[i + tickLen] === '`') tickLen++;
+      const closeCode = findClosingInlineCode(text, i + tickLen, tickLen);
+      if (closeCode !== -1) {
+        i = closeCode + tickLen;
+        continue;
+      }
+      i += tickLen;
+      continue;
+    }
+    if (text[i] === '$') {
+      if (text[i + 1] === '$') {
+        i += 2;
+        continue;
+      }
+      return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+function isCurrencyDollar(text, dollarIdx) {
+  const afterDollar = text.slice(dollarIdx + 1);
+  const numMatch = afterDollar.match(
+    /^(\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)(?:[kKmMbBtT](?![a-zA-Z0-9_]))?/
+  );
+  if (!numMatch) return false;
+
+  const afterNumIdx = dollarIdx + 1 + numMatch[0].length;
+  const nextChar = text[afterNumIdx] || '';
+
+  // Explicit single-number math like $5$
+  if (nextChar === '$') return false;
+
+  // Immediate math/TeX token after digits (e.g. $2x$, $10^{-5}$, $5\times$, $2(x)$, $5!$)
+  if (/^[a-zA-Z\\^_{[(+*=<>\|\~°!]/.test(nextChar)) {
+    return false;
+  }
+
+  // Whitespace + math operator leading to a non-currency closing '$' (e.g. $5 + 3 = 8$)
+  const rest = text.slice(afterNumIdx);
+  if (/^[ \t]+(?:[+\-*\/=<>^_\\|×÷≤≥≠≈±·])/.test(rest)) {
+    const nextDollar = findNextSingleDollarInParagraph(text, afterNumIdx);
+    if (nextDollar !== -1) {
+      const charAfterClose = text[nextDollar + 1] || '';
+      if (!/^\d/.test(charAfterClose)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Normalizes LaTeX delimiters (\(...\) and \[...\]) and single-line standalone $$...$$
+ * for remark-math while leaving fenced code blocks, inline code, incomplete streaming
+ * delimiters, and ordinary currency amounts ($5, $10, $19.99, $5M) untouched.
+ */
+export function preprocessMathMarkdown(markdown, { isStreaming = false } = {}) {
+  if (!markdown || typeof markdown !== 'string') return '';
+
+  const text = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let out = '';
+  let i = 0;
+  let inFence = false;
+  let fenceChar = '';
+  let fenceLen = 0;
+
+  while (i < text.length) {
+    const atLineStart = i === 0 || text[i - 1] === '\n';
+
+    if (atLineStart) {
+      const nextNl = text.indexOf('\n', i);
+      const lineEnd = nextNl === -1 ? text.length : nextNl;
+      const line = text.slice(i, lineEnd);
+
+      if (inFence) {
+        out += line;
+        if (nextNl !== -1) out += '\n';
+        if (isFenceClose(line, fenceChar, fenceLen)) {
+          inFence = false;
+          fenceChar = '';
+          fenceLen = 0;
+        }
+        i = nextNl === -1 ? text.length : nextNl + 1;
+        continue;
+      }
+
+      const fence = isFenceStart(line);
+      if (fence) {
+        inFence = true;
+        fenceChar = fence.fenceChar;
+        fenceLen = fence.fenceLen;
+        out += line;
+        if (nextNl !== -1) out += '\n';
+        i = nextNl === -1 ? text.length : nextNl + 1;
+        continue;
+      }
+    }
+
+    if (inFence) {
+      out += text[i++];
+      continue;
+    }
+
+    // Preserve inline code spans verbatim
+    if (text[i] === '`') {
+      let tickLen = 0;
+      while (i + tickLen < text.length && text[i + tickLen] === '`') tickLen++;
+      const closeCode = findClosingInlineCode(text, i + tickLen, tickLen);
+      if (closeCode !== -1) {
+        out += text.slice(i, closeCode + tickLen);
+        i = closeCode + tickLen;
+        continue;
+      }
+      out += text.slice(i, i + tickLen);
+      i += tickLen;
+      continue;
+    }
+
+    // Handle backslash escapes and LaTeX \(...\) / \[...\] delimiters
+    if (text[i] === '\\' && i + 1 < text.length) {
+      const next = text[i + 1];
+      if (next === '[') {
+        const closeIdx = findClosingDelimiter(text, i + 2, '\\]', false);
+        if (closeIdx !== -1) {
+          const inner = text.slice(i + 2, closeIdx).trim();
+          const needsLeadingNl = out.length > 0 && !out.endsWith('\n');
+          const afterClose = text[closeIdx + 2] || '';
+          const needsTrailingNl = afterClose !== '' && afterClose !== '\n';
+          out += `${needsLeadingNl ? '\n' : ''}$$\n${inner}\n$$${needsTrailingNl ? '\n' : ''}`;
+          i = closeIdx + 2;
+          continue;
+        }
+      } else if (next === '(') {
+        const closeIdx = findClosingDelimiter(text, i + 2, '\\)', true);
+        if (closeIdx !== -1) {
+          const inner = text.slice(i + 2, closeIdx).trim();
+          if (inner.length > 0) {
+            out += `$${inner}$`;
+            i = closeIdx + 2;
+            continue;
+          }
+        }
+      }
+      out += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+
+    // Block math $$...$$
+    if (text[i] === '$' && text[i + 1] === '$') {
+      const closeIdx = findClosingDelimiter(text, i + 2, '$$', false);
+      if (closeIdx !== -1) {
+        const inner = text.slice(i + 2, closeIdx);
+        const lineStart = out.lastIndexOf('\n') + 1;
+        const beforeOnLine = out.slice(lineStart);
+        const afterEndIdx = text.indexOf('\n', closeIdx + 2);
+        const afterOnLine = text.slice(
+          closeIdx + 2,
+          afterEndIdx === -1 ? text.length : afterEndIdx
+        );
+
+        if (!inner.includes('\n') && /^[ \t]*$/.test(beforeOnLine) && /^[ \t]*$/.test(afterOnLine)) {
+          out += `$$\n${inner.trim()}\n$$`;
+        } else {
+          out += `$$${inner}$$`;
+        }
+        i = closeIdx + 2;
+        continue;
+      }
+      // While streaming, escape unclosed $$ so micromark-extension-math does not auto-close
+      // an incomplete block at EOF and flash a KaTeX parse error mid-response.
+      out += isStreaming ? '\\$\\$' : '$$';
+      i += 2;
+      continue;
+    }
+
+    // Single '$': escape ordinary currency amounts so remark-math does not pair them
+    if (text[i] === '$') {
+      out += isCurrencyDollar(text, i) ? '\\$' : '$';
+      i += 1;
+      continue;
+    }
+
+    out += text[i++];
+  }
+
+  return out;
 }
 
 export const CalloutContext = React.createContext(false);
@@ -380,9 +649,18 @@ export default function MarkdownContent({ content = '', isStreaming = false, eff
     [isStreaming, effectiveMode]
   );
 
+  const processedContent = useMemo(
+    () => preprocessMathMarkdown(content || '', { isStreaming }),
+    [content, isStreaming]
+  );
+
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-      {content || ''}
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      components={markdownComponents}
+    >
+      {processedContent}
     </ReactMarkdown>
   );
 }

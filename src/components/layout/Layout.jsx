@@ -317,10 +317,10 @@ export default function Layout({
         return true;
       }
 
-      // 5. Exclude Horizontally Scrollable Elements (code blocks, data tables, scrollable pills)
+      // 5. Exclude Horizontally Scrollable Elements (code blocks, data tables, display equations, scrollable pills)
       if (
         target.closest(
-          '.table-responsive-wrapper, .markdown-table, .code-block-container, pre, code, .prompt-suggestions-scroll, .alternative-nav-wrapper, .dictation-lang-dropdown'
+          '.table-responsive-wrapper, .markdown-table, .code-block-container, .katex-display, pre, code, .prompt-suggestions-scroll, .alternative-nav-wrapper, .dictation-lang-dropdown'
         )
       ) {
         return true;

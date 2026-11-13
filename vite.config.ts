@@ -42,7 +42,7 @@ export default defineConfig(() => {
         workbox: {
           clientsClaim: true,
           skipWaiting: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest,wasm}'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest,wasm,woff2,woff,ttf}'],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
           navigateFallback: '/index.html',
           navigateFallbackDenylist: [
@@ -94,6 +94,9 @@ export default defineConfig(() => {
               if (
                 id.includes('react-markdown') ||
                 id.includes('remark-gfm') ||
+                id.includes('remark-math') ||
+                id.includes('rehype-katex') ||
+                id.includes('/node_modules/katex/') ||
                 id.includes('micromark') ||
                 id.includes('mdast') ||
                 id.includes('hast') ||

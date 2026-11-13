@@ -3833,6 +3833,57 @@ html, body {
   background-color: rgba(0, 0, 0, 0.015);
 }
 
+/* KaTeX Mathematical Expression Rendering */
+.ai-markdown-container .katex {
+  word-break: normal;
+  overflow-wrap: normal;
+  text-indent: 0;
+  color: inherit;
+  max-width: 100%;
+}
+
+.ai-markdown-container .katex-display {
+  display: block;
+  max-width: 100%;
+  margin: 1rem 0;
+  padding: 0.35rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  text-align: center;
+  scrollbar-width: thin;
+}
+
+.ai-markdown-container .katex-display > .katex {
+  display: inline-block;
+  min-width: 100%;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.ai-markdown-container .katex-error {
+  color: var(--status-danger, #ef4444);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  word-break: break-word;
+}
+
+[data-theme="light"] .ai-markdown-container .katex-error {
+  color: #dc2626;
+}
+
+@media (max-width: 640px) {
+  .ai-markdown-container .katex-display {
+    margin: 0.85rem 0;
+    padding: 0.3rem 0.15rem;
+  }
+
+  .ai-markdown-container .katex-display > .katex {
+    font-size: 1.05em;
+  }
+}
+
 /* ==========================================================================
    Learning Mode — Professional Educational Response Formatting
    ========================================================================== */
@@ -6143,7 +6194,7 @@ html, body {
 .ai-markdown-container.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
 .ai-markdown-container.is-streaming > .educational-callout-block:last-child .educational-callout-text::after,
 .ai-markdown-container.is-streaming > blockquote.educational-callout:last-child .educational-callout-body > *:last-child::after,
-.ai-markdown-container.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote):not(.educational-callout-block)::after {
+.ai-markdown-container.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(.katex-display):not(hr):not(ul):not(ol):not(blockquote):not(.educational-callout-block)::after {
   content: '';
   display: inline-block;
   width: 6px;
@@ -6163,7 +6214,7 @@ html, body {
 .ai-markdown-container.mode-learning.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
 .ai-markdown-container.mode-learning.is-streaming > .educational-callout-block:last-child .educational-callout-text::after,
 .ai-markdown-container.mode-learning.is-streaming > blockquote.educational-callout:last-child .educational-callout-body > *:last-child::after,
-.ai-markdown-container.mode-learning.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote):not(.educational-callout-block)::after {
+.ai-markdown-container.mode-learning.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(.katex-display):not(hr):not(ul):not(ol):not(blockquote):not(.educational-callout-block)::after {
   background-color: #8b5cf6;
 }
 
@@ -6173,7 +6224,7 @@ html, body {
 .ai-markdown-container.mode-writing.is-streaming > blockquote:last-child > *:last-child::after,
 .ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
 .ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
-.ai-markdown-container.mode-writing.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote)::after {
+.ai-markdown-container.mode-writing.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(.katex-display):not(hr):not(ul):not(ol):not(blockquote)::after {
   background-color: #d97706;
 }
 
@@ -6182,7 +6233,7 @@ html, body {
 [data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > blockquote:last-child > *:last-child::after,
 [data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
 [data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
-[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote)::after {
+[data-theme="light"] .ai-markdown-container.mode-writing.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(.katex-display):not(hr):not(ul):not(ol):not(blockquote)::after {
   background-color: #b45309;
 }
 
@@ -6192,7 +6243,7 @@ html, body {
 .ai-markdown-container.mode-coding.is-streaming > blockquote:last-child > *:last-child::after,
 .ai-markdown-container.mode-coding.is-streaming > :is(ul, ol):last-child li:last-child > *:last-child::after,
 .ai-markdown-container.mode-coding.is-streaming > :is(ul, ol):last-child li:last-child:not(:has(*))::after,
-.ai-markdown-container.mode-coding.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(hr):not(ul):not(ol):not(blockquote)::after {
+.ai-markdown-container.mode-coding.is-streaming > *:last-child:not(.code-block-container):not(.table-responsive-wrapper):not(.katex-display):not(hr):not(ul):not(ol):not(blockquote)::after {
   background-color: #10b981;
 }
 
