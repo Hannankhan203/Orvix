@@ -75,7 +75,6 @@ import {
   normalizeAssistantMessage,
   addAlternativeToAssistantMessage,
   switchActiveAlternativeInMessage,
-  updateActiveAlternativeInMessage,
   ensureConversationAlternatives,
   createAlternativeRecord,
   getActiveAlternative,
@@ -2688,7 +2687,7 @@ export default function ChatPage({
     );
   };
 
-  // Regenerate an assistant response in-place using the model of the response currently being viewed
+  // Regenerate an assistant response as a new alternative using the model of the response currently being viewed
   const handleRegenerate = async (assistantMessage) => {
     if (isSharedView) return;
     stopSpeech();
@@ -2758,28 +2757,32 @@ export default function ChatPage({
       }
     }
 
-    // Update active alternative in-place to streaming state using its own provider without replacing other alternatives
+    const newAlternative = createAlternativeRecord({
+      parentMessageId: precedingUserMessage.id,
+      interactionId: precedingUserMessage.interactionId || normalizedTarget.interactionId || null,
+      provider: providerToUse,
+      modelUsed: modelToUse,
+      content: '',
+      isStreaming: true,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      referencedAttachments: undefined
+    });
+
+    // Append a new active alternative so the original and all previously generated responses remain preserved
     updateMessagesState((previous) =>
       previous.map((m) => {
         if (m.id !== targetAssistantId) return m;
         const normalized = normalizeAssistantMessage(m, precedingUserMessage);
-        const updated = updateActiveAlternativeInMessage(normalized, {
-          content: '',
-          modelUsed: modelToUse,
-          provider: providerToUse,
-          responseTimeMs: null,
-          timestamp: new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          }),
-          isStreaming: true,
-          isError: false,
-          isStopped: false,
-          referencedAttachments: undefined
-        });
+        const updated = addAlternativeToAssistantMessage(normalized, newAlternative);
         return {
           ...updated,
-          requestStartTime
+          requestStartTime,
+          isStreaming: true,
+          isError: false,
+          isStopped: false
         };
       })
     );
