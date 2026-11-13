@@ -1,6 +1,6 @@
 # Orvix
 
-**Version: V 0.4.1**
+**Version: V 0.4.2**
 
 An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
 
@@ -121,7 +121,7 @@ Built as a full-stack Node.js application, Orvix combines a React 19 single-page
 - **Mobile Swipe Navigation**: Natural swipe-right gesture across the main conversation area on mobile and tablet viewports (`<= 1024px`) to open the chat history sidebar, complete with safe exclusions for inputs, headers, code blocks, and iOS back-navigation edges.
 - **Voice Dictation with Whisper Refinement**: Real-time browser speech recognition rendering interim transcript snapshots as you speak, reconciled with server-side Groq Whisper Large v3 Turbo (with Gemini audio fallback) upon completion.
 - **Four Specialized Chat Modes**: Dedicated modes for **General Assistant**, **Learning** (educational callouts), **Writing** (editorial layout), and **Coding** (VS Code styling with locked 22px line heights).
-- **Multi-Model Response Alternatives**: Compare answers from multiple providers for the same prompt using an `< X of Y >` pager without overwriting prior outputs.
+- **Multi-Model Response Alternatives**: Compare and regenerate answers across multiple AI providers (such as Gemini, Grok, and others) using `< X of Y >` model navigation without overwriting prior outputs, preserving valid response history across regenerations, retries, and prompt restoration.
 - **Global Input Auto-Focus**: Type anywhere on the page to automatically focus the composer without losing the first keystroke, protecting active text selection and shortcuts.
 - **Controlled Continuation**: Automatic segmentation of long outputs with continuation notices and an interactive composer chip (`[ → Continue response ]`).
 - **Deep Multimodal Attachments**: Drag-and-drop, clipboard paste (`Ctrl+V`), and file picker staging for documents and images with server-side Tesseract OCR and honest `NO_TEXT_DETECTED` handling.
@@ -536,8 +536,9 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 
 ### Multi-Model Alternative Responses
 
-- Click **Another Model** (`Sparkles` icon) on any assistant response to generate an alternative output from another provider without losing the existing answer.
-- Navigate between responses using the `< X of Y >` pager on the message card.
+- Click **Another Model** (`Sparkles` icon) or **Regenerate** on any assistant response to generate a fresh output as a newly appended alternative without overwriting existing answers from Gemini, Grok, or other AI models.
+- Navigate between all generated responses using the `< X of Y >` pager on the message card.
+- Error-recovery actions (**Retry**, **Switch Provider & Retry**, and **Restore Prompt**) preserve previously successful alternatives, while Firestore snapshot handling protects active streaming responses from stale updates.
 
 ### Automatic Chat-Input Focus
 
@@ -945,6 +946,13 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 ---
 
 ## Version History & Release Changelog
+
+### V 0.4.2 — Non-Destructive Response Regeneration & History Preservation
+- **Non-Destructive Normal Regeneration**: Normal regeneration now appends a new alternative record rather than overwriting the active response in place, keeping original and subsequent generations intact across local and Firestore persistence.
+- **Preserved Multi-Model Navigation**: Previous responses from Gemini, Grok, and other AI models remain preserved and accessible through `< X of Y >` model navigation after regenerating.
+- **Retry & Switch-Provider History Preservation**: Retry and switch-provider recovery actions append a fresh alternative when previously successful alternatives exist instead of replacing the existing assistant message.
+- **Restore Prompt History Preservation**: Restoring a prompt after a failed attempt removes or bypasses only the failed attempt and restores access to the most recent valid alternative when valid response history exists.
+- **Active Stream Snapshot Protection**: Firestore snapshot synchronization (`subscribeToChatMessages`) protects in-progress streaming assistant messages and their alternatives from being overwritten or reverted by stale snapshots during active requests.
 
 ### V 0.4.1 — Daily Attachment Upload Quota & Midnight PKT Reset
 - **5 Uploads per PKT Calendar Day**: Enforced a strict daily limit of **5 attachment uploads per authenticated student account** across both standard multipart uploads (`POST /api/upload`) and signed direct cloud uploads (`POST /api/upload/direct/signed-url` and `/complete`).
