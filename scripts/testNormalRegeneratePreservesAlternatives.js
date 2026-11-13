@@ -1,18 +1,23 @@
 /**
- * Regression Suite: Normal Regenerate Preserves Existing Alternatives
+ * Regression Suite: Normal Regenerate Replaces Active Alternative & Preserves Others
  *
- * Verifies:
- * 1. ChatPage.jsx `handleRegenerate` appends a new alternative via
- *    `createAlternativeRecord` and `addAlternativeToAssistantMessage`
- *    instead of overwriting the active alternative via `updateActiveAlternativeInMessage`.
- * 2. Generating Gemini -> generating Groq/Grok -> switching back to Gemini ->
- *    clicking normal Regenerate preserves original Gemini and Groq responses
- *    while appending a new active Gemini alternative (`3 of 3`).
- * 3. `runIsolatedPromptStream` writes chunks, stop-state, and final completion
- *    strictly to the newly active alternative ID without mutating earlier ones.
- * 4. Switching across all alternatives updates root projected fields accurately.
- * 5. Firestore payload (`buildFirestoreMessagePayload`) and localStorage serialization
- *    (`sanitizeMessageForStorage`) preserve all alternatives across reload.
+ * Verifies Phase 1 requirements:
+ * 1. ChatPage.jsx `handleRegenerate` uses `replaceActiveAlternativeForRegeneration`
+ *    instead of `createAlternativeRecord` / `addAlternativeToAssistantMessage`.
+ * 2. Normal regeneration replaces only the active response (`[Grok, Cloudflare]` ->
+ *    normal Regenerate while viewing Cloudflare -> `[Grok, Latest Cloudflare]`).
+ * 3. Alternative count remains unchanged and the previous active response is no longer
+ *    accessible in state, navigation, local cache, or Firestore reload.
+ * 4. Other provider alternatives remain completely unchanged.
+ * 5. Active alternative ID, position, provider, model, message ID, interaction ID,
+ *    and creation timestamps remain stable.
+ * 6. Streaming state and timer reset correctly (`content: ''`, `responseTimeMs: null`,
+ *    `isStreaming: true`, `isError: false`, `isStopped: false`, `isInterrupted: false`,
+ *    fresh timestamp, stale error/retry metadata cleared) so `LiveResponseTimer` starts
+ *    and the previous response-time badge does not remain visible.
+ * 7. Message ordering and topology memoization remain stable.
+ * 8. Stopping mid-stream during normal regeneration finalizes only the active
+ *    alternative without creating a new entry or mutating other alternatives.
  */
 
 import assert from 'node:assert/strict';
@@ -24,6 +29,7 @@ import {
   normalizeAssistantMessage,
   createAlternativeRecord,
   addAlternativeToAssistantMessage,
+  replaceActiveAlternativeForRegeneration,
   switchActiveAlternativeInMessage,
   getActiveAlternative,
   getAlternativeMetrics,
@@ -61,9 +67,38 @@ async function runCase(name, fn) {
   }
 }
 
+function shouldRenderLiveTimer(msg) {
+  return Boolean(
+    msg &&
+      msg.sender !== 'user' &&
+      !msg.isError &&
+      !msg.isStopped &&
+      !msg.isInterrupted &&
+      msg.isStreaming &&
+      !msg.responseTimeMs &&
+      typeof msg.requestStartTime === 'number'
+  );
+}
+
+function shouldRenderResponseTimeBadge(msg) {
+  return Boolean(
+    msg &&
+      msg.sender !== 'user' &&
+      !msg.isError &&
+      !msg.isStopped &&
+      !msg.isInterrupted &&
+      typeof msg.responseTimeMs === 'number'
+  );
+}
+
 function createSimulationHarness() {
   const controller = createRequestIsolationController();
-  const orderMemo = createConversationOrderMemo();
+  let fullOrderCount = 0;
+  const orderMemo = createConversationOrderMemo({
+    onFullOrder: () => {
+      fullOrderCount++;
+    }
+  });
   const activeChatId = 'chat-regen-1';
   let isLoading = false;
   /** @type {any[]} */
@@ -84,9 +119,7 @@ function createSimulationHarness() {
   const persistMessageSafe = async (chatId, message) => {
     const normalized =
       message.sender === 'assistant' ? normalizeAssistantMessage(message) : message;
-    // Mirror Firestore persistence (`buildFirestoreMessagePayload`) + local cache (`sanitizeMessageForStorage`)
     const payload = buildFirestoreMessagePayload(normalized);
-    // Simulate serverTimestamp materialization
     firestoreMessageDocs[normalized.id] = {
       ...payload,
       id: normalized.id,
@@ -131,7 +164,14 @@ function createSimulationHarness() {
     return orderConversationMessages(ensureConversationAlternatives(hydrated));
   };
 
-  const runStream = ({ assistantMessageId, providerToUse, modelToUse, promptText, streamRequest }) =>
+  const runStream = ({
+    assistantMessageId,
+    providerToUse,
+    modelToUse,
+    promptText,
+    customStartTime = null,
+    streamRequest
+  }) =>
     runIsolatedPromptStream({
       controller,
       targetChatId: activeChatId,
@@ -140,6 +180,7 @@ function createSimulationHarness() {
       effectiveModelOverride: modelToUse,
       promptText,
       currentAttachments: [],
+      customStartTime,
       prefersReducedMotion: true,
       getActiveChatId: () => activeChatId,
       onUpdateMessages: updateMessagesState,
@@ -157,7 +198,11 @@ function createSimulationHarness() {
     });
 
   // Mirrors updated handleRegenerate in src/pages/ChatPage.jsx
-  const regenerateActiveResponse = async (assistantMessage, streamRequest) => {
+  const regenerateActiveResponse = async (
+    assistantMessage,
+    streamRequest,
+    { freshTimestamp = '10:05 AM', requestStartTime = 500 } = {}
+  ) => {
     const msgIndex = messages.findIndex((m) => m.id === assistantMessage.id);
     assert.ok(msgIndex >= 0, 'Target assistant message must exist');
 
@@ -173,29 +218,16 @@ function createSimulationHarness() {
     const rawModelCandidate = activeAlt?.modelUsed || latestAssistant.modelUsed || null;
     const modelToUse = sanitizeModelForProvider(providerToUse, rawModelCandidate);
 
-    const newAlternative = createAlternativeRecord({
-      parentMessageId: precedingUserMessage.id,
-      interactionId: precedingUserMessage.interactionId || normalizedTarget.interactionId || null,
-      provider: providerToUse,
-      modelUsed: modelToUse,
-      content: '',
-      isStreaming: true,
-      timestamp: '10:05 AM',
-      referencedAttachments: undefined
-    });
-
     updateMessagesState((previous) =>
       previous.map((m) => {
         if (m.id !== assistantMessage.id) return m;
-        const normalized = normalizeAssistantMessage(m, precedingUserMessage);
-        const updated = addAlternativeToAssistantMessage(normalized, newAlternative);
-        return {
-          ...updated,
-          requestStartTime: 100,
-          isStreaming: true,
-          isError: false,
-          isStopped: false
-        };
+        return replaceActiveAlternativeForRegeneration(m, {
+          provider: providerToUse,
+          modelUsed: modelToUse,
+          timestamp: freshTimestamp,
+          requestStartTime,
+          precedingUserMessage
+        });
       })
     );
 
@@ -204,15 +236,17 @@ function createSimulationHarness() {
       providerToUse,
       modelToUse,
       promptText: precedingUserMessage.content,
+      customStartTime: requestStartTime,
       streamRequest
     });
 
-    return { newAlternative, streamResult };
+    return { streamResult };
   };
 
   return {
     controller,
     getMessages: () => messages,
+    getFullOrderCount: () => fullOrderCount,
     setInitialMessages: (initial) => {
       messages = orderMemo(initial);
     },
@@ -246,9 +280,9 @@ function createSimulationHarness() {
   };
 }
 
-console.log('Running Normal Regenerate Preserves Alternatives regression tests...');
+console.log('Running Normal Regenerate Replaces Active Alternative regression tests...');
 
-await runCase('1. ChatPage.jsx handleRegenerate appends new alternative and no longer overwrites in-place', async () => {
+await runCase('1. ChatPage.jsx handleRegenerate replaces active alternative in-place via replaceActiveAlternativeForRegeneration', async () => {
   const chatPageSrc = fs.readFileSync(path.join(ROOT_DIR, 'src/pages/ChatPage.jsx'), 'utf8');
   const startIdx = chatPageSrc.indexOf('const handleRegenerate =');
   assert.ok(startIdx !== -1, 'handleRegenerate must exist in ChatPage.jsx');
@@ -257,16 +291,16 @@ await runCase('1. ChatPage.jsx handleRegenerate appends new alternative and no l
 
   const handleRegenBody = chatPageSrc.slice(startIdx, endIdx);
   assert.ok(
-    handleRegenBody.includes('createAlternativeRecord('),
-    'handleRegenerate must call createAlternativeRecord()'
+    handleRegenBody.includes('replaceActiveAlternativeForRegeneration('),
+    'handleRegenerate must call replaceActiveAlternativeForRegeneration()'
   );
   assert.ok(
-    handleRegenBody.includes('addAlternativeToAssistantMessage('),
-    'handleRegenerate must call addAlternativeToAssistantMessage()'
+    !handleRegenBody.includes('createAlternativeRecord('),
+    'handleRegenerate must NOT call createAlternativeRecord()'
   );
   assert.ok(
-    !handleRegenBody.includes('updateActiveAlternativeInMessage('),
-    'handleRegenerate must NOT overwrite active alternative with updateActiveAlternativeInMessage()'
+    !handleRegenBody.includes('addAlternativeToAssistantMessage('),
+    'handleRegenerate must NOT call addAlternativeToAssistantMessage()'
   );
   assert.ok(
     handleRegenBody.includes('const activeAlt = getActiveAlternative(normalizedTarget)'),
@@ -274,7 +308,7 @@ await runCase('1. ChatPage.jsx handleRegenerate appends new alternative and no l
   );
 });
 
-await runCase('2. Gemini -> Groq -> switch to Gemini -> normal Regenerate preserves all 3 responses and persists across reload', async () => {
+await runCase('2. Grok -> Cloudflare -> normal Regenerate while viewing Cloudflare keeps exactly 2 alternatives and replaces only Cloudflare', async () => {
   const harness = createSimulationHarness();
   const now = 1718000000000;
   const userMsg = {
@@ -288,12 +322,12 @@ await runCase('2. Gemini -> Groq -> switch to Gemini -> normal Regenerate preser
   };
   const initialAssistant = normalizeAssistantMessage(
     {
-      id: `gemini-${now}-assistant`,
+      id: `groq-${now}-assistant`,
       interactionId: userMsg.interactionId,
       parentMessageId: userMsg.id,
       sender: 'assistant',
-      provider: 'gemini',
-      modelUsed: 'gemini-3.8-flash',
+      provider: 'groq',
+      modelUsed: 'openai/gpt-oss-120b',
       content: '',
       timestamp: '10:00 AM',
       createdAt: now,
@@ -306,40 +340,7 @@ await runCase('2. Gemini -> Groq -> switch to Gemini -> normal Regenerate preser
   harness.setInitialMessages([userMsg, initialAssistant]);
   await harness.persistMessageSafe('chat-regen-1', userMsg);
 
-  // Step 1: Initial Gemini generation completes
-  await harness.runStream({
-    assistantMessageId: initialAssistant.id,
-    providerToUse: 'gemini',
-    modelToUse: 'gemini-3.8-flash',
-    promptText: userMsg.content,
-    streamRequest: async ({ onStart, onChunk }) => {
-      onStart({ modelUsed: 'gemini-3.8-flash', provider: 'gemini' });
-      onChunk('Gemini initial ', 'Gemini initial ');
-      onChunk('answer.', 'Gemini initial answer.');
-      return {
-        text: 'Gemini initial answer.',
-        modelUsed: 'gemini-3.8-flash',
-        provider: 'gemini'
-      };
-    }
-  });
-
-  // Step 2: Generate alternative with Groq ("Grok")
-  const groqAlt = createAlternativeRecord({
-    parentMessageId: userMsg.id,
-    interactionId: userMsg.interactionId,
-    provider: 'groq',
-    modelUsed: 'openai/gpt-oss-120b',
-    content: '',
-    timestamp: '10:01 AM'
-  });
-  harness.updateMessagesState((prev) =>
-    prev.map((m) =>
-      m.id === initialAssistant.id
-        ? { ...addAlternativeToAssistantMessage(m, groqAlt), isStreaming: true }
-        : m
-    )
-  );
+  // Step 1: Generate response using Grok ("groq")
   await harness.runStream({
     assistantMessageId: initialAssistant.id,
     providerToUse: 'groq',
@@ -347,71 +348,143 @@ await runCase('2. Gemini -> Groq -> switch to Gemini -> normal Regenerate preser
     promptText: userMsg.content,
     streamRequest: async ({ onStart, onChunk }) => {
       onStart({ modelUsed: 'openai/gpt-oss-120b', provider: 'groq' });
-      onChunk('Groq response.', 'Groq response.');
+      onChunk('Grok initial answer.', 'Grok initial answer.');
       return {
-        text: 'Groq response.',
+        text: 'Grok initial answer.',
         modelUsed: 'openai/gpt-oss-120b',
         provider: 'groq'
       };
     }
   });
 
-  let assistantAfterGroq = harness.getMessages().find((m) => m.id === initialAssistant.id);
-  assert.equal(assistantAfterGroq.alternatives.length, 2);
-  const originalGeminiAltId = assistantAfterGroq.alternatives[0].id;
-  const groqAltId = assistantAfterGroq.alternatives[1].id;
-
-  // Step 3: Switch back to Gemini (`1 of 2`) and trigger normal Regenerate
-  await harness.switchAlternative(initialAssistant.id, originalGeminiAltId);
-  let activeBeforeRegen = harness.getMessages().find((m) => m.id === initialAssistant.id);
-  assert.equal(activeBeforeRegen.activeAlternativeId, originalGeminiAltId);
-  assert.equal(activeBeforeRegen.provider, 'gemini');
-  assert.equal(activeBeforeRegen.content, 'Gemini initial answer.');
-
-  const { newAlternative } = await harness.regenerateActiveResponse(
-    activeBeforeRegen,
-    async ({ onStart, onChunk }) => {
-      onStart({ modelUsed: 'gemini-3.8-flash', provider: 'gemini' });
-      onChunk('Gemini regenerated ', 'Gemini regenerated ');
-      // Mid-stream check: previous alternatives remain untouched and active alt receives stream
-      const midStreamMsg = harness.getMessages().find((m) => m.id === initialAssistant.id);
-      assert.equal(midStreamMsg.alternatives.length, 3);
-      assert.equal(midStreamMsg.activeAlternativeId, midStreamMsg.alternatives[2].id);
-      assert.notEqual(midStreamMsg.activeAlternativeId, originalGeminiAltId);
-      assert.notEqual(midStreamMsg.activeAlternativeId, groqAltId);
-      assert.equal(midStreamMsg.alternatives[0].content, 'Gemini initial answer.');
-      assert.equal(midStreamMsg.alternatives[1].content, 'Groq response.');
-
-      onChunk('answer v2.', 'Gemini regenerated answer v2.');
+  // Step 2: Regenerate with Another AI Model -> Cloudflare
+  const cfAlt = createAlternativeRecord({
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'cloudflare',
+    modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+    content: '',
+    timestamp: '10:01 AM',
+    createdAt: now + 60_000,
+    createdAtMs: now + 60_000
+  });
+  harness.updateMessagesState((prev) =>
+    prev.map((m) =>
+      m.id === initialAssistant.id
+        ? { ...addAlternativeToAssistantMessage(m, cfAlt), isStreaming: true }
+        : m
+    )
+  );
+  await harness.runStream({
+    assistantMessageId: initialAssistant.id,
+    providerToUse: 'cloudflare',
+    modelToUse: '@cf/meta/llama-3.1-8b-instruct',
+    promptText: userMsg.content,
+    streamRequest: async ({ onStart, onChunk }) => {
+      onStart({ modelUsed: '@cf/meta/llama-3.1-8b-instruct', provider: 'cloudflare' });
+      onChunk('Old Cloudflare response.', 'Old Cloudflare response.');
       return {
-        text: 'Gemini regenerated answer v2.',
-        modelUsed: 'gemini-3.8-flash',
-        provider: 'gemini'
+        text: 'Old Cloudflare response.',
+        modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+        provider: 'cloudflare'
       };
     }
+  });
+
+  const beforeRegen = harness.getMessages().find((m) => m.id === initialAssistant.id);
+  assert.equal(beforeRegen.alternatives.length, 2);
+  const grokAltId = beforeRegen.alternatives[0].id;
+  const grokResponseTime = beforeRegen.alternatives[0].responseTimeMs;
+  const cloudflareAltId = beforeRegen.alternatives[1].id;
+  assert.equal(beforeRegen.activeAlternativeId, cloudflareAltId);
+  assert.equal(typeof beforeRegen.responseTimeMs, 'number');
+  assert.equal(shouldRenderResponseTimeBadge(beforeRegen), true);
+
+  const fullOrdersBeforeRegen = harness.getFullOrderCount();
+
+  // Step 3: While viewing Cloudflare, click normal Regenerate
+  await harness.regenerateActiveResponse(
+    beforeRegen,
+    async ({ onStart, onChunk }) => {
+      // Pre-chunk check: old Cloudflare cleared, timer reset, LiveResponseTimer active, badge hidden
+      const resetState = harness.getMessages().find((m) => m.id === initialAssistant.id);
+      assert.equal(resetState.alternatives.length, 2);
+      assert.equal(resetState.activeAlternativeId, cloudflareAltId);
+      assert.equal(resetState.content, '');
+      assert.equal(resetState.responseTimeMs, null);
+      assert.equal(resetState.alternatives[1].responseTimeMs, null);
+      assert.equal(resetState.isStreaming, true);
+      assert.equal(resetState.isError, false);
+      assert.equal(resetState.isStopped, false);
+      assert.equal(resetState.isInterrupted, false);
+      assert.equal(resetState.timestamp, '10:05 AM');
+      assert.equal(shouldRenderLiveTimer(resetState), true);
+      assert.equal(shouldRenderResponseTimeBadge(resetState), false);
+      assert.equal(resetState.alternatives[0].content, 'Grok initial answer.');
+
+      onStart({ modelUsed: '@cf/meta/llama-3.1-8b-instruct', provider: 'cloudflare' });
+      onChunk('Latest Cloudflare ', 'Latest Cloudflare ');
+      await new Promise((r) => setTimeout(r, 25));
+
+      // Mid-stream check: Grok preserved, same 2 alternatives, active ID stable
+      const midStream = harness.getMessages().find((m) => m.id === initialAssistant.id);
+      assert.equal(midStream.alternatives.length, 2);
+      assert.equal(midStream.activeAlternativeId, cloudflareAltId);
+      assert.equal(midStream.alternatives[0].id, grokAltId);
+      assert.equal(midStream.alternatives[0].content, 'Grok initial answer.');
+      assert.equal(midStream.alternatives[1].id, cloudflareAltId);
+      assert.equal(midStream.alternatives[1].content, 'Latest Cloudflare ');
+
+      onChunk('response.', 'Latest Cloudflare response.');
+      return {
+        text: 'Latest Cloudflare response.',
+        modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+        provider: 'cloudflare'
+      };
+    },
+    { freshTimestamp: '10:05 AM', requestStartTime: 900 }
   );
 
-  // Step 4: Confirm original Gemini, Groq, and new Gemini are all present (`3 of 3`)
+  // Step 4: Verify exact 2 alternatives: [Grok, Latest Cloudflare]
   const afterRegen = harness.getMessages().find((m) => m.id === initialAssistant.id);
-  assert.equal(afterRegen.alternatives.length, 3);
-  assert.equal(afterRegen.activeAlternativeId, newAlternative.id);
-  assert.equal(afterRegen.provider, 'gemini');
-  assert.equal(afterRegen.modelUsed, 'gemini-3.8-flash');
-  assert.equal(afterRegen.content, 'Gemini regenerated answer v2.');
+  assert.equal(afterRegen.id, initialAssistant.id, 'Message ID must remain stable');
+  assert.equal(afterRegen.parentMessageId, userMsg.id);
+  assert.equal(afterRegen.interactionId, userMsg.interactionId);
+  assert.equal(afterRegen.createdAt, now);
+  assert.equal(afterRegen.createdAtMs, now);
+  assert.equal(afterRegen.alternatives.length, 2, 'Alternative count must stay 2');
+  assert.equal(afterRegen.activeAlternativeId, cloudflareAltId, 'Active alternative ID must remain stable');
+  assert.equal(afterRegen.provider, 'cloudflare');
+  assert.equal(afterRegen.modelUsed, '@cf/meta/llama-3.1-8b-instruct');
+  assert.equal(afterRegen.content, 'Latest Cloudflare response.');
+  assert.equal(typeof afterRegen.responseTimeMs, 'number');
+  assert.equal(shouldRenderLiveTimer(afterRegen), false);
+  assert.equal(shouldRenderResponseTimeBadge(afterRegen), true);
+  assert.equal(
+    harness.getFullOrderCount(),
+    fullOrdersBeforeRegen,
+    'Topology memoization must reuse slot order without full re-order'
+  );
 
-  assert.equal(afterRegen.alternatives[0].id, originalGeminiAltId);
-  assert.equal(afterRegen.alternatives[0].content, 'Gemini initial answer.');
-  assert.equal(afterRegen.alternatives[0].provider, 'gemini');
+  assert.equal(afterRegen.alternatives[0].id, grokAltId);
+  assert.equal(afterRegen.alternatives[0].content, 'Grok initial answer.');
+  assert.equal(afterRegen.alternatives[0].provider, 'groq');
+  assert.equal(afterRegen.alternatives[0].modelUsed, 'openai/gpt-oss-120b');
+  assert.equal(afterRegen.alternatives[0].responseTimeMs, grokResponseTime);
 
-  assert.equal(afterRegen.alternatives[1].id, groqAltId);
-  assert.equal(afterRegen.alternatives[1].content, 'Groq response.');
-  assert.equal(afterRegen.alternatives[1].provider, 'groq');
+  assert.equal(afterRegen.alternatives[1].id, cloudflareAltId);
+  assert.equal(afterRegen.alternatives[1].content, 'Latest Cloudflare response.');
+  assert.equal(afterRegen.alternatives[1].provider, 'cloudflare');
+  assert.equal(afterRegen.alternatives[1].modelUsed, '@cf/meta/llama-3.1-8b-instruct');
 
-  assert.equal(afterRegen.alternatives[2].id, newAlternative.id);
-  assert.equal(afterRegen.alternatives[2].content, 'Gemini regenerated answer v2.');
-  assert.equal(afterRegen.alternatives[2].provider, 'gemini');
+  const serialized = JSON.stringify(afterRegen);
+  assert.equal(
+    serialized.includes('Old Cloudflare response.'),
+    false,
+    'Previous Cloudflare response must no longer be accessible anywhere in message'
+  );
 
-  let metrics = getAlternativeMetrics(afterRegen);
+  const metrics = getAlternativeMetrics(afterRegen);
   assert.deepEqual(
     {
       total: metrics.total,
@@ -419,47 +492,139 @@ await runCase('2. Gemini -> Groq -> switch to Gemini -> normal Regenerate preser
       canGoPrevious: metrics.canGoPrevious,
       canGoNext: metrics.canGoNext
     },
-    { total: 3, currentIndex: 2, canGoPrevious: true, canGoNext: false }
+    { total: 2, currentIndex: 1, canGoPrevious: true, canGoNext: false }
   );
 
-  // Step 5: Switch across all 3 alternatives and verify root projections
-  await harness.switchAlternative(initialAssistant.id, originalGeminiAltId);
-  let switched1 = harness.getMessages().find((m) => m.id === initialAssistant.id);
-  assert.equal(switched1.content, 'Gemini initial answer.');
-  assert.equal(switched1.provider, 'gemini');
-  assert.equal(getAlternativeMetrics(switched1).currentIndex, 0);
+  // Step 5: Navigate between Grok and Latest Cloudflare
+  await harness.switchAlternative(initialAssistant.id, grokAltId);
+  const viewedGrok = harness.getMessages().find((m) => m.id === initialAssistant.id);
+  assert.equal(viewedGrok.content, 'Grok initial answer.');
+  assert.equal(viewedGrok.provider, 'groq');
+  assert.equal(getAlternativeMetrics(viewedGrok).currentIndex, 0);
 
-  await harness.switchAlternative(initialAssistant.id, groqAltId);
-  let switched2 = harness.getMessages().find((m) => m.id === initialAssistant.id);
-  assert.equal(switched2.content, 'Groq response.');
-  assert.equal(switched2.provider, 'groq');
-  assert.equal(switched2.modelUsed, 'openai/gpt-oss-120b');
-  assert.equal(getAlternativeMetrics(switched2).currentIndex, 1);
+  await harness.switchAlternative(initialAssistant.id, cloudflareAltId);
+  const viewedCloudflare = harness.getMessages().find((m) => m.id === initialAssistant.id);
+  assert.equal(viewedCloudflare.content, 'Latest Cloudflare response.');
+  assert.equal(viewedCloudflare.provider, 'cloudflare');
+  assert.equal(getAlternativeMetrics(viewedCloudflare).currentIndex, 1);
 
-  await harness.switchAlternative(initialAssistant.id, newAlternative.id);
-  let switched3 = harness.getMessages().find((m) => m.id === initialAssistant.id);
-  assert.equal(switched3.content, 'Gemini regenerated answer v2.');
-  assert.equal(switched3.provider, 'gemini');
-  assert.equal(getAlternativeMetrics(switched3).currentIndex, 2);
-
-  // Step 6: Simulate conversation reload from Firestore & local cache
+  // Step 6: Verify Firestore reload and localStorage cache have only Grok + Latest Cloudflare
   const reloadedFromFirestore = harness.simulateReloadFromFirestore();
   assert.equal(reloadedFromFirestore.length, 2);
-  const reloadedAssistant = reloadedFromFirestore[1];
-  assert.equal(reloadedAssistant.alternatives.length, 3);
-  assert.equal(reloadedAssistant.activeAlternativeId, newAlternative.id);
-  assert.equal(reloadedAssistant.content, 'Gemini regenerated answer v2.');
-  assert.equal(reloadedAssistant.alternatives[0].content, 'Gemini initial answer.');
-  assert.equal(reloadedAssistant.alternatives[1].content, 'Groq response.');
-  assert.equal(reloadedAssistant.alternatives[2].content, 'Gemini regenerated answer v2.');
+  assert.equal(reloadedFromFirestore[0].id, userMsg.id);
+  assert.equal(reloadedFromFirestore[1].id, initialAssistant.id);
+  assert.equal(reloadedFromFirestore[1].alternatives.length, 2);
+  assert.equal(reloadedFromFirestore[1].alternatives[0].content, 'Grok initial answer.');
+  assert.equal(reloadedFromFirestore[1].alternatives[1].content, 'Latest Cloudflare response.');
+  assert.equal(
+    JSON.stringify(reloadedFromFirestore).includes('Old Cloudflare response.'),
+    false
+  );
 
   const localCached = harness.getLocalCache();
-  assert.equal(localCached.length, 2);
-  assert.equal(localCached[1].alternatives.length, 3);
-  assert.equal(localCached[1].activeAlternativeId, newAlternative.id);
+  assert.equal(localCached[1].alternatives.length, 2);
+  assert.equal(JSON.stringify(localCached).includes('Old Cloudflare response.'), false);
 });
 
-await runCase('3. Stopping mid-stream during normal Regenerate finalizes only the new alternative and preserves prior ones', async () => {
+await runCase('3. replaceActiveAlternativeForRegeneration clears stale error, stopped, interrupted, and retry metadata', async () => {
+  const now = 1718000020000;
+  const erroredAssistant = {
+    id: `gemini-${now}-assistant`,
+    parentMessageId: `user-${now}`,
+    interactionId: `interaction-${now}`,
+    sender: 'assistant',
+    provider: 'gemini',
+    modelUsed: 'gemini-3.8-flash',
+    content: 'Partial content *[Response interrupted: Rate limit]*',
+    responseTimeMs: 880,
+    timestamp: '09:50 AM',
+    createdAt: now,
+    createdAtMs: now,
+    activeAlternativeId: `alt-gemini-${now}`,
+    alternatives: [
+      {
+        id: `alt-gemini-${now}`,
+        parentMessageId: `user-${now}`,
+        interactionId: `interaction-${now}`,
+        sender: 'assistant',
+        provider: 'gemini',
+        modelUsed: 'gemini-3.8-flash',
+        content: 'Partial content *[Response interrupted: Rate limit]*',
+        responseTimeMs: 880,
+        timestamp: '09:50 AM',
+        createdAt: now,
+        createdAtMs: now,
+        isError: true,
+        isStopped: true,
+        isInterrupted: true,
+        failedPrompt: 'Explain relativity',
+        failedProvider: 'gemini',
+        canSwitchProvider: true,
+        errorCode: 'RATE_LIMIT',
+        status: 'RATE_LIMIT',
+        httpStatus: 429,
+        suggestedProviders: ['groq']
+      }
+    ],
+    isError: true,
+    isStopped: true,
+    isInterrupted: true,
+    failedPrompt: 'Explain relativity',
+    failedProvider: 'gemini',
+    canSwitchProvider: true,
+    errorCode: 'RATE_LIMIT',
+    status: 'RATE_LIMIT',
+    httpStatus: 429,
+    suggestedProviders: ['groq']
+  };
+
+  const reset = replaceActiveAlternativeForRegeneration(erroredAssistant, {
+    provider: 'gemini',
+    modelUsed: 'gemini-3.8-flash',
+    timestamp: '10:15 AM',
+    requestStartTime: 1234.5
+  });
+
+  assert.equal(reset.id, erroredAssistant.id);
+  assert.equal(reset.activeAlternativeId, `alt-gemini-${now}`);
+  assert.equal(reset.alternatives.length, 1);
+  assert.equal(reset.interactionId, `interaction-${now}`);
+  assert.equal(reset.createdAt, now);
+  assert.equal(reset.createdAtMs, now);
+  assert.equal(reset.content, '');
+  assert.equal(reset.responseTimeMs, null);
+  assert.equal(reset.timestamp, '10:15 AM');
+  assert.equal(reset.requestStartTime, 1234.5);
+  assert.equal(reset.isStreaming, true);
+  assert.equal(reset.isError, false);
+  assert.equal(reset.isStopped, false);
+  assert.equal(reset.isInterrupted, false);
+  assert.equal(reset.failedPrompt, undefined);
+  assert.equal(reset.failedProvider, undefined);
+  assert.equal(reset.canSwitchProvider, undefined);
+  assert.equal(reset.errorCode, undefined);
+  assert.equal(reset.status, undefined);
+  assert.equal(reset.httpStatus, undefined);
+  assert.equal(reset.suggestedProviders, undefined);
+
+  const resetAlt = reset.alternatives[0];
+  assert.equal(resetAlt.id, `alt-gemini-${now}`);
+  assert.equal(resetAlt.content, '');
+  assert.equal(resetAlt.responseTimeMs, null);
+  assert.equal(resetAlt.timestamp, '10:15 AM');
+  assert.equal(resetAlt.createdAt, now);
+  assert.equal(resetAlt.createdAtMs, now);
+  assert.equal(resetAlt.isStreaming, true);
+  assert.equal(resetAlt.isError, false);
+  assert.equal(resetAlt.isStopped, false);
+  assert.equal(resetAlt.isInterrupted, false);
+  assert.equal(resetAlt.failedPrompt, undefined);
+  assert.equal(resetAlt.failedProvider, undefined);
+  assert.equal(shouldRenderLiveTimer(reset), true);
+  assert.equal(shouldRenderResponseTimeBadge(reset), false);
+});
+
+await runCase('4. Stopping mid-stream during normal Regenerate updates only the active alternative and preserves prior ones', async () => {
   const harness = createSimulationHarness();
   const now = 1718000050000;
   const userMsg = {
@@ -471,17 +636,38 @@ await runCase('3. Stopping mid-stream during normal Regenerate finalizes only th
     createdAt: now,
     createdAtMs: now
   };
+  const altGrok = createAlternativeRecord({
+    id: `alt-grok-${now}`,
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'groq',
+    modelUsed: 'openai/gpt-oss-120b',
+    content: 'Grok poem.',
+    responseTimeMs: 250,
+    timestamp: '10:10 AM',
+    createdAt: now,
+    createdAtMs: now
+  });
+  const altCloudflare = createAlternativeRecord({
+    id: `alt-cf-${now}`,
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'cloudflare',
+    modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+    content: 'Old Cloudflare poem.',
+    responseTimeMs: 420,
+    timestamp: '10:11 AM',
+    createdAt: now + 60_000,
+    createdAtMs: now + 60_000
+  });
   const initialAssistant = normalizeAssistantMessage(
     {
-      id: `gemini-${now}-assistant`,
+      id: `groq-${now}-assistant`,
       interactionId: userMsg.interactionId,
       parentMessageId: userMsg.id,
       sender: 'assistant',
-      provider: 'gemini',
-      modelUsed: 'gemini-3.8-flash',
-      content: 'Original poem.',
-      responseTimeMs: 420,
-      timestamp: '10:10 AM',
+      alternatives: [altGrok, altCloudflare],
+      activeAlternativeId: altCloudflare.id,
       createdAt: now,
       createdAtMs: now,
       isStreaming: false
@@ -502,7 +688,7 @@ await runCase('3. Stopping mid-stream during normal Regenerate finalizes only th
     initialAssistant,
     async ({ signal, onStart, onChunk }) => {
       signal.addEventListener('abort', () => releaseAbort(), { once: true });
-      onStart({ modelUsed: 'gemini-3.8-flash', provider: 'gemini' });
+      onStart({ modelUsed: '@cf/meta/llama-3.1-8b-instruct', provider: 'cloudflare' });
       onChunk('Partial ', 'Partial ');
       await waitUntilAborted;
       const err = new Error('Stopped by user');
@@ -517,16 +703,19 @@ await runCase('3. Stopping mid-stream during normal Regenerate finalizes only th
 
   const afterStop = harness.getMessages().find((m) => m.id === initialAssistant.id);
   assert.equal(afterStop.alternatives.length, 2);
-  assert.equal(afterStop.alternatives[0].content, 'Original poem.');
+  assert.equal(afterStop.activeAlternativeId, altCloudflare.id);
+  assert.equal(afterStop.alternatives[0].id, altGrok.id);
+  assert.equal(afterStop.alternatives[0].content, 'Grok poem.');
   assert.equal(afterStop.alternatives[0].isStopped, false);
+  assert.equal(afterStop.alternatives[1].id, altCloudflare.id);
   assert.equal(afterStop.alternatives[1].isStopped, true);
   assert.equal(afterStop.alternatives[1].content, 'Partial ');
-  assert.equal(afterStop.activeAlternativeId, afterStop.alternatives[1].id);
+  assert.equal(afterStop.alternatives[1].responseTimeMs, null);
   assert.equal(harness.getIsLoading(), false);
 
   const reloaded = harness.simulateReloadFromFirestore();
   assert.equal(reloaded[1].alternatives.length, 2);
-  assert.equal(reloaded[1].alternatives[0].content, 'Original poem.');
+  assert.equal(reloaded[1].alternatives[0].content, 'Grok poem.');
   assert.equal(reloaded[1].alternatives[1].content, 'Partial ');
 });
 

@@ -332,6 +332,75 @@ export function updateActiveAlternativeInMessage(assistantMessage, updates = {})
 }
 
 /**
+ * Resets the currently active alternative in-place for normal regeneration while
+ * preserving message ID, active alternative ID, alternative position/count,
+ * interaction ID, creation timestamps, and all other alternatives.
+ *
+ * @param {Object} assistantMessage
+ * @param {Object} [options]
+ * @param {string|null} [options.provider=null]
+ * @param {string|null|undefined} [options.modelUsed=undefined]
+ * @param {string} [options.timestamp='']
+ * @param {number|null} [options.requestStartTime=null]
+ * @param {Object|null} [options.precedingUserMessage=null]
+ * @returns {Object} Updated assistant message ready for streaming into the active alternative
+ */
+export function replaceActiveAlternativeForRegeneration(
+  assistantMessage,
+  {
+    provider = null,
+    modelUsed = undefined,
+    timestamp = '',
+    requestStartTime = null,
+    precedingUserMessage = null
+  } = {}
+) {
+  if (!assistantMessage) return assistantMessage;
+
+  const normalized = normalizeAssistantMessage(assistantMessage, precedingUserMessage);
+  const activeAlt = getActiveAlternative(normalized);
+  const resolvedProvider = provider || activeAlt?.provider || normalized.provider || 'gemini';
+  const resolvedModel =
+    modelUsed !== undefined
+      ? modelUsed
+      : (activeAlt?.modelUsed ?? normalized.modelUsed ?? null);
+  const resolvedTimestamp =
+    timestamp ||
+    new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+  const updated = updateActiveAlternativeInMessage(normalized, {
+    content: '',
+    provider: resolvedProvider,
+    modelUsed: resolvedModel,
+    responseTimeMs: null,
+    timestamp: resolvedTimestamp,
+    isStreaming: true,
+    isError: false,
+    isStopped: false,
+    isInterrupted: false,
+    failedPrompt: undefined,
+    failedProvider: undefined,
+    canSwitchProvider: undefined,
+    errorCode: undefined,
+    status: undefined,
+    httpStatus: undefined,
+    suggestedProviders: undefined
+  });
+
+  if (typeof requestStartTime === 'number') {
+    return {
+      ...updated,
+      requestStartTime
+    };
+  }
+
+  return updated;
+}
+
+/**
  * Resolves the currently active alternative record from an assistant message.
  * @param {Object} assistantMessage
  * @returns {Object|null}

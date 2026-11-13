@@ -74,6 +74,7 @@ import {
 import {
   normalizeAssistantMessage,
   addAlternativeToAssistantMessage,
+  replaceActiveAlternativeForRegeneration,
   switchActiveAlternativeInMessage,
   ensureConversationAlternatives,
   createAlternativeRecord,
@@ -2900,7 +2901,7 @@ export default function ChatPage({
     }
   };
 
-  // Regenerate an assistant response as a new alternative using the model of the response currently being viewed
+  // Regenerate the currently active alternative in-place using its provider and model
   const handleRegenerate = async (assistantMessage) => {
     if (isSharedView) return;
     stopSpeech();
@@ -2970,33 +2971,22 @@ export default function ChatPage({
       }
     }
 
-    const newAlternative = createAlternativeRecord({
-      parentMessageId: precedingUserMessage.id,
-      interactionId: precedingUserMessage.interactionId || normalizedTarget.interactionId || null,
-      provider: providerToUse,
-      modelUsed: modelToUse,
-      content: '',
-      isStreaming: true,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      }),
-      referencedAttachments: undefined
+    const freshTimestamp = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit'
     });
 
-    // Append a new active alternative so the original and all previously generated responses remain preserved
+    // Replace only the active alternative in-place while preserving all other alternatives
     updateMessagesState((previous) =>
       previous.map((m) => {
         if (m.id !== targetAssistantId) return m;
-        const normalized = normalizeAssistantMessage(m, precedingUserMessage);
-        const updated = addAlternativeToAssistantMessage(normalized, newAlternative);
-        return {
-          ...updated,
+        return replaceActiveAlternativeForRegeneration(m, {
+          provider: providerToUse,
+          modelUsed: modelToUse,
+          timestamp: freshTimestamp,
           requestStartTime,
-          isStreaming: true,
-          isError: false,
-          isStopped: false
-        };
+          precedingUserMessage
+        });
       })
     );
 
