@@ -4,8 +4,14 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import Tesseract from 'tesseract.js';
 
-const require = createRequire(import.meta.url);
-const __filename = fileURLToPath(import.meta.url);
+const moduleRequire =
+  typeof import.meta !== 'undefined' && import.meta.url
+    ? createRequire(import.meta.url)
+    : createRequire(path.join(process.cwd(), 'package.json'));
+const __filename =
+  typeof import.meta !== 'undefined' && import.meta.url
+    ? fileURLToPath(import.meta.url)
+    : path.resolve(process.cwd(), 'src', 'services', 'imageOcrService.js');
 const __dirname = path.dirname(__filename);
 
 /**
@@ -110,7 +116,7 @@ export function resolveLocalTesseractAssets() {
   let workerPath = null;
   const workerCandidates = [];
   try {
-    workerCandidates.push(require.resolve('tesseract.js/src/worker-script/node/index.js'));
+    workerCandidates.push(moduleRequire.resolve('tesseract.js/src/worker-script/node/index.js'));
   } catch (_) {}
   workerCandidates.push(
     path.resolve(process.cwd(), 'node_modules/tesseract.js/src/worker-script/node/index.js'),
@@ -140,7 +146,7 @@ export function resolveLocalTesseractAssets() {
   let corePath = null;
   const coreCandidates = [];
   try {
-    coreCandidates.push(path.dirname(require.resolve('tesseract.js-core/package.json')));
+    coreCandidates.push(path.dirname(moduleRequire.resolve('tesseract.js-core/package.json')));
   } catch (_) {}
   coreCandidates.push(
     path.resolve(process.cwd(), 'node_modules/tesseract.js-core'),

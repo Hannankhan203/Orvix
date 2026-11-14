@@ -137,7 +137,10 @@ async function requireUploadAuthentication(
   return authStatus.userId;
 }
 
-const __filename = fileURLToPath(import.meta.url);
+const __filename =
+  typeof import.meta !== 'undefined' && import.meta.url
+    ? fileURLToPath(import.meta.url)
+    : path.resolve(process.cwd(), 'server', 'uploadSubsystem.ts');
 const __dirname = path.dirname(__filename);
 
 /**

@@ -1,5 +1,12 @@
-﻿import type { Request, Response } from 'express';
-import { app } from '../server.ts';
+﻿import express from 'express';
+import type { Request, Response } from 'express';
+import { applyCorsMiddleware, applyJsonBodyMiddleware } from '../server/serverConfig.ts';
+import { registerChatRoutes } from '../server/chatSubsystem.ts';
+
+const app = express();
+applyCorsMiddleware(app);
+applyJsonBodyMiddleware(app);
+registerChatRoutes(app);
 
 export default function handler(req: Request, res: Response) {
   // Ensure no socket or response timeouts cut off streaming
@@ -19,6 +26,8 @@ export default function handler(req: Request, res: Response) {
 
   if (req.url === '/' || !req.url) {
     req.url = '/api/chat';
+  } else if (req.url.startsWith('/?')) {
+    req.url = '/api/chat' + req.url.slice(1);
   } else if (!req.url.startsWith('/api/chat') && !req.url.startsWith('/chat')) {
     req.url = '/api/chat' + (req.url.startsWith('/') ? req.url : '/' + req.url);
   }

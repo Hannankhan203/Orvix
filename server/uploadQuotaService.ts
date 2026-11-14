@@ -758,18 +758,50 @@ export function parseServiceAccountCredential(raw: string, sourceVar: string): a
   let parsed: any;
   let rawJsonError: Error | null = null;
 
-  // 1. Attempt raw JSON parsing
+  // 1. Attempt raw JSON parsing (unwrapping optional outer quotes or double-encoded strings)
   try {
     parsed = JSON.parse(trimmed);
+    if (typeof parsed === 'string') {
+      try {
+        const inner = JSON.parse(parsed);
+        if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+          parsed = inner;
+        }
+      } catch (_) {}
+    }
   } catch (err: any) {
     rawJsonError = err;
+    if (
+      (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    ) {
+      try {
+        const unwrapped = JSON.parse(trimmed.slice(1, -1));
+        if (unwrapped && typeof unwrapped === 'object' && !Array.isArray(unwrapped)) {
+          parsed = unwrapped;
+        }
+      } catch (_) {}
+    }
   }
 
   // 2. If raw JSON parsing fails, safely attempt Base64 decoding using Node.js Buffer
   if (parsed === undefined) {
     try {
-      const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+      const candidateB64 =
+        (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+        (trimmed.startsWith('"') && trimmed.endsWith('"'))
+          ? trimmed.slice(1, -1).trim()
+          : trimmed;
+      const decoded = Buffer.from(candidateB64, 'base64').toString('utf8');
       parsed = JSON.parse(decoded);
+      if (typeof parsed === 'string') {
+        try {
+          const inner = JSON.parse(parsed);
+          if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+            parsed = inner;
+          }
+        } catch (_) {}
+      }
     } catch (_) {
       throw new Error(
         `${sourceVar} contains invalid JSON: ${rawJsonError?.message || 'Failed to parse JSON or Base64-encoded JSON.'}`
@@ -795,6 +827,22 @@ export function parseServiceAccountCredential(raw: string, sourceVar: string): a
     throw new Error(
       `${sourceVar} contains invalid JSON: Expected a service-account object with type "service_account" or project_id.`
     );
+  }
+
+  // Normalize literal "\\n" escapes inside PEM private keys pasted into hosting dashboards
+  if (
+    typeof parsed.private_key === 'string' &&
+    parsed.private_key.includes('\\n') &&
+    !parsed.private_key.includes('\n')
+  ) {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+  if (
+    typeof parsed.privateKey === 'string' &&
+    parsed.privateKey.includes('\\n') &&
+    !parsed.privateKey.includes('\n')
+  ) {
+    parsed.privateKey = parsed.privateKey.replace(/\\n/g, '\n');
   }
 
   return parsed;

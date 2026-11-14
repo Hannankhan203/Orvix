@@ -1,4 +1,4 @@
-import type express from 'express';
+import express from 'express';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -7,7 +7,10 @@ import { logAIDiagnostic } from './diagnosticLogger.ts';
 // @ts-ignore - provider model sanitizer service
 import { getProviderDisplayName } from '../src/services/providerModelSanitizer.js';
 
-const __filename = fileURLToPath(import.meta.url);
+const __filename =
+  typeof import.meta !== 'undefined' && import.meta.url
+    ? fileURLToPath(import.meta.url)
+    : path.resolve(process.cwd(), 'server', 'serverConfig.ts');
 const __dirname = path.dirname(__filename);
 
 export function getGroqApiBaseUrl(): string {
@@ -956,6 +959,93 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
   }
 
   return false;
+}
+
+/**
+ * Controlled CORS middleware enforcing the explicit origin allowlist across both the
+ * standalone Express server and individual Vercel serverless endpoint entry points.
+ */
+export function applyCorsMiddleware(app: express.Express): void {
+  app.use((req, res, next) => {
+    const origin = req.headers.origin as string | undefined;
+
+    // Handle preflight OPTIONS request
+    if (req.method === 'OPTIONS') {
+      if (origin && !isAllowedOrigin(origin, req)) {
+        return res.status(403).json({
+          error: 'Cross-origin request blocked by CORS policy.',
+          code: 403,
+          status: 'FORBIDDEN'
+        });
+      }
+
+      if (origin) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+      }
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+      res.setHeader('Access-Control-Max-Age', '86400');
+      return res.sendStatus(204);
+    }
+
+    // Handle actual requests (GET, POST, DELETE, etc.)
+    if (origin) {
+      if (!isAllowedOrigin(origin, req)) {
+        if (
+          req.path.startsWith('/api/') ||
+          req.path.startsWith('/upload') ||
+          req.path.startsWith('/chat') ||
+          req.path.startsWith('/transcribe') ||
+          req.path.startsWith('/config') ||
+          req.path.startsWith('/health')
+        ) {
+          return res.status(403).json({
+            error: 'Cross-origin request blocked by CORS policy.',
+            code: 403,
+            status: 'FORBIDDEN'
+          });
+        }
+      } else {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Title');
+      }
+    }
+
+    next();
+  });
+}
+
+/**
+ * Applies Vercel pre-parsed body detection, 25 MB JSON parsing, and structured 413 handling.
+ */
+export function applyJsonBodyMiddleware(app: express.Express): void {
+  app.use((req, _res, next) => {
+    // If running in Vercel serverless runtime where body has already been parsed into an object
+    if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+      (req as any)._body = true;
+    }
+    next();
+  });
+
+  app.use(express.json({ limit: '25mb' }));
+
+  // Return structured JSON on oversized HTTP request bodies instead of default HTML 413 responses
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err && (err.type === 'entity.too.large' || err.status === 413 || err.statusCode === 413)) {
+      return res.status(413).json({
+        error:
+          'The request payload exceeds the maximum supported size (3.0 MB per image, 4.2 MB total chat request budget). Please resize or compress attached images and try again.',
+        code: 413,
+        status: 'PAYLOAD_TOO_LARGE',
+        retryable: false,
+        canFallback: false
+      });
+    }
+    return next(err);
+  });
 }
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

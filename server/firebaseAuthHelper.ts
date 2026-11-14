@@ -124,11 +124,45 @@ export function getConfiguredFirebaseProjectId(): string {
   if (testFirebaseProjectId !== null) {
     return testFirebaseProjectId.trim();
   }
-  return (
+  const direct = (
     process.env.FIREBASE_PROJECT_ID ||
     process.env.VITE_FIREBASE_PROJECT_ID ||
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ||
     ''
   ).trim();
+  if (direct) {
+    return direct;
+  }
+
+  const rawSa = (
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
+    ''
+  ).trim();
+  if (rawSa) {
+    try {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(rawSa);
+      } catch (_) {
+        parsed = JSON.parse(Buffer.from(rawSa, 'base64').toString('utf8'));
+      }
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+      const saProjectId =
+        typeof parsed?.project_id === 'string'
+          ? parsed.project_id.trim()
+          : typeof parsed?.projectId === 'string'
+            ? parsed.projectId.trim()
+            : '';
+      if (isValidFirebaseProjectId(saProjectId)) {
+        return saProjectId;
+      }
+    } catch (_) {}
+  }
+
+  return '';
 }
 
 /**
