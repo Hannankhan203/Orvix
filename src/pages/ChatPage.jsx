@@ -106,10 +106,12 @@ import {
 } from '../services/serviceWorkerManager.js';
 import {
   createAbortError,
+  isAbortLikeError,
   createRequestIsolationController,
   cancelActiveChatRequest,
   runIsolatedPromptStream
 } from '../services/requestIsolationService.js';
+import { prepareAttachmentsForUpload } from '../services/attachmentCompressionCoordinator.js';
 import { normalizeAIError } from '../services/errorNormalizationService.js';
 import {
   createSharedChatSnapshot,
@@ -239,6 +241,7 @@ export default function ChatPage({
     data: null
   });
   const [uploadQuota, setUploadQuota] = useState(() => getUploadQuotaState());
+  const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState(null);
 
   const isSubmittingRef = useRef(false);
   const persistedMessageIdsRef = useRef(new Set());
@@ -261,6 +264,9 @@ export default function ChatPage({
   const setLoadingAndSubmitting = (loading) => {
     setIsLoading(loading);
     isSubmittingRef.current = loading;
+    if (!loading) {
+      setAttachmentProcessingStatus(null);
+    }
   };
 
   const messageOrderMemoRef = useRef(null);
@@ -288,6 +294,7 @@ export default function ChatPage({
   };
 
   const cancelCurrentGeneration = (reason = 'stopped') => {
+    setAttachmentProcessingStatus(null);
     return cancelActiveChatRequest(requestControllerRef.current, reason, {
       getActiveChatId: () => activeChatIdRef.current,
       onUpdateMessages: updateMessagesState,
@@ -1656,6 +1663,7 @@ export default function ChatPage({
       activeChatIdRef.current === initialChatId;
 
     const failPreflightIfActive = (errMsg) => {
+      setAttachmentProcessingStatus(null);
       if (!isPreflightActive()) return false;
       requestControllerRef.current.markFinalized(preflightRequestId);
       if (errMsg) {
@@ -1681,20 +1689,50 @@ export default function ChatPage({
 
     setLoadingAndSubmitting(true);
     setPersistenceError(null);
+    setAttachmentProcessingStatus(null);
 
     let processedAttachments = [];
 
-    // Step 1: Upload or locally extract file attachments
+    // Step 1: Optimize, upload, or locally extract file attachments
     if (hasAttachments) {
-      const filesToUpload = attachments.filter((att) => att.file);
-      if (filesToUpload.length > 0) {
+      const rawFilesToUpload = attachments.filter((att) => att.file);
+      if (rawFilesToUpload.length > 0) {
         // Enforce maximum single file size client-side before processing/network transmission
         const MAX_PER_FILE_BYTES = 25 * 1024 * 1024;
-        const oversized = filesToUpload.find((f) => f.file && f.file.size > MAX_PER_FILE_BYTES);
+        const oversized = rawFilesToUpload.find((f) => f.file && f.file.size > MAX_PER_FILE_BYTES);
         if (oversized) {
           return failPreflightIfActive(
             `File '${oversized.name}' exceeds the maximum allowed size of 25MB.`
           );
+        }
+
+        // Smart Compression preflight (runs once per unique file before ALL upload/extraction branches)
+        let filesToUpload = rawFilesToUpload;
+        try {
+          filesToUpload = await prepareAttachmentsForUpload(rawFilesToUpload, {
+            signal: preflightEntry.signal,
+            isActive: isPreflightActive,
+            onStage: (statusUpdate) => {
+              if (isPreflightActive()) {
+                setAttachmentProcessingStatus(statusUpdate);
+              }
+            }
+          });
+        } catch (prepErr) {
+          setAttachmentProcessingStatus(null);
+          if (!isPreflightActive() || isAbortLikeError(prepErr, preflightEntry.signal)) {
+            if (isPreflightActive()) {
+              return failPreflightIfActive(null);
+            }
+            return false;
+          }
+          console.warn('Smart compression preparation fell back to original file:', prepErr);
+          filesToUpload = rawFilesToUpload;
+        }
+
+        if (!isPreflightActive()) {
+          setAttachmentProcessingStatus(null);
+          return false;
         }
 
         const isWebLLM = submitProvider === 'webllm';
@@ -1727,7 +1765,17 @@ export default function ChatPage({
               continue;
             }
 
-            // Perform browser-side extraction
+            if (isPreflightActive()) {
+              setAttachmentProcessingStatus({
+                phase: 'extracting',
+                stage: 'extracting',
+                fileName: att.name,
+                label: `Extracting text from ${att.name}...`,
+                progressPercent: null
+              });
+            }
+
+            // Perform browser-side extraction using the prepared (compressed or original) file
             const extResult = await extractBrowserDocument(att.file, {
               id: att.id,
               name: att.name,
@@ -1845,9 +1893,31 @@ export default function ChatPage({
             let usedDirectUpload = false;
             if (directCandidate) {
               try {
-                const directResult = await uploadFileDirectToSupabase(filesToUpload[0].file, {
+                const directTarget = filesToUpload[0];
+                const directDisplayName = directTarget.name || directTarget.file.name || 'attachment';
+                if (isPreflightActive()) {
+                  setAttachmentProcessingStatus({
+                    phase: 'uploading',
+                    stage: 'uploading',
+                    fileName: directDisplayName,
+                    label: `Uploading ${directDisplayName}...`,
+                    progressPercent: 0
+                  });
+                }
+                const directResult = await uploadFileDirectToSupabase(directTarget.file, {
                   chatId: effectiveChatId,
-                  signal: uploadController.signal
+                  signal: uploadController.signal,
+                  onProgress: (percent) => {
+                    if (isPreflightActive()) {
+                      setAttachmentProcessingStatus({
+                        phase: 'uploading',
+                        stage: 'uploading',
+                        fileName: directDisplayName,
+                        label: `Uploading ${directDisplayName}...`,
+                        progressPercent: percent
+                      });
+                    }
+                  }
                 });
                 rawUploaded = directResult.attachment
                   ? [directResult.attachment]
@@ -1872,6 +1942,20 @@ export default function ChatPage({
             }
 
             if (!usedDirectUpload) {
+              const primaryUploadName =
+                filesToUpload[0]?.name || filesToUpload[0]?.file?.name || 'attachment';
+              if (isPreflightActive()) {
+                setAttachmentProcessingStatus({
+                  phase: 'uploading',
+                  stage: 'uploading',
+                  fileName: primaryUploadName,
+                  label:
+                    filesToUpload.length > 1
+                      ? `Uploading ${filesToUpload.length} attachments...`
+                      : `Uploading ${primaryUploadName}...`,
+                  progressPercent: null
+                });
+              }
               const formData = new FormData();
               if (effectiveChatId) {
                 formData.append('conversationId', effectiveChatId);
@@ -1936,6 +2020,15 @@ export default function ChatPage({
                   const fallbackLocalAttachments = [];
                   for (const att of filesToUpload) {
                     if (!isPreflightActive()) return false;
+                    if (isPreflightActive()) {
+                      setAttachmentProcessingStatus({
+                        phase: 'extracting',
+                        stage: 'extracting',
+                        fileName: att.name,
+                        label: `Extracting text from ${att.name}...`,
+                        progressPercent: null
+                      });
+                    }
                     const extResult = await extractBrowserDocument(att.file, {
                       id: att.id,
                       name: att.name,
@@ -2071,6 +2164,16 @@ export default function ChatPage({
                     continue;
                   }
 
+                  if (isPreflightActive()) {
+                    setAttachmentProcessingStatus({
+                      phase: 'extracting',
+                      stage: 'extracting',
+                      fileName: att.name,
+                      label: `Extracting text from ${att.name}...`,
+                      progressPercent: null
+                    });
+                  }
+
                   const extResult = await extractBrowserDocument(att.file, {
                     id: att.id,
                     name: att.name,
@@ -2180,6 +2283,8 @@ export default function ChatPage({
         }));
       }
     }
+
+    setAttachmentProcessingStatus(null);
 
     if (!isPreflightActive()) {
       return false;
@@ -2457,6 +2562,7 @@ export default function ChatPage({
       }
       return true;
     } catch (error) {
+      setAttachmentProcessingStatus(null);
       console.error('Submission error:', error);
       if (isAuthenticatedSharedPreview) {
         setIsSubmittingFirstSharedMessage(false);
@@ -3816,6 +3922,7 @@ export default function ChatPage({
         onSignInClick={() => setShowAuthModal(true)}
         onNavigateHome={onNavigateHome || handleNewChat}
         uploadQuota={uploadQuota}
+        attachmentProcessingStatus={attachmentProcessingStatus}
       />
 
       <ShareChatModal

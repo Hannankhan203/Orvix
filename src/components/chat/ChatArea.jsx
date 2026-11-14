@@ -103,7 +103,8 @@ export default function ChatArea({
   sharedLoading = false,
   onSignInClick = undefined,
   onNavigateHome = undefined,
-  uploadQuota = null
+  uploadQuota = null,
+  attachmentProcessingStatus = null
 }) {
   const isComposerDisabled = isPublicSharedViewer || (isReadOnly && !isAuthenticatedSharedPreview);
   const uploadQuotaText = !isReadOnly && !isSharedView ? formatDailyUploadQuotaText(uploadQuota) : null;
@@ -1604,6 +1605,27 @@ Transcript:
               onRemove={handleRemoveAttachment}
               uploadQuotaText={uploadQuotaText}
             />
+
+            {attachmentProcessingStatus && !isReadOnly && !isSharedView && (
+              <div
+                className={`composer-attachment-processing-bar phase-${attachmentProcessingStatus.phase || 'optimizing'}`}
+                data-testid="attachment-processing-status"
+                data-phase={attachmentProcessingStatus.phase || 'optimizing'}
+                data-stage={attachmentProcessingStatus.stage || ''}
+                role="status"
+                aria-live="polite"
+              >
+                <Loader2 size={12} className="spin-icon composer-processing-spinner" aria-hidden="true" />
+                <span className="composer-processing-text">
+                  {attachmentProcessingStatus.label || 'Processing attachment...'}
+                </span>
+                {typeof attachmentProcessingStatus.progressPercent === 'number' && (
+                  <span className="composer-processing-percent">
+                    {Math.round(attachmentProcessingStatus.progressPercent)}%
+                  </span>
+                )}
+              </div>
+            )}
 
             {(uploadQuotaText || isUploadQuotaLoading) && (
               <div

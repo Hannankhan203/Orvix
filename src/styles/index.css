@@ -13392,3 +13392,48 @@ body.theme-light .composer-upload-quota-bar.is-exhausted,
     margin-bottom: 3px;
   }
 }
+
+/* Attachment Optimization / Upload Status Indicator */
+.composer-attachment-processing-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 3px 10px;
+  margin: 0 0 5px 2px;
+  border-radius: var(--radius-full);
+  font-size: 0.74rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+  background-color: var(--bg-app);
+  border: 1px solid var(--border-subtle);
+  user-select: none;
+  max-width: 100%;
+}
+
+.composer-processing-spinner {
+  flex-shrink: 0;
+  color: var(--accent-primary, #60a5fa);
+}
+
+.composer-processing-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-processing-percent {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+@media (max-width: 640px) {
+  .composer-attachment-processing-bar {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    margin-bottom: 4px;
+  }
+}
