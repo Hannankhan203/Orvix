@@ -36,6 +36,20 @@ export function formatCompressionStageLabel(stage, fileName) {
   return fileName ? `${prefix} ${fileName}...` : `${prefix} attachment...`;
 }
 
+const GENERIC_ATTACHMENT_MIMES = new Set([
+  'application/octet-stream',
+  'binary/octet-stream',
+  'application/binary',
+  'application/unknown',
+  'unknown/unknown'
+]);
+
+function isGenericAttachmentMime(mime) {
+  if (typeof mime !== 'string') return true;
+  const clean = mime.split(';')[0].trim().toLowerCase();
+  return !clean || GENERIC_ATTACHMENT_MIMES.has(clean);
+}
+
 /**
  * Ensures any resulting File matches the attachment's canonical filename and MIME type.
  * @param {File} resultingFile
@@ -45,7 +59,9 @@ export function formatCompressionStageLabel(stage, fileName) {
 function ensureCanonicalFileMetadata(resultingFile, att) {
   if (!resultingFile) return att.file;
   const expectedName = att.name || att.originalName || resultingFile.name;
-  const expectedType = att.type || resultingFile.type || '';
+  const hasSpecificAttType = !isGenericAttachmentMime(att.type);
+  const expectedType =
+    (hasSpecificAttType ? att.type : resultingFile.type) || att.type || resultingFile.type || '';
 
   const nameMatches = !expectedName || resultingFile.name === expectedName;
   const typeMatches = !expectedType || resultingFile.type === expectedType;
@@ -78,13 +94,15 @@ function ensureCanonicalFileMetadata(resultingFile, att) {
 function buildPreparedAttachment(att, resultingFile, result) {
   const finalFile = ensureCanonicalFileMetadata(resultingFile || att.file, att);
   const finalSize = typeof finalFile?.size === 'number' ? finalFile.size : att.size;
+  const resolvedType =
+    (!isGenericAttachmentMime(att.type) ? att.type : finalFile.type) || att.type || finalFile.type;
 
   return {
     ...att,
     id: att.id,
     name: att.name || finalFile.name,
     originalName: att.originalName || att.name || finalFile.name,
-    type: att.type || finalFile.type,
+    type: resolvedType,
     extension: att.extension,
     isImage: Boolean(att.isImage),
     previewUrl: att.previewUrl,

@@ -57,6 +57,13 @@ export const SMART_COMPRESSION_DEFAULTS = Object.freeze({
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const SUPPORTED_PDF_MIME_TYPE = 'application/pdf';
+const GENERIC_MIME_TYPES = new Set([
+  'application/octet-stream',
+  'binary/octet-stream',
+  'application/binary',
+  'application/unknown',
+  'unknown/unknown'
+]);
 
 const EXTENSION_TO_MIME = Object.freeze({
   '.png': 'image/png',
@@ -75,6 +82,7 @@ const MIME_TO_EXTENSIONS = Object.freeze({
 });
 
 let customImageAdapterForTesting = null;
+let customPngOptimizerForTesting = null;
 
 /**
  * Allows unit tests running outside a full browser DOM (e.g. Node.js) to inject
@@ -83,6 +91,15 @@ let customImageAdapterForTesting = null;
  */
 export function setImageCompressionAdapterForTesting(adapter) {
   customImageAdapterForTesting = adapter || null;
+}
+
+/**
+ * Allows automated tests to inject or override the lossless PNG optimizer
+ * (e.g. to simulate an oxipng failure and verify safe Canvas fallback).
+ * @param {((bytes: Uint8Array, options?: Object) => Promise<Uint8Array|ArrayBuffer>)|null} optimizer
+ */
+export function setPngOptimizerForTesting(optimizer) {
+  customPngOptimizerForTesting = typeof optimizer === 'function' ? optimizer : null;
 }
 
 function readUint16BE(bytes, offset) {
@@ -135,6 +152,11 @@ function normalizeMimeType(mime) {
   if (clean === 'image/jpg' || clean === 'image/pjpeg') return 'image/jpeg';
   if (clean === 'application/x-pdf') return 'application/pdf';
   return clean;
+}
+
+export function isGenericMimeType(mime) {
+  const normalized = normalizeMimeType(mime);
+  return !normalized || GENERIC_MIME_TYPES.has(normalized);
 }
 
 function buildResult(file, compressed, originalSize, finalSize, reason) {
@@ -739,19 +761,83 @@ function getBrowserImageAdapter() {
 }
 
 /**
- * Checks raw PDF bytes for encryption / digital signature protection markers
- * outside compressed stream payloads.
+ * Checks raw PDF bytes across the full document (including incremental updates)
+ * for encryption (/Encrypt) or digital signature (/Sig, /ByteRange) indicators.
  */
-function hasRawPdfProtectionMarkers(bytes) {
-  // Scan header/trailer regions (first 8KB and last 16KB) for /Encrypt
-  const decoder = new TextDecoder('latin1');
-  const head = decoder.decode(bytes.subarray(0, Math.min(bytes.length, 8192)));
-  const tailStart = Math.max(0, bytes.length - 16384);
-  const tail = decoder.decode(bytes.subarray(tailStart));
-  const combined = `${head}\n${tail}`;
+export function hasRawPdfProtectionMarkers(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length === 0) return false;
 
-  if (/\/Encrypt\s+\d+\s+\d+\s+R\b|\/Encrypt\s*<</.test(combined)) {
-    return true;
+  const decoder = new TextDecoder('latin1');
+  const chunkSize = 512 * 1024;
+  const overlap = 256;
+  const encryptPattern = /\/Encrypt\s+\d+\s+\d+\s+R\b|\/Encrypt\s*<</;
+  const sigPattern = /\/Sig(?=$|[\s\[\]<>()/{}%])/;
+  const byteRangePattern = /\/ByteRange(?=$|[\s\[\]<>()/{}%])/;
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize - overlap) {
+    const end = Math.min(bytes.length, offset + chunkSize);
+    const text = decoder.decode(bytes.subarray(offset, end));
+    if (encryptPattern.test(text) || sigPattern.test(text) || byteRangePattern.test(text)) {
+      return true;
+    }
+    if (end >= bytes.length) break;
+  }
+
+  return false;
+}
+
+/**
+ * Inspects parsed pdf-lib indirect objects (including decompressed object streams)
+ * for digital signature dictionaries, /ByteRange entries, AcroForm SigFlags, or Perms.
+ */
+function hasParsedPdfProtectionMarkers(pdfDoc, pdfLibModule) {
+  try {
+    const { PDFDict, PDFStream, PDFName, PDFNumber } = pdfLibModule || {};
+    if (!pdfDoc?.context || typeof pdfDoc.context.enumerateIndirectObjects !== 'function') {
+      return false;
+    }
+
+    const sigName = PDFName?.of ? PDFName.of('Sig') : null;
+    const docTsName = PDFName?.of ? PDFName.of('DocTimeStamp') : null;
+    const typeKey = PDFName?.of ? PDFName.of('Type') : null;
+    const ftKey = PDFName?.of ? PDFName.of('FT') : null;
+    const byteRangeKey = PDFName?.of ? PDFName.of('ByteRange') : null;
+    const sigFlagsKey = PDFName?.of ? PDFName.of('SigFlags') : null;
+    const permsKey = PDFName?.of ? PDFName.of('Perms') : null;
+
+    for (const [, obj] of pdfDoc.context.enumerateIndirectObjects()) {
+      const dict =
+        PDFDict && obj instanceof PDFDict
+          ? obj
+          : PDFStream && obj instanceof PDFStream
+          ? obj.dict
+          : null;
+      if (!dict || typeof dict.get !== 'function') continue;
+
+      if (byteRangeKey && dict.has(byteRangeKey)) {
+        return true;
+      }
+      if (permsKey && dict.has(permsKey)) {
+        return true;
+      }
+      if (sigName && typeKey && dict.get(typeKey) === sigName) {
+        return true;
+      }
+      if (docTsName && typeKey && dict.get(typeKey) === docTsName) {
+        return true;
+      }
+      if (sigName && ftKey && dict.get(ftKey) === sigName) {
+        return true;
+      }
+      if (sigFlagsKey && dict.has(sigFlagsKey)) {
+        const flags = dict.get(sigFlagsKey);
+        if (PDFNumber && flags instanceof PDFNumber && flags.asNumber() > 0) {
+          return true;
+        }
+      }
+    }
+  } catch (_) {
+    // Non-fatal; fall through safely
   }
   return false;
 }
@@ -846,16 +932,24 @@ async function runWithCancellation(promiseOrFn, { signal, deadlineAt, timeoutMs 
 }
 
 /**
- * Resolves the canonical MIME type for an input File, ensuring extension and MIME agree.
+ * Resolves the canonical MIME type for an input File.
+ * - Treats generic MIME types (`application/octet-stream`, etc.) as non-definitive.
+ * - Resolves actual format using filename extension and validated binary signature.
+ * - Never trusts extension (or declared MIME) alone when the binary signature conflicts or is missing.
  */
-function resolveInputFormat(file, inputBytes) {
-  const ext = extractExtension(file.name);
-  const declaredMime = normalizeMimeType(file.type);
+export function resolveInputFormat(file, inputBytes) {
+  const ext = extractExtension(file?.name);
+  const rawDeclaredMime = normalizeMimeType(file?.type);
+  const declaredMime =
+    rawDeclaredMime && !GENERIC_MIME_TYPES.has(rawDeclaredMime) ? rawDeclaredMime : '';
   const extMime = ext ? EXTENSION_TO_MIME[ext] || '' : '';
   const sigMime = detectFormatFromSignature(inputBytes);
 
   // If binary signature is recognized as GIF, report GIF so animated check / skip runs accurately
   if (sigMime === 'image/gif') {
+    if (ext && ext !== '.gif') {
+      return { ok: false, mimeType: extMime || declaredMime || 'image/gif', sigMime, mismatch: true };
+    }
     return { ok: false, mimeType: 'image/gif', sigMime };
   }
 
@@ -865,11 +959,17 @@ function resolveInputFormat(file, inputBytes) {
   }
 
   // Verify extension matches targetMime if extension is present
-  if (ext && MIME_TO_EXTENSIONS[targetMime] && !MIME_TO_EXTENSIONS[targetMime].includes(ext)) {
-    return { ok: false, mimeType: targetMime, sigMime, mismatch: true };
+  if (ext) {
+    if (MIME_TO_EXTENSIONS[targetMime]) {
+      if (!MIME_TO_EXTENSIONS[targetMime].includes(ext)) {
+        return { ok: false, mimeType: targetMime, sigMime, mismatch: true };
+      }
+    } else if (extMime && extMime !== targetMime) {
+      return { ok: false, mimeType: targetMime, sigMime, mismatch: true };
+    }
   }
 
-  // Verify binary signature matches targetMime
+  // Verify binary signature matches targetMime (never trust extension or declared MIME alone)
   if (!sigMime || sigMime !== targetMime) {
     return { ok: false, mimeType: targetMime, sigMime, mismatch: true };
   }
@@ -878,8 +978,160 @@ function resolveInputFormat(file, inputBytes) {
 }
 
 /**
- * Optimizes an image File using browser-native APIs while preserving quality,
- * transparency, MIME type, and extension.
+ * Losslessly optimizes PNG bytes using `@jsquash/oxipng` in browser environments
+ * (or an injected test optimizer), preserving transparency, dimensions, and color accuracy.
+ */
+async function runOxipngOptimization(inputBytes, { signal, deadlineAt, timeoutMs }) {
+  if (customPngOptimizerForTesting) {
+    const out = await runWithCancellation(
+      () => customPngOptimizerForTesting(inputBytes, { level: 2, interlace: false, optimiseAlpha: false }),
+      { signal, deadlineAt, timeoutMs }
+    );
+    return out instanceof Uint8Array ? out : new Uint8Array(out);
+  }
+
+  const oxipngModule = await runWithCancellation(() => import('@jsquash/oxipng'), {
+    signal,
+    deadlineAt,
+    timeoutMs
+  });
+  const optimise = oxipngModule?.optimise || oxipngModule?.default;
+  if (typeof optimise !== 'function') {
+    throw new Error('@jsquash/oxipng optimise function is unavailable');
+  }
+
+  const exactBuffer = inputBytes.buffer.slice(
+    inputBytes.byteOffset,
+    inputBytes.byteOffset + inputBytes.byteLength
+  );
+  const optimizedBuffer = await runWithCancellation(
+    () =>
+      optimise(exactBuffer, {
+        level: 2,
+        interlace: false,
+        optimiseAlpha: false
+      }),
+    { signal, deadlineAt, timeoutMs }
+  );
+
+  if (!(optimizedBuffer instanceof ArrayBuffer) && !(optimizedBuffer instanceof Uint8Array)) {
+    throw new Error('@jsquash/oxipng returned an unexpected buffer type');
+  }
+  return optimizedBuffer instanceof Uint8Array
+    ? optimizedBuffer
+    : new Uint8Array(optimizedBuffer);
+}
+
+/**
+ * Verifies in browser DOM/Worker runtimes (when ImageBitmap/Image is available)
+ * that an optimized PNG decodes cleanly at exact original dimensions and preserves
+ * actual transparency when present.
+ */
+async function verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHeader, { signal, deadlineAt, timeoutMs }) {
+  const canDecodeBitmap = typeof createImageBitmap === 'function';
+  const canUseImage =
+    typeof Image !== 'undefined' &&
+    typeof URL !== 'undefined' &&
+    typeof URL.createObjectURL === 'function';
+
+  if (!canDecodeBitmap && !canUseImage) {
+    // Non-DOM environments rely on strict binary PNG header + IEND + animated validation
+    return true;
+  }
+
+  const decodeDimensionsAndAlpha = async (bytes, checkAlphaPixels) => {
+    const blob = new Blob([bytes], { type: 'image/png' });
+    let bitmap = null;
+    let objectUrl = null;
+    try {
+      let source;
+      let width;
+      let height;
+      if (canDecodeBitmap) {
+        bitmap = await createImageBitmap(blob);
+        source = bitmap;
+        width = bitmap.width;
+        height = bitmap.height;
+      } else {
+        objectUrl = URL.createObjectURL(blob);
+        const img = await new Promise((resolve, reject) => {
+          const el = new Image();
+          el.onload = () => resolve(el);
+          el.onerror = () => reject(new Error('PNG decode failed'));
+          el.src = objectUrl;
+        });
+        source = img;
+        width = img.naturalWidth || img.width;
+        height = img.naturalHeight || img.height;
+      }
+
+      let hasTransparentPixels = false;
+      if (checkAlphaPixels) {
+        const hasCanvas =
+          typeof OffscreenCanvas !== 'undefined' ||
+          (typeof document !== 'undefined' && typeof document.createElement === 'function');
+        if (hasCanvas) {
+          const canvas =
+            typeof OffscreenCanvas !== 'undefined'
+              ? new OffscreenCanvas(width, height)
+              : document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true });
+          if (ctx) {
+            ctx.clearRect(0, 0, width, height);
+            ctx.drawImage(source, 0, 0, width, height);
+            try {
+              const imgData = ctx.getImageData(0, 0, width, height);
+              hasTransparentPixels = analyzeImagePixels(imgData.data, width, height).hasTransparentPixels;
+            } catch (_) {
+              hasTransparentPixels = false;
+            }
+          }
+        }
+      }
+
+      return { width, height, hasTransparentPixels };
+    } finally {
+      try {
+        bitmap?.close?.();
+      } catch (_) {}
+      if (objectUrl) {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch (_) {}
+      }
+    }
+  };
+
+  const outDecoded = await runWithCancellation(
+    () => decodeDimensionsAndAlpha(outBytes, Boolean(inputHeader.hasAlphaMetadata)),
+    { signal, deadlineAt, timeoutMs }
+  );
+
+  if (outDecoded.width !== inputHeader.width || outDecoded.height !== inputHeader.height) {
+    return false;
+  }
+
+  // If original PNG has alpha metadata and actual transparent pixels, output must preserve alpha
+  if (inputHeader.hasAlphaMetadata && !outHeader.hasAlphaMetadata) {
+    const origDecoded = await runWithCancellation(
+      () => decodeDimensionsAndAlpha(inputBytes, true),
+      { signal, deadlineAt, timeoutMs }
+    );
+    if (origDecoded.hasTransparentPixels && !outDecoded.hasTransparentPixels) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Optimizes an image File while preserving quality, transparency, MIME type, and extension.
+ * - For PNGs (in real browser/runtime without a mock adapter): uses `@jsquash/oxipng` lossless
+ *   optimization first, keeping Canvas only as a safe fallback if oxipng fails or produces invalid output.
+ * - For JPEG/WebP (and Canvas fallback): uses browser-native Canvas decode/encode.
  */
 async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
   const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
@@ -909,31 +1161,124 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
     );
   }
 
-  // 3. Acquire browser-native image adapter
-  const adapter = getBrowserImageAdapter();
-  if (!adapter) {
-    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+  // 3. Primary PNG lossless optimization via @jsquash/oxipng (unless test adapter overrides)
+  let oxipngAttempted = false;
+  let oxipngInvalidOutput = false;
+  if (mimeType === 'image/png' && !customImageAdapterForTesting) {
+    oxipngAttempted = true;
+    emitStage(onStage, COMPRESSION_STAGES.OPTIMIZING, {
       fileName: file.name,
-      reason: COMPRESSION_REASONS.UNSUPPORTED_ENVIRONMENT
+      mimeType,
+      originalSize: file.size,
+      optimizer: 'oxipng'
     });
-    return buildResult(
-      file,
-      false,
-      file.size,
-      file.size,
-      COMPRESSION_REASONS.UNSUPPORTED_ENVIRONMENT
-    );
+
+    try {
+      const outBytes = await runOxipngOptimization(inputBytes, { signal, deadlineAt, timeoutMs });
+
+      emitStage(onStage, COMPRESSION_STAGES.VALIDATING, {
+        fileName: file.name,
+        mimeType,
+        originalSize: file.size,
+        candidateSize: outBytes?.byteLength || 0
+      });
+
+      const outHeader =
+        outBytes instanceof Uint8Array ? parseImageHeaderInfo(outBytes, 'image/png') : { valid: false };
+      const isValidStructure =
+        outBytes instanceof Uint8Array &&
+        outBytes.byteLength > 0 &&
+        detectFormatFromSignature(outBytes) === 'image/png' &&
+        !detectAnimatedImage(outBytes, 'image/png') &&
+        outHeader.valid &&
+        outHeader.width === inputHeader.width &&
+        outHeader.height === inputHeader.height;
+
+      const isDecodeValid = isValidStructure
+        ? await verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHeader, {
+            signal,
+            deadlineAt,
+            timeoutMs
+          })
+        : false;
+
+      if (!isValidStructure || !isDecodeValid) {
+        oxipngInvalidOutput = true;
+      } else {
+        const encodedSize = outBytes.byteLength;
+        const savingsRatio = encodedSize > 0 ? (file.size - encodedSize) / file.size : 0;
+        if (!encodedSize || encodedSize >= file.size || savingsRatio < minSavingsRatio) {
+          // Valid lossless oxipng optimization did not reach >= 10% savings.
+          // Do not force lossy/premultiplied-alpha Canvas re-encoding over valid lossless PNG.
+          emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+            fileName: file.name,
+            reason: COMPRESSION_REASONS.INSUFFICIENT_SAVINGS
+          });
+          return buildResult(
+            file,
+            false,
+            file.size,
+            file.size,
+            COMPRESSION_REASONS.INSUFFICIENT_SAVINGS
+          );
+        }
+
+        const compressedFile = new File([outBytes], file.name, {
+          type: 'image/png',
+          lastModified: file.lastModified
+        });
+
+        emitStage(onStage, COMPRESSION_STAGES.COMPLETE, {
+          fileName: compressedFile.name,
+          mimeType: 'image/png',
+          originalSize: file.size,
+          finalSize: compressedFile.size
+        });
+
+        return buildResult(
+          compressedFile,
+          true,
+          file.size,
+          compressedFile.size,
+          COMPRESSION_REASONS.COMPRESSED
+        );
+      }
+    } catch (oxipngErr) {
+      if (oxipngErr?.name === 'AbortError' || oxipngErr?.name === 'TimeoutError' || signal?.aborted) {
+        throw oxipngErr;
+      }
+      // Fall through to safe Canvas fallback when oxipng fails or is unavailable
+    }
   }
 
-  emitStage(onStage, COMPRESSION_STAGES.OPTIMIZING, {
-    fileName: file.name,
-    mimeType,
-    originalSize: file.size
-  });
+  // 4. Acquire browser-native Canvas image adapter (primary for JPEG/WebP, safe fallback for PNG)
+  const adapter = getBrowserImageAdapter();
+  if (!adapter) {
+    const fallbackReason = oxipngInvalidOutput
+      ? COMPRESSION_REASONS.VALIDATION_FAILED
+      : COMPRESSION_REASONS.UNSUPPORTED_ENVIRONMENT;
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: fallbackReason
+    });
+    return buildResult(file, false, file.size, file.size, fallbackReason);
+  }
+
+  if (!oxipngAttempted) {
+    emitStage(onStage, COMPRESSION_STAGES.OPTIMIZING, {
+      fileName: file.name,
+      mimeType,
+      originalSize: file.size
+    });
+  }
 
   let decoded = null;
   try {
-    decoded = await runWithCancellation(() => adapter.decodeAndAnalyze(file), {
+    const sourceBlob =
+      file.type === mimeType
+        ? file
+        : new Blob([inputBytes], { type: mimeType });
+    decoded = await runWithCancellation(() => adapter.decodeAndAnalyze(sourceBlob), {
       signal,
       deadlineAt,
       timeoutMs
@@ -987,7 +1332,7 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
       return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.VALIDATION_FAILED);
     }
 
-    // 4. Validate output MIME, signature, dimensions, and >= 10% savings
+    // 5. Validate output MIME, signature, dimensions, and >= 10% savings
     emitStage(onStage, COMPRESSION_STAGES.VALIDATING, {
       fileName: file.name,
       mimeType,
@@ -1064,11 +1409,12 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
 /**
  * Losslessly optimizes a PDF File via `pdf-lib` structural object-stream compaction.
  * Never rasterizes pages or modifies text, fonts, layout, or selectable content.
+ * Protects encrypted and digitally signed PDFs (/Sig, /ByteRange) by skipping untouched.
  */
 async function optimizePdfFile(file, inputBytes, options, ctx) {
   const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
 
-  // Quick pre-check for PDF encryption marker before parsing
+  // Quick pre-check for PDF encryption or digital signature markers before parsing
   if (hasRawPdfProtectionMarkers(inputBytes)) {
     emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
       fileName: file.name,
@@ -1083,11 +1429,12 @@ async function optimizePdfFile(file, inputBytes, options, ctx) {
     originalSize: file.size
   });
 
-  const { PDFDocument } = await runWithCancellation(() => import('pdf-lib'), {
+  const pdfLibModule = await runWithCancellation(() => import('pdf-lib'), {
     signal,
     deadlineAt,
     timeoutMs
   });
+  const { PDFDocument } = pdfLibModule;
 
   let pdfDoc;
   try {
@@ -1106,7 +1453,7 @@ async function optimizePdfFile(file, inputBytes, options, ctx) {
     return buildResult(file, false, file.size, file.size, reason);
   }
 
-  if (pdfDoc.isEncrypted) {
+  if (pdfDoc.isEncrypted || hasParsedPdfProtectionMarkers(pdfDoc, pdfLibModule)) {
     emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
       fileName: file.name,
       reason: COMPRESSION_REASONS.PROTECTED_PDF
@@ -1253,9 +1600,12 @@ export async function compressFile(file, options = {}) {
       originalSize
     });
 
-    // Quick extension/MIME pre-check before reading bytes for clearly unsupported formats
+    // Quick extension/MIME pre-check before reading bytes for clearly unsupported formats.
+    // Generic MIME types (e.g. application/octet-stream) are NOT definitive and defer to extension + signature.
     const ext = extractExtension(file.name);
-    const declaredMime = normalizeMimeType(file.type);
+    const rawDeclaredMime = normalizeMimeType(file.type);
+    const declaredMime =
+      rawDeclaredMime && !GENERIC_MIME_TYPES.has(rawDeclaredMime) ? rawDeclaredMime : '';
     const candidateMime = declaredMime || EXTENSION_TO_MIME[ext] || '';
 
     if (
@@ -1336,6 +1686,23 @@ export async function compressFile(file, options = {}) {
         reason
       });
       return buildResult(file, false, originalSize, originalSize, reason);
+    }
+
+    // Enforce exact format-specific lightweight gate when resolved via signature (e.g. extensionless octet-stream)
+    const resolvedMinThreshold =
+      formatInfo.mimeType === SUPPORTED_PDF_MIME_TYPE ? minPdfBytes : minImageBytes;
+    if (originalSize < resolvedMinThreshold) {
+      emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+        fileName: file.name,
+        reason: COMPRESSION_REASONS.LIGHTWEIGHT_FILE
+      });
+      return buildResult(
+        file,
+        false,
+        originalSize,
+        originalSize,
+        COMPRESSION_REASONS.LIGHTWEIGHT_FILE
+      );
     }
 
     const ctx = {

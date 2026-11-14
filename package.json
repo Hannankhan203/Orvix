@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.32.0",
+    "@jsquash/oxipng": "^2.3.0",
     "@mlc-ai/web-llm": "0.2.86",
     "@supabase/supabase-js": "^2.119.0",
     "@tailwindcss/vite": "^4.3.3",

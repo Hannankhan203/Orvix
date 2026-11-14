@@ -114,6 +114,9 @@ export default defineConfig(() => {
         }
       }
     },
+    optimizeDeps: {
+      exclude: ['@jsquash/oxipng'],
+    },
     resolve: {
       alias: {
         '@': path.resolve('.'),

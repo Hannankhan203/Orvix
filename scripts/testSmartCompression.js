@@ -25,8 +25,12 @@ import {
   computeSafeTargetDimensions,
   detectAnimatedImage,
   detectFormatFromSignature,
+  hasRawPdfProtectionMarkers,
+  isGenericMimeType,
   parseImageHeaderInfo,
-  setImageCompressionAdapterForTesting
+  resolveInputFormat,
+  setImageCompressionAdapterForTesting,
+  setPngOptimizerForTesting
 } from '../src/services/smartCompressionService.js';
 
 // ---------------------------------------------------------------------------
@@ -712,6 +716,243 @@ async function runTests() {
     assert.strictEqual(errRes.reason, COMPRESSION_REASONS.ERROR);
 
     setImageCompressionAdapterForTesting(null);
+    passed++;
+  }
+
+  // 12. Phase 1: MIME detection (application/octet-stream generic handling & signature conflicts)
+  {
+    assert.strictEqual(isGenericMimeType('application/octet-stream'), true);
+    assert.strictEqual(isGenericMimeType('application/octet-stream; charset=binary'), true);
+    assert.strictEqual(isGenericMimeType(''), true);
+    assert.strictEqual(isGenericMimeType('image/png'), false);
+    assert.strictEqual(isGenericMimeType('application/pdf'), false);
+
+    // A. Valid PNG with application/octet-stream resolves to image/png
+    const octetPngBytes = makePngBuffer(1000, 700, { colorType: 6, extraPaddingBytes: 110_000 });
+    const octetPngFile = new File([octetPngBytes], 'screenshot.png', {
+      type: 'application/octet-stream'
+    });
+    const pngFormat = resolveInputFormat(octetPngFile, new Uint8Array(octetPngBytes));
+    assert.strictEqual(pngFormat.ok, true);
+    assert.strictEqual(pngFormat.mimeType, 'image/png');
+
+    // B. Valid PDF with application/octet-stream resolves to application/pdf and compresses cleanly
+    const octetPdfBytes = await makeOptimizablePdfBuffer([
+      'Octet Stream PDF Page 1',
+      'Octet Stream PDF Page 2'
+    ]);
+    const octetPdfFile = new File([octetPdfBytes], 'octet-report.pdf', {
+      type: 'application/octet-stream',
+      lastModified: 1711111111000
+    });
+    const octetPdfRes = await compressFile(octetPdfFile);
+    assert.strictEqual(octetPdfRes.compressed, true, `Expected octet-stream PDF to compress, got ${octetPdfRes.reason}`);
+    assert.strictEqual(octetPdfRes.file.name, 'octet-report.pdf');
+    assert.strictEqual(octetPdfRes.file.type, 'application/pdf');
+    assert.strictEqual(octetPdfRes.reason, COMPRESSION_REASONS.COMPRESSED);
+
+    // C. Extensionless PNG with application/octet-stream resolves via signature and enforces minImageBytes
+    const smallExtensionlessPng = new File(
+      [makePngBuffer(400, 300, { extraPaddingBytes: 70_000 })],
+      'pasted-blob',
+      { type: 'application/octet-stream' }
+    );
+    const smallExtlessRes = await compressFile(smallExtensionlessPng);
+    assert.strictEqual(smallExtlessRes.file, smallExtensionlessPng);
+    assert.strictEqual(smallExtlessRes.compressed, false);
+    assert.strictEqual(smallExtlessRes.reason, COMPRESSION_REASONS.LIGHTWEIGHT_FILE);
+
+    // D. Never trust extension alone when binary signature conflicts (JPEG bytes in .png)
+    const spoofedPng = new File(
+      [makeMinimalJpegBuffer(1200, 800, 100_000)],
+      'spoofed.png',
+      { type: 'application/octet-stream' }
+    );
+    const spoofedPngRes = await compressFile(spoofedPng);
+    assert.strictEqual(spoofedPngRes.file, spoofedPng);
+    assert.strictEqual(spoofedPngRes.compressed, false);
+    assert.strictEqual(spoofedPngRes.reason, COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE);
+
+    // E. Never trust extension alone when binary signature conflicts (PNG bytes in .pdf)
+    const spoofedPdf = new File([octetPngBytes], 'fake.pdf', {
+      type: 'application/octet-stream'
+    });
+    const spoofedPdfRes = await compressFile(spoofedPdf);
+    assert.strictEqual(spoofedPdfRes.file, spoofedPdf);
+    assert.strictEqual(spoofedPdfRes.compressed, false);
+    assert.strictEqual(spoofedPdfRes.reason, COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE);
+
+    // F. Never trust extension alone when signature is invalid/garbage
+    const garbagePng = new File([Buffer.alloc(100 * 1024, 0x58)], 'corrupt.png', {
+      type: 'application/octet-stream'
+    });
+    const garbagePngRes = await compressFile(garbagePng);
+    assert.strictEqual(garbagePngRes.file, garbagePng);
+    assert.strictEqual(garbagePngRes.compressed, false);
+    assert.strictEqual(garbagePngRes.reason, COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE);
+
+    // G. Unsupported format with application/octet-stream skips cleanly
+    const octetTxt = new File([Buffer.alloc(100 * 1024, 0x41)], 'readme.txt', {
+      type: 'application/octet-stream'
+    });
+    const octetTxtRes = await compressFile(octetTxt);
+    assert.strictEqual(octetTxtRes.file, octetTxt);
+    assert.strictEqual(octetTxtRes.compressed, false);
+    assert.strictEqual(octetTxtRes.reason, COMPRESSION_REASONS.UNSUPPORTED_FORMAT);
+
+    passed++;
+  }
+
+  // 13. Phase 1: PNG oxipng lossless optimizer gating & safe fallback
+  {
+    const rawPngBytes = makePngBuffer(900, 600, { colorType: 6, extraPaddingBytes: 120_000 });
+    const smallPngBytes = makePngBuffer(900, 600, { colorType: 6, extraPaddingBytes: 0 });
+    const octetPng = new File([rawPngBytes], 'ui-capture.png', {
+      type: 'application/octet-stream',
+      lastModified: 1712222222000
+    });
+
+    // A. Valid oxipng optimization >= 10% savings succeeds without invoking Canvas
+    let oxipngCalls = 0;
+    setPngOptimizerForTesting(async () => {
+      oxipngCalls++;
+      return smallPngBytes;
+    });
+    const oxiSuccess = await compressFile(octetPng);
+    assert.strictEqual(oxipngCalls, 1);
+    assert.strictEqual(oxiSuccess.compressed, true);
+    assert.strictEqual(oxiSuccess.file.name, 'ui-capture.png');
+    assert.strictEqual(oxiSuccess.file.type, 'image/png');
+    assert.strictEqual(oxiSuccess.finalSize, smallPngBytes.length);
+    assert.strictEqual(oxiSuccess.reason, COMPRESSION_REASONS.COMPRESSED);
+
+    // B. Valid oxipng optimization < 10% savings skips cleanly with INSUFFICIENT_SAVINGS
+    setPngOptimizerForTesting(async (bytes) => {
+      // Only ~4% smaller than rawPngBytes
+      return makePngBuffer(900, 600, { colorType: 6, extraPaddingBytes: 114_000 });
+    });
+    const oxiSmall = await compressFile(octetPng);
+    assert.strictEqual(oxiSmall.file, octetPng);
+    assert.strictEqual(oxiSmall.compressed, false);
+    assert.strictEqual(oxiSmall.reason, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
+
+    // C. Invalid oxipng output (mismatched dimensions) rejects cleanly without replacing original
+    setPngOptimizerForTesting(async () => makePngBuffer(300, 200, { colorType: 6 }));
+    const oxiBadDims = await compressFile(octetPng);
+    assert.strictEqual(oxiBadDims.file, octetPng);
+    assert.strictEqual(oxiBadDims.compressed, false);
+    assert.strictEqual(oxiBadDims.reason, COMPRESSION_REASONS.VALIDATION_FAILED);
+
+    // D. Oxipng throw with no DOM Canvas safely returns original without crash
+    setPngOptimizerForTesting(async () => {
+      throw new Error('Simulated WASM failure');
+    });
+    const oxiErr = await compressFile(octetPng);
+    assert.strictEqual(oxiErr.file, octetPng);
+    assert.strictEqual(oxiErr.compressed, false);
+    assert.strictEqual(oxiErr.reason, COMPRESSION_REASONS.UNSUPPORTED_ENVIRONMENT);
+
+    setPngOptimizerForTesting(null);
+    passed++;
+  }
+
+  // 14. Phase 1: Signed PDF protection (/Sig and /ByteRange)
+  {
+    // A. Raw PDF with /Type /Sig and /ByteRange in the middle of a large PDF (outside head/tail windows)
+    const basePdf = await makeOptimizablePdfBuffer(['Signed Contract Page 1', 'Signed Contract Page 2']);
+    const baseStr = basePdf.toString('latin1');
+    const eofIdx = baseStr.lastIndexOf('%%EOF');
+    const midSignatureObj =
+      '\n999 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 1200 1800 45000] /Contents <0000> >>\nendobj\n';
+    const signedRawPdf = Buffer.from(
+      baseStr.slice(0, Math.floor(baseStr.length / 2)) +
+        midSignatureObj +
+        baseStr.slice(Math.floor(baseStr.length / 2), eofIdx) +
+        baseStr.slice(eofIdx),
+      'latin1'
+    );
+    assert.strictEqual(hasRawPdfProtectionMarkers(new Uint8Array(signedRawPdf)), true);
+    const signedRawFile = new File([signedRawPdf], 'signed-mid.pdf', { type: 'application/pdf' });
+    const signedRawRes = await compressFile(signedRawFile);
+    assert.strictEqual(signedRawRes.file, signedRawFile, 'Signed PDF must return exact untouched File');
+    assert.strictEqual(signedRawRes.compressed, false);
+    assert.strictEqual(signedRawRes.reason, COMPRESSION_REASONS.PROTECTED_PDF);
+
+    // B. PDF with /FT /Sig AcroForm field only
+    const ftSigStr =
+      baseStr.slice(0, eofIdx) +
+      '\n998 0 obj\n<< /FT /Sig /T (Signature1) >>\nendobj\n' +
+      baseStr.slice(eofIdx);
+    const ftSigFile = new File([Buffer.from(ftSigStr, 'latin1')], 'acroform-sig.pdf', {
+      type: 'application/pdf'
+    });
+    const ftSigRes = await compressFile(ftSigFile);
+    assert.strictEqual(ftSigRes.file, ftSigFile);
+    assert.strictEqual(ftSigRes.compressed, false);
+    assert.strictEqual(ftSigRes.reason, COMPRESSION_REASONS.PROTECTED_PDF);
+
+    // C. PDF with /ByteRange indicator only
+    const brStr =
+      baseStr.slice(0, eofIdx) +
+      '\n997 0 obj\n<< /ByteRange [0 100 200 300] >>\nendobj\n' +
+      baseStr.slice(eofIdx);
+    const brFile = new File([Buffer.from(brStr, 'latin1')], 'byterange-only.pdf', {
+      type: 'application/pdf'
+    });
+    const brRes = await compressFile(brFile);
+    assert.strictEqual(brRes.file, brFile);
+    assert.strictEqual(brRes.compressed, false);
+    assert.strictEqual(brRes.reason, COMPRESSION_REASONS.PROTECTED_PDF);
+
+    // D. Signed PDF where /Sig and /ByteRange live inside a Flate-compressed /ObjStm (invisible in raw bytes)
+    const objStmDoc = await PDFDocument.create();
+    const font = await objStmDoc.embedFont(StandardFonts.Helvetica);
+    const p1 = objStmDoc.addPage([612, 792]);
+    p1.drawText('Compressed ObjectStream Signed PDF', { x: 50, y: 720, size: 14, font });
+    const sigDict = objStmDoc.context.obj({
+      Type: 'Sig',
+      Filter: 'Adobe.PPKLite',
+      ByteRange: [0, 10, 20, 30]
+    });
+    const sigRef = objStmDoc.context.register(sigDict);
+    const { PDFName } = await import('pdf-lib');
+    objStmDoc.catalog.set(PDFName.of('AcroSigTest'), sigRef);
+    const objStmSaved = Buffer.from(await objStmDoc.save({ useObjectStreams: true }));
+    const objStmStr = objStmSaved.toString('latin1');
+    const objStmEof = objStmStr.lastIndexOf('%%EOF');
+    const objStmPadded = Buffer.from(
+      objStmStr.slice(0, objStmEof) +
+        '\n% padding ' +
+        'ABCDEF0123456789'.repeat(4500) +
+        '\n' +
+        objStmStr.slice(objStmEof),
+      'latin1'
+    );
+    assert.strictEqual(
+      hasRawPdfProtectionMarkers(new Uint8Array(objStmPadded)),
+      false,
+      'Compressed ObjStm /Sig should not be in raw bytes'
+    );
+    const objStmSignedFile = new File([objStmPadded], 'compressed-sig.pdf', {
+      type: 'application/pdf'
+    });
+    const objStmRes = await compressFile(objStmSignedFile);
+    assert.strictEqual(objStmRes.file, objStmSignedFile, 'ObjStm-compressed signed PDF must still be protected');
+    assert.strictEqual(objStmRes.compressed, false);
+    assert.strictEqual(objStmRes.reason, COMPRESSION_REASONS.PROTECTED_PDF);
+
+    // E. Unsigned PDF containing normal word "Signal" must NOT false-positive and must compress cleanly
+    const unsignedSignalPdf = await makeOptimizablePdfBuffer([
+      'Signal Processing Architecture Overview — Page 1',
+      'Digital Signal Integrity Report — Page 2'
+    ]);
+    const unsignedFile = new File([unsignedSignalPdf], 'signal-report.pdf', {
+      type: 'application/pdf'
+    });
+    const unsignedRes = await compressFile(unsignedFile);
+    assert.strictEqual(unsignedRes.compressed, true, 'Normal unsigned PDF must still compress');
+    assert.strictEqual(unsignedRes.reason, COMPRESSION_REASONS.COMPRESSED);
+
     passed++;
   }
 
