@@ -1884,11 +1884,19 @@ export default function ChatPage({
 
           try {
             let rawUploaded = [];
+            const primaryUploadAtt = filesToUpload[0];
+            const primaryTransportFile =
+              primaryUploadAtt?.storageCompression?.compressed &&
+              primaryUploadAtt?.storageCompression?.encodedFile
+                ? primaryUploadAtt.storageCompression.encodedFile
+                : null;
             const directCandidate =
               filesToUpload.length === 1 &&
               Boolean(currentUser?.uid) &&
               isBrowserOnline() &&
-              isDirectUploadCandidate(filesToUpload[0].file);
+              (primaryTransportFile
+                ? isDirectUploadCandidate(primaryTransportFile)
+                : isDirectUploadCandidate(filesToUpload[0].file));
 
             let usedDirectUpload = false;
             if (directCandidate) {
@@ -1907,6 +1915,7 @@ export default function ChatPage({
                 const directResult = await uploadFileDirectToSupabase(directTarget.file, {
                   chatId: effectiveChatId,
                   signal: uploadController.signal,
+                  storageCompression: directTarget.storageCompression,
                   onProgress: (percent) => {
                     if (isPreflightActive()) {
                       setAttachmentProcessingStatus({
@@ -1963,7 +1972,26 @@ export default function ChatPage({
               formData.append('provider', submitProvider || DEFAULT_PROVIDER);
               formData.append('offline', String(!isBrowserOnline()));
               filesToUpload.forEach((att) => {
-                formData.append('files', att.file, att.name);
+                const useStorageEnvelope = Boolean(
+                  att.storageCompression?.compressed && att.storageCompression?.encodedFile
+                );
+                const uploadPayload = useStorageEnvelope
+                  ? att.storageCompression.encodedFile
+                  : att.file;
+                formData.append('files', uploadPayload, att.name);
+                if (useStorageEnvelope) {
+                  formData.append('storageEncoding', att.storageCompression.encoding);
+                  formData.append('originalSize', String(att.storageCompression.originalSize));
+                  if (att.storageCompression.originalMimeType || att.type) {
+                    formData.append(
+                      'originalMimeType',
+                      String(att.storageCompression.originalMimeType || att.type)
+                    );
+                  }
+                  if (att.storageCompression.sha256) {
+                    formData.append('storageChecksum', att.storageCompression.sha256);
+                  }
+                }
               });
 
               let uploadRes;

@@ -7,6 +7,10 @@
 import { isVisionCapableProvider } from './documentContextService.js';
 import { getAuthHeaders, getAuthUserId } from './authService.js';
 import {
+  isOrvixStorageEnvelope,
+  decodeOrvixStorageEnvelope
+} from './storageEnvelopeService.js';
+import {
   deleteChunksForDocument,
   deleteChunksForDocuments,
   deleteChunksForConversation
@@ -1775,7 +1779,23 @@ export async function fetchAttachmentBlob(attachment, chatId = null) {
     const query = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : '';
     const res = await fetchWithAuth(`/api/upload/${attachment.id}/file${query}`);
     if (res.ok) {
-      const blob = await res.blob();
+      let blob = await res.blob();
+      // Defense in depth: ensure no raw Orvix storage envelope ever reaches previews or IndexedDB
+      if (blob && blob.size >= 58 && typeof blob.slice === 'function') {
+        try {
+          const headBuf = await blob.slice(0, 8).arrayBuffer();
+          if (isOrvixStorageEnvelope(headBuf)) {
+            const fullBuf = await blob.arrayBuffer();
+            const decoded = await decodeOrvixStorageEnvelope(fullBuf, {
+              expectedExtension: attachment?.extension || '',
+              expectedMimeType: attachment?.type || attachment?.mimeType || ''
+            });
+            blob = new Blob([decoded.data], {
+              type: decoded.originalMimeType || attachment?.type || attachment?.mimeType || 'application/octet-stream'
+            });
+          }
+        } catch (_) {}
+      }
       // Cache in IndexedDB asynchronously for faster subsequent loads and offline retrieval
       try {
         const currentUid = getAuthUserId();
@@ -2193,7 +2213,7 @@ export function isDirectUploadCandidate(file, options = {}) {
  * @returns {Promise<{ success: boolean, attachment: Object }>}
  */
 export async function uploadFileDirectToSupabase(file, options = {}) {
-  const { chatId, isPermanent = false, signal, onProgress } = options;
+  const { chatId, isPermanent = false, signal, onProgress, storageCompression } = options;
 
   if (!file) {
     throw new Error('No file provided for direct upload.');
@@ -2202,9 +2222,20 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     throw new Error('A valid chatId is required for direct upload.');
   }
 
+  const hasStorageCompression = Boolean(
+    storageCompression?.compressed && storageCompression?.encodedFile
+  );
+  const uploadPayload = hasStorageCompression ? storageCompression.encodedFile : file;
+  const wireSize = uploadPayload.size || 0;
+  const originalSize = hasStorageCompression
+    ? storageCompression.originalSize || file.size || wireSize
+    : file.size || 0;
+
   const fileName = file.name || 'attachment';
-  const fileSize = file.size || 0;
-  const mimeType = file.type || 'application/octet-stream';
+  const mimeType =
+    (hasStorageCompression ? storageCompression.originalMimeType : null) ||
+    file.type ||
+    'application/octet-stream';
 
   // 1. Authenticated request for a short-lived signed upload URL
   const signedUrlRes = await fetchWithAuth('/api/upload/direct/signed-url', {
@@ -2213,9 +2244,17 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     body: JSON.stringify({
       chatId,
       fileName,
-      fileSize,
+      fileSize: wireSize,
+      originalSize,
       mimeType,
-      isPermanent
+      isPermanent,
+      ...(hasStorageCompression
+        ? {
+            storageEncoding: storageCompression.encoding,
+            storageChecksum: storageCompression.sha256,
+            originalMimeType: mimeType
+          }
+        : {})
     }),
     signal
   });
@@ -2282,7 +2321,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
       }
       if (xhr.status >= 200 && xhr.status < 300) {
         if (typeof onProgress === 'function') {
-          onProgress(100, fileSize, fileSize);
+          onProgress(100, wireSize, wireSize);
         }
         resolve();
       } else {
@@ -2314,8 +2353,9 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     };
 
     xhr.open('PUT', signedUrl);
-    xhr.setRequestHeader('Content-Type', mimeType || 'application/octet-stream');
-    xhr.send(file);
+    // Explicitly never set HTTP Content-Encoding on stored Supabase objects; envelope is self-describing.
+    xhr.setRequestHeader('Content-Type', hasStorageCompression ? 'application/octet-stream' : (mimeType || 'application/octet-stream'));
+    xhr.send(uploadPayload);
   });
 
   // 3. Authenticated completion call: verifies object in storage, runs extraction, records metadata
@@ -2325,7 +2365,15 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     body: JSON.stringify({
       attachmentId,
       chatId,
-      storagePath
+      storagePath,
+      ...(hasStorageCompression
+        ? {
+            storageEncoding: storageCompression.encoding,
+            originalSize,
+            originalMimeType: mimeType,
+            storageChecksum: storageCompression.sha256
+          }
+        : {})
     }),
     signal
   });

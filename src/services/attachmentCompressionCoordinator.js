@@ -13,11 +13,16 @@ import {
   COMPRESSION_STAGES,
   COMPRESSION_REASONS
 } from './smartCompressionService.js';
+import {
+  compressFileForTransparentStorage,
+  isTransparentStorageCompressionSupported
+} from './storageEnvelopeService.js';
 import { formatFileSize } from '../components/chat/chatAreaUtils.js';
 import { createAbortError, isAbortLikeError } from './requestIsolationService.js';
 
 const evaluatedFileCache = new WeakMap();
 const compressedOutputFiles = new WeakSet();
+const evaluatedStorageCache = new WeakMap();
 
 const OPTIMIZATION_STAGE_LABELS = {
   [COMPRESSION_STAGES.ANALYZING]: 'Analyzing',
@@ -89,15 +94,16 @@ function ensureCanonicalFileMetadata(resultingFile, att) {
  * @param {Object} att
  * @param {File} resultingFile
  * @param {Object} result
+ * @param {Object} [storageResult]
  * @returns {Object}
  */
-function buildPreparedAttachment(att, resultingFile, result) {
+function buildPreparedAttachment(att, resultingFile, result, storageResult = null) {
   const finalFile = ensureCanonicalFileMetadata(resultingFile || att.file, att);
   const finalSize = typeof finalFile?.size === 'number' ? finalFile.size : att.size;
   const resolvedType =
     (!isGenericAttachmentMime(att.type) ? att.type : finalFile.type) || att.type || finalFile.type;
 
-  return {
+  const prepared = {
     ...att,
     id: att.id,
     name: att.name || finalFile.name,
@@ -116,6 +122,98 @@ function buildPreparedAttachment(att, resultingFile, result) {
       reason: result?.reason || COMPRESSION_REASONS.SKIPPED
     }
   };
+
+  if (storageResult) {
+    prepared.storageCompression = {
+      compressed: Boolean(storageResult.compressed),
+      encoding: storageResult.compressed ? storageResult.encoding : null,
+      encodedFile: storageResult.compressed ? storageResult.encodedFile : null,
+      originalSize: storageResult.originalSize ?? finalSize,
+      encodedSize: storageResult.encodedSize ?? finalSize,
+      originalMimeType: storageResult.originalMimeType || resolvedType,
+      extension: storageResult.extension || att.extension,
+      crc32: storageResult.crc32,
+      sha256: storageResult.sha256,
+      savingsBytes: storageResult.savingsBytes || 0,
+      savingsRatio: storageResult.savingsRatio || 0,
+      reason: storageResult.reason || COMPRESSION_REASONS.SKIPPED
+    };
+  } else if (att.storageCompression) {
+    prepared.storageCompression = att.storageCompression;
+  }
+
+  return prepared;
+}
+
+/**
+ * Evaluates transparent Orvix envelope compression for TXT/MD/DOC/PPT/XLS attachments.
+ * Keeps original `att.file` untouched and places envelope on `storageResult.encodedFile`.
+ */
+async function evaluateTransparentStorageCompression(
+  att,
+  inputFile,
+  { signal, isActive, onStage, displayName, transparentCompressFn }
+) {
+  const isCandidate = isTransparentStorageCompressionSupported({
+    name: displayName,
+    type: att.type || inputFile.type,
+    extension: att.extension
+  });
+  if (!isCandidate) {
+    return null;
+  }
+
+  if (att.storageCompression?.compressed && att.storageCompression?.encodedFile) {
+    return att.storageCompression;
+  }
+
+  const cached = evaluatedStorageCache.get(inputFile);
+  if (cached) {
+    return cached;
+  }
+
+  if (typeof onStage === 'function' && !signal?.aborted && (typeof isActive !== 'function' || isActive())) {
+    onStage({
+      phase: 'optimizing',
+      stage: COMPRESSION_STAGES.OPTIMIZING,
+      fileName: displayName,
+      label: formatCompressionStageLabel(COMPRESSION_STAGES.OPTIMIZING, displayName),
+      originalSize: inputFile.size,
+      candidateSize: null,
+      finalSize: null,
+      progressPercent: null
+    });
+  }
+
+  let storageRes;
+  try {
+    storageRes = await transparentCompressFn(inputFile, {
+      signal,
+      extension: att.extension
+    });
+  } catch (err) {
+    if (isAbortLikeError(err, signal) || (typeof isActive === 'function' && !isActive())) {
+      throw createAbortError('Attachment optimization cancelled.');
+    }
+    console.warn(`Transparent storage compression failed for '${displayName}', using original file:`, err);
+    storageRes = {
+      compressed: false,
+      encoding: null,
+      encodedFile: null,
+      originalFile: inputFile,
+      originalSize: inputFile.size,
+      encodedSize: inputFile.size,
+      originalMimeType: att.type || inputFile.type,
+      reason: COMPRESSION_REASONS.ERROR
+    };
+  }
+
+  if (signal?.aborted || (typeof isActive === 'function' && !isActive())) {
+    throw createAbortError('Attachment optimization cancelled.');
+  }
+
+  evaluatedStorageCache.set(inputFile, storageRes);
+  return storageRes;
 }
 
 /**
@@ -129,6 +227,7 @@ function buildPreparedAttachment(att, resultingFile, result) {
  * @param {() => boolean} [options.isActive]
  * @param {(status: Object) => void} [options.onStage]
  * @param {typeof compressFile} [options.compressFn]
+ * @param {typeof compressFileForTransparentStorage} [options.transparentCompressFn]
  * @returns {Promise<Array<Object>>}
  */
 export async function prepareAttachmentsForUpload(filesToUpload = [], options = {}) {
@@ -136,7 +235,8 @@ export async function prepareAttachmentsForUpload(filesToUpload = [], options = 
     signal,
     isActive,
     onStage,
-    compressFn = compressFile
+    compressFn = compressFile,
+    transparentCompressFn = compressFileForTransparentStorage
   } = options;
 
   const assertActive = () => {
@@ -179,7 +279,17 @@ export async function prepareAttachmentsForUpload(filesToUpload = [], options = 
 
     const cachedResult = evaluatedFileCache.get(inputFile);
     if (cachedResult) {
-      prepared.push(buildPreparedAttachment(att, cachedResult.file || inputFile, cachedResult));
+      let storageRes = null;
+      if (!cachedResult.compressed) {
+        storageRes = await evaluateTransparentStorageCompression(att, cachedResult.file || inputFile, {
+          signal,
+          isActive,
+          onStage,
+          displayName,
+          transparentCompressFn
+        });
+      }
+      prepared.push(buildPreparedAttachment(att, cachedResult.file || inputFile, cachedResult, storageRes));
       continue;
     }
 
@@ -252,7 +362,19 @@ export async function prepareAttachmentsForUpload(filesToUpload = [], options = 
       });
     }
 
-    prepared.push(buildPreparedAttachment(att, normalizedResult.file, normalizedResult));
+    let storageRes = null;
+    if (!normalizedResult.compressed) {
+      storageRes = await evaluateTransparentStorageCompression(att, normalizedResult.file, {
+        signal,
+        isActive,
+        onStage,
+        displayName,
+        transparentCompressFn
+      });
+    }
+
+    assertActive();
+    prepared.push(buildPreparedAttachment(att, normalizedResult.file, normalizedResult, storageRes));
   }
 
   assertActive();
@@ -279,7 +401,9 @@ export function clearFileCompressionCacheEntryForTesting(file) {
   if (cached?.file) {
     evaluatedFileCache.delete(cached.file);
     compressedOutputFiles.delete(cached.file);
+    evaluatedStorageCache.delete(cached.file);
   }
   evaluatedFileCache.delete(file);
   compressedOutputFiles.delete(file);
+  evaluatedStorageCache.delete(file);
 }

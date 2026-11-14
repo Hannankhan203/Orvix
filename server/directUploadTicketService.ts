@@ -48,6 +48,11 @@ export interface PendingDirectUploadTicket {
   extension: string;
   mimeType: string;
   size: number;
+  storageEncoding?: string | null;
+  originalSize?: number;
+  encodedSize?: number;
+  originalMimeType?: string;
+  storageChecksum?: string;
   quotaReservation: QuotaReservation;
   expiresAt: number;
   createdAt: number;

@@ -199,6 +199,9 @@ export interface UploadedFileRecord {
   storageProvider?: 'local' | 'supabase';
   storagePath?: string;
   storageBucket?: string;
+  storageEncoding?: string | null;
+  storedSize?: number;
+  storageChecksum?: string;
   userId?: string;
   isPermanent?: boolean;
 }

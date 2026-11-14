@@ -18,6 +18,15 @@ import {
   MAX_VISION_IMAGE_BYTES,
   MAX_CHAT_REQUEST_BYTES
 } from '../src/services/attachmentStorageService.js';
+// @ts-ignore - Self-describing transparent storage envelope codec
+import {
+  ORVIX_ENVELOPE_ENCODING_ID,
+  StorageEnvelopeError,
+  decodeOrvixStorageEnvelopeSync,
+  getCanonicalMimeForExtension,
+  isOrvixStorageEnvelope,
+  isTransparentStorageCompressionSupported
+} from '../src/services/storageEnvelopeService.js';
 import {
   uploadAttachmentToStorage,
   downloadAttachmentFromStorage,
@@ -628,6 +637,288 @@ const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const cleanupTimer = setInterval(cleanupExpiredUploads, CLEANUP_INTERVAL_MS);
 if (cleanupTimer.unref) cleanupTimer.unref();
 
+const SIGNED_DECODE_URL_SECRET =
+  process.env.ORVIX_SIGNED_URL_SECRET ||
+  process.env.SESSION_SECRET ||
+  crypto.randomBytes(32).toString('hex');
+
+function firstFieldValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return typeof value[0] === 'string' ? value[0].trim() : '';
+  }
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function resolveRequestOrigin(req: express.Request): string {
+  const protoHeader = req.headers['x-forwarded-proto'];
+  const proto =
+    (Array.isArray(protoHeader) ? protoHeader[0] : protoHeader)?.split(',')[0]?.trim() ||
+    req.protocol ||
+    'http';
+  const hostHeader = req.headers['x-forwarded-host'];
+  const host =
+    (Array.isArray(hostHeader) ? hostHeader[0] : hostHeader)?.split(',')[0]?.trim() ||
+    req.get('host') ||
+    '127.0.0.1:3000';
+  return `${proto}://${host}`;
+}
+
+function computeSignedDecodeSignature(
+  fileId: string,
+  uid: string,
+  chatId: string,
+  exp: number,
+  dl: string
+): string {
+  const payload = `${fileId}\n${uid}\n${chatId}\n${exp}\n${dl}`;
+  return crypto
+    .createHmac('sha256', SIGNED_DECODE_URL_SECRET)
+    .update(payload)
+    .digest('base64url');
+}
+
+function createSignedDecodeUrl(
+  req: express.Request,
+  params: {
+    fileId: string;
+    userId: string;
+    chatId: string;
+    expiresInSeconds?: number;
+    forceDownload?: boolean;
+  }
+): { signedUrl: string; expiresInSeconds: number } {
+  const expiresInSeconds = Math.max(1, Math.min(120, params.expiresInSeconds || 120));
+  const exp = Date.now() + expiresInSeconds * 1000;
+  const dl = params.forceDownload ? '1' : '0';
+  const sig = computeSignedDecodeSignature(
+    params.fileId,
+    params.userId,
+    params.chatId,
+    exp,
+    dl
+  );
+  const origin = resolveRequestOrigin(req);
+  const routeSegment = params.forceDownload ? 'download' : 'file';
+  const signedUrl =
+    `${origin}/api/upload/${encodeURIComponent(params.fileId)}/${routeSegment}` +
+    `?chatId=${encodeURIComponent(params.chatId)}` +
+    `&uid=${encodeURIComponent(params.userId)}` +
+    `&exp=${exp}` +
+    `&dl=${dl}` +
+    `&sig=${encodeURIComponent(sig)}`;
+  return { signedUrl, expiresInSeconds };
+}
+
+function verifySignedDecodeQuery(
+  req: express.Request,
+  fileId: string
+):
+  | { hasSignature: false }
+  | { hasSignature: true; valid: true; uid: string; chatId: string; dl: string }
+  | { hasSignature: true; valid: false; status: number; code: string; error: string } {
+  const sigRaw = typeof req.query.sig === 'string' ? req.query.sig.trim() : '';
+  if (!sigRaw) {
+    return { hasSignature: false };
+  }
+
+  const uid = typeof req.query.uid === 'string' ? req.query.uid.trim() : '';
+  const chatId = typeof req.query.chatId === 'string' ? req.query.chatId.trim() : '';
+  const expRaw = typeof req.query.exp === 'string' ? req.query.exp.trim() : '';
+  const dl = typeof req.query.dl === 'string' ? req.query.dl.trim() : '0';
+  const exp = Number(expRaw);
+
+  if (!uid || !chatId || !Number.isFinite(exp) || (dl !== '0' && dl !== '1')) {
+    return {
+      hasSignature: true,
+      valid: false,
+      status: 403,
+      code: 'INVALID_SIGNED_URL',
+      error: 'Signed URL parameters are malformed or incomplete.'
+    };
+  }
+
+  const expectedSig = computeSignedDecodeSignature(fileId, uid, chatId, exp, dl);
+  const actualBuf = Buffer.from(sigRaw, 'utf8');
+  const expectedBuf = Buffer.from(expectedSig, 'utf8');
+  if (
+    actualBuf.length !== expectedBuf.length ||
+    !crypto.timingSafeEqual(actualBuf, expectedBuf)
+  ) {
+    return {
+      hasSignature: true,
+      valid: false,
+      status: 403,
+      code: 'INVALID_SIGNED_URL',
+      error: 'Signed URL signature is invalid.'
+    };
+  }
+
+  if (Date.now() > exp) {
+    return {
+      hasSignature: true,
+      valid: false,
+      status: 403,
+      code: 'SIGNED_URL_EXPIRED',
+      error: 'Pre-signed attachment URL has expired.'
+    };
+  }
+
+  return { hasSignature: true, valid: true, uid, chatId, dl };
+}
+
+function unwrapUploadedOrStoredPayload(params: {
+  buffer: Buffer;
+  ext: string;
+  clientMime?: string;
+  declaredEncoding?: string | null;
+  declaredOriginalSize?: number | string | null;
+  declaredOriginalMimeType?: string | null;
+  declaredChecksum?: string | null;
+  maxOriginalBytes?: number;
+}): {
+  encoded: boolean;
+  storageEncoding: string | null;
+  rawStorageBuffer: Buffer;
+  decodedBuffer: Buffer;
+  originalSize: number;
+  storedSize: number;
+  canonicalMimeType: string;
+  storageChecksum?: string;
+} {
+  const {
+    buffer,
+    ext,
+    clientMime = '',
+    declaredEncoding = '',
+    declaredOriginalSize = null,
+    declaredOriginalMimeType = '',
+    declaredChecksum = null,
+    maxOriginalBytes = MAX_FILE_SIZE_BYTES
+  } = params;
+
+  const cleanDeclaredEncoding = typeof declaredEncoding === 'string' ? declaredEncoding.trim() : '';
+  const targetSupported = isTransparentStorageCompressionSupported({ extension: ext });
+  const hasEnvelope = isOrvixStorageEnvelope(buffer);
+
+  if (cleanDeclaredEncoding) {
+    if (cleanDeclaredEncoding !== ORVIX_ENVELOPE_ENCODING_ID) {
+      throw new StorageEnvelopeError(
+        `Unsupported storage encoding '${cleanDeclaredEncoding}'.`,
+        'UNSUPPORTED_STORAGE_ENCODING'
+      );
+    }
+    if (!targetSupported) {
+      throw new StorageEnvelopeError(
+        `Storage encoding '${cleanDeclaredEncoding}' is not supported for '${ext}' files.`,
+        'UNSUPPORTED_STORAGE_ENCODING'
+      );
+    }
+    if (!hasEnvelope) {
+      throw new StorageEnvelopeError(
+        'Declared storageEncoding does not match uploaded payload format.',
+        'INVALID_STORAGE_ENVELOPE'
+      );
+    }
+  }
+
+  if (hasEnvelope && targetSupported) {
+    let parsedOriginalSize: number | null = null;
+    if (
+      declaredOriginalSize !== null &&
+      declaredOriginalSize !== undefined &&
+      String(declaredOriginalSize).trim() !== ''
+    ) {
+      const n = Number(declaredOriginalSize);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new StorageEnvelopeError(
+          'Declared originalSize must be a positive integer.',
+          'ENVELOPE_SIZE_MISMATCH'
+        );
+      }
+      parsedOriginalSize = n;
+    }
+
+    const decoded = decodeOrvixStorageEnvelopeSync(buffer, {
+      maxOriginalBytes,
+      expectedExtension: ext,
+      expectedMimeType: declaredOriginalMimeType || clientMime || '',
+      expectedOriginalSize: parsedOriginalSize,
+      expectedChecksum: declaredChecksum || null
+    });
+
+    const decodedBuffer = Buffer.from(decoded.data);
+    return {
+      encoded: true,
+      storageEncoding: decoded.encoding,
+      rawStorageBuffer: buffer,
+      decodedBuffer,
+      originalSize: decodedBuffer.length,
+      storedSize: buffer.length,
+      canonicalMimeType: decoded.originalMimeType,
+      storageChecksum: decoded.sha256
+    };
+  }
+
+  const normalizedClientMime = (clientMime || '').split(';')[0].trim().toLowerCase();
+  const fallbackMime =
+    (normalizedClientMime && normalizedClientMime !== 'application/octet-stream'
+      ? normalizedClientMime
+      : '') ||
+    (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) ||
+    'application/octet-stream';
+
+  return {
+    encoded: false,
+    storageEncoding: null,
+    rawStorageBuffer: buffer,
+    decodedBuffer: buffer,
+    originalSize: buffer.length,
+    storedSize: buffer.length,
+    canonicalMimeType: fallbackMime
+  };
+}
+
+function decodeSupabaseBufferIfEnvelope(
+  rawData: Buffer,
+  ext: string,
+  fallbackMime?: string
+): {
+  encoded: boolean;
+  storageEncoding: string | null;
+  buffer: Buffer;
+  mimeType: string;
+  storedSize: number;
+} {
+  if (isOrvixStorageEnvelope(rawData)) {
+    const decoded = decodeOrvixStorageEnvelopeSync(rawData, {
+      maxOriginalBytes: MAX_FILE_SIZE_BYTES,
+      expectedExtension: ext || ''
+    });
+    return {
+      encoded: true,
+      storageEncoding: decoded.encoding,
+      buffer: Buffer.from(decoded.data),
+      mimeType: decoded.originalMimeType,
+      storedSize: rawData.length
+    };
+  }
+
+  const cleanFallback = (fallbackMime || '').split(';')[0].trim().toLowerCase();
+  const resolvedMime =
+    (cleanFallback && cleanFallback !== 'application/octet-stream' ? cleanFallback : '') ||
+    getCanonicalMimeForExtension(ext) ||
+    (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) ||
+    'application/octet-stream';
+
+  return {
+    encoded: false,
+    storageEncoding: null,
+    buffer: rawData,
+    mimeType: resolvedMime,
+    storedSize: rawData.length
+  };
+}
+
 /**
  * Serializes an UploadedFileRecord into the canonical client-facing attachment contract
  * shared by both standard (`POST /api/upload`) and direct (`POST /api/upload/direct/complete`) uploads.
@@ -659,6 +950,8 @@ export function serializeRegisteredAttachment(r: UploadedFileRecord) {
     storagePath: r.storagePath || null,
     storageBucket: r.storageBucket || null,
     bucket: r.storageBucket || null,
+    storageEncoding: r.storageEncoding || null,
+    storedSize: typeof r.storedSize === 'number' ? r.storedSize : r.size,
     userId: r.userId || null,
     chatId: r.conversationId || null,
     conversationId: r.conversationId || null,
@@ -842,11 +1135,23 @@ export async function resolveRegisteredAttachmentForChat(
       });
 
       if (downloadRes.success && downloadRes.data && downloadRes.data.length > 0) {
-        const buffer = downloadRes.data;
         const extFromName = path.extname(att?.originalName || att?.name || '').replace(/^\.+/, '').toLowerCase();
         const cleanExt = (resolvedExt || (typeof att?.extension === 'string' ? att.extension.replace(/^\.+/, '').toLowerCase() : '') || extFromName || 'pdf').toLowerCase();
         const dotExt = `.${cleanExt}`;
 
+        let decodedStorage: ReturnType<typeof decodeSupabaseBufferIfEnvelope>;
+        try {
+          decodedStorage = decodeSupabaseBufferIfEnvelope(
+            downloadRes.data,
+            dotExt,
+            downloadRes.mimeType
+          );
+        } catch (decodeErr) {
+          console.warn('[Upload Rehydration] Envelope decode error:', decodeErr);
+          return { status: 'not_found', record: null };
+        }
+
+        const buffer = decodedStorage.buffer;
         const sigResult = await verifyFileSignature(buffer, dotExt);
         if (!sigResult.valid) {
           return { status: 'not_found', record: null };
@@ -855,16 +1160,18 @@ export async function resolveRegisteredAttachmentForChat(
         const isImg =
           ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(dotExt) ||
           Boolean(att?.isImage) ||
-          (downloadRes.mimeType || '').toLowerCase().startsWith('image/');
+          (decodedStorage.mimeType || '').toLowerCase().startsWith('image/');
 
         const originalName =
           (typeof att?.originalName === 'string' && att.originalName.trim()) ||
           (typeof att?.name === 'string' && att.name.trim()) ||
           `${attId}${dotExt}`;
-        const mimeType =
+        const clientMimeCandidate =
           (typeof att?.mimeType === 'string' && att.mimeType.trim()) ||
           (typeof att?.type === 'string' && att.type.trim()) ||
-          downloadRes.mimeType ||
+          '';
+        const mimeType =
+          (decodedStorage.encoded ? decodedStorage.mimeType : clientMimeCandidate || decodedStorage.mimeType) ||
           (isImg ? `image/${cleanExt === 'jpg' ? 'jpeg' : cleanExt}` : cleanExt === 'pdf' ? 'application/pdf' : 'application/octet-stream');
 
         const diskFilename = `${attId}${dotExt}`;
@@ -919,6 +1226,8 @@ export async function resolveRegisteredAttachmentForChat(
           storageProvider: 'supabase',
           storagePath: resolvedStoragePath,
           storageBucket: getSupabaseBucket(),
+          storageEncoding: decodedStorage.storageEncoding,
+          storedSize: decodedStorage.storedSize,
           isImage: isImg,
           dimensions: sigResult.dimensions,
           extraction,
@@ -1282,10 +1591,23 @@ export function registerUploadRoutes(app: express.Express) {
             bucket: record.storageBucket
           });
           if (downloadResult.success && downloadResult.data) {
-            inputSource = downloadResult.data;
-            record.buffer = downloadResult.data;
+            const decoded = decodeSupabaseBufferIfEnvelope(
+              downloadResult.data,
+              ext,
+              downloadResult.mimeType || record.mimeType
+            );
+            inputSource = decoded.buffer;
+            record.buffer = decoded.buffer;
+            record.storageEncoding = decoded.storageEncoding || record.storageEncoding;
+            record.storedSize = decoded.storedSize;
           }
         } catch (err: any) {
+          if (err instanceof StorageEnvelopeError) {
+            return res.status(422).json({
+              error: err.message,
+              code: err.code
+            });
+          }
           console.warn(`[Extraction] Failed to retrieve file from Supabase for ${record.id}:`, err?.message || err);
         }
       }
@@ -1409,8 +1731,23 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const ext = path.extname(lookup.filename || '').toLowerCase();
+    let decodedStorage: ReturnType<typeof decodeSupabaseBufferIfEnvelope>;
+    try {
+      decodedStorage = decodeSupabaseBufferIfEnvelope(
+        downloadResult.data,
+        ext,
+        downloadResult.mimeType
+      );
+    } catch (decodeErr: any) {
+      return res.status(422).json({
+        error: decodeErr?.message || 'Stored attachment envelope is invalid.',
+        code: decodeErr?.code || 'CORRUPTED_STORAGE_OBJECT'
+      });
+    }
+
+    const decodedBuffer = decodedStorage.buffer;
     const mimeType =
-      downloadResult.mimeType ||
+      decodedStorage.mimeType ||
       (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) ||
       'application/octet-stream';
     const isImg =
@@ -1426,7 +1763,7 @@ export function registerUploadRoutes(app: express.Express) {
 
     if (isImg) {
       const imgExtraction = await extractImageText(
-        downloadResult.data,
+        decodedBuffer,
         originalName,
         ext,
         mimeType,
@@ -1439,7 +1776,7 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const extraction = (await extractDocumentContent(
-      downloadResult.data,
+      decodedBuffer,
       originalName,
       ext,
       mimeType,
@@ -1465,11 +1802,23 @@ export function registerUploadRoutes(app: express.Express) {
         return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
       }
 
-      const rawChatId = (typeof req.query.chatId === 'string' ? req.query.chatId : '').trim();
+      const signedCheck = verifySignedDecodeQuery(req, fileId);
+      if (signedCheck.hasSignature && !signedCheck.valid) {
+        return res.status(signedCheck.status).json({
+          error: signedCheck.error,
+          code: signedCheck.code
+        });
+      }
+
+      const rawChatId = (
+        signedCheck.hasSignature && signedCheck.valid
+          ? signedCheck.chatId
+          : (typeof req.query.chatId === 'string' ? req.query.chatId : '')
+      ).trim();
       const record = fileRegistry.get(fileId);
 
       if (record) {
-        // For every Supabase-backed attachment, require a non-empty record.userId and successful Firebase authentication.
+        // For every Supabase-backed attachment, require a non-empty record.userId and valid authorization.
         if (record.storageProvider === 'supabase' && !record.userId) {
           return res.status(403).json({
             error: 'Access denied: Attachment is missing required ownership metadata.',
@@ -1478,7 +1827,30 @@ export function registerUploadRoutes(app: express.Express) {
         }
 
         let authenticatedUserId: string | null = null;
-        if (record.storageProvider === 'supabase' || record.userId) {
+        if (signedCheck.hasSignature && signedCheck.valid) {
+          if (req.headers.authorization) {
+            const authStatus = await authenticateRequest(req);
+            if (authStatus.status !== 'authenticated' || authStatus.userId !== signedCheck.uid) {
+              return res.status(403).json({
+                error: 'Access denied: Signed URL does not belong to authenticated user.',
+                code: 'STORAGE_ACCESS_DENIED'
+              });
+            }
+          }
+          if (record.userId && record.userId !== signedCheck.uid) {
+            return res.status(403).json({
+              error: 'Access denied: You do not have permission to access attachments belonging to another user.',
+              code: 'STORAGE_ACCESS_DENIED'
+            });
+          }
+          if (record.conversationId && record.conversationId !== signedCheck.chatId) {
+            return res.status(403).json({
+              error: 'Access denied: Signed URL conversation mismatch.',
+              code: 'STORAGE_ACCESS_DENIED'
+            });
+          }
+          authenticatedUserId = signedCheck.uid;
+        } else if (record.storageProvider === 'supabase' || record.userId) {
           const authStatus = await authenticateRequest(req);
           if (authStatus.status === 'invalid') {
             return res.status(401).json({
@@ -1501,14 +1873,16 @@ export function registerUploadRoutes(app: express.Express) {
           authenticatedUserId = authStatus.userId;
         }
 
-        let diskFilename = record.diskFilename;
-        let originalName = record.originalName || 'document';
+        const diskFilename = record.diskFilename;
+        const ext = path.extname(diskFilename || record.originalName || '').toLowerCase();
+        const originalName = record.originalName || 'document';
         let mimeType = record.mimeType || 'application/octet-stream';
 
         const forceDownload =
           req.query.download === 'true' ||
           req.path.includes('/download') ||
-          req.query.action === 'download';
+          req.query.action === 'download' ||
+          (signedCheck.hasSignature && signedCheck.valid && signedCheck.dl === '1');
 
         const isInline =
           !forceDownload &&
@@ -1517,6 +1891,7 @@ export function registerUploadRoutes(app: express.Express) {
             mimeType.startsWith('image/'));
 
         const safeFilename = path.basename(originalName).replace(/[/\\?%*:|"<>]/g, '_');
+        res.setHeader('Cache-Control', 'private, no-store');
         res.setHeader('Content-Type', mimeType);
         res.setHeader(
           'Content-Disposition',
@@ -1532,10 +1907,29 @@ export function registerUploadRoutes(app: express.Express) {
             });
 
             if (downloadResult.success && downloadResult.data) {
-              if (downloadResult.mimeType && downloadResult.mimeType !== 'application/octet-stream') {
-                res.setHeader('Content-Type', downloadResult.mimeType);
+              let decodedStorage: ReturnType<typeof decodeSupabaseBufferIfEnvelope>;
+              try {
+                decodedStorage = decodeSupabaseBufferIfEnvelope(
+                  downloadResult.data,
+                  ext,
+                  downloadResult.mimeType || record.mimeType
+                );
+              } catch (decodeErr: any) {
+                return res.status(422).json({
+                  error: decodeErr?.message || 'Stored attachment envelope is corrupted or invalid.',
+                  code: decodeErr?.code || 'CORRUPTED_STORAGE_OBJECT'
+                });
               }
-              return res.send(downloadResult.data);
+
+              const finalMime =
+                (decodedStorage.encoded ? decodedStorage.mimeType : null) ||
+                (downloadResult.mimeType && downloadResult.mimeType !== 'application/octet-stream'
+                  ? downloadResult.mimeType
+                  : null) ||
+                mimeType;
+              res.setHeader('Content-Type', finalMime);
+              res.setHeader('Content-Length', String(decodedStorage.buffer.length));
+              return res.send(decodedStorage.buffer);
             }
 
             if (downloadResult.status === 403 || downloadResult.code === 'STORAGE_ACCESS_DENIED') {
@@ -1553,6 +1947,7 @@ export function registerUploadRoutes(app: express.Express) {
 
         // 2. Direct in-memory buffer serving (guest/offline or local fallback)
         if (record.buffer) {
+          res.setHeader('Content-Length', String(record.buffer.length));
           return res.send(record.buffer);
         }
 
@@ -1572,29 +1967,41 @@ export function registerUploadRoutes(app: express.Express) {
         return res.status(404).json({ error: 'Attachment file not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
       }
 
-      // When record is NOT found in fileRegistry (e.g. server restart or unauthenticated probe)
-      // Enforce fail-closed security: NEVER search or serve unverified files from disk!
-      const authStatus = await authenticateRequest(req);
-      if (authStatus.status === 'invalid') {
-        return res.status(401).json({
-          error: `Authentication failed: ${authStatus.error}`,
-          code: authStatus.code || 'INVALID_TOKEN'
-        });
-      }
-      if (authStatus.status === 'guest') {
-        if (rawChatId) {
+      // When record is NOT found in fileRegistry (e.g. server restart or signed decoding link)
+      let authenticatedUserId: string;
+      if (signedCheck.hasSignature && signedCheck.valid) {
+        if (req.headers.authorization) {
+          const authStatus = await authenticateRequest(req);
+          if (authStatus.status !== 'authenticated' || authStatus.userId !== signedCheck.uid) {
+            return res.status(403).json({
+              error: 'Access denied: Signed URL does not belong to authenticated user.',
+              code: 'STORAGE_ACCESS_DENIED'
+            });
+          }
+        }
+        authenticatedUserId = signedCheck.uid;
+      } else {
+        const authStatus = await authenticateRequest(req);
+        if (authStatus.status === 'invalid') {
           return res.status(401).json({
-            error: 'Authentication required to access this attachment.',
-            code: 'AUTH_REQUIRED'
+            error: `Authentication failed: ${authStatus.error}`,
+            code: authStatus.code || 'INVALID_TOKEN'
           });
         }
-        return res.status(404).json({
-          error: 'Attachment file not found or has expired.',
-          code: 'ATTACHMENT_NOT_FOUND'
-        });
+        if (authStatus.status === 'guest') {
+          if (rawChatId) {
+            return res.status(401).json({
+              error: 'Authentication required to access this attachment.',
+              code: 'AUTH_REQUIRED'
+            });
+          }
+          return res.status(404).json({
+            error: 'Attachment file not found or has expired.',
+            code: 'ATTACHMENT_NOT_FOUND'
+          });
+        }
+        authenticatedUserId = authStatus.userId;
       }
-
-      const authenticatedUserId = authStatus.userId;
 
       if (!rawChatId) {
         if (req.query.chatId !== undefined) {
@@ -1655,15 +2062,26 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       const ext = path.extname(lookup.filename || '').toLowerCase();
-      let mimeType = downloadResult.mimeType;
-      if (!mimeType || mimeType === 'application/octet-stream') {
-        mimeType = (ALLOWED_EXTENSIONS_MAP[ext] && ALLOWED_EXTENSIONS_MAP[ext][0]) || 'application/octet-stream';
+      let decodedStorage: ReturnType<typeof decodeSupabaseBufferIfEnvelope>;
+      try {
+        decodedStorage = decodeSupabaseBufferIfEnvelope(
+          downloadResult.data,
+          ext,
+          downloadResult.mimeType
+        );
+      } catch (decodeErr: any) {
+        return res.status(422).json({
+          error: decodeErr?.message || 'Stored attachment envelope is corrupted or invalid.',
+          code: decodeErr?.code || 'CORRUPTED_STORAGE_OBJECT'
+        });
       }
 
+      const mimeType = decodedStorage.mimeType;
       const forceDownload =
         req.query.download === 'true' ||
         req.path.includes('/download') ||
-        req.query.action === 'download';
+        req.query.action === 'download' ||
+        (signedCheck.hasSignature && signedCheck.valid && signedCheck.dl === '1');
 
       const isInline =
         !forceDownload &&
@@ -1673,13 +2091,15 @@ export function registerUploadRoutes(app: express.Express) {
 
       const originalName = lookup.filename || 'attachment';
       const safeFilename = path.basename(originalName).replace(/[/\\?%*:|"<>]/g, '_');
+      res.setHeader('Cache-Control', 'private, no-store');
       res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Length', String(decodedStorage.buffer.length));
       res.setHeader(
         'Content-Disposition',
         `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(safeFilename)}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`
       );
 
-      return res.send(downloadResult.data);
+      return res.send(decodedStorage.buffer);
     }
   );
 
@@ -1729,8 +2149,33 @@ export function registerUploadRoutes(app: express.Express) {
         });
       }
       const authenticatedUserId = authStatus.userId;
-
       const forceDownload = req.query.download === 'true' || req.query.action === 'download';
+
+      // Encoded objects must NEVER expose raw Supabase storage URLs; return a short-lived signed decoding URL instead.
+      if (record.storageEncoding === ORVIX_ENVELOPE_ENCODING_ID) {
+        const parsed = parseStoragePath(record.storagePath);
+        const effectiveChat = record.conversationId || parsed.chatId || rawChatId;
+        if (!effectiveChat) {
+          return res.status(400).json({
+            error: 'Missing required chatId parameter to generate decoding signed URL.',
+            code: 'MISSING_CHAT_ID'
+          });
+        }
+        const safeSigned = createSignedDecodeUrl(req, {
+          fileId,
+          userId: authenticatedUserId,
+          chatId: effectiveChat,
+          expiresInSeconds: 120,
+          forceDownload
+        });
+        return res.json({
+          success: true,
+          signedUrl: safeSigned.signedUrl,
+          expiresInSeconds: safeSigned.expiresInSeconds,
+          decodingProxy: true
+        });
+      }
+
       const signedResult = await createAttachmentSignedUrl(record.storagePath, {
         requestingUserId: authenticatedUserId || undefined,
         expiresInSeconds: 120,
@@ -1805,6 +2250,41 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const forceDownload = req.query.download === 'true' || req.query.action === 'download';
+    const ext = path.extname(lookup.filename || lookup.path || '').toLowerCase();
+
+    // Post-restart safety check: inspect target formats in Supabase before issuing a direct URL so encoded objects never leak raw envelopes
+    if (isTransparentStorageCompressionSupported({ extension: ext })) {
+      const probeDownload = await downloadAttachmentFromStorage(lookup.path, {
+        requestingUserId: authenticatedUserId
+      });
+      if (probeDownload.success && probeDownload.data && isOrvixStorageEnvelope(probeDownload.data)) {
+        try {
+          decodeOrvixStorageEnvelopeSync(probeDownload.data, {
+            maxOriginalBytes: MAX_FILE_SIZE_BYTES,
+            expectedExtension: ext
+          });
+        } catch (decodeErr: any) {
+          return res.status(422).json({
+            error: decodeErr?.message || 'Stored attachment envelope is corrupted or invalid.',
+            code: decodeErr?.code || 'CORRUPTED_STORAGE_OBJECT'
+          });
+        }
+        const safeSigned = createSignedDecodeUrl(req, {
+          fileId,
+          userId: authenticatedUserId,
+          chatId: rawChatId,
+          expiresInSeconds: 120,
+          forceDownload
+        });
+        return res.json({
+          success: true,
+          signedUrl: safeSigned.signedUrl,
+          expiresInSeconds: safeSigned.expiresInSeconds,
+          decodingProxy: true
+        });
+      }
+    }
+
     const signedResult = await createAttachmentSignedUrl(lookup.path, {
       requestingUserId: authenticatedUserId,
       expiresInSeconds: 120,
@@ -2135,6 +2615,43 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
 
+    const rawStorageEncoding = firstFieldValue(req.body?.storageEncoding);
+    const rawOriginalSize = req.body?.originalSize;
+    const rawOriginalMimeType = firstFieldValue(req.body?.originalMimeType);
+    const rawStorageChecksum = firstFieldValue(req.body?.storageChecksum);
+
+    let validatedOriginalSize: number | undefined;
+    if (rawStorageEncoding) {
+      if (rawStorageEncoding !== ORVIX_ENVELOPE_ENCODING_ID) {
+        return res.status(400).json({
+          error: `Unsupported storage encoding '${rawStorageEncoding}'.`,
+          code: 'UNSUPPORTED_STORAGE_ENCODING'
+        });
+      }
+      if (!isTransparentStorageCompressionSupported({ extension: ext })) {
+        return res.status(400).json({
+          error: `Storage encoding '${rawStorageEncoding}' is not supported for '${ext}' files.`,
+          code: 'UNSUPPORTED_STORAGE_ENCODING'
+        });
+      }
+      if (rawOriginalSize !== undefined && rawOriginalSize !== null && String(rawOriginalSize).trim() !== '') {
+        const parsedOriginalSize = Number(rawOriginalSize);
+        if (!Number.isFinite(parsedOriginalSize) || parsedOriginalSize <= 0) {
+          return res.status(400).json({
+            error: 'Original file size must be greater than 0 bytes.',
+            code: 'INVALID_ORIGINAL_SIZE'
+          });
+        }
+        if (parsedOriginalSize > MAX_FILE_SIZE_BYTES) {
+          return res.status(400).json({
+            error: `Original file exceeds maximum allowed size of ${formatBytes(MAX_FILE_SIZE_BYTES)}.`,
+            code: 'FILE_TOO_LARGE'
+          });
+        }
+        validatedOriginalSize = parsedOriginalSize;
+      }
+    }
+
     const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
     let quotaReservation: any;
     try {
@@ -2210,8 +2727,17 @@ export function registerUploadRoutes(app: express.Express) {
       bucket: signRes.bucket || bucket,
       fileName: safeBaseName,
       extension: extension.toUpperCase(),
-      mimeType: mimeType || defaultMime,
+      mimeType: rawOriginalMimeType || mimeType || defaultMime,
       size: fileSize,
+      ...(rawStorageEncoding
+        ? {
+            storageEncoding: rawStorageEncoding,
+            originalSize: validatedOriginalSize,
+            encodedSize: fileSize,
+            originalMimeType: rawOriginalMimeType || mimeType || defaultMime,
+            ...(rawStorageChecksum ? { storageChecksum: rawStorageChecksum } : {})
+          }
+        : {}),
       quotaReservation: quotaReservation.reservation,
       expiresAt: Date.now() + 15 * 60 * 1000,
       createdAt: Date.now(),
@@ -2305,9 +2831,9 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const uploadedBuffer = downloadRes.data;
-    const verifiedSize = uploadedBuffer.length;
+    const storedSize = uploadedBuffer.length;
 
-    if (verifiedSize === 0) {
+    if (storedSize === 0) {
       const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'EMPTY_FILE');
       if (cleanupRes.quotaStatus) {
         attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
@@ -2318,7 +2844,7 @@ export function registerUploadRoutes(app: express.Express) {
       });
     }
 
-    if (verifiedSize > MAX_FILE_SIZE_BYTES) {
+    if (storedSize > MAX_FILE_SIZE_BYTES) {
       const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'FILE_TOO_LARGE');
       if (cleanupRes.quotaStatus) {
         attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
@@ -2330,7 +2856,40 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const ext = '.' + ticket.extension.toLowerCase();
-    const sigResult = await verifyFileSignature(uploadedBuffer, ext);
+    const declaredEncoding = ticket.storageEncoding || firstFieldValue(req.body?.storageEncoding);
+    const declaredOriginalSize = ticket.originalSize ?? req.body?.originalSize ?? null;
+    const declaredOriginalMime = ticket.originalMimeType || firstFieldValue(req.body?.originalMimeType) || ticket.mimeType;
+    const declaredChecksum = ticket.storageChecksum || firstFieldValue(req.body?.storageChecksum) || null;
+
+    let unwrapped: ReturnType<typeof unwrapUploadedOrStoredPayload>;
+    try {
+      unwrapped = unwrapUploadedOrStoredPayload({
+        buffer: uploadedBuffer,
+        ext,
+        clientMime: ticket.mimeType,
+        declaredEncoding,
+        declaredOriginalSize,
+        declaredOriginalMimeType: declaredOriginalMime,
+        declaredChecksum,
+        maxOriginalBytes: MAX_FILE_SIZE_BYTES
+      });
+    } catch (envErr: any) {
+      const errCode = envErr?.code || 'INVALID_STORAGE_ENVELOPE';
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, errCode);
+      if (cleanupRes.quotaStatus) {
+        attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+      }
+      return res.status(400).json({
+        error: envErr?.message || 'Invalid storage compression envelope.',
+        code: errCode
+      });
+    }
+
+    const decodedBuffer = unwrapped.decodedBuffer;
+    const verifiedSize = decodedBuffer.length;
+    const canonicalMime = unwrapped.canonicalMimeType || ticket.mimeType;
+
+    const sigResult = await verifyFileSignature(decodedBuffer, ext);
     if (!sigResult.valid) {
       const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'INVALID_FILE_SIGNATURE');
       if (cleanupRes.quotaStatus) {
@@ -2386,17 +2945,17 @@ export function registerUploadRoutes(app: express.Express) {
 
     const isImg =
       ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
-      ticket.mimeType.startsWith('image/');
+      canonicalMime.startsWith('image/');
 
     let extraction: any = null;
     const geminiKey = process.env.GEMINI_API_KEY || null;
     try {
       if (isImg) {
         extraction = await extractImageText(
-          uploadedBuffer,
+          decodedBuffer,
           ticket.fileName,
           ext,
-          ticket.mimeType,
+          canonicalMime,
           ticket.attachmentId,
           sigResult.dimensions,
           geminiKey,
@@ -2404,10 +2963,10 @@ export function registerUploadRoutes(app: express.Express) {
         );
       } else {
         extraction = await extractDocumentContent(
-          uploadedBuffer,
+          decodedBuffer,
           ticket.fileName,
           ext,
-          ticket.mimeType,
+          canonicalMime,
           ticket.attachmentId,
           { offline: false, apiKey: geminiKey }
         );
@@ -2419,14 +2978,14 @@ export function registerUploadRoutes(app: express.Express) {
     const diskFilename = `${ticket.attachmentId}${ext}`;
     try {
       const fullDiskPath = path.join(UPLOAD_DIR, diskFilename);
-      fs.writeFile(fullDiskPath, uploadedBuffer, () => {});
+      fs.writeFile(fullDiskPath, decodedBuffer, () => {});
     } catch (_) {}
 
     const record: UploadedFileRecord = {
       id: ticket.attachmentId,
       originalName: ticket.fileName,
       diskFilename,
-      mimeType: ticket.mimeType,
+      mimeType: canonicalMime,
       extension: ticket.extension,
       size: verifiedSize,
       formattedSize: formatBytes(verifiedSize),
@@ -2439,10 +2998,13 @@ export function registerUploadRoutes(app: express.Express) {
       storageProvider: 'supabase',
       storagePath: ticket.storagePath,
       storageBucket: ticket.bucket,
+      storageEncoding: unwrapped.storageEncoding,
+      storedSize: unwrapped.storedSize,
+      ...(unwrapped.storageChecksum ? { storageChecksum: unwrapped.storageChecksum } : {}),
       isImage: isImg,
       dimensions: sigResult.dimensions,
       extraction,
-      buffer: uploadedBuffer
+      buffer: decodedBuffer
     };
 
     fileRegistry.set(ticket.attachmentId, record);
@@ -2640,6 +3202,13 @@ export function registerUploadRoutes(app: express.Express) {
 
       const uploadedResults: UploadedFileRecord[] = [];
       const validationErrors: string[] = [];
+      let validationErrorCode = 'INVALID_FILE_CONTENT';
+      const rawStoragePayloads = new Map<string, { rawBuffer: Buffer; storageMimeType: string }>();
+
+      const declaredEncoding = firstFieldValue(req.body?.storageEncoding);
+      const declaredOriginalSize = req.body?.originalSize ?? null;
+      const declaredOriginalMime = firstFieldValue(req.body?.originalMimeType);
+      const declaredChecksum = firstFieldValue(req.body?.storageChecksum);
 
       for (const file of files) {
         const ext = path.extname(file.originalname).toLowerCase();
@@ -2651,14 +3220,36 @@ export function registerUploadRoutes(app: express.Express) {
           .slice(0, 150) || 'attachment';
 
         const fileBuffer = file.buffer;
-        const fileSize = fileBuffer ? fileBuffer.length : file.size;
+        const wireSize = fileBuffer ? fileBuffer.length : file.size;
 
-        if (!fileBuffer || fileSize === 0) {
+        if (!fileBuffer || wireSize === 0) {
           validationErrors.push(`File '${safeBaseName}' is empty (0 bytes).`);
           continue;
         }
 
-        const sigResult = await verifyFileSignature(fileBuffer, ext);
+        let unwrapped: ReturnType<typeof unwrapUploadedOrStoredPayload>;
+        try {
+          unwrapped = unwrapUploadedOrStoredPayload({
+            buffer: fileBuffer,
+            ext,
+            clientMime: file.mimetype || '',
+            declaredEncoding,
+            declaredOriginalSize,
+            declaredOriginalMimeType: declaredOriginalMime,
+            declaredChecksum,
+            maxOriginalBytes: MAX_FILE_SIZE_BYTES
+          });
+        } catch (envErr: any) {
+          validationErrorCode = envErr?.code || 'INVALID_STORAGE_ENVELOPE';
+          validationErrors.push(`File '${safeBaseName}': ${envErr?.message || 'Invalid storage compression envelope.'}`);
+          continue;
+        }
+
+        const decodedBuffer = unwrapped.decodedBuffer;
+        const decodedSize = decodedBuffer.length;
+        const canonicalMime = unwrapped.canonicalMimeType;
+
+        const sigResult = await verifyFileSignature(decodedBuffer, ext);
         if (!sigResult.valid) {
           validationErrors.push(`File '${safeBaseName}': ${sigResult.reason}`);
           continue;
@@ -2666,7 +3257,7 @@ export function registerUploadRoutes(app: express.Express) {
 
         const isImg =
           ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].includes(ext) ||
-          (file.mimetype || '').toLowerCase().startsWith('image/');
+          canonicalMime.toLowerCase().startsWith('image/');
 
         const fileId = crypto.randomUUID();
         const diskFilename = `${fileId}${ext}`;
@@ -2674,17 +3265,22 @@ export function registerUploadRoutes(app: express.Express) {
 
         try {
           const fullDiskPath = path.join(UPLOAD_DIR, diskFilename);
-          fs.writeFile(fullDiskPath, fileBuffer, () => {});
+          fs.writeFile(fullDiskPath, decodedBuffer, () => {});
         } catch (_) {}
+
+        rawStoragePayloads.set(fileId, {
+          rawBuffer: unwrapped.rawStorageBuffer,
+          storageMimeType: unwrapped.encoded ? 'application/octet-stream' : canonicalMime
+        });
 
         const record: UploadedFileRecord = {
           id: fileId,
           originalName: safeBaseName,
           diskFilename,
-          mimeType: file.mimetype || (isImg ? `image/${ext.replace('.', '')}` : 'application/octet-stream'),
+          mimeType: canonicalMime || (isImg ? `image/${ext.replace('.', '')}` : 'application/octet-stream'),
           extension: ext.replace('.', '').toUpperCase(),
-          size: fileSize,
-          formattedSize: formatBytes(fileSize),
+          size: decodedSize,
+          formattedSize: formatBytes(decodedSize),
           status: isImg ? 'ready' : 'uploaded',
           uploadedAt: nowIso,
           expiresAt: Date.now() + TEMP_FILE_TTL_MS,
@@ -2692,9 +3288,12 @@ export function registerUploadRoutes(app: express.Express) {
           userId: authenticatedUserId || undefined,
           isPermanent: String(req.body?.isPermanent || req.body?.permanent || '').toLowerCase() === 'true',
           storageProvider: 'local',
+          storageEncoding: unwrapped.storageEncoding,
+          storedSize: unwrapped.storedSize,
+          ...(unwrapped.storageChecksum ? { storageChecksum: unwrapped.storageChecksum } : {}),
           isImage: isImg,
           dimensions: sigResult.dimensions,
-          buffer: fileBuffer
+          buffer: decodedBuffer
         };
 
         fileRegistry.set(fileId, record);
@@ -2725,7 +3324,7 @@ export function registerUploadRoutes(app: express.Express) {
         }
         return res.status(400).json({
           error: validationErrors.join(' '),
-          code: 'INVALID_FILE_CONTENT'
+          code: validationErrorCode
         });
       }
 
@@ -2780,7 +3379,10 @@ export function registerUploadRoutes(app: express.Express) {
         const uploadedToSupabase: { path: string; bucket?: string }[] = [];
 
         for (const rec of uploadedResults) {
-          if (rec.buffer && rec.buffer.length > 0) {
+          const storagePayload = rawStoragePayloads.get(rec.id);
+          const bufferForCloud = storagePayload?.rawBuffer || rec.buffer;
+          const mimeForCloud = storagePayload?.storageMimeType || rec.mimeType;
+          if (bufferForCloud && bufferForCloud.length > 0) {
             const rawExt = path.extname(rec.diskFilename).replace(/^\.+/, '').toLowerCase();
             let supaRes;
             try {
@@ -2789,8 +3391,8 @@ export function registerUploadRoutes(app: express.Express) {
                 chatId: cleanChatId,
                 attachmentId: rec.id,
                 extension: rawExt,
-                buffer: rec.buffer,
-                mimeType: rec.mimeType,
+                buffer: bufferForCloud,
+                mimeType: mimeForCloud,
                 expiresAt: rec.expiresAt,
                 isPermanent: rec.isPermanent
               });
