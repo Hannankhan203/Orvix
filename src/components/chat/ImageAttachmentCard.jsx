@@ -45,12 +45,14 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
   const [downloading, setDownloading] = useState(false);
   const [notice, setNotice] = useState(null);
 
-  if (!attachment) return null;
-
-  const filename = attachment.originalName || attachment.name || attachment.filename || 'Image';
-  const ext = (attachment.extension || '').replace('.', '').toUpperCase() || 'IMG';
-  const sizeText = formatSize(attachment.size, attachment.formattedSize);
-  const isHeic = ext === 'HEIC' || ext === 'HEIF' || (attachment.type || '').includes('heic') || (attachment.type || '').includes('heif');
+  const filename = attachment?.originalName || attachment?.name || attachment?.filename || 'Image';
+  const ext = (attachment?.extension || '').replace('.', '').toUpperCase() || 'IMG';
+  const sizeText = formatSize(attachment?.size, attachment?.formattedSize);
+  const isHeic =
+    ext === 'HEIC' ||
+    ext === 'HEIF' ||
+    (attachment?.type || '').includes('heic') ||
+    (attachment?.type || '').includes('heif');
 
   // Dismiss transient notice
   useEffect(() => {
@@ -59,10 +61,19 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
     return () => clearTimeout(t);
   }, [notice]);
 
-  // Resolve image source URL (IndexedDB blob -> file object -> backend file URL)
+  // Resolve image source URL (IndexedDB blob -> file object -> authenticated backend retrieval)
   useEffect(() => {
     let active = true;
     let createdBlobUrl = null;
+
+    if (!attachment) {
+      setImageSrc(null);
+      setLoading(false);
+      setHasError(false);
+      return () => {
+        active = false;
+      };
+    }
 
     async function resolveSource() {
       setLoading(true);
@@ -88,7 +99,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         return;
       }
 
-      // 3. Blob URL or external URL (excluding /api/upload endpoints for now)
+      // 3. Blob URL or external URL (excluding /api/upload endpoints)
       if (typeof attachment.url === 'string' && attachment.url && !attachment.url.startsWith('/api/upload')) {
         if (active) {
           setImageSrc(attachment.url);
@@ -97,11 +108,12 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         return;
       }
 
-      // 4. Check client-side IndexedDB
+      // 4. Check client-side IndexedDB, then authenticated backend retrieval
       if (attachment.id) {
         try {
           const record = await getAttachmentRecord(attachment.id);
-          if (record?.blob && isAttachmentOwnedByCurrentUser(attachment, record) && active) {
+          if (!active) return;
+          if (record?.blob && isAttachmentOwnedByCurrentUser(attachment, record)) {
             createdBlobUrl = URL.createObjectURL(record.blob);
             setImageSrc(createdBlobUrl);
             setLoading(false);
@@ -109,31 +121,28 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
           }
         } catch (_) {}
 
-        // 5. Fallback to backend serving endpoint (with authenticated Supabase retrieval and guest fallback)
+        // 5. Authenticated backend retrieval via fetchAttachmentBlob (includes token refresh retry)
         const effectiveChatId = attachment.chatId || attachment.conversationId || '';
         try {
           const fetchResult = await fetchAttachmentBlob(attachment, effectiveChatId);
-          if (active) {
-            if (fetchResult.success && fetchResult.blob) {
-              createdBlobUrl = URL.createObjectURL(fetchResult.blob);
-              setImageSrc(createdBlobUrl);
-              setLoading(false);
-              return;
-            } else if (fetchResult.status === 401 || fetchResult.status === 403 || fetchResult.status === 404) {
-              setHasError(true);
-              setLoading(false);
-              return;
-            }
+          if (!active) return;
+
+          if (fetchResult?.success && fetchResult.blob) {
+            createdBlobUrl = URL.createObjectURL(fetchResult.blob);
+            setImageSrc(createdBlobUrl);
+            setLoading(false);
+            return;
           }
         } catch (_) {}
 
         if (active) {
-          const query = effectiveChatId ? `?chatId=${encodeURIComponent(effectiveChatId)}` : '';
-          setImageSrc(`/api/upload/${attachment.id}/file${query}`);
+          setImageSrc(null);
+          setHasError(true);
           setLoading(false);
         }
       } else {
         if (active) {
+          setImageSrc(null);
           setLoading(false);
           setHasError(true);
         }
@@ -148,7 +157,26 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         URL.revokeObjectURL(createdBlobUrl);
       }
     };
-  }, [attachment.id, attachment.file, attachment.url, attachment.previewUrl, attachment.dataUrl, attachment.base64]);
+  }, [
+    attachment?.id,
+    attachment?.file,
+    attachment?.url,
+    attachment?.previewUrl,
+    attachment?.dataUrl,
+    attachment?.base64,
+    attachment?.chatId,
+    attachment?.conversationId,
+    attachment?.userId,
+    attachment?.storageProvider,
+    attachment?.isCloud,
+    attachment?.name,
+    attachment?.originalName,
+    attachment?.type,
+    attachment?.mimeType,
+    attachment?.extension
+  ]);
+
+  if (!attachment) return null;
 
   const handleCardClick = (e) => {
     if (e.target.closest('.image-card-action-btn')) {

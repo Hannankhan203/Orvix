@@ -130,18 +130,16 @@ export default function AttachmentCard({
   const [noticeMessage, setNoticeMessage] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  if (!attachment) return null;
-
-  const filename = attachment.name || attachment.originalName || 'Document';
+  const filename = attachment?.name || attachment?.originalName || 'Document';
   const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toUpperCase() : '';
   const rawExt =
     (filenameExt && filenameExt !== 'FILE' ? filenameExt : null) ||
-    (attachment.extension ? String(attachment.extension).replace('.', '').toUpperCase() : null) ||
-    (attachment.format ? String(attachment.format).replace('.', '').toUpperCase() : null) ||
+    (attachment?.extension ? String(attachment.extension).replace('.', '').toUpperCase() : null) ||
+    (attachment?.format ? String(attachment.format).replace('.', '').toUpperCase() : null) ||
     'FILE';
   const ext = rawExt.toUpperCase();
-  const sizeText = formatSize(attachment.size, attachment.formattedSize);
-  const canPreview = isFormatPreviewable(ext, attachment.type || attachment.mimeType);
+  const sizeText = formatSize(attachment?.size, attachment?.formattedSize);
+  const canPreview = isFormatPreviewable(ext, attachment?.type || attachment?.mimeType);
   const IconComponent = getFormatIcon(ext);
   const formatBadgeClass = getFormatBadgeClass(ext);
 
@@ -155,8 +153,12 @@ export default function AttachmentCard({
   // Gracefully verify attachment availability on mount (handles page refresh & reopened conversations)
   useEffect(() => {
     let isMounted = true;
-    if (!attachment?.id) return;
+    if (!attachment?.id) {
+      setIsUnavailable(false);
+      return;
+    }
 
+    setIsUnavailable(false);
     checkAttachmentStatus(attachment).then((status) => {
       if (isMounted && !status.available) {
         setIsUnavailable(true);
@@ -168,7 +170,19 @@ export default function AttachmentCard({
     return () => {
       isMounted = false;
     };
-  }, [attachment?.id]);
+  }, [
+    attachment?.id,
+    attachment?.chatId,
+    attachment?.conversationId,
+    attachment?.file,
+    attachment?.previewUrl,
+    attachment?.dataUrl,
+    attachment?.userId,
+    attachment?.storageProvider,
+    attachment?.isCloud
+  ]);
+
+  if (!attachment) return null;
 
   const handleCardClick = async (e) => {
     // If a sub-button was clicked, let its handler handle it

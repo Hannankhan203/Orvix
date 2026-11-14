@@ -23,6 +23,24 @@ import {
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MIN_SIMILARITY = 0.15; // Minimum cosine similarity for semantic relevance
 
+const INELIGIBLE_INDEXING_STATUSES = new Set([
+  'error',
+  'corrupted',
+  'encrypted',
+  'unsupported_format',
+  'scanned_or_image_only',
+  'NO_TEXT_DETECTED',
+  'empty'
+]);
+
+function isDocumentEligibleForIndexing(doc) {
+  if (!doc || typeof doc !== 'object') return false;
+  const docId = doc.id || doc.fileId;
+  if (!docId) return false;
+  if (INELIGIBLE_INDEXING_STATUSES.has(doc.status)) return false;
+  return true;
+}
+
 /**
  * Indexes a single extracted document into the vector store.
  * Chunks the document according to its format (pages/slides/sections/windows),
@@ -42,15 +60,7 @@ export async function indexDocument(doc, conversationId = null, options = {}) {
   if (!docId) return { docId: null, chunkCount: 0, success: false };
 
   // If document failed extraction, is encrypted/corrupted/unsupported, or contains no readable text, skip indexing
-  if (
-    doc.status === 'error' ||
-    doc.status === 'corrupted' ||
-    doc.status === 'encrypted' ||
-    doc.status === 'unsupported_format' ||
-    doc.status === 'scanned_or_image_only' ||
-    doc.status === 'NO_TEXT_DETECTED' ||
-    doc.status === 'empty'
-  ) {
+  if (!isDocumentEligibleForIndexing(doc)) {
     return { docId, chunkCount: 0, success: false };
   }
 
@@ -154,14 +164,27 @@ export async function searchSemanticChunks({
     candidateChunks = await getAllIndexedChunks();
   }
 
-  // If candidate chunks are missing but inMemoryDocs are provided, index them on-the-fly
-  if (candidateChunks.length === 0 && Array.isArray(inMemoryDocs) && inMemoryDocs.length > 0) {
+  // Index any eligible inMemoryDocs that do not already have chunks in candidateChunks
+  if (Array.isArray(inMemoryDocs) && inMemoryDocs.length > 0) {
+    const indexedDocIds = new Set(candidateChunks.map((c) => c?.docId).filter(Boolean));
+    const targetDocIdSet = targetDocIds.length > 0 ? new Set(targetDocIds) : null;
+
     for (const doc of inMemoryDocs) {
+      if (!isDocumentEligibleForIndexing(doc)) continue;
       const docId = doc.id || doc.fileId;
       if (!docId) continue;
+      if (targetDocIdSet && !targetDocIdSet.has(docId)) continue;
+      if (indexedDocIds.has(docId)) continue;
+
       const chunks = chunkDocument(doc, { conversationId });
+      if (chunks.length === 0) {
+        indexedDocIds.add(docId);
+        continue;
+      }
+
       const enriched = await generateChunkEmbeddingsAsync(chunks);
       await storeDocumentChunks(docId, enriched, conversationId);
+      indexedDocIds.add(docId);
       candidateChunks.push(...enriched);
     }
   }

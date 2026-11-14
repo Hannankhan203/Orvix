@@ -123,6 +123,101 @@ export function formatTableAsPlainText(headers, rows) {
   return formattedRows.join('\n\n');
 }
 
+const ALLOWED_CLIPBOARD_URL_SCHEMES = new Set(['http:', 'https:']);
+
+function decodeNumericHtmlEntities(str) {
+  return str
+    .replace(/&#(\d+);?/g, (_, dec) => {
+      const code = Number(dec);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&#x([0-9a-fA-F]+);?/g, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&colon;/gi, ':');
+}
+
+/**
+ * Validates and sanitizes a link URL for HTML clipboard output.
+ * Allows only explicit http:/https: schemes and safe relative links.
+ * Rejects dangerous or executable schemes (javascript:, data:, vbscript:, file:, blob:, etc.),
+ * control-character/entity obfuscation, and protocol-relative URLs.
+ *
+ * @param {string} rawUrl
+ * @returns {string|null} Escaped safe href value, or null if rejected
+ */
+export function sanitizeClipboardUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return null;
+
+  const unescaped = rawUrl
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+
+  if (!unescaped) return null;
+
+  // Reject ASCII control characters (tabs, newlines, NUL, etc.) used to obfuscate URI schemes
+  if (/[\u0000-\u001F\u007F]/.test(unescaped)) {
+    return null;
+  }
+
+  // Inspect entity-decoded form to catch obfuscated schemes (e.g. &#x6a;avascript:, &colon;)
+  const entityDecoded = decodeNumericHtmlEntities(unescaped);
+  if (/[\u0000-\u001F\u007F]/.test(entityDecoded)) {
+    return null;
+  }
+
+  const normalizedForScheme = entityDecoded.replace(/\s+/g, '');
+
+  // Reject protocol-relative URLs (//host, /\host, \\host)
+  if (
+    /^[\\/]{2}/.test(normalizedForScheme) ||
+    normalizedForScheme.startsWith('\\') ||
+    /^\/\\/.test(normalizedForScheme)
+  ) {
+    return null;
+  }
+
+  // Check if URL declares a scheme before the first path/query/fragment delimiter
+  const firstDelimiterIdx = normalizedForScheme.search(/[/?#]/);
+  const authorityOrSchemePrefix =
+    firstDelimiterIdx === -1 ? normalizedForScheme : normalizedForScheme.slice(0, firstDelimiterIdx);
+
+  if (authorityOrSchemePrefix.includes(':')) {
+    const schemeMatch = normalizedForScheme.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)/);
+    if (!schemeMatch) {
+      return null;
+    }
+    const scheme = schemeMatch[1].toLowerCase();
+    if (!ALLOWED_CLIPBOARD_URL_SCHEMES.has(scheme)) {
+      return null;
+    }
+    const afterScheme = normalizedForScheme.slice(scheme.length);
+    if (!afterScheme.startsWith('//') || afterScheme.length <= 2) {
+      return null;
+    }
+    return escapeHtml(unescaped);
+  }
+
+  // Allow safe relative links (#fragment, /path, ./path, ../path, ?query, bare relative paths)
+  if (
+    unescaped.startsWith('#') ||
+    unescaped.startsWith('/') ||
+    unescaped.startsWith('./') ||
+    unescaped.startsWith('../') ||
+    unescaped.startsWith('?') ||
+    /^[a-zA-Z0-9._~%-][^\s]*$/.test(unescaped)
+  ) {
+    return escapeHtml(unescaped);
+  }
+
+  return null;
+}
+
 /**
  * Converts inline markdown (bold, italic, code, links) to safe HTML
  */
@@ -132,6 +227,37 @@ export function inlineMarkdownToHtml(text) {
   out = escapeHtml(out);
   out = out.replace(/\u0000BR\u0000/g, '<br>');
 
+  // Protect inline code spans first so markdown formatting/links inside code are not expanded
+  const codeSpans = [];
+  out = out.replace(/`([^`]+)`/g, (_, code) => {
+    const token = `\u0000INLINECODE:${codeSpans.length}\u0000`;
+    codeSpans.push(
+      `<code style="background-color: #f1f5f9; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.9em;">${code}</code>`
+    );
+    return token;
+  });
+
+  // Protect and sanitize links before bold/italic rules so underscores in URLs are preserved
+  const linkSpans = [];
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, rawUrl) => {
+    const token = `\u0000INLINELINK:${linkSpans.length}\u0000`;
+    const safeUrl = sanitizeClipboardUrl(rawUrl);
+    const formattedLabel = label
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>');
+
+    if (!safeUrl) {
+      linkSpans.push(formattedLabel);
+    } else {
+      linkSpans.push(
+        `<a href="${safeUrl}" style="color: #2563eb; text-decoration: underline;" target="_blank" rel="noopener noreferrer">${formattedLabel}</a>`
+      );
+    }
+    return token;
+  });
+
   // Bold
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
@@ -140,11 +266,9 @@ export function inlineMarkdownToHtml(text) {
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   out = out.replace(/_([^_]+)_/g, '<em>$1</em>');
 
-  // Inline Code
-  out = out.replace(/`([^`]+)`/g, '<code style="background-color: #f1f5f9; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.9em;">$1</code>');
-
-  // Links
-  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color: #2563eb; text-decoration: underline;" target="_blank" rel="noopener noreferrer">$1</a>');
+  // Restore links and inline code spans
+  out = out.replace(/\u0000INLINELINK:(\d+)\u0000/g, (_, idx) => linkSpans[Number(idx)] ?? '');
+  out = out.replace(/\u0000INLINECODE:(\d+)\u0000/g, (_, idx) => codeSpans[Number(idx)] ?? '');
 
   return out;
 }

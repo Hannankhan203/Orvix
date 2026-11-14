@@ -708,6 +708,93 @@ async function main() {
   });
 
   // --------------------------------------------------------------------------
+  // Group 8: ORVIX-AUD-038 Incremental In-Memory Document Indexing
+  // --------------------------------------------------------------------------
+  console.log('\n--- 8. ORVIX-AUD-038: Incremental In-Memory Document Indexing ---');
+
+  await runTestAsync('8.1 Indexes new inMemoryDocs even when candidateChunks already exist for prior documents', async () => {
+    await clearAllChunks();
+
+    const docA = {
+      id: 'doc_existing_a',
+      originalName: 'solar_guide.txt',
+      format: 'TXT',
+      text: 'Solar photovoltaic panels convert sunlight into electricity using silicon cells.'
+    };
+    const docB = {
+      id: 'doc_new_b',
+      originalName: 'ocean_currents.txt',
+      format: 'TXT',
+      text: 'Thermohaline circulation drives deep ocean currents based on temperature and salinity gradients.'
+    };
+
+    // Index only docA initially
+    const initRes = await indexDocument(docA, 'conv_aud038');
+    assert.strictEqual(initRes.success, true);
+
+    // Search with docIds and inMemoryDocs containing BOTH docA (already indexed) and docB (new)
+    const results = await searchSemanticChunks({
+      query: 'What drives deep ocean currents and salinity gradients?',
+      docIds: ['doc_existing_a', 'doc_new_b'],
+      conversationId: 'conv_aud038',
+      inMemoryDocs: [docA, docB],
+      topK: 3
+    });
+
+    assert.ok(results.length >= 1, 'Expected docB to be indexed and retrieved');
+    assert.strictEqual(results[0].docId, 'doc_new_b');
+    assert.ok(results[0].text.includes('Thermohaline circulation'));
+
+    // Verify both documents are now persisted in vector store without duplicate chunks
+    const storedA = await getChunksForDocuments(['doc_existing_a']);
+    const storedB = await getChunksForDocuments(['doc_new_b']);
+    assert.strictEqual(storedA.length, 1);
+    assert.strictEqual(storedB.length, 1);
+  });
+
+  await runTestAsync('8.2 Prevents duplicate indexing and skips ineligible documents in inMemoryDocs', async () => {
+    await clearAllChunks();
+
+    const doc1 = {
+      id: 'doc_dup_1',
+      originalName: 'alpha.txt',
+      format: 'TXT',
+      text: 'Kubernetes orchestrates containerized workloads across clusters.'
+    };
+    const doc2 = {
+      id: 'doc_dup_2',
+      originalName: 'beta.txt',
+      format: 'TXT',
+      text: 'GraphQL provides a typed query language for APIs.'
+    };
+    const docEncrypted = {
+      id: 'doc_encrypted_skip',
+      originalName: 'secret.docx',
+      format: 'DOCX',
+      status: 'encrypted',
+      text: 'Encrypted document placeholder text'
+    };
+
+    await indexDocument(doc1, 'conv_aud038_dup');
+
+    // Pass duplicate doc2 entries + already-indexed doc1 + ineligible encrypted doc
+    const results = await searchSemanticChunks({
+      query: 'typed query language for APIs',
+      docIds: ['doc_dup_1', 'doc_dup_2', 'doc_encrypted_skip'],
+      conversationId: 'conv_aud038_dup',
+      inMemoryDocs: [doc1, doc2, doc2, docEncrypted],
+      topK: 5
+    });
+
+    assert.strictEqual(results.length, 1);
+    assert.strictEqual(results[0].docId, 'doc_dup_2');
+
+    const allStored = await getChunksForConversation('conv_aud038_dup');
+    assert.strictEqual(allStored.length, 2, 'Should store exactly 1 chunk each for doc1 and doc2, none for encrypted doc');
+    assert.strictEqual(allStored.some((c) => c.docId === 'doc_encrypted_skip'), false);
+  });
+
+  // --------------------------------------------------------------------------
   // Summary
   // --------------------------------------------------------------------------
   console.log('\n======================================================================');
