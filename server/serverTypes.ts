@@ -19,6 +19,10 @@ export interface DocumentData {
   slides?: Array<{ slideNumber: number; title?: string; text: string; notes?: string; charCount: number }>;
   sectionCount?: number;
   sections?: Array<{ heading: string; level: number; content: string; charCount: number }>;
+  sheetCount?: number;
+  sheetNames?: string[];
+  rowCount?: number;
+  columnCount?: number;
   table?: {
     headers: string[];
     rowCount: number;
@@ -72,6 +76,10 @@ export interface DocumentExtractionResult {
   slides?: Array<{ slideNumber: number; title?: string; text: string; notes?: string; charCount: number }>;
   sectionCount?: number;
   sections?: Array<{ heading: string; level: number; content: string; charCount: number }>;
+  sheetCount?: number;
+  sheetNames?: string[];
+  rowCount?: number;
+  columnCount?: number;
   table?: {
     headers: string[];
     rowCount: number;

@@ -190,8 +190,8 @@ export function chunkDocument(doc, options = {}) {
     if (chunks.length > 0) return chunks;
   }
 
-  // 2. Structured PPTX chunking by slide
-  if (format === 'PPTX' && Array.isArray(doc.slides) && doc.slides.length > 0) {
+  // 2. Structured PPT / PPTX chunking by slide
+  if ((format === 'PPTX' || format === 'PPT') && Array.isArray(doc.slides) && doc.slides.length > 0) {
     for (const slide of doc.slides) {
       const slideTitle = slide.title ? slide.title.trim() : '';
       const slideBody = normalizeChunkText(slide.text || '');

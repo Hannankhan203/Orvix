@@ -1788,7 +1788,7 @@ export default function ChatPage({
 
             if (extResult.isImage || extResult.status === 'unsupported_offline') {
               return failPreflightIfActive(
-                'Image text recognition (OCR) requires an internet connection. Connect to the internet to process image text, or attach a text document (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML).'
+                'Image text recognition (OCR) requires an internet connection. Connect to the internet to process image text, or attach a text document (PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, TXT, MD, CSV, JSON, XML).'
               );
             }
 
@@ -1813,7 +1813,7 @@ export default function ChatPage({
 
             if (!extResult.success || extResult.status === 'unsupported_format' || extResult.status === 'corrupted' || extResult.status === 'error') {
               return failPreflightIfActive(
-                extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'. Supported offline formats: PDF, DOCX, PPTX, TXT, MD, CSV, TSV, JSON, XML.`
+                extResult.error || extResult.warning || `Cannot extract text locally from '${att.name}'. Supported offline formats: PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, TXT, MD, CSV, TSV, JSON, XML.`
               );
             }
 
@@ -2213,7 +2213,7 @@ export default function ChatPage({
                   if (!isPreflightActive()) return false;
 
                   if (extResult.isImage || extResult.status === 'unsupported_offline') {
-                    throw new Error('Image text recognition (OCR) requires an internet connection. Connect to the internet to process image text, or attach a text document (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML).');
+                    throw new Error('Image text recognition (OCR) requires an internet connection. Connect to the internet to process image text, or attach a text document (PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, TXT, MD, CSV, JSON, XML).');
                   }
                   if (extResult.status === 'scanned_or_image_only') {
                     throw new Error(extResult.warning || 'No readable text could be extracted from this PDF. This document appears to be scanned without a text layer.');

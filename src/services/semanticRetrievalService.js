@@ -41,8 +41,16 @@ export async function indexDocument(doc, conversationId = null, options = {}) {
   const docId = doc.id || doc.fileId;
   if (!docId) return { docId: null, chunkCount: 0, success: false };
 
-  // If document was an unreadable image or error, skip indexing
-  if (doc.status === 'error' || doc.status === 'NO_TEXT_DETECTED' || doc.status === 'empty') {
+  // If document failed extraction, is encrypted/corrupted/unsupported, or contains no readable text, skip indexing
+  if (
+    doc.status === 'error' ||
+    doc.status === 'corrupted' ||
+    doc.status === 'encrypted' ||
+    doc.status === 'unsupported_format' ||
+    doc.status === 'scanned_or_image_only' ||
+    doc.status === 'NO_TEXT_DETECTED' ||
+    doc.status === 'empty'
+  ) {
     return { docId, chunkCount: 0, success: false };
   }
 

@@ -4,12 +4,18 @@ import JSZip from 'jszip';
 import mammoth from 'mammoth';
 import { extractText as extractPdfText } from 'unpdf';
 import { extractImageText, rawImageDataToBmp } from './imageOcrService.js';
+import {
+  extractSpreadsheetDocument,
+  extractLegacyDocDocument,
+  extractLegacyPptDocument
+} from './officeDocumentExtractors.js';
 
 // Configurable safety boundaries to prevent memory exhaustion and runaway processing
 const MAX_EXTRACTED_CHARACTERS = 500_000; // ~100k words
 const MAX_PREVIEW_LENGTH = 350;
 const MAX_SCANNED_PDF_PAGES_TO_OCR = 10;
 const MIN_IMAGE_OCR_DIMENSION = 30; // Ignore tiny decorative noise icons
+const MAX_EXTRACTION_INPUT_BYTES = 25 * 1024 * 1024; // 25 MB maximum file limit
 
 
 /**
@@ -1178,26 +1184,7 @@ async function extractPptxDocument(buffer) {
   }
 }
 
-/**
- * Handles Legacy Binary PowerPoint (.ppt) files
- * Adheres strictly to Requirement 7:
- * "For legacy .ppt files, use a compatible parser or a clearly documented conversion approach only if available.
- *  Do not silently treat binary PowerPoint files as plain text."
- * @returns {Object}
- */
-function handleLegacyPptDocument() {
-  return {
-    status: 'unsupported_format',
-    success: false,
-    text: '',
-    totalCharacters: 0,
-    totalWords: 0,
-    warning:
-      'Legacy binary PowerPoint (.ppt) format cannot be parsed directly. Please convert or save the presentation as modern PowerPoint (.pptx) format and re-upload.',
-    error:
-      'Legacy binary PowerPoint (.ppt) format is not supported for text extraction. Please use modern .pptx format.'
-  };
-}
+// Legacy binary .ppt extraction is implemented via extractLegacyPptDocument in ./officeDocumentExtractors.js
 
 /**
  * Core Extractor for Plain Text, Markdown, Log, and Code formats
@@ -1495,6 +1482,24 @@ export async function extractDocumentContent(
     };
   }
 
+  if (fileSizeBytes > MAX_EXTRACTION_INPUT_BYTES) {
+    return {
+      fileId,
+      filename: displayFilename,
+      originalName,
+      format: formatName,
+      mimeType,
+      sizeBytes: fileSizeBytes,
+      status: 'error',
+      success: false,
+      text: '',
+      totalCharacters: 0,
+      totalWords: 0,
+      error: `Document exceeds maximum extraction size limit of ${Math.round(MAX_EXTRACTION_INPUT_BYTES / (1024 * 1024))} MB.`,
+      extractedAt: nowIso
+    };
+  }
+
   let partialResult = {};
 
   try {
@@ -1507,12 +1512,21 @@ export async function extractDocumentContent(
         partialResult = await extractDocxDocument(buffer);
         break;
 
+      case '.doc':
+        partialResult = await extractLegacyDocDocument(buffer);
+        break;
+
       case '.pptx':
         partialResult = await extractPptxDocument(buffer);
         break;
 
       case '.ppt':
-        partialResult = handleLegacyPptDocument();
+        partialResult = await extractLegacyPptDocument(buffer);
+        break;
+
+      case '.xls':
+      case '.xlsx':
+        partialResult = await extractSpreadsheetDocument(buffer, normalizedExt);
         break;
 
       case '.txt':
@@ -1580,6 +1594,8 @@ export async function extractDocumentContent(
     slides: partialResult.slides,
     sectionCount: partialResult.sectionCount,
     sections: partialResult.sections,
+    sheetCount: partialResult.sheetCount,
+    sheetNames: partialResult.sheetNames,
     rowCount: partialResult.rowCount,
     columnCount: partialResult.columnCount,
     table: partialResult.table,

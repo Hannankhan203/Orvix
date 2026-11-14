@@ -1,16 +1,17 @@
 /**
  * Orvix Browser-Side Document Extraction Service
  * Provides client-side text and metadata extraction for supported documents
- * (TXT, MD, CSV, TSV, JSON, XML, DOCX, text-based PDF, PPTX) without server round-trips.
+ * (TXT, MD, CSV, TSV, JSON, XML, DOCX, DOC, PPTX, PPT, XLSX, XLS, text-based PDF) without server round-trips.
  *
  * Uses native browser APIs and dynamically imports heavy parsing libraries
- * (unpdf, mammoth, jszip) so the initial application bundle remains lean.
+ * (unpdf, mammoth, jszip, @e965/xlsx, cfb) so the initial application bundle remains lean.
  * Returns the exact DocumentExtractionResult schema expected by documentContextService.js.
  */
 
 // Safety limits matching server-side extraction
 const MAX_EXTRACTED_CHARACTERS = 500_000;
 const MAX_PREVIEW_LENGTH = 350;
+const MAX_EXTRACTION_INPUT_BYTES = 25 * 1024 * 1024;
 
 /**
  * Counts words in a string
@@ -1153,15 +1154,35 @@ async function extractPptxDocument(arrayBuffer) {
  */
 export function isBrowserExtractable(extension = '', mimeType = '') {
   const ext = (extension || '').replace(/^\./, '').toLowerCase();
-  const mime = (mimeType || '').toLowerCase();
+  const mime = (mimeType || '').split(';')[0].trim().toLowerCase();
 
-  const supportedExts = ['txt', 'log', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'docx', 'pdf', 'pptx'];
+  const supportedExts = [
+    'txt',
+    'log',
+    'md',
+    'markdown',
+    'csv',
+    'tsv',
+    'json',
+    'xml',
+    'docx',
+    'doc',
+    'pdf',
+    'pptx',
+    'ppt',
+    'xlsx',
+    'xls'
+  ];
   if (supportedExts.includes(ext)) return true;
 
   if (
     mime === 'application/pdf' ||
+    mime === 'application/msword' ||
     mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+    mime === 'application/vnd.ms-powerpoint' ||
     mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
+    mime === 'application/vnd.ms-excel' ||
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
     mime === 'text/plain' ||
     mime === 'text/x-log' ||
     mime === 'text/markdown' ||
@@ -1216,21 +1237,29 @@ export async function extractBrowserDocument(file, metadata = {}) {
       ? 'PDF'
       : ext === '.docx'
         ? 'DOCX'
-        : ext === '.pptx'
-          ? 'PPTX'
-          : ext === '.txt'
-            ? 'TXT'
-            : ext === '.md' || ext === '.markdown'
-              ? 'MD'
-              : ext === '.csv'
-                ? 'CSV'
-                : ext === '.tsv'
-                  ? 'TSV'
-                  : ext === '.json'
-                    ? 'JSON'
-                    : ext === '.xml'
-                      ? 'XML'
-                      : ext.replace('.', '').toUpperCase() || 'UNKNOWN';
+        : ext === '.doc'
+          ? 'DOC'
+          : ext === '.pptx'
+            ? 'PPTX'
+            : ext === '.ppt'
+              ? 'PPT'
+              : ext === '.xlsx'
+                ? 'XLSX'
+                : ext === '.xls'
+                  ? 'XLS'
+                  : ext === '.txt'
+                    ? 'TXT'
+                    : ext === '.md' || ext === '.markdown'
+                      ? 'MD'
+                      : ext === '.csv'
+                        ? 'CSV'
+                        : ext === '.tsv'
+                          ? 'TSV'
+                          : ext === '.json'
+                            ? 'JSON'
+                            : ext === '.xml'
+                              ? 'XML'
+                              : ext.replace('.', '').toUpperCase() || 'UNKNOWN';
 
   // Check for image files (images require server OCR)
   const isImage =
@@ -1253,7 +1282,7 @@ export async function extractBrowserDocument(file, metadata = {}) {
       totalCharacters: 0,
       totalWords: 0,
       warning:
-        'Image text recognition (OCR) is not supported offline. Connect to the internet to process image text, or attach a text document (PDF, DOCX, PPTX, TXT, MD, CSV, JSON, XML).',
+        'Image text recognition (OCR) is not supported offline. Connect to the internet to process image text, or attach a text document (PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, TXT, MD, CSV, JSON, XML).',
       error: 'Image text extraction is not available offline.',
       extractedAt: nowIso
     };
@@ -1278,60 +1307,21 @@ export async function extractBrowserDocument(file, metadata = {}) {
     };
   }
 
-  // Handle legacy binary Office formats
-  if (ext === '.ppt') {
+  // Enforce safe extraction input size bound
+  if (sizeBytes > MAX_EXTRACTION_INPUT_BYTES) {
     return {
       fileId,
       filename: originalName,
       originalName,
-      format: 'PPT',
+      format: formatName,
       mimeType,
       sizeBytes,
-      status: 'unsupported_format',
+      status: 'error',
       success: false,
       text: '',
       totalCharacters: 0,
       totalWords: 0,
-      warning:
-        'Legacy binary PowerPoint (.ppt) format cannot be parsed directly in the browser. Please convert the presentation to modern PowerPoint (.pptx) format and re-attach.',
-      extractedAt: nowIso
-    };
-  }
-
-  if (ext === '.doc') {
-    return {
-      fileId,
-      filename: originalName,
-      originalName,
-      format: 'DOC',
-      mimeType,
-      sizeBytes,
-      status: 'unsupported_format',
-      success: false,
-      text: '',
-      totalCharacters: 0,
-      totalWords: 0,
-      warning:
-        'Legacy binary Word (.doc) format cannot be parsed directly in the browser. Please save the document as modern Word (.docx) format and re-attach.',
-      extractedAt: nowIso
-    };
-  }
-
-  if (ext === '.xls' || ext === '.xlsx') {
-    return {
-      fileId,
-      filename: originalName,
-      originalName,
-      format: ext.replace('.', '').toUpperCase(),
-      mimeType,
-      sizeBytes,
-      status: 'unsupported_format',
-      success: false,
-      text: '',
-      totalCharacters: 0,
-      totalWords: 0,
-      warning:
-        'Excel spreadsheets (.xls, .xlsx) are not supported for offline extraction. Please export or save table data as CSV or TSV and re-attach.',
+      error: `Document exceeds maximum local extraction size limit of ${Math.round(MAX_EXTRACTION_INPUT_BYTES / (1024 * 1024))} MB.`,
       extractedAt: nowIso
     };
   }
@@ -1352,9 +1342,31 @@ export async function extractBrowserDocument(file, metadata = {}) {
         break;
       }
 
+      case '.doc': {
+        const arrayBuffer = await file.arrayBuffer();
+        const { extractLegacyDocDocument } = await import('./officeDocumentExtractors.js');
+        partialResult = await extractLegacyDocDocument(arrayBuffer);
+        break;
+      }
+
       case '.pptx': {
         const arrayBuffer = await file.arrayBuffer();
         partialResult = await extractPptxDocument(arrayBuffer);
+        break;
+      }
+
+      case '.ppt': {
+        const arrayBuffer = await file.arrayBuffer();
+        const { extractLegacyPptDocument } = await import('./officeDocumentExtractors.js');
+        partialResult = await extractLegacyPptDocument(arrayBuffer);
+        break;
+      }
+
+      case '.xls':
+      case '.xlsx': {
+        const arrayBuffer = await file.arrayBuffer();
+        const { extractSpreadsheetDocument } = await import('./officeDocumentExtractors.js');
+        partialResult = await extractSpreadsheetDocument(arrayBuffer, ext);
         break;
       }
 
@@ -1397,7 +1409,7 @@ export async function extractBrowserDocument(file, metadata = {}) {
             status: 'unsupported_format',
             success: false,
             text: '',
-            error: `Browser-side extraction is not supported for extension '${ext}'. Supported formats: PDF, DOCX, PPTX, TXT, MD, CSV, TSV, JSON, XML.`
+            error: `Browser-side extraction is not supported for extension '${ext}'. Supported formats: PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, TXT, MD, CSV, TSV, JSON, XML.`
           };
         }
         break;
@@ -1438,9 +1450,12 @@ export async function extractBrowserDocument(file, metadata = {}) {
     slides: partialResult.slides,
     sectionCount: partialResult.sectionCount,
     sections: partialResult.sections,
+    sheetCount: partialResult.sheetCount,
+    sheetNames: partialResult.sheetNames,
     rowCount: partialResult.rowCount,
     columnCount: partialResult.columnCount,
     table: partialResult.table,
+    hasText: partialResult.hasText !== undefined ? partialResult.hasText : (totalCharacters > 0),
     isScanned: Boolean(partialResult.isScanned),
     isTruncated: Boolean(isTruncated || partialResult.isTruncated),
     warning: partialResult.warning,

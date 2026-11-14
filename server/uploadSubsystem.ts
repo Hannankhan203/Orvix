@@ -1041,6 +1041,8 @@ export function serializeRegisteredAttachment(r: UploadedFileRecord) {
           slides: r.extraction.slides,
           sectionCount: r.extraction.sectionCount,
           sections: r.extraction.sections,
+          sheetCount: (r.extraction as any).sheetCount,
+          sheetNames: (r.extraction as any).sheetNames,
           table: r.extraction.table,
           headings: (r.extraction as any).headings,
           metadata: (r.extraction as any).metadata,

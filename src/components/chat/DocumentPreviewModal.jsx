@@ -400,8 +400,23 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               const text = await localRecord.blob.text();
               if (active) setTextContent(text);
             } catch (_) {}
-          } else if (isOffice && attachment.extraction?.text) {
-            setTextContent(attachment.extraction.text);
+          } else if (isOffice) {
+            if (attachment.extraction?.text) {
+              setTextContent(attachment.extraction.text);
+            } else {
+              try {
+                const extracted = await extractBrowserDocument(localRecord.blob, {
+                  id: attachment.id,
+                  name: filename,
+                  originalName: filename,
+                  mimeType: mime,
+                  extension: ext
+                });
+                if (active && extracted?.text) {
+                  setTextContent(extracted.text);
+                }
+              } catch (_) {}
+            }
           }
           if (active) setLoading(false);
           return;
@@ -437,8 +452,23 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         if (isTextual) {
           const text = await blob.text();
           if (active) setTextContent(text);
-        } else if (isOffice && attachment.extraction?.text) {
-          setTextContent(attachment.extraction.text);
+        } else if (isOffice) {
+          if (attachment.extraction?.text) {
+            setTextContent(attachment.extraction.text);
+          } else {
+            try {
+              const extracted = await extractBrowserDocument(blob, {
+                id: attachment.id,
+                name: filename,
+                originalName: filename,
+                mimeType: mime,
+                extension: ext
+              });
+              if (active && extracted?.text) {
+                setTextContent(extracted.text);
+              }
+            } catch (_) {}
+          }
         }
 
         if (active) setLoading(false);

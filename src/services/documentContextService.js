@@ -675,6 +675,18 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
       continue;
     }
 
+    // 3b. Check for corrupted / malformed non-image document failures BEFORE scanned/image-only check
+    if (doc.status === 'corrupted') {
+      const issue =
+        doc.error ||
+        doc.warning ||
+        `The document '${docName}' could not be read because the file appears corrupted or malformed.`;
+      unreadableDocNotes.push(issue);
+      if (selectedDocs.length === 1) directAnswer = issue;
+      docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (${format}) - STATUS: CORRUPTED]\n${issue}`);
+      continue;
+    }
+
     // 4. Check for unhandled scanned / image-only PDFs without extracted text
     if (
       doc.status === 'scanned_or_image_only' ||
@@ -683,6 +695,7 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
         !doc.success &&
         doc.status !== 'empty' &&
         doc.status !== 'encrypted' &&
+        doc.status !== 'corrupted' &&
         doc.status !== 'error' &&
         doc.status !== 'unsupported_format')
     ) {
@@ -700,7 +713,9 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
     }
 
     if (doc.status === 'encrypted') {
-      const issue = `The document '${docName}' is encrypted or password-protected and cannot be read without a password.`;
+      const issue =
+        doc.error ||
+        `The document '${docName}' is encrypted or password-protected and cannot be read without a password.`;
       unreadableDocNotes.push(issue);
       if (selectedDocs.length === 1) directAnswer = issue;
       docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (${format}) - STATUS: ENCRYPTED]\n${issue}`);
@@ -784,7 +799,7 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
     if (intent.targetScope === 'slide' || intent.targetScope === 'slide_range') {
       const requestedSlides = intent.targetSlides || [];
 
-      if (format === 'PPTX' && Array.isArray(doc.slides) && doc.slides.length > 0) {
+      if ((format === 'PPTX' || format === 'PPT') && Array.isArray(doc.slides) && doc.slides.length > 0) {
         const totalSlides = doc.slideCount || doc.slides.length;
         const validSlides = requestedSlides.filter((s) => s >= 1 && s <= totalSlides);
         const outOfBoundsSlides = requestedSlides.filter((s) => s < 1 || s > totalSlides);
@@ -794,11 +809,11 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
           if (selectedDocs.length === 1) {
             directAnswer = outOfBoundsMsg;
           }
-          docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (PPTX, ${totalSlides} slides)]\n${outOfBoundsMsg}`);
+          docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (${format}, ${totalSlides} slides)]\n${outOfBoundsMsg}`);
           continue;
         }
 
-        let slideContent = `=== DOCUMENT: "${docName}" (PPTX Presentation, ${totalSlides} slides total) ===\n`;
+        let slideContent = `=== DOCUMENT: "${docName}" (${format} Presentation, ${totalSlides} slides total) ===\n`;
         if (outOfBoundsSlides.length > 0) {
           slideContent += `[Note: Slide(s) ${outOfBoundsSlides.join(', ')} do not exist. Showing available slide(s) ${validSlides.join(', ')} of ${totalSlides}]\n\n`;
         }
@@ -837,6 +852,7 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
       `Format: ${format}${scannedBadge}${ocrBadge} | Total Characters: ${charCount.toLocaleString()} | Words: ${wordCount.toLocaleString()}` +
       (doc.pageCount ? ` | Pages: ${doc.pageCount}` : '') +
       (doc.slideCount ? ` | Slides: ${doc.slideCount}` : '') +
+      (doc.sheetCount ? ` | Sheets: ${doc.sheetCount}` : '') +
       (doc.sectionCount ? ` | Sections: ${doc.sectionCount}` : '') +
       noticeBadge +
       '\n';
@@ -1206,7 +1222,7 @@ These pages develop the topic consecutively across pages ${minPage} through ${ma
     const intent = parseDocumentQueryIntent(prompt, targetedDocs);
     const sNum = intent.targetSlides?.[0] || 1;
 
-    if (format === 'PPTX' && primaryDoc.slides) {
+    if ((format === 'PPTX' || format === 'PPT') && primaryDoc.slides) {
       const slideObj = primaryDoc.slides.find((s) => s.slideNumber === sNum);
       if (!slideObj) {
         return `Slide ${sNum} was not found in **${docName}**.`;
@@ -1235,7 +1251,7 @@ These pages develop the topic consecutively across pages ${minPage} through ${ma
     const minSlide = Math.min(...slides);
     const maxSlide = Math.max(...slides);
 
-    if (format === 'PPTX' && primaryDoc.slides) {
+    if ((format === 'PPTX' || format === 'PPT') && primaryDoc.slides) {
       const relevantSlides = primaryDoc.slides.filter((s) => slides.includes(s.slideNumber));
       const breakdown = relevantSlides
         .map(
