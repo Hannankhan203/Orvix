@@ -33,6 +33,157 @@ service cloud.firestore {
                  && val.matches('^[a-zA-Z0-9_-]+$'));
     }
 
+    function isValidOptionalString(val, maxLen) {
+      return val == null || (val is string && val.size() <= maxLen);
+    }
+
+    function isValidNonNegativeNumberOrNull(val) {
+      return val == null || (val is number && val >= 0);
+    }
+
+    function isValidStringList10(items, maxLen) {
+      return items is list
+             && items.size() <= 10
+             && (items.size() <= 0 || (items[0] is string && items[0].size() <= maxLen))
+             && (items.size() <= 1 || (items[1] is string && items[1].size() <= maxLen))
+             && (items.size() <= 2 || (items[2] is string && items[2].size() <= maxLen))
+             && (items.size() <= 3 || (items[3] is string && items[3].size() <= maxLen))
+             && (items.size() <= 4 || (items[4] is string && items[4].size() <= maxLen))
+             && (items.size() <= 5 || (items[5] is string && items[5].size() <= maxLen))
+             && (items.size() <= 6 || (items[6] is string && items[6].size() <= maxLen))
+             && (items.size() <= 7 || (items[7] is string && items[7].size() <= maxLen))
+             && (items.size() <= 8 || (items[8] is string && items[8].size() <= maxLen))
+             && (items.size() <= 9 || (items[9] is string && items[9].size() <= maxLen));
+    }
+
+    function isValidSharedExtraction(ext) {
+      return ext is map
+             && ext.keys().hasOnly([
+               'status',
+               'type',
+               'format',
+               'text',
+               'charCount',
+               'wordCount',
+               'totalWords',
+               'totalCharacters',
+               'lineCount',
+               'confidence',
+               'hasText',
+               'truncated',
+               'warnings'
+             ])
+             && (!('status' in ext) || isValidOptionalString(ext.status, 64))
+             && (!('type' in ext) || isValidOptionalString(ext.type, 64))
+             && (!('format' in ext) || isValidOptionalString(ext.format, 32))
+             && (!('text' in ext) || isValidOptionalString(ext.text, 50000))
+             && (!('charCount' in ext) || isValidNonNegativeNumberOrNull(ext.charCount))
+             && (!('wordCount' in ext) || isValidNonNegativeNumberOrNull(ext.wordCount))
+             && (!('totalWords' in ext) || isValidNonNegativeNumberOrNull(ext.totalWords))
+             && (!('totalCharacters' in ext) || isValidNonNegativeNumberOrNull(ext.totalCharacters))
+             && (!('lineCount' in ext) || isValidNonNegativeNumberOrNull(ext.lineCount))
+             && (!('confidence' in ext) || isValidNonNegativeNumberOrNull(ext.confidence))
+             && (!('hasText' in ext) || ext.hasText == null || ext.hasText is bool)
+             && (!('truncated' in ext) || ext.truncated == null || ext.truncated is bool)
+             && (!('warnings' in ext) || ext.warnings == null || isValidStringList10(ext.warnings, 200));
+    }
+
+    function isValidSharedAttachmentItem(att) {
+      return att is map
+             && att.keys().hasAll(['id', 'name', 'size', 'type'])
+             && att.keys().hasOnly([
+               'id',
+               'name',
+               'originalName',
+               'size',
+               'type',
+               'extension',
+               'format',
+               'category',
+               'uploadedAt',
+               'extraction'
+             ])
+             && att.id is string && att.id.size() > 0 && att.id.size() <= 128
+             && att.name is string && att.name.size() > 0 && att.name.size() <= 255
+             && (!('originalName' in att) || isValidOptionalString(att.originalName, 255))
+             && att.size is number && att.size >= 0
+             && att.type is string && att.type.size() > 0 && att.type.size() <= 128
+             && (!('extension' in att) || isValidOptionalString(att.extension, 32))
+             && (!('format' in att) || isValidOptionalString(att.format, 32))
+             && (!('category' in att) || isValidOptionalString(att.category, 32))
+             && (!('uploadedAt' in att) || isValidOptionalString(att.uploadedAt, 64))
+             && (!('extraction' in att) || att.extraction == null || isValidSharedExtraction(att.extraction));
+    }
+
+    function isValidSharedAttachmentChunk10(atts, offset) {
+      return (atts.size() <= offset + 0 || isValidSharedAttachmentItem(atts[offset + 0]))
+             && (atts.size() <= offset + 1 || isValidSharedAttachmentItem(atts[offset + 1]))
+             && (atts.size() <= offset + 2 || isValidSharedAttachmentItem(atts[offset + 2]))
+             && (atts.size() <= offset + 3 || isValidSharedAttachmentItem(atts[offset + 3]))
+             && (atts.size() <= offset + 4 || isValidSharedAttachmentItem(atts[offset + 4]))
+             && (atts.size() <= offset + 5 || isValidSharedAttachmentItem(atts[offset + 5]))
+             && (atts.size() <= offset + 6 || isValidSharedAttachmentItem(atts[offset + 6]))
+             && (atts.size() <= offset + 7 || isValidSharedAttachmentItem(atts[offset + 7]))
+             && (atts.size() <= offset + 8 || isValidSharedAttachmentItem(atts[offset + 8]))
+             && (atts.size() <= offset + 9 || isValidSharedAttachmentItem(atts[offset + 9]));
+    }
+
+    function isValidSharedAttachmentsList(atts) {
+      return atts is list
+             && atts.size() <= 20
+             && (atts.size() <= 0 || isValidSharedAttachmentChunk10(atts, 0))
+             && (atts.size() <= 10 || isValidSharedAttachmentChunk10(atts, 10));
+    }
+
+    function isValidSharedAlternativeItem(alt) {
+      return alt is map
+             && alt.keys().hasAll(['id', 'content'])
+             && alt.keys().hasOnly([
+               'id',
+               'content',
+               'modelUsed',
+               'provider',
+               'mode',
+               'responseTimeMs',
+               'createdAtMs',
+               'clientTimestamp',
+               'timestamp',
+               'parentMessageId',
+               'sender'
+             ])
+             && alt.id is string && alt.id.size() > 0 && alt.id.size() <= 128
+             && alt.content is string && alt.content.size() <= 100000
+             && (!('modelUsed' in alt) || isValidOptionalString(alt.modelUsed, 120))
+             && (!('provider' in alt) || isValidOptionalString(alt.provider, 64))
+             && (!('mode' in alt) || alt.mode == null || isValidChatMode(alt.mode))
+             && (!('responseTimeMs' in alt) || isValidNonNegativeNumberOrNull(alt.responseTimeMs))
+             && (!('createdAtMs' in alt) || isValidNonNegativeNumberOrNull(alt.createdAtMs))
+             && (!('clientTimestamp' in alt) || isValidOptionalString(alt.clientTimestamp, 64))
+             && (!('timestamp' in alt) || isValidOptionalString(alt.timestamp, 64))
+             && (!('parentMessageId' in alt) || isValidOptionalString(alt.parentMessageId, 128))
+             && (!('sender' in alt) || alt.sender == null || alt.sender in ['user', 'assistant']);
+    }
+
+    function isValidSharedAlternativeChunk10(alts, offset) {
+      return (alts.size() <= offset + 0 || isValidSharedAlternativeItem(alts[offset + 0]))
+             && (alts.size() <= offset + 1 || isValidSharedAlternativeItem(alts[offset + 1]))
+             && (alts.size() <= offset + 2 || isValidSharedAlternativeItem(alts[offset + 2]))
+             && (alts.size() <= offset + 3 || isValidSharedAlternativeItem(alts[offset + 3]))
+             && (alts.size() <= offset + 4 || isValidSharedAlternativeItem(alts[offset + 4]))
+             && (alts.size() <= offset + 5 || isValidSharedAlternativeItem(alts[offset + 5]))
+             && (alts.size() <= offset + 6 || isValidSharedAlternativeItem(alts[offset + 6]))
+             && (alts.size() <= offset + 7 || isValidSharedAlternativeItem(alts[offset + 7]))
+             && (alts.size() <= offset + 8 || isValidSharedAlternativeItem(alts[offset + 8]))
+             && (alts.size() <= offset + 9 || isValidSharedAlternativeItem(alts[offset + 9]));
+    }
+
+    function isValidSharedAlternativesList(alts) {
+      return alts is list
+             && alts.size() <= 20
+             && (alts.size() <= 0 || isValidSharedAlternativeChunk10(alts, 0))
+             && (alts.size() <= 10 || isValidSharedAlternativeChunk10(alts, 10));
+    }
+
     function isValidSharedMessageItem(msg) {
       return msg is map
              && msg.keys().hasAll(['id', 'sender', 'content'])
@@ -60,19 +211,59 @@ service cloud.firestore {
              && msg.sender in ['user', 'assistant']
              && msg.content is string
              && msg.content.size() <= 100000
-             && (!('modelUsed' in msg) || msg.modelUsed == null || msg.modelUsed is string)
-             && (!('provider' in msg) || msg.provider == null || msg.provider is string)
+             && (msg.content.size() > 0
+                 || ('attachments' in msg && msg.attachments is list && msg.attachments.size() > 0)
+                 || ('referencedAttachments' in msg && msg.referencedAttachments is list && msg.referencedAttachments.size() > 0))
+             && (!('modelUsed' in msg) || isValidOptionalString(msg.modelUsed, 120))
+             && (!('provider' in msg) || isValidOptionalString(msg.provider, 64))
              && (!('mode' in msg) || msg.mode == null || isValidChatMode(msg.mode))
-             && (!('responseTimeMs' in msg) || msg.responseTimeMs == null || msg.responseTimeMs is number)
-             && (!('parentMessageId' in msg) || msg.parentMessageId == null || msg.parentMessageId is string)
-             && (!('interactionId' in msg) || msg.interactionId == null || msg.interactionId is string)
-             && (!('activeAlternativeId' in msg) || msg.activeAlternativeId == null || msg.activeAlternativeId is string)
-             && (!('alternatives' in msg) || msg.alternatives is list)
-             && (!('attachments' in msg) || msg.attachments is list)
-             && (!('referencedAttachments' in msg) || msg.referencedAttachments is list)
-             && (!('createdAtMs' in msg) || msg.createdAtMs is number)
-             && (!('clientTimestamp' in msg) || msg.clientTimestamp is string)
-             && (!('timestamp' in msg) || msg.timestamp is string);
+             && (!('responseTimeMs' in msg) || isValidNonNegativeNumberOrNull(msg.responseTimeMs))
+             && (!('parentMessageId' in msg) || isValidOptionalString(msg.parentMessageId, 128))
+             && (!('interactionId' in msg) || isValidOptionalString(msg.interactionId, 128))
+             && (!('activeAlternativeId' in msg) || isValidOptionalString(msg.activeAlternativeId, 128))
+             && (!('alternatives' in msg) || msg.alternatives == null || isValidSharedAlternativesList(msg.alternatives))
+             && (!('attachments' in msg) || msg.attachments == null || isValidSharedAttachmentsList(msg.attachments))
+             && (!('referencedAttachments' in msg) || msg.referencedAttachments == null || isValidSharedAttachmentsList(msg.referencedAttachments))
+             && (!('createdAtMs' in msg) || isValidNonNegativeNumberOrNull(msg.createdAtMs))
+             && (!('clientTimestamp' in msg) || isValidOptionalString(msg.clientTimestamp, 64))
+             && (!('timestamp' in msg) || isValidOptionalString(msg.timestamp, 64));
+    }
+
+    function isValidSharedMessageChunk10(msgs, offset) {
+      return (msgs.size() <= offset + 0 || isValidSharedMessageItem(msgs[offset + 0]))
+             && (msgs.size() <= offset + 1 || isValidSharedMessageItem(msgs[offset + 1]))
+             && (msgs.size() <= offset + 2 || isValidSharedMessageItem(msgs[offset + 2]))
+             && (msgs.size() <= offset + 3 || isValidSharedMessageItem(msgs[offset + 3]))
+             && (msgs.size() <= offset + 4 || isValidSharedMessageItem(msgs[offset + 4]))
+             && (msgs.size() <= offset + 5 || isValidSharedMessageItem(msgs[offset + 5]))
+             && (msgs.size() <= offset + 6 || isValidSharedMessageItem(msgs[offset + 6]))
+             && (msgs.size() <= offset + 7 || isValidSharedMessageItem(msgs[offset + 7]))
+             && (msgs.size() <= offset + 8 || isValidSharedMessageItem(msgs[offset + 8]))
+             && (msgs.size() <= offset + 9 || isValidSharedMessageItem(msgs[offset + 9]));
+    }
+
+    function isValidSharedMessageGroup50(msgs, offset) {
+      return (msgs.size() <= offset + 0 || isValidSharedMessageChunk10(msgs, offset + 0))
+             && (msgs.size() <= offset + 10 || isValidSharedMessageChunk10(msgs, offset + 10))
+             && (msgs.size() <= offset + 20 || isValidSharedMessageChunk10(msgs, offset + 20))
+             && (msgs.size() <= offset + 30 || isValidSharedMessageChunk10(msgs, offset + 30))
+             && (msgs.size() <= offset + 40 || isValidSharedMessageChunk10(msgs, offset + 40));
+    }
+
+    function isValidSharedMessagesList(msgs) {
+      return msgs is list
+             && msgs.size() >= 1
+             && msgs.size() <= 500
+             && (msgs.size() <= 0 || isValidSharedMessageGroup50(msgs, 0))
+             && (msgs.size() <= 50 || isValidSharedMessageGroup50(msgs, 50))
+             && (msgs.size() <= 100 || isValidSharedMessageGroup50(msgs, 100))
+             && (msgs.size() <= 150 || isValidSharedMessageGroup50(msgs, 150))
+             && (msgs.size() <= 200 || isValidSharedMessageGroup50(msgs, 200))
+             && (msgs.size() <= 250 || isValidSharedMessageGroup50(msgs, 250))
+             && (msgs.size() <= 300 || isValidSharedMessageGroup50(msgs, 300))
+             && (msgs.size() <= 350 || isValidSharedMessageGroup50(msgs, 350))
+             && (msgs.size() <= 400 || isValidSharedMessageGroup50(msgs, 400))
+             && (msgs.size() <= 450 || isValidSharedMessageGroup50(msgs, 450));
     }
 
     // User profile document: strictly restricted to authenticated owner
@@ -189,11 +380,8 @@ service cloud.firestore {
                     && request.resource.data.messageCount >= 1
                     && request.resource.data.messageCount <= 500
                     && request.resource.data.messages is list
-                    && request.resource.data.messages.size() >= 1
-                    && request.resource.data.messages.size() <= 500
                     && request.resource.data.messageCount == request.resource.data.messages.size()
-                    && isValidSharedMessageItem(request.resource.data.messages[0])
-                    && isValidSharedMessageItem(request.resource.data.messages[request.resource.data.messages.size() - 1]);
+                    && isValidSharedMessagesList(request.resource.data.messages);
 
       // Shared snapshots are strictly immutable and cannot be modified or deleted via public sharing rules
       allow update, delete: if false;

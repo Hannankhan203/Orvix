@@ -103,6 +103,7 @@ export async function createDurableUploadTicket(
 ): Promise<PendingDirectUploadTicket> {
   const attachmentId = ticketData.attachmentId;
   const now = Date.now();
+  const isProd = isProductionEnvironment();
 
   const ticket: PendingDirectUploadTicket = {
     ...ticketData,
@@ -116,54 +117,66 @@ export async function createDurableUploadTicket(
   try {
     const db = getFirestoreDb();
     const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-    if (typeof docRef.set === 'function') {
+    if (typeof docRef.set !== 'function') {
+      if (isProd) {
+        throw new Error('Durable Firestore upload ticket collection is unavailable in production.');
+      }
+    } else {
       await docRef.set(JSON.parse(JSON.stringify(ticket)), { merge: false });
     }
   } catch (err: any) {
-    if (isProductionEnvironment()) {
+    if (isProd) {
       throw err;
     }
     console.warn('[DirectUploadTicket] Warning: Could not write ticket to Firestore:', err?.message || err);
   }
 
-  // 2. Secondary in-memory cache write
-  pendingDirectUploads.set(attachmentId, ticket);
+  // 2. Secondary in-memory cache write exclusively in non-production environments
+  if (!isProd) {
+    pendingDirectUploads.set(attachmentId, ticket);
+  }
 
   return ticket;
 }
 
 /**
- * Retrieves an upload ticket from authoritative Firestore storage or fallback memory cache.
+ * Retrieves an upload ticket from authoritative Firestore storage or non-production fallback memory cache.
  */
 export async function getDurableUploadTicket(
   attachmentId: string
 ): Promise<PendingDirectUploadTicket | null> {
   if (!attachmentId) return null;
+  const isProd = isProductionEnvironment();
 
-  // 1. Try authoritative Firestore lookup first
+  // 1. Authoritative Firestore lookup
   try {
     const db = getFirestoreDb();
     const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-    if (typeof docRef.get === 'function') {
+    if (typeof docRef.get !== 'function') {
+      if (isProd) {
+        throw new Error('Durable Firestore upload ticket lookup is unavailable in production.');
+      }
+    } else {
       const snap = await docRef.get();
       if (snap && snap.exists) {
         const data = (typeof snap.data === 'function' ? snap.data() : snap.data) as PendingDirectUploadTicket;
         if (data && data.attachmentId) {
-          // Sync to in-memory cache
-          pendingDirectUploads.set(attachmentId, data);
+          if (!isProd) {
+            pendingDirectUploads.set(attachmentId, data);
+          }
           return data;
         }
       }
     }
   } catch (err: any) {
-    if (isProductionEnvironment()) {
+    if (isProd) {
       throw err;
     }
     console.warn('[DirectUploadTicket] Notice: Firestore ticket lookup failed, checking cache:', err?.message || err);
   }
 
   // 2. Fall back to in-memory cache exclusively in non-production environments
-  if (!isProductionEnvironment()) {
+  if (!isProd) {
     const cached = pendingDirectUploads.get(attachmentId);
     return cached || null;
   }
@@ -180,10 +193,11 @@ export async function claimDirectUploadTicketForCompletion(
   authenticatedUserId: string,
   chatId: string
 ): Promise<ClaimTicketResult> {
-  const db = getFirestoreDb();
   const now = Date.now();
+  const isProd = isProductionEnvironment();
 
   try {
+    const db = getFirestoreDb();
     return await db.runTransaction(async (transaction: any) => {
       const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
       const snap = await transaction.get(docRef);
@@ -191,7 +205,7 @@ export async function claimDirectUploadTicketForCompletion(
       let ticket: PendingDirectUploadTicket | null = null;
       if (snap && snap.exists) {
         ticket = (typeof snap.data === 'function' ? snap.data() : snap.data) as PendingDirectUploadTicket;
-      } else if (!isProductionEnvironment()) {
+      } else if (!isProd) {
         // Check secondary memory cache exclusively in non-production test/dev environments
         ticket = pendingDirectUploads.get(attachmentId) || null;
       }
@@ -265,7 +279,9 @@ export async function claimDirectUploadTicketForCompletion(
           lastUpdated: now
         };
         transaction.set(docRef, JSON.parse(JSON.stringify(expiredTicket)), { merge: true });
-        pendingDirectUploads.set(attachmentId, expiredTicket);
+        if (!isProd) {
+          pendingDirectUploads.set(attachmentId, expiredTicket);
+        }
         return {
           success: false,
           status: 404,
@@ -307,7 +323,9 @@ export async function claimDirectUploadTicketForCompletion(
       };
 
       transaction.set(docRef, JSON.parse(JSON.stringify(claimedTicket)), { merge: true });
-      pendingDirectUploads.set(attachmentId, claimedTicket);
+      if (!isProd) {
+        pendingDirectUploads.set(attachmentId, claimedTicket);
+      }
 
       return {
         success: true,
@@ -335,10 +353,15 @@ export async function finalizeCompletedDirectUploadTicket(
   attachmentId: string
 ): Promise<void> {
   const now = Date.now();
+  const isProd = isProductionEnvironment();
   try {
     const db = getFirestoreDb();
     const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-    if (typeof docRef.set === 'function') {
+    if (typeof docRef.set !== 'function') {
+      if (isProd) {
+        throw new Error('Durable Firestore upload ticket finalization is unavailable in production.');
+      }
+    } else {
       await docRef.set(
         {
           status: 'completed',
@@ -349,6 +372,9 @@ export async function finalizeCompletedDirectUploadTicket(
       );
     }
   } catch (err: any) {
+    if (isProd) {
+      throw err;
+    }
     console.warn('[DirectUploadTicket] Notice: Could not update completion status in Firestore:', err?.message || err);
   }
 
@@ -366,6 +392,7 @@ export async function failAndCleanupDurableUploadTicket(
   reason: string = 'FAILED_VALIDATION'
 ): Promise<CleanupTicketResult> {
   const now = Date.now();
+  const isProd = isProductionEnvironment();
 
   // 1. Release reserved quota slot safely and capture current PKT day status
   let quotaStatus: QuotaStatus | null = null;
@@ -381,11 +408,18 @@ export async function failAndCleanupDurableUploadTicket(
     });
   } catch (_) {}
 
-  // 3. Mark ticket state in Firestore
+  // 3. Remove from in-memory pending map
+  pendingDirectUploads.delete(ticket.attachmentId);
+
+  // 4. Mark ticket state in durable Firestore
   try {
     const db = getFirestoreDb();
     const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(ticket.attachmentId);
-    if (typeof docRef.set === 'function') {
+    if (typeof docRef.set !== 'function') {
+      if (isProd) {
+        throw new Error('Durable Firestore upload ticket update is unavailable in production.');
+      }
+    } else {
       await docRef.set(
         {
           status: 'failed',
@@ -395,10 +429,12 @@ export async function failAndCleanupDurableUploadTicket(
         { merge: true }
       );
     }
-  } catch (_) {}
-
-  // 4. Remove from in-memory pending map
-  pendingDirectUploads.delete(ticket.attachmentId);
+  } catch (err: any) {
+    if (isProd) {
+      throw err;
+    }
+    console.warn('[DirectUploadTicket] Notice: Could not mark failed ticket in Firestore:', err?.message || err);
+  }
 
   return { quotaStatus };
 }
@@ -412,25 +448,34 @@ export async function cancelDurableUploadTicket(
   attachmentId: string,
   requestingUserId: string
 ): Promise<CancelTicketResult> {
-  const db = getFirestoreDb();
   const now = Date.now();
+  const isProd = isProductionEnvironment();
 
   try {
+    const db = getFirestoreDb();
     let ticket: PendingDirectUploadTicket | null = null;
 
-    // Check Firestore doc first
+    // Check Firestore doc first; never ignore Firestore errors in production
     try {
       const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-      if (typeof docRef.get === 'function') {
+      if (typeof docRef.get !== 'function') {
+        if (isProd) {
+          throw new Error('Durable Firestore upload ticket lookup is unavailable in production.');
+        }
+      } else {
         const snap = await docRef.get();
         if (snap && snap.exists) {
           ticket = (typeof snap.data === 'function' ? snap.data() : snap.data) as PendingDirectUploadTicket;
         }
       }
-    } catch (_) {}
+    } catch (readErr: any) {
+      if (isProd) {
+        throw readErr;
+      }
+    }
 
-    // Fall back to memory cache
-    if (!ticket) {
+    // Fall back to memory cache exclusively in non-production environments
+    if (!ticket && !isProd) {
       ticket = pendingDirectUploads.get(attachmentId) || null;
     }
 
@@ -464,10 +509,14 @@ export async function cancelDurableUploadTicket(
       });
     } catch (_) {}
 
-    // Update Firestore state
+    // Update durable Firestore state; never ignore write failures in production
     try {
       const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-      if (typeof docRef.set === 'function') {
+      if (typeof docRef.set !== 'function') {
+        if (isProd) {
+          throw new Error('Durable Firestore upload ticket cancellation write is unavailable in production.');
+        }
+      } else {
         await docRef.set(
           {
             status: 'cancelled',
@@ -476,7 +525,11 @@ export async function cancelDurableUploadTicket(
           { merge: true }
         );
       }
-    } catch (_) {}
+    } catch (writeErr: any) {
+      if (isProd) {
+        throw writeErr;
+      }
+    }
 
     // Remove from in-memory cache
     pendingDirectUploads.delete(attachmentId);
@@ -495,12 +548,13 @@ export async function cancelDurableUploadTicket(
 }
 
 /**
- * Sweeps expired or abandoned direct upload tickets across Firestore and memory.
+ * Sweeps expired or abandoned direct upload tickets across Firestore (and non-production memory cache).
  * Releases reserved quota slots and deletes uncompleted objects from storage safely.
  * Restart-safe and serverless compatible.
  */
 export async function pruneExpiredDirectUploadTickets(): Promise<number> {
   const now = Date.now();
+  const isProd = isProductionEnvironment();
   let pruned = 0;
   const processedIds = new Set<string>();
 
@@ -508,7 +562,11 @@ export async function pruneExpiredDirectUploadTickets(): Promise<number> {
   try {
     const db = getFirestoreDb();
     const colRef = db.collection(UPLOAD_TICKETS_COLLECTION);
-    if (typeof colRef.where === 'function' && typeof colRef.get === 'function') {
+    if (typeof colRef.where !== 'function' || typeof colRef.get !== 'function') {
+      if (isProd) {
+        throw new Error('Durable Firestore upload ticket query is unavailable in production.');
+      }
+    } else {
       const snap = await colRef.where('status', 'in', ['pending', 'completing']).get();
       if (snap && Array.isArray(snap.docs)) {
         for (const doc of snap.docs) {
@@ -543,7 +601,11 @@ export async function pruneExpiredDirectUploadTickets(): Promise<number> {
               } else if (typeof colRef.doc === 'function') {
                 await colRef.doc(ticket.attachmentId).delete();
               }
-            } catch (_) {}
+            } catch (delErr: any) {
+              if (isProd) {
+                throw delErr;
+              }
+            }
 
             pendingDirectUploads.delete(ticket.attachmentId);
           }
@@ -551,35 +613,40 @@ export async function pruneExpiredDirectUploadTickets(): Promise<number> {
       }
     }
   } catch (err: any) {
+    if (isProd) {
+      throw err;
+    }
     console.warn('[DirectUploadTicket] Notice: Firestore pruning sweep encountered an error:', err?.message || err);
   }
 
-  // 2. Also sweep in-memory cache to handle test overrides where ticket.expiresAt is mutated in-memory
-  for (const [attachmentId, ticket] of pendingDirectUploads.entries()) {
-    if (processedIds.has(attachmentId)) continue;
-    if (ticket.expiresAt <= now || (ticket.status === 'completing' && ticket.lastUpdated && now - ticket.lastUpdated > 5 * 60 * 1000)) {
-      processedIds.add(attachmentId);
-      pruned++;
-      pendingDirectUploads.delete(attachmentId);
+  // 2. Sweep in-memory cache exclusively in non-production environments
+  if (!isProd) {
+    for (const [attachmentId, ticket] of pendingDirectUploads.entries()) {
+      if (processedIds.has(attachmentId)) continue;
+      if (ticket.expiresAt <= now || (ticket.status === 'completing' && ticket.lastUpdated && now - ticket.lastUpdated > 5 * 60 * 1000)) {
+        processedIds.add(attachmentId);
+        pruned++;
+        pendingDirectUploads.delete(attachmentId);
 
-      try {
-        await releaseUploadSlot(ticket.quotaReservation);
-      } catch (_) {}
+        try {
+          await releaseUploadSlot(ticket.quotaReservation);
+        } catch (_) {}
 
-      try {
-        await deleteAttachmentFromStorage(ticket.storagePath, {
-          requestingUserId: ticket.userId,
-          bucket: ticket.bucket
-        });
-      } catch (_) {}
+        try {
+          await deleteAttachmentFromStorage(ticket.storagePath, {
+            requestingUserId: ticket.userId,
+            bucket: ticket.bucket
+          });
+        } catch (_) {}
 
-      try {
-        const db = getFirestoreDb();
-        const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-        if (typeof docRef.delete === 'function') {
-          await docRef.delete();
-        }
-      } catch (_) {}
+        try {
+          const db = getFirestoreDb();
+          const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
+          if (typeof docRef.delete === 'function') {
+            await docRef.delete();
+          }
+        } catch (_) {}
+      }
     }
   }
 

@@ -188,28 +188,6 @@ export function ensureServerEnvLoaded(): void {
         }
       }
     }
-
-    // Container fallback: scan /proc for GEMINI_API_KEY if not already set
-    if (!process.env.GEMINI_API_KEY && fs.existsSync('/proc')) {
-      try {
-        const procDirs = fs.readdirSync('/proc');
-        for (const pid of procDirs) {
-          if (!/^\d+$/.test(pid)) continue;
-          const envFile = path.join('/proc', pid, 'environ');
-          if (fs.existsSync(envFile)) {
-            const raw = fs.readFileSync(envFile, 'utf-8');
-            const match = raw.split('\0').find((l) => l.startsWith('GEMINI_API_KEY='));
-            if (match) {
-              const val = match.slice('GEMINI_API_KEY='.length).trim();
-              if (val) {
-                process.env.GEMINI_API_KEY = val;
-                break;
-              }
-            }
-          }
-        }
-      } catch (_) {}
-    }
   } catch (_) {
     // Non-fatal in read-only or restricted serverless environments
   }
@@ -245,11 +223,24 @@ export function isConfiguredCredential(value: string): boolean {
  * Inspects process.env sequentially (skipping empty or placeholder values so valid fallback aliases win),
  * and falls back to a trimmed case-insensitive key scan for hosting dashboards with accidental key whitespace.
  */
+function isClientPrefixedEnvKey(name: string): boolean {
+  const upper = name.trim().toUpperCase();
+  return (
+    upper.startsWith('VITE_') ||
+    upper.startsWith('NEXT_PUBLIC_') ||
+    upper.startsWith('REACT_APP_')
+  );
+}
+
 export function resolveEnvCredential(...candidateNames: string[]): string {
   ensureServerEnvLoaded();
 
-  // 1. Direct lookup across candidate names in priority order
-  for (const name of candidateNames) {
+  const serverCandidateNames = candidateNames.filter(
+    (name) => typeof name === 'string' && !isClientPrefixedEnvKey(name)
+  );
+
+  // 1. Direct lookup across approved server candidate names in priority order
+  for (const name of serverCandidateNames) {
     const raw = process.env[name];
     if (typeof raw === 'string') {
       const sanitized = sanitizeCredentialValue(raw);
@@ -261,9 +252,10 @@ export function resolveEnvCredential(...candidateNames: string[]): string {
 
   // 2. Fallback: trimmed case-insensitive key match in process.env
   const envEntries = Object.entries(process.env);
-  for (const name of candidateNames) {
+  for (const name of serverCandidateNames) {
     const targetUpper = name.trim().toUpperCase();
     for (const [envKey, rawVal] of envEntries) {
+      if (isClientPrefixedEnvKey(envKey)) continue;
       if (typeof rawVal === 'string' && envKey.trim().toUpperCase() === targetUpper) {
         const sanitized = sanitizeCredentialValue(rawVal);
         if (isConfiguredCredential(sanitized)) {
@@ -457,12 +449,9 @@ export function getGroqApiKey(): string {
   return resolveEnvCredential(
     'GROQ_API_KEY',
     'ORVIX_GROQ_API_KEY',
-    'VITE_GROQ_API_KEY',
     'GROQ_KEY',
     'GROQ_API_TOKEN',
-    'GROQ_API_SECRET',
-    'NEXT_PUBLIC_GROQ_API_KEY',
-    'REACT_APP_GROQ_API_KEY'
+    'GROQ_API_SECRET'
   );
 }
 
@@ -470,13 +459,10 @@ export function getOpenRouterApiKey(): string {
   return resolveEnvCredential(
     'OPENROUTER_API_KEY',
     'ORVIX_OPENROUTER_API_KEY',
-    'VITE_OPENROUTER_API_KEY',
     'OPEN_ROUTER_API_KEY',
     'OPENROUTER_KEY',
     'OPENROUTER_API_TOKEN',
-    'OPENROUTER_API_SECRET',
-    'NEXT_PUBLIC_OPENROUTER_API_KEY',
-    'REACT_APP_OPENROUTER_API_KEY'
+    'OPENROUTER_API_SECRET'
   );
 }
 
@@ -484,19 +470,14 @@ export function getGeminiApiKey(): string {
   return resolveEnvCredential(
     'GEMINI_API_KEY',
     'ORVIX_GEMINI_API_KEY',
-    'VITE_GEMINI_API_KEY',
-    'GOOGLE_API_KEY',
-    'NEXT_PUBLIC_GEMINI_API_KEY',
-    'REACT_APP_GEMINI_API_KEY'
+    'GOOGLE_API_KEY'
   );
 }
 
 export function getSupabaseUrl(): string {
   const url = resolveEnvCredential(
     'SUPABASE_URL',
-    'ORVIX_SUPABASE_URL',
-    'NEXT_PUBLIC_SUPABASE_URL',
-    'VITE_SUPABASE_URL'
+    'ORVIX_SUPABASE_URL'
   );
   return url.trim().replace(/\/+$/, '');
 }
@@ -563,17 +544,13 @@ export function getSupabaseAttachmentCleanupBatchSize(): number {
 export function getCloudflareCredentials(): { accountId: string; apiToken: string } {
   const accountId = resolveEnvCredential(
     'CLOUDFLARE_ACCOUNT_ID',
-    'ORVIX_CLOUDFLARE_ACCOUNT_ID',
-    'VITE_CLOUDFLARE_ACCOUNT_ID',
-    'NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID'
+    'ORVIX_CLOUDFLARE_ACCOUNT_ID'
   );
   const apiToken = resolveEnvCredential(
     'CLOUDFLARE_API_TOKEN',
     'ORVIX_CLOUDFLARE_API_TOKEN',
-    'VITE_CLOUDFLARE_API_TOKEN',
     'CLOUDFLARE_TOKEN',
-    'CLOUDFLARE_API_KEY',
-    'NEXT_PUBLIC_CLOUDFLARE_API_TOKEN'
+    'CLOUDFLARE_API_KEY'
   );
   return { accountId, apiToken };
 }

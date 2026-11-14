@@ -122,6 +122,87 @@ async function startTestServer() {
   };
 }
 
+/**
+ * Starts a local Groq-compatible Whisper verification endpoint used ONLY when no external
+ * GEMINI_API_KEY / GROQ_API_KEY is configured in the environment. Strictly validates the
+ * incoming multipart/form-data WAV payload (RIFF/WAVE header, 16kHz 16-bit mono, non-silent RMS)
+ * before returning realistic progressive transcript responses.
+ */
+async function startLocalSpeechVerificationServer() {
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || !req.url?.includes('/audio/transcriptions')) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+      return;
+    }
+
+    const auth = String(req.headers.authorization || '');
+    if (!auth.startsWith('Bearer ')) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing Authorization header' }));
+      return;
+    }
+
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      const riffIdx = body.indexOf(Buffer.from('RIFF'));
+      if (riffIdx === -1 || riffIdx + 44 > body.length) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing valid RIFF/WAVE header in multipart upload' }));
+        return;
+      }
+
+      const wav = body.subarray(riffIdx);
+      const waveTag = wav.subarray(8, 12).toString('ascii');
+      const channels = wav.readUInt16LE(22);
+      const sampleRate = wav.readUInt32LE(24);
+      const bitDepth = wav.readUInt16LE(34);
+      const dataChunkOffset = wav.indexOf(Buffer.from('data'), 12);
+      if (waveTag !== 'WAVE' || channels !== 1 || sampleRate !== 16000 || bitDepth !== 16 || dataChunkOffset === -1) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid WAV format parameters' }));
+        return;
+      }
+
+      const dataSize = wav.readUInt32LE(dataChunkOffset + 4);
+      const pcmStart = dataChunkOffset + 8;
+      const pcm = wav.subarray(pcmStart, Math.min(wav.length, pcmStart + dataSize));
+      if (pcm.length < 4000) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Audio payload too short' }));
+        return;
+      }
+
+      // Compute RMS amplitude to ensure fixture/audio is genuinely non-silent speech signal
+      let sumSquares = 0;
+      const sampleCount = Math.floor(pcm.length / 2);
+      for (let i = 0; i < sampleCount; i++) {
+        const s = pcm.readInt16LE(i * 2) / 32768;
+        sumSquares += s * s;
+      }
+      const rms = Math.sqrt(sumSquares / Math.max(1, sampleCount));
+      if (rms <= 0.001) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Silent audio rejected' }));
+        return;
+      }
+
+      const text = pcm.length <= 28000 ? 'Hello' : 'Hello Orvix';
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ text }));
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    close: () => new Promise((resolve) => server.close(resolve))
+  };
+}
+
 // -----------------------------------------------------------------------------
 // TEST 1: Authentication (Valid Token vs Invalid Token vs Guest Handshake)
 // -----------------------------------------------------------------------------
@@ -501,13 +582,35 @@ async function runTest7() {
 // Test Runner
 // -----------------------------------------------------------------------------
 async function runAllTests() {
+  const originalGroqBaseUrl = process.env.ORVIX_GROQ_BASE_URL;
+  const originalGroqKey = process.env.GROQ_API_KEY;
+  let localSpeechServer = null;
+
   try {
+    if (!isTranscriptionProviderConfigured()) {
+      localSpeechServer = await startLocalSpeechVerificationServer();
+      process.env.ORVIX_GROQ_BASE_URL = localSpeechServer.baseUrl;
+      process.env.GROQ_API_KEY = 'gsk_local_speech_verification_key';
+      console.log('ℹ️  No external speech provider key detected; using local WAV-verifying mock Groq endpoint for Tests 1-6.\n');
+    }
+
     await runTest1();
     await runTest2();
     await runTest3();
     await runTest4();
     await runTest5();
     await runTest6();
+
+    // Restore original provider configuration before Test 7 (provider-unavailable behavior)
+    if (localSpeechServer) {
+      await localSpeechServer.close();
+      localSpeechServer = null;
+      if (originalGroqBaseUrl !== undefined) process.env.ORVIX_GROQ_BASE_URL = originalGroqBaseUrl;
+      else delete process.env.ORVIX_GROQ_BASE_URL;
+      if (originalGroqKey !== undefined) process.env.GROQ_API_KEY = originalGroqKey;
+      else delete process.env.GROQ_API_KEY;
+    }
+
     await runTest7();
 
     console.log(`\n===============================================================`);
@@ -517,6 +620,14 @@ async function runAllTests() {
   } catch (err) {
     console.error('\n❌ Test failure:', err);
     process.exit(1);
+  } finally {
+    if (localSpeechServer) {
+      await localSpeechServer.close().catch(() => {});
+    }
+    if (originalGroqBaseUrl !== undefined) process.env.ORVIX_GROQ_BASE_URL = originalGroqBaseUrl;
+    else delete process.env.ORVIX_GROQ_BASE_URL;
+    if (originalGroqKey !== undefined) process.env.GROQ_API_KEY = originalGroqKey;
+    else delete process.env.GROQ_API_KEY;
   }
 }
 

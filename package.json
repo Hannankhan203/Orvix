@@ -33,7 +33,8 @@
     "test:office-extraction": "node scripts/testOfficeDocumentExtraction.js",
     "test:ocr-packs": "node scripts/testMultilingualOcrPacks.js",
     "test:websocket-voice": "node scripts/testWebSocketVoiceStreaming.js",
-    "test": "npm run lint && node scripts/testDirectBase64ImageQuotaBypassRegression.js && node scripts/testWebLLMQuotaBypassRegression.js && node scripts/testServerlessDirectUploadDurable.js && node scripts/testDirectSupabaseUpload.js && node scripts/testWebSocketVoiceStreaming.js && node scripts/testMultilingualOcrPacks.js && node scripts/testSemanticRAG.js && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMultiTabConversationSync.js && node scripts/testMessageAlignmentOrdering.js && node scripts/testStoragePaginationReliability.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js && node scripts/testLiveResponseTimerOptimization.js && node scripts/testSupabaseConversationDeletionLifecycle.js && node scripts/testEditResendAttachmentCleanup.js && node scripts/testStorageProviderMetadataRegression.js && node scripts/testPrematureLocalAttachmentDeletion.js && node scripts/testOrphanedStagingUploadsRegression.js && node scripts/testSupabaseUploadFailureRegression.js && node scripts/testUploadDailyQuota.js"
+    "test:audit": "node scripts/testAudit001And030.js",
+    "test": "node scripts/runAllTests.js"
   },
   "dependencies": {
     "@e965/xlsx": "^0.20.3",

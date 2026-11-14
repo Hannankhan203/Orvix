@@ -285,50 +285,72 @@
               },
               "alternatives": {
                 "type": "array",
+                "maxItems": 20,
                 "description": "Sanitized history of alternative responses generated for an assistant turn.",
                 "items": {
                   "type": "object",
                   "properties": {
-                    "id": { "type": "string" },
-                    "parentMessageId": { "type": "string" },
-                    "sender": { "type": "string", "enum": ["assistant"] },
-                    "content": { "type": "string" },
-                    "provider": { "type": "string" },
-                    "modelUsed": { "type": "string" },
-                    "responseTimeMs": { "type": "number" },
-                    "timestamp": { "type": "string" },
-                    "createdAt": { "type": "number" },
-                    "referencedAttachments": { "type": "array" },
-                    "isError": { "type": "boolean" },
-                    "isStopped": { "type": "boolean" }
-                  }
+                    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "content": { "type": "string", "maxLength": 100000 },
+                    "modelUsed": { "type": "string", "maxLength": 120 },
+                    "provider": { "type": "string", "maxLength": 64 },
+                    "mode": { "type": "string", "enum": ["general", "coding", "writing", "learning"] },
+                    "responseTimeMs": { "type": "number", "minimum": 0 },
+                    "createdAtMs": { "type": "number", "minimum": 0 },
+                    "clientTimestamp": { "type": "string", "maxLength": 64 },
+                    "timestamp": { "type": "string", "maxLength": 64 },
+                    "parentMessageId": { "type": "string", "maxLength": 128 },
+                    "sender": { "type": "string", "enum": ["user", "assistant"] }
+                  },
+                  "required": ["id", "content"]
                 }
               },
               "attachments": {
                 "type": "array",
+                "maxItems": 20,
                 "description": "Sanitized attachment metadata and extracted text/OCR content (no binary blobs, base64, or data URLs).",
                 "items": {
                   "type": "object",
                   "properties": {
-                    "id": { "type": "string" },
-                    "name": { "type": "string" },
-                    "originalName": { "type": "string" },
-                    "size": { "type": "number" },
-                    "formattedSize": { "type": "string" },
-                    "type": { "type": "string" },
-                    "mimeType": { "type": "string" },
-                    "extension": { "type": "string" },
-                    "isImage": { "type": "boolean" },
-                    "status": { "type": "string" },
+                    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+                    "originalName": { "type": "string", "maxLength": 255 },
+                    "size": { "type": "number", "minimum": 0 },
+                    "type": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "extension": { "type": "string", "maxLength": 32 },
+                    "format": { "type": "string", "maxLength": 32 },
+                    "category": { "type": "string", "maxLength": 32 },
+                    "uploadedAt": { "type": "string", "maxLength": 64 },
                     "extraction": {
                       "type": "object",
-                      "description": "Sanitized document/image text extraction metadata and extracted text."
+                      "description": "Sanitized document/image text extraction metadata and extracted text.",
+                      "properties": {
+                        "status": { "type": "string", "maxLength": 64 },
+                        "type": { "type": "string", "maxLength": 64 },
+                        "format": { "type": "string", "maxLength": 32 },
+                        "text": { "type": "string", "maxLength": 50000 },
+                        "charCount": { "type": "number", "minimum": 0 },
+                        "wordCount": { "type": "number", "minimum": 0 },
+                        "totalWords": { "type": "number", "minimum": 0 },
+                        "totalCharacters": { "type": "number", "minimum": 0 },
+                        "lineCount": { "type": "number", "minimum": 0 },
+                        "confidence": { "type": "number", "minimum": 0 },
+                        "hasText": { "type": "boolean" },
+                        "truncated": { "type": "boolean" },
+                        "warnings": {
+                          "type": "array",
+                          "maxItems": 10,
+                          "items": { "type": "string", "maxLength": 200 }
+                        }
+                      }
                     }
-                  }
+                  },
+                  "required": ["id", "name", "size", "type"]
                 }
               },
               "referencedAttachments": {
                 "type": "array",
+                "maxItems": 20,
                 "description": "Sanitized attachment metadata referenced by an assistant response."
               },
               "createdAtMs": {

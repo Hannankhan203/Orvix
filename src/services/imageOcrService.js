@@ -606,7 +606,7 @@ function isNetworkOrOfflineVisionError(err) {
  * @returns {Promise<{ hasText: boolean, text: string } | null>}
  */
 export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = 'image/jpeg', apiKey = null, language = 'eng') {
-  const key = apiKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  const key = apiKey || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
   if (!key || key === 'MY_GEMINI_API_KEY') {
     return null;
   }
@@ -875,7 +875,7 @@ export async function extractImageText(
 
   // 4. PRIORITY 1: Gemini Vision AI when online and configured
   // Skipped immediately when client reports offline/preferLocal so zero cloud calls are made offline.
-  const geminiKey = apiKey || process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  const geminiKey = apiKey || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined);
   if (!isOfflineHint && geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
     try {
       const visionResult = await extractImageTextWithGeminiVision(imageBuffer, mimeType, geminiKey, activeLang);

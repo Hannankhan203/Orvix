@@ -3,7 +3,8 @@
  *
  * Verifies:
  * 1. Localhost baseline credential resolution.
- * 2. Production environment alias resolution (GROQ_API_KEY, VITE_GROQ_API_KEY, ORVIX_GROQ_API_KEY, etc.)
+ * 2. Production environment alias resolution (GROQ_API_KEY, ORVIX_GROQ_API_KEY, etc.)
+ *    with strict rejection of client-prefixed secret variables (VITE_*, NEXT_PUBLIC_*, REACT_APP_*)
  *    and OpenRouter alias resolution with whitespace and surrounding quote sanitization.
  * 3. /api/config availability endpoint reports correct boolean flags and strictly sets no-cache headers.
  * 4. Groq requests via server /api/chat execute successfully when configured.
@@ -124,10 +125,14 @@ try {
   const origEnv = { ...process.env };
   delete process.env.GROQ_API_KEY;
 
-  // Case C1: VITE_GROQ_API_KEY (frequently configured in Vite deployments)
+  // Case C1: Client-prefixed secrets must NEVER be accepted as server credentials
   process.env.VITE_GROQ_API_KEY = 'gsk_from_vite_env';
-  assert.equal(getGroqApiKey(), 'gsk_from_vite_env');
+  process.env.NEXT_PUBLIC_GROQ_API_KEY = 'gsk_from_next_public';
+  process.env.REACT_APP_GROQ_API_KEY = 'gsk_from_react_app';
+  assert.equal(getGroqApiKey(), '', 'Client-prefixed Groq secret variables must be rejected');
   delete process.env.VITE_GROQ_API_KEY;
+  delete process.env.NEXT_PUBLIC_GROQ_API_KEY;
+  delete process.env.REACT_APP_GROQ_API_KEY;
 
   // Case C2: ORVIX_GROQ_API_KEY
   process.env.ORVIX_GROQ_API_KEY = 'gsk_from_orvix_env';
@@ -149,10 +154,14 @@ try {
   // D. Alias resolution for OpenRouter
   delete process.env.OPENROUTER_API_KEY;
 
-  // Case D1: VITE_OPENROUTER_API_KEY
+  // Case D1: Client-prefixed OpenRouter secrets must be rejected
   process.env.VITE_OPENROUTER_API_KEY = 'sk-or-from-vite';
-  assert.equal(getOpenRouterApiKey(), 'sk-or-from-vite');
+  process.env.NEXT_PUBLIC_OPENROUTER_API_KEY = 'sk-or-from-next-public';
+  process.env.REACT_APP_OPENROUTER_API_KEY = 'sk-or-from-react-app';
+  assert.equal(getOpenRouterApiKey(), '', 'Client-prefixed OpenRouter secret variables must be rejected');
   delete process.env.VITE_OPENROUTER_API_KEY;
+  delete process.env.NEXT_PUBLIC_OPENROUTER_API_KEY;
+  delete process.env.REACT_APP_OPENROUTER_API_KEY;
 
   // Case D2: ORVIX_OPENROUTER_API_KEY
   process.env.ORVIX_OPENROUTER_API_KEY = 'sk-or-from-orvix';

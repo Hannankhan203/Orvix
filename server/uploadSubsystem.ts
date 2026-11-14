@@ -2837,7 +2837,7 @@ export function registerUploadRoutes(app: express.Express) {
 
   // Direct Supabase Upload: Create Short-Lived Signed Upload URL
   app.post(['/api/upload/direct/signed-url', '/upload/direct/signed-url'], async (req, res) => {
-    void pruneExpiredDirectUploadTickets();
+    opportunisticDirectUploadPrune();
 
     const authenticatedUserId =
       (req as any).authenticatedUploadUserId ||
@@ -3043,7 +3043,19 @@ export function registerUploadRoutes(app: express.Express) {
       isPermanent: String(req.body?.isPermanent || req.body?.permanent || '').toLowerCase() === 'true',
       status: 'pending'
     };
-    await createDurableUploadTicket(ticket);
+    try {
+      await createDurableUploadTicket(ticket);
+    } catch (ticketErr: any) {
+      console.error('[DirectUpload] Durable ticket persistence failed:', ticketErr?.message || ticketErr);
+      try {
+        await releaseUploadSlot(quotaReservation.reservation);
+      } catch (_) {}
+      return res.status(503).json({
+        error: 'Upload ticket persistence unavailable. Please try again later.',
+        code: 'TICKET_PERSISTENCE_UNAVAILABLE',
+        status: 'SERVICE_UNAVAILABLE'
+      });
+    }
     opportunisticDirectUploadPrune();
 
     attachQuotaHeaders(
@@ -3096,12 +3108,22 @@ export function registerUploadRoutes(app: express.Express) {
 
     const quotaIdentity = buildAuthenticatedQuotaIdentity(authenticatedUserId);
 
+    try {
     const claimResult = await claimDirectUploadTicketForCompletion(attachmentId, authenticatedUserId, chatId);
     if (!claimResult.success) {
       if (claimResult.isExpired && claimResult.ticket) {
-        const cleanupRes = await failAndCleanupDurableUploadTicket(claimResult.ticket, 'EXPIRED');
-        if (cleanupRes.quotaStatus) {
-          attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+        try {
+          const cleanupRes = await failAndCleanupDurableUploadTicket(claimResult.ticket, 'EXPIRED');
+          if (cleanupRes.quotaStatus) {
+            attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+          }
+        } catch (cleanupErr: any) {
+          console.error('[DirectUpload] Expired ticket durable cleanup failed:', cleanupErr?.message || cleanupErr);
+          return res.status(503).json({
+            error: 'Upload ticket persistence unavailable during expiration cleanup.',
+            code: 'TICKET_PERSISTENCE_UNAVAILABLE',
+            status: 'SERVICE_UNAVAILABLE'
+          });
         }
       }
       return res.status(claimResult.status).json({
@@ -3314,7 +3336,16 @@ export function registerUploadRoutes(app: express.Express) {
     }
     docSet.add(ticket.attachmentId);
 
-    await finalizeCompletedDirectUploadTicket(attachmentId);
+    try {
+      await finalizeCompletedDirectUploadTicket(attachmentId);
+    } catch (finalizeErr: any) {
+      console.error('[DirectUpload] Failed to finalize durable ticket in Firestore:', finalizeErr?.message || finalizeErr);
+      return res.status(503).json({
+        error: 'Upload ticket persistence unavailable while finalizing upload.',
+        code: 'TICKET_PERSISTENCE_UNAVAILABLE',
+        status: 'SERVICE_UNAVAILABLE'
+      });
+    }
 
     const serializedAtt = serializeRegisteredAttachment(record);
 
@@ -3325,6 +3356,15 @@ export function registerUploadRoutes(app: express.Express) {
       attachment: serializedAtt,
       quota: committedStatus
     });
+    } catch (routeErr: any) {
+      console.error('[DirectUpload] Complete failed due to persistence/service error:', routeErr?.message || routeErr);
+      if (res.headersSent) return;
+      return res.status(503).json({
+        error: 'Upload ticket persistence unavailable. Please try again later.',
+        code: 'TICKET_PERSISTENCE_UNAVAILABLE',
+        status: 'SERVICE_UNAVAILABLE'
+      });
+    }
   });
 
   // Direct Supabase Upload: Cancel & Rollback Upload Ticket
@@ -3337,10 +3377,10 @@ export function registerUploadRoutes(app: express.Express) {
     }
     const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
     const cancelRes = await cancelDurableUploadTicket(attachmentId, authenticatedUserId);
-    if (!cancelRes.success && cancelRes.status === 403) {
-      return res.status(403).json({
-        error: cancelRes.error,
-        code: cancelRes.code
+    if (!cancelRes.success) {
+      return res.status(cancelRes.status || 500).json({
+        error: cancelRes.error || 'An internal error occurred during upload cancellation.',
+        code: cancelRes.code || 'CANCEL_FAILED'
       });
     }
 
