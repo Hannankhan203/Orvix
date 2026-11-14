@@ -1,7 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, Sparkles } from 'lucide-react';
 import Button from '../ui/Button.jsx';
-import { getProviderConfigAvailability } from '../../services/providerModelSanitizer.js';
+import {
+  getProviderConfigAvailability,
+  normalizeProviderId
+} from '../../services/providerModelSanitizer.js';
+import { findMatchingAlternative } from '../../services/alternativeResponseService.js';
 
 /**
  * AlternativeResponseNav Component
@@ -176,8 +180,10 @@ export default function AlternativeResponseNav({
               <div className="alternative-provider-list">
                 {selectableModels.length > 0 ? (
                   selectableModels.map((provider) => {
-                    const isCurrent = provider.id === currentProviderId;
-                    const hasExistingAlt = (message.alternatives || []).some((a) => a.provider === provider.id);
+                    const isCurrent =
+                      normalizeProviderId(provider.id) === normalizeProviderId(currentProviderId);
+                    const existingAlt = findMatchingAlternative(message, provider.id);
+                    const hasExistingAlt = Boolean(existingAlt);
                     const altAvailability = getProviderConfigAvailability(provider.id, providerConfig);
                     const isConfirmedUnconfigured = altAvailability.state === 'unconfigured';
                     return (
@@ -186,10 +192,18 @@ export default function AlternativeResponseNav({
                         type="button"
                         className={`alternative-provider-option ${isCurrent ? 'is-active-provider' : ''}`}
                         onClick={() => {
+                          if (isCurrent) return;
                           setShowAltMenu(false);
                           onGenerateAlternative(message, provider.id);
                         }}
-                        disabled={isLoading}
+                        disabled={isLoading || isCurrent}
+                        title={
+                          isCurrent
+                            ? 'Currently viewing this model response'
+                            : hasExistingAlt
+                            ? 'Switch to existing response from this model'
+                            : undefined
+                        }
                         role="menuitem"
                       >
                         <div className="alt-provider-info">
@@ -201,7 +215,7 @@ export default function AlternativeResponseNav({
                             Current
                           </span>
                         ) : hasExistingAlt ? (
-                          <span className="alt-provider-existing-tag" title="An alternative with this model was generated">
+                          <span className="alt-provider-existing-tag" title="Switch to existing response from this model">
                             Generated
                           </span>
                         ) : isConfirmedUnconfigured ? (

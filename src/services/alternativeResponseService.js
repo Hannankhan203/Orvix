@@ -44,7 +44,52 @@ export function generateAlternativeId(provider = 'assistant') {
  * @returns {Object} Clean ResponseAlternative object
  */
 export { sanitizeModelForProvider } from './providerModelSanitizer.js';
-import { sanitizeStoredDisplayModel } from './providerModelSanitizer.js';
+import {
+  normalizeProviderId,
+  sanitizeModelForProvider,
+  sanitizeStoredDisplayModel
+} from './providerModelSanitizer.js';
+
+function assignOptionalRecoveryFields(target, source = {}) {
+  if (!source || typeof source !== 'object') return target;
+  if (typeof source.failedPrompt === 'string' && source.failedPrompt.length > 0) {
+    target.failedPrompt = source.failedPrompt;
+  }
+  if (typeof source.failedProvider === 'string' && source.failedProvider.length > 0) {
+    target.failedProvider = source.failedProvider;
+  }
+  if (typeof source.canSwitchProvider === 'boolean') {
+    target.canSwitchProvider = source.canSwitchProvider;
+  }
+  if (typeof source.errorCode === 'string' && source.errorCode.length > 0) {
+    target.errorCode = source.errorCode;
+  }
+  if (source.status !== undefined && source.status !== null) {
+    target.status = source.status;
+  }
+  if (source.httpStatus !== undefined && source.httpStatus !== null) {
+    target.httpStatus = source.httpStatus;
+  }
+  if (Array.isArray(source.suggestedProviders) && source.suggestedProviders.length > 0) {
+    target.suggestedProviders = source.suggestedProviders;
+  }
+  return target;
+}
+
+function projectAlternativeRecoveryFields(alt = {}) {
+  return {
+    isError: Boolean(alt.isError),
+    isStopped: Boolean(alt.isStopped),
+    isInterrupted: Boolean(alt.isInterrupted),
+    failedPrompt: typeof alt.failedPrompt === 'string' && alt.failedPrompt.length > 0 ? alt.failedPrompt : undefined,
+    failedProvider: typeof alt.failedProvider === 'string' && alt.failedProvider.length > 0 ? alt.failedProvider : undefined,
+    canSwitchProvider: typeof alt.canSwitchProvider === 'boolean' ? alt.canSwitchProvider : undefined,
+    errorCode: typeof alt.errorCode === 'string' && alt.errorCode.length > 0 ? alt.errorCode : undefined,
+    status: alt.status !== undefined && alt.status !== null ? alt.status : undefined,
+    httpStatus: alt.httpStatus !== undefined && alt.httpStatus !== null ? alt.httpStatus : undefined,
+    suggestedProviders: Array.isArray(alt.suggestedProviders) && alt.suggestedProviders.length > 0 ? alt.suggestedProviders : undefined
+  };
+}
 
 export function createAlternativeRecord({
   id = null,
@@ -59,12 +104,20 @@ export function createAlternativeRecord({
   createdAtMs = null,
   referencedAttachments = [],
   isError = false,
-  isStopped = false
+  isStopped = false,
+  isInterrupted = false,
+  failedPrompt = undefined,
+  failedProvider = undefined,
+  canSwitchProvider = undefined,
+  errorCode = undefined,
+  status = undefined,
+  httpStatus = undefined,
+  suggestedProviders = undefined
 } = {}) {
   const chosenProvider = provider || 'gemini';
   const cleanModel = sanitizeStoredDisplayModel(chosenProvider, modelUsed);
   const resolvedCreated = typeof createdAt === 'number' && !isNaN(createdAt) ? createdAt : Date.now();
-  return {
+  const record = {
     id: id || generateAlternativeId(chosenProvider),
     parentMessageId: parentMessageId || null,
     interactionId: interactionId || null,
@@ -78,8 +131,18 @@ export function createAlternativeRecord({
     createdAtMs: typeof createdAtMs === 'number' && !isNaN(createdAtMs) ? createdAtMs : resolvedCreated,
     referencedAttachments: Array.isArray(referencedAttachments) ? [...referencedAttachments] : [],
     isError: Boolean(isError),
-    isStopped: Boolean(isStopped)
+    isStopped: Boolean(isStopped),
+    isInterrupted: Boolean(isInterrupted)
   };
+  return assignOptionalRecoveryFields(record, {
+    failedPrompt,
+    failedProvider,
+    canSwitchProvider,
+    errorCode,
+    status,
+    httpStatus,
+    suggestedProviders
+  });
 }
 
 /**
@@ -100,6 +163,29 @@ function hasActiveAlternativeRecord(alternatives, activeAlternativeId) {
     if (alt && alt.id === activeAlternativeId) {
       return true;
     }
+  }
+  return false;
+}
+
+function activeAlternativeRequiresProjection(message) {
+  if (!message || !Array.isArray(message.alternatives) || !message.activeAlternativeId) {
+    return false;
+  }
+  const activeAlt = message.alternatives.find((a) => a && a.id === message.activeAlternativeId);
+  if (!activeAlt) return false;
+  if (
+    Boolean(message.isError) !== Boolean(activeAlt.isError) ||
+    Boolean(message.isStopped) !== Boolean(activeAlt.isStopped) ||
+    Boolean(message.isInterrupted) !== Boolean(activeAlt.isInterrupted)
+  ) {
+    return true;
+  }
+  if (
+    activeAlt.failedPrompt !== message.failedPrompt ||
+    activeAlt.failedProvider !== message.failedProvider ||
+    activeAlt.errorCode !== message.errorCode
+  ) {
+    return true;
   }
   return false;
 }
@@ -128,7 +214,8 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
     message.activeAlternativeId &&
     (!parentMessageId || message.parentMessageId === parentMessageId) &&
     (!interactionId || message.interactionId === interactionId) &&
-    hasActiveAlternativeRecord(message.alternatives, message.activeAlternativeId)
+    hasActiveAlternativeRecord(message.alternatives, message.activeAlternativeId) &&
+    !activeAlternativeRequiresProjection(message)
   ) {
     return message;
   }
@@ -161,7 +248,15 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
         createdAtMs: alt.createdAtMs || createdAtMs,
         referencedAttachments: alt.referencedAttachments || message.referencedAttachments || [],
         isError: alt.isError,
-        isStopped: alt.isStopped
+        isStopped: alt.isStopped,
+        isInterrupted: alt.isInterrupted,
+        failedPrompt: alt.failedPrompt,
+        failedProvider: alt.failedProvider,
+        canSwitchProvider: alt.canSwitchProvider,
+        errorCode: alt.errorCode,
+        status: alt.status,
+        httpStatus: alt.httpStatus,
+        suggestedProviders: alt.suggestedProviders
       })
     );
   } else {
@@ -181,7 +276,15 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
         createdAtMs,
         referencedAttachments: message.referencedAttachments || [],
         isError: message.isError,
-        isStopped: message.isStopped
+        isStopped: message.isStopped,
+        isInterrupted: message.isInterrupted,
+        failedPrompt: message.failedPrompt,
+        failedProvider: message.failedProvider,
+        canSwitchProvider: message.canSwitchProvider,
+        errorCode: message.errorCode,
+        status: message.status,
+        httpStatus: message.httpStatus,
+        suggestedProviders: message.suggestedProviders
       })
     ];
   }
@@ -212,7 +315,8 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
     referencedAttachments:
       activeAlt.referencedAttachments && activeAlt.referencedAttachments.length > 0
         ? activeAlt.referencedAttachments
-        : message.referencedAttachments
+        : message.referencedAttachments,
+    ...projectAlternativeRecoveryFields(activeAlt)
   };
 }
 
@@ -247,13 +351,14 @@ export function addAlternativeToAssistantMessage(assistantMessage, newAlternativ
     referencedAttachments:
       newAlternative.referencedAttachments && newAlternative.referencedAttachments.length > 0
         ? newAlternative.referencedAttachments
-        : normalized.referencedAttachments
+        : normalized.referencedAttachments,
+    ...projectAlternativeRecoveryFields(newAlternative)
   };
 }
 
 /**
  * Switches the active alternative of an assistant message to targetAlternativeId.
- * Updates projected properties (content, provider, model, responseTimeMs) accordingly.
+ * Updates projected properties (content, provider, model, responseTimeMs, error/recovery state) accordingly.
  *
  * @param {Object} assistantMessage - Target assistant message
  * @param {string} targetAlternativeId - ID of alternative to make active
@@ -277,10 +382,12 @@ export function switchActiveAlternativeInMessage(assistantMessage, targetAlterna
     modelUsed: targetAlt.modelUsed,
     responseTimeMs: targetAlt.responseTimeMs,
     timestamp: targetAlt.timestamp || assistantMessage.timestamp,
+    isStreaming: Boolean(targetAlt.isStreaming),
     referencedAttachments:
       targetAlt.referencedAttachments && targetAlt.referencedAttachments.length > 0
         ? targetAlt.referencedAttachments
-        : assistantMessage.referencedAttachments
+        : assistantMessage.referencedAttachments,
+    ...projectAlternativeRecoveryFields(targetAlt)
   };
 }
 
@@ -390,14 +497,11 @@ export function replaceActiveAlternativeForRegeneration(
     suggestedProviders: undefined
   });
 
-  if (typeof requestStartTime === 'number') {
-    return {
-      ...updated,
-      requestStartTime
-    };
-  }
-
-  return updated;
+  return {
+    ...updated,
+    isRegeneration: true,
+    ...(typeof requestStartTime === 'number' ? { requestStartTime } : {})
+  };
 }
 
 /**
@@ -412,6 +516,62 @@ export function getActiveAlternative(assistantMessage) {
   if (alts.length === 0) return null;
   const activeId = normalized.activeAlternativeId;
   return alts.find((a) => a.id === activeId) || alts[0] || null;
+}
+
+/**
+ * Finds an existing alternative matching the requested provider (and model when explicitly specified).
+ * Uses consistent provider/model normalization so aliases resolve deterministically without creating duplicates.
+ *
+ * @param {Object} assistantMessage
+ * @param {string|{ provider?: string, model?: string }} targetProvider
+ * @param {string|null} [targetModel=null]
+ * @returns {Object|null}
+ */
+export function findMatchingAlternative(assistantMessage, targetProvider, targetModel = null) {
+  if (!assistantMessage || !targetProvider) return null;
+
+  const rawProvider =
+    typeof targetProvider === 'object' && targetProvider?.provider
+      ? targetProvider.provider
+      : targetProvider;
+  const rawModel =
+    targetModel !== null && targetModel !== undefined
+      ? targetModel
+      : typeof targetProvider === 'object' && targetProvider?.model
+      ? targetProvider.model
+      : null;
+
+  const normalizedProvider = normalizeProviderId(rawProvider);
+  if (!normalizedProvider) return null;
+
+  const normalized = normalizeAssistantMessage(assistantMessage);
+  const alts = Array.isArray(normalized?.alternatives) ? normalized.alternatives : [];
+  if (alts.length === 0) return null;
+
+  const normalizedTargetModel = rawModel
+    ? sanitizeModelForProvider(normalizedProvider, rawModel)
+    : null;
+
+  const matches = alts.filter((alt) => {
+    if (!alt) return false;
+    const altProvider = normalizeProviderId(alt.provider);
+    if (altProvider !== normalizedProvider) return false;
+    if (normalizedTargetModel && alt.modelUsed) {
+      const altModel = sanitizeModelForProvider(altProvider, alt.modelUsed);
+      if (altModel && altModel !== normalizedTargetModel) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  if (matches.length === 0) return null;
+
+  const activeMatch = matches.find((a) => a.id === normalized.activeAlternativeId);
+  if (activeMatch) return activeMatch;
+
+  const healthyMatch = matches.find((a) => !a.isError && !a.isInterrupted);
+  return healthyMatch || matches[0];
 }
 
 /**
@@ -506,7 +666,8 @@ export function ensureConversationAlternatives(messages = []) {
         msg.interactionId &&
         Array.isArray(msg.alternatives) &&
         msg.alternatives.length > 0 &&
-        hasActiveAlternativeRecord(msg.alternatives, msg.activeAlternativeId)
+        hasActiveAlternativeRecord(msg.alternatives, msg.activeAlternativeId) &&
+        !activeAlternativeRequiresProjection(msg)
       ) {
         continue;
       }
@@ -533,7 +694,8 @@ function isFastNormalizedAssistantForUser(msg, parentUser) {
   if (!msg || !parentUser || !parentUser.id) return false;
   if (msg.parentMessageId !== parentUser.id) return false;
   if (!msg.interactionId && parentUser.interactionId) return false;
-  return hasActiveAlternativeRecord(msg.alternatives, msg.activeAlternativeId);
+  if (!hasActiveAlternativeRecord(msg.alternatives, msg.activeAlternativeId)) return false;
+  return !activeAlternativeRequiresProjection(msg);
 }
 
 function canReuseMessageSlotOrder(prevMsg, nextMsg) {

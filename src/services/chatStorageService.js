@@ -754,10 +754,15 @@ export function sanitizeMessageForStorage(msg) {
 }
 
 export function buildFirestoreMessagePayload(targetMessage) {
+  const safeContent =
+    typeof targetMessage.content === 'string' && targetMessage.content.length > 0
+      ? targetMessage.content
+      : ' ';
+
   return {
     id: targetMessage.id,
     sender: targetMessage.sender,
-    content: targetMessage.content,
+    content: safeContent,
     modelUsed: targetMessage.modelUsed || null,
     provider: targetMessage.provider || null,
     responseTimeMs: typeof targetMessage.responseTimeMs === 'number' ? targetMessage.responseTimeMs : null,
@@ -766,25 +771,57 @@ export function buildFirestoreMessagePayload(targetMessage) {
     createdAtMs: typeof targetMessage.createdAtMs === 'number' ? targetMessage.createdAtMs : Date.now(),
     activeAlternativeId: targetMessage.activeAlternativeId || null,
     alternatives: Array.isArray(targetMessage.alternatives)
-      ? targetMessage.alternatives.map((alt) => ({
-          id: alt.id,
-          parentMessageId: alt.parentMessageId || targetMessage.parentMessageId || null,
-          sender: 'assistant',
-          content: typeof alt.content === 'string' ? alt.content : '',
-          provider: alt.provider || targetMessage.provider || 'gemini',
-          modelUsed: alt.modelUsed || null,
-          responseTimeMs: typeof alt.responseTimeMs === 'number' ? alt.responseTimeMs : null,
-          timestamp: alt.timestamp || '',
-          createdAt: typeof alt.createdAt === 'number' ? alt.createdAt : Date.now(),
-          attachments: Array.isArray(alt.attachments)
-            ? alt.attachments.map(serializeAttachmentForStorage)
-            : [],
-          referencedAttachments: Array.isArray(alt.referencedAttachments)
-            ? alt.referencedAttachments.map(serializeAttachmentForStorage)
-            : [],
-          isError: Boolean(alt.isError),
-          isStopped: Boolean(alt.isStopped)
-        }))
+      ? targetMessage.alternatives.map((alt) => {
+          const entry = {
+            id: alt.id,
+            parentMessageId: alt.parentMessageId || targetMessage.parentMessageId || null,
+            interactionId: alt.interactionId || targetMessage.interactionId || null,
+            sender: 'assistant',
+            content: typeof alt.content === 'string' ? alt.content : '',
+            provider: alt.provider || targetMessage.provider || 'gemini',
+            modelUsed: alt.modelUsed || null,
+            responseTimeMs: typeof alt.responseTimeMs === 'number' ? alt.responseTimeMs : null,
+            timestamp: alt.timestamp || '',
+            createdAt: typeof alt.createdAt === 'number' ? alt.createdAt : Date.now(),
+            createdAtMs:
+              typeof alt.createdAtMs === 'number'
+                ? alt.createdAtMs
+                : typeof alt.createdAt === 'number'
+                ? alt.createdAt
+                : Date.now(),
+            attachments: Array.isArray(alt.attachments)
+              ? alt.attachments.map(serializeAttachmentForStorage)
+              : [],
+            referencedAttachments: Array.isArray(alt.referencedAttachments)
+              ? alt.referencedAttachments.map(serializeAttachmentForStorage)
+              : [],
+            isError: Boolean(alt.isError),
+            isStopped: Boolean(alt.isStopped),
+            isInterrupted: Boolean(alt.isInterrupted)
+          };
+          if (typeof alt.failedPrompt === 'string' && alt.failedPrompt.length > 0) {
+            entry.failedPrompt = alt.failedPrompt;
+          }
+          if (typeof alt.failedProvider === 'string' && alt.failedProvider.length > 0) {
+            entry.failedProvider = alt.failedProvider;
+          }
+          if (typeof alt.canSwitchProvider === 'boolean') {
+            entry.canSwitchProvider = alt.canSwitchProvider;
+          }
+          if (typeof alt.errorCode === 'string' && alt.errorCode.length > 0) {
+            entry.errorCode = alt.errorCode;
+          }
+          if (alt.status !== undefined && alt.status !== null) {
+            entry.status = alt.status;
+          }
+          if (alt.httpStatus !== undefined && alt.httpStatus !== null) {
+            entry.httpStatus = alt.httpStatus;
+          }
+          if (Array.isArray(alt.suggestedProviders) && alt.suggestedProviders.length > 0) {
+            entry.suggestedProviders = alt.suggestedProviders;
+          }
+          return entry;
+        })
       : [],
     attachments: Array.isArray(targetMessage.attachments)
       ? targetMessage.attachments.map(serializeAttachmentForStorage)
@@ -1216,13 +1253,38 @@ export async function updateChatMode(userId, chatId, mode) {
  * @param {string} chatId - Chat document ID
  * @param {Object} message - Message object
  */
+export function shouldPersistChatMessage(userId, chatId, message) {
+  if (!message || (message.sender !== 'user' && message.sender !== 'assistant')) {
+    return false;
+  }
+  if (!message.isError) {
+    return true;
+  }
+  if (message.sender !== 'assistant') {
+    return false;
+  }
+  if (Boolean(message.isRegeneration)) {
+    return true;
+  }
+  if (Array.isArray(message.alternatives) && message.alternatives.length > 1) {
+    return true;
+  }
+  if (userId && chatId && message.id) {
+    const existingCached = getCachedChatMessages(userId, chatId);
+    if (existingCached.some((m) => m && m.id === message.id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function saveChatMessage(userId, chatId, message) {
   if (!userId || !chatId || !message?.id) {
     return;
   }
 
-  // Never persist temporary mock messages, loading states, or failed error messages
-  if (message.isError || (message.sender !== 'user' && message.sender !== 'assistant')) {
+  // Skip ephemeral non-persisted errors while persisting failed regenerations and multi-alternative states
+  if (!shouldPersistChatMessage(userId, chatId, message)) {
     return;
   }
 
@@ -2172,7 +2234,15 @@ export async function syncOfflineUserChatsToFirestore(userId) {
 
         const localMessages = getCachedChatMessages(userId, localChat.id);
         const pendingMessages = localMessages.filter(
-          (m) => m && m.pendingSync && !m.isError && (m.sender === 'user' || m.sender === 'assistant')
+          (m) =>
+            m &&
+            m.pendingSync &&
+            (m.sender === 'user' ||
+              (m.sender === 'assistant' &&
+                (!m.isError ||
+                  Boolean(m.isRegeneration) ||
+                  (Array.isArray(m.alternatives) && m.alternatives.length > 1) ||
+                  Boolean(m.failedPrompt))))
         );
 
         const needsChatSync = Boolean(
