@@ -719,6 +719,233 @@ await runCase('4. Stopping mid-stream during normal Regenerate updates only the 
   assert.equal(reloaded[1].alternatives[1].content, 'Partial ');
 });
 
+await runCase('5. Scenario A: Clicking normal Regenerate 3x on same provider (Grok) keeps count at 1 and leaves only latest response', async () => {
+  const harness = createSimulationHarness();
+  const now = 1718000080000;
+  const userMsg = {
+    id: `user-${now}`,
+    interactionId: `interaction-${now}`,
+    sender: 'user',
+    content: 'Summarize HTTP/3 in one paragraph.',
+    timestamp: '10:20 AM',
+    createdAt: now,
+    createdAtMs: now
+  };
+  const initialAssistant = normalizeAssistantMessage(
+    {
+      id: `groq-${now}-assistant`,
+      interactionId: userMsg.interactionId,
+      parentMessageId: userMsg.id,
+      sender: 'assistant',
+      provider: 'groq',
+      modelUsed: 'openai/gpt-oss-120b',
+      content: '',
+      timestamp: '10:20 AM',
+      createdAt: now,
+      createdAtMs: now,
+      isStreaming: true
+    },
+    userMsg
+  );
+
+  harness.setInitialMessages([userMsg, initialAssistant]);
+  await harness.persistMessageSafe('chat-regen-1', userMsg);
+
+  await harness.runStream({
+    assistantMessageId: initialAssistant.id,
+    providerToUse: 'groq',
+    modelToUse: 'openai/gpt-oss-120b',
+    promptText: userMsg.content,
+    streamRequest: async ({ onStart, onChunk }) => {
+      onStart({ modelUsed: 'openai/gpt-oss-120b', provider: 'groq' });
+      onChunk('Grok v1 answer.', 'Grok v1 answer.');
+      return { text: 'Grok v1 answer.', modelUsed: 'openai/gpt-oss-120b', provider: 'groq' };
+    }
+  });
+
+  const initialMsg = harness.getMessages().find((m) => m.id === initialAssistant.id);
+  const originalAltId = initialMsg.alternatives[0].id;
+  assert.equal(initialMsg.alternatives.length, 1);
+
+  for (let round = 2; round <= 4; round++) {
+    const current = harness.getMessages().find((m) => m.id === initialAssistant.id);
+    const nextText = `Grok v${round} answer.`;
+    await harness.regenerateActiveResponse(
+      current,
+      async ({ onStart, onChunk }) => {
+        onStart({ modelUsed: 'openai/gpt-oss-120b', provider: 'groq' });
+        onChunk(nextText, nextText);
+        return { text: nextText, modelUsed: 'openai/gpt-oss-120b', provider: 'groq' };
+      },
+      { freshTimestamp: `10:2${round} AM`, requestStartTime: 200 * round }
+    );
+
+    const afterRound = harness.getMessages().find((m) => m.id === initialAssistant.id);
+    assert.equal(afterRound.alternatives.length, 1, `Round ${round}: alternative count must remain 1`);
+    assert.equal(afterRound.activeAlternativeId, originalAltId);
+    assert.equal(afterRound.alternatives[0].id, originalAltId);
+    assert.equal(afterRound.content, nextText);
+    assert.equal(getAlternativeMetrics(afterRound).total, 1);
+  }
+
+  const finalSerialized = JSON.stringify(harness.getMessages());
+  assert.equal(finalSerialized.includes('Grok v1 answer.'), false);
+  assert.equal(finalSerialized.includes('Grok v2 answer.'), false);
+  assert.equal(finalSerialized.includes('Grok v3 answer.'), false);
+  assert.equal(finalSerialized.includes('Grok v4 answer.'), true);
+
+  const reloaded = harness.simulateReloadFromFirestore();
+  assert.equal(reloaded[1].alternatives.length, 1);
+  assert.equal(reloaded[1].content, 'Grok v4 answer.');
+  assert.equal(JSON.stringify(reloaded).includes('Grok v1 answer.'), false);
+  assert.equal(JSON.stringify(reloaded).includes('Grok v2 answer.'), false);
+  assert.equal(JSON.stringify(reloaded).includes('Grok v3 answer.'), false);
+
+  const localCached = harness.getLocalCache();
+  assert.equal(localCached[1].alternatives.length, 1);
+  assert.equal(localCached[1].content, 'Grok v4 answer.');
+});
+
+await runCase('6. Scenario D: 3+ alternatives — regenerating the middle alternative preserves its position and all neighbors', async () => {
+  const harness = createSimulationHarness();
+  const now = 1718000120000;
+  const userMsg = {
+    id: `user-${now}`,
+    interactionId: `interaction-${now}`,
+    sender: 'user',
+    content: 'Compare REST, GraphQL, and gRPC.',
+    timestamp: '10:30 AM',
+    createdAt: now,
+    createdAtMs: now
+  };
+  const altGrok = createAlternativeRecord({
+    id: `alt-grok-${now}`,
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'groq',
+    modelUsed: 'openai/gpt-oss-120b',
+    content: 'Grok comparison v1.',
+    responseTimeMs: 210,
+    timestamp: '10:30 AM',
+    createdAt: now,
+    createdAtMs: now
+  });
+  const altCloudflare = createAlternativeRecord({
+    id: `alt-cf-${now}`,
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'cloudflare',
+    modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+    content: 'Cloudflare comparison old.',
+    responseTimeMs: 310,
+    timestamp: '10:31 AM',
+    createdAt: now + 1000,
+    createdAtMs: now + 1000
+  });
+  const altGemini = createAlternativeRecord({
+    id: `alt-gem-${now}`,
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'gemini',
+    modelUsed: 'gemini-3.8-flash',
+    content: 'Gemini comparison v1.',
+    responseTimeMs: 290,
+    timestamp: '10:32 AM',
+    createdAt: now + 2000,
+    createdAtMs: now + 2000
+  });
+  const altOpenRouter = createAlternativeRecord({
+    id: `alt-or-${now}`,
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'openrouter',
+    modelUsed: 'openrouter/free',
+    content: 'OpenRouter comparison v1.',
+    responseTimeMs: 350,
+    timestamp: '10:33 AM',
+    createdAt: now + 3000,
+    createdAtMs: now + 3000
+  });
+
+  const assistantMsg = normalizeAssistantMessage(
+    {
+      id: `groq-${now}-assistant`,
+      parentMessageId: userMsg.id,
+      interactionId: userMsg.interactionId,
+      sender: 'assistant',
+      alternatives: [altGrok, altCloudflare, altGemini, altOpenRouter],
+      activeAlternativeId: altOpenRouter.id,
+      createdAt: now,
+      createdAtMs: now
+    },
+    userMsg
+  );
+
+  harness.setInitialMessages([userMsg, assistantMsg]);
+  await harness.persistMessageSafe('chat-regen-1', userMsg);
+  await harness.persistMessageSafe('chat-regen-1', assistantMsg);
+
+  // Navigate to middle alternative (Cloudflare at index 1)
+  await harness.switchAlternative(assistantMsg.id, altCloudflare.id);
+  const viewingMiddle = harness.getMessages().find((m) => m.id === assistantMsg.id);
+  const middleMetrics = getAlternativeMetrics(viewingMiddle);
+  assert.equal(middleMetrics.total, 4);
+  assert.equal(middleMetrics.currentIndex, 1);
+  assert.equal(middleMetrics.canGoPrevious, true);
+  assert.equal(middleMetrics.canGoNext, true);
+
+  // Normal Regenerate while viewing middle alternative
+  await harness.regenerateActiveResponse(
+    viewingMiddle,
+    async ({ onStart, onChunk }) => {
+      onStart({ modelUsed: '@cf/meta/llama-3.1-8b-instruct', provider: 'cloudflare' });
+      onChunk('Cloudflare comparison latest.', 'Cloudflare comparison latest.');
+      return {
+        text: 'Cloudflare comparison latest.',
+        modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+        provider: 'cloudflare'
+      };
+    },
+    { freshTimestamp: '10:35 AM', requestStartTime: 650 }
+  );
+
+  const afterMiddleRegen = harness.getMessages().find((m) => m.id === assistantMsg.id);
+  assert.equal(afterMiddleRegen.alternatives.length, 4, 'Must remain 4 alternatives');
+  assert.equal(afterMiddleRegen.activeAlternativeId, altCloudflare.id, 'Middle alt remains active');
+  assert.equal(afterMiddleRegen.alternatives[0].id, altGrok.id);
+  assert.equal(afterMiddleRegen.alternatives[0].content, 'Grok comparison v1.');
+  assert.equal(afterMiddleRegen.alternatives[1].id, altCloudflare.id);
+  assert.equal(afterMiddleRegen.alternatives[1].content, 'Cloudflare comparison latest.');
+  assert.equal(afterMiddleRegen.alternatives[2].id, altGemini.id);
+  assert.equal(afterMiddleRegen.alternatives[2].content, 'Gemini comparison v1.');
+  assert.equal(afterMiddleRegen.alternatives[3].id, altOpenRouter.id);
+  assert.equal(afterMiddleRegen.alternatives[3].content, 'OpenRouter comparison v1.');
+
+  assert.equal(
+    JSON.stringify(afterMiddleRegen).includes('Cloudflare comparison old.'),
+    false,
+    'Old middle response must no longer be accessible'
+  );
+
+  const afterMetrics = getAlternativeMetrics(afterMiddleRegen);
+  assert.equal(afterMetrics.currentIndex, 1);
+  assert.equal(afterMetrics.canGoPrevious, true);
+  assert.equal(afterMetrics.canGoNext, true);
+
+  // Verify navigation backward & forward works cleanly across all 4 slots
+  await harness.switchAlternative(assistantMsg.id, afterMiddleRegen.alternatives[0].id);
+  assert.equal(harness.getMessages()[1].content, 'Grok comparison v1.');
+  await harness.switchAlternative(assistantMsg.id, afterMiddleRegen.alternatives[2].id);
+  assert.equal(harness.getMessages()[1].content, 'Gemini comparison v1.');
+  await harness.switchAlternative(assistantMsg.id, afterMiddleRegen.alternatives[3].id);
+  assert.equal(harness.getMessages()[1].content, 'OpenRouter comparison v1.');
+
+  const reloaded = harness.simulateReloadFromFirestore();
+  assert.equal(reloaded[1].alternatives.length, 4);
+  assert.equal(reloaded[1].alternatives[1].content, 'Cloudflare comparison latest.');
+  assert.equal(JSON.stringify(reloaded).includes('Cloudflare comparison old.'), false);
+});
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   process.exit(1);

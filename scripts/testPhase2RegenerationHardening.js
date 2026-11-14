@@ -826,6 +826,190 @@ await runCase('8. Stale Firestore snapshot cannot restore old replaced response 
   assert.equal(pendingPersistMap.size, 0);
 });
 
+await runCase('9. firestore.rules message create/update schema strictly permits successful, failed, stopped, and interrupted regeneration payloads', async () => {
+  const rulesText = fs.readFileSync(path.join(ROOT_DIR, 'firestore.rules'), 'utf8');
+  const messagesBlockStart = rulesText.indexOf('match /messages/{messageId}');
+  assert.ok(messagesBlockStart !== -1, 'firestore.rules must define match /messages/{messageId}');
+  const messagesBlock = rulesText.slice(messagesBlockStart, rulesText.indexOf('match /sharedChats/{shareId}'));
+
+  const allowCreateMatch = messagesBlock.match(/allow create:[\s\S]*?hasAll\(\[([^\]]+)\]\)/);
+  const allowUpdateMatch = messagesBlock.match(/allow update:[\s\S]*?hasOnly\(\[([^\]]+)\]\)/);
+  assert.ok(allowCreateMatch && allowUpdateMatch, 'firestore.rules must define hasAll/hasOnly for messages');
+
+  const parseKeyList = (raw) =>
+    raw
+      .split(',')
+      .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean);
+
+  const requiredCreateKeys = parseKeyList(allowCreateMatch[1]);
+  const allowedUpdateKeys = new Set(parseKeyList(allowUpdateMatch[1]));
+
+  const variants = [
+    {
+      label: 'successful',
+      msg: normalizeAssistantMessage({
+        id: 'asst-rules-ok',
+        parentMessageId: 'u1',
+        interactionId: 'int1',
+        sender: 'assistant',
+        provider: 'cloudflare',
+        modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+        content: 'Updated Cloudflare answer',
+        responseTimeMs: 410
+      })
+    },
+    {
+      label: 'failed',
+      msg: normalizeAssistantMessage({
+        id: 'asst-rules-err',
+        parentMessageId: 'u1',
+        interactionId: 'int1',
+        sender: 'assistant',
+        provider: 'cloudflare',
+        modelUsed: '@cf/meta/llama-3.1-8b-instruct',
+        content: 'Upstream 503 error',
+        isError: true,
+        failedPrompt: 'Explain TLS',
+        failedProvider: 'cloudflare',
+        canSwitchProvider: true,
+        errorCode: 'SERVICE_UNAVAILABLE',
+        httpStatus: 503,
+        suggestedProviders: ['groq', 'gemini'],
+        isRegeneration: true
+      })
+    },
+    {
+      label: 'stopped',
+      msg: normalizeAssistantMessage({
+        id: 'asst-rules-stop',
+        parentMessageId: 'u1',
+        interactionId: 'int1',
+        sender: 'assistant',
+        provider: 'groq',
+        modelUsed: 'openai/gpt-oss-120b',
+        content: 'Partial stopped response',
+        isStopped: true
+      })
+    },
+    {
+      label: 'interrupted',
+      msg: normalizeAssistantMessage({
+        id: 'asst-rules-int',
+        parentMessageId: 'u1',
+        interactionId: 'int1',
+        sender: 'assistant',
+        provider: 'gemini',
+        modelUsed: 'gemini-3.8-flash',
+        content: 'Partial...\n\n*[Response interrupted: Network lost]*',
+        isInterrupted: true,
+        failedPrompt: 'Explain TLS',
+        failedProvider: 'gemini',
+        canSwitchProvider: true,
+        errorCode: 'NETWORK_ERROR'
+      })
+    }
+  ];
+
+  for (const { label, msg } of variants) {
+    const payload = buildFirestoreMessagePayload(sanitizeMessageForStorage(msg));
+    for (const reqKey of requiredCreateKeys) {
+      assert.ok(Object.prototype.hasOwnProperty.call(payload, reqKey), `${label} payload missing required key ${reqKey}`);
+    }
+    for (const key of Object.keys(payload)) {
+      assert.ok(allowedUpdateKeys.has(key), `${label} payload has disallowed firestore.rules key ${key}`);
+    }
+    assert.equal(typeof payload.content, 'string');
+    assert.ok(payload.content.length > 0 && payload.content.length <= 100000);
+    assertNoUndefinedDeep(payload, label);
+  }
+});
+
+await runCase('10. Offline regeneration (pendingSync: true) is not overwritten by older cloud snapshots before sync completes', async () => {
+  localStorage.clear();
+  const userId = 'user-offline-regen';
+  const chatId = 'chat-offline-regen';
+  const now = 1718100100000;
+
+  const userMsg = {
+    id: 'user-off-1',
+    interactionId: 'int-off-1',
+    sender: 'user',
+    content: 'Explain QUIC',
+    createdAt: now,
+    createdAtMs: now
+  };
+
+  const oldAlt = createAlternativeRecord({
+    id: 'alt-grok-off',
+    parentMessageId: userMsg.id,
+    interactionId: userMsg.interactionId,
+    provider: 'groq',
+    modelUsed: 'openai/gpt-oss-120b',
+    content: 'OLD online Grok response',
+    responseTimeMs: 250,
+    createdAt: now,
+    createdAtMs: now
+  });
+
+  const oldCloudDoc = normalizeAssistantMessage(
+    {
+      id: 'asst-off-1',
+      parentMessageId: userMsg.id,
+      interactionId: userMsg.interactionId,
+      sender: 'assistant',
+      activeAlternativeId: oldAlt.id,
+      alternatives: [oldAlt],
+      createdAt: now,
+      createdAtMs: now,
+      pendingSync: false
+    },
+    userMsg
+  );
+
+  // User goes offline and regenerates Grok in-place -> saved to cache with pendingSync: true
+  const offlineRegen = {
+    ...replaceActiveAlternativeForRegeneration(oldCloudDoc, {
+      provider: 'groq',
+      modelUsed: 'openai/gpt-oss-120b',
+      timestamp: '11:30 AM',
+      requestStartTime: 400,
+      precedingUserMessage: userMsg
+    }),
+    content: 'NEW offline regenerated Grok response',
+    isStreaming: false,
+    responseTimeMs: 190,
+    pendingSync: true
+  };
+  offlineRegen.alternatives = offlineRegen.alternatives.map((a) => ({
+    ...a,
+    content: 'NEW offline regenerated Grok response',
+    isStreaming: false,
+    responseTimeMs: 190
+  }));
+
+  saveCachedChatMessages(userId, chatId, [userMsg, offlineRegen]);
+
+  // Simulate subscribeToChatMessages receiving stale cloud snapshot while local still has pendingSync: true
+  const currentLocal = getCachedChatMessages(userId, chatId);
+  const cloudMessages = [userMsg, oldCloudDoc];
+  const byId = new Map();
+  for (const cm of cloudMessages) byId.set(cm.id, cm);
+  for (const lm of currentLocal) {
+    if (!lm?.id) continue;
+    if (!byId.has(lm.id)) {
+      if (lm.pendingSync || cloudMessages.length === 0) byId.set(lm.id, lm);
+    } else if (lm.pendingSync) {
+      byId.set(lm.id, lm);
+    }
+  }
+
+  const merged = orderConversationMessages(ensureConversationAlternatives(Array.from(byId.values())));
+  assert.equal(merged[1].alternatives.length, 1);
+  assert.equal(merged[1].content, 'NEW offline regenerated Grok response');
+  assert.equal(JSON.stringify(merged).includes('OLD online Grok response'), false);
+});
+
 console.log(`\nSummary: ${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   process.exit(1);

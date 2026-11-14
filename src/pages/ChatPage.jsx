@@ -835,8 +835,10 @@ export default function ChatPage({
     sessionStorage.setItem('orvix_active_chat', activeChatId);
 
     // Sync active mode from chat metadata (default to 'general' for legacy chats)
+    const guestChatsFallback = !isCloudEnabled ? getGuestChats() : null;
     const matchingChat =
       userChats.find((chat) => chat.id === activeChatId) ||
+      guestChatsFallback?.find((chat) => chat.id === activeChatId) ||
       SAMPLE_CHATS.find((chat) => chat.id === activeChatId);
     if (matchingChat) {
       setActiveMode(matchingChat.mode || 'general');
@@ -855,9 +857,9 @@ export default function ChatPage({
     }
 
     // Guest conversations.
-    const guestChat = userChats.find(
-      (chat) => chat.id === activeChatId
-    );
+    const guestChat =
+      userChats.find((chat) => chat.id === activeChatId) ||
+      guestChatsFallback?.find((chat) => chat.id === activeChatId);
 
     if (
       !isCloudEnabled &&
