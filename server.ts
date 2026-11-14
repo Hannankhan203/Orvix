@@ -148,19 +148,14 @@ app.get(['/api/config', '/config'], (_req, res) => {
   try {
     return res.json(getServerProviderConfigStatus(isServerless));
   } catch (err) {
-    console.warn('[Server] Error resolving provider config status:', err);
-    return res.status(200).json({
-      geminiConfigured: false,
-      groqConfigured: false,
-      openrouterConfigured: false,
-      cloudflareConfigured: false,
-      supabaseConfigured: false,
-      webllmSupported: true,
-      demoModeEnabled: false,
-      whisperConfigured: false,
-      whisperProvider: null,
-      websocketStreamingSupported: false,
-      websocketStreamingEndpoint: null
+    console.warn(
+      '[Server] Error resolving provider config status:',
+      sanitizeErrorLog(String((err as any)?.message || err || 'Unknown configuration error'))
+    );
+    return res.status(500).json({
+      error: 'Unable to resolve server configuration.',
+      code: 500,
+      status: 'INTERNAL_CONFIG_ERROR'
     });
   }
 });

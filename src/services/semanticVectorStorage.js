@@ -34,35 +34,102 @@ export function getVectorDB() {
 
   if (vectorDbPromise) return vectorDbPromise;
 
-  vectorDbPromise = new Promise((resolve) => {
+  let didFail = false;
+  let pendingPromise = null;
+  pendingPromise = new Promise((resolve) => {
+    let settled = false;
+    const resolveFailure = (reason, err) => {
+      if (settled) return;
+      settled = true;
+      didFail = true;
+      if (pendingPromise && vectorDbPromise === pendingPromise) {
+        vectorDbPromise = null;
+      }
+      if (reason) {
+        console.warn(reason, err);
+      }
+      resolve(null);
+    };
+
     try {
       const request = idb.open(VECTOR_DB_NAME, VECTOR_DB_VERSION);
+      if (!request) {
+        resolveFailure(
+          '[Vector Storage] IndexedDB open returned empty request, using memory fallback:',
+          null
+        );
+        return;
+      }
 
       request.onupgradeneeded = (event) => {
-        const db = event.target.result;
-        if (!db.objectStoreNames.contains(VECTOR_STORE_NAME)) {
-          const store = db.createObjectStore(VECTOR_STORE_NAME, { keyPath: 'id' });
-          store.createIndex('docId', 'docId', { unique: false });
-          store.createIndex('conversationId', 'conversationId', { unique: false });
-          store.createIndex('createdAt', 'createdAt', { unique: false });
+        try {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains(VECTOR_STORE_NAME)) {
+            const store = db.createObjectStore(VECTOR_STORE_NAME, { keyPath: 'id' });
+            store.createIndex('docId', 'docId', { unique: false });
+            store.createIndex('conversationId', 'conversationId', { unique: false });
+            store.createIndex('createdAt', 'createdAt', { unique: false });
+          }
+        } catch (upgradeErr) {
+          try {
+            event?.target?.transaction?.abort?.();
+          } catch (_) {}
+          resolveFailure(
+            '[Vector Storage] IndexedDB upgrade error, using memory fallback:',
+            upgradeErr
+          );
         }
       };
 
       request.onsuccess = (event) => {
-        resolve(event.target.result);
+        if (settled) return;
+        const db = event?.target?.result || null;
+        if (!db) {
+          resolveFailure(
+            '[Vector Storage] IndexedDB open resolved without database instance, using memory fallback:',
+            null
+          );
+          return;
+        }
+        settled = true;
+
+        try {
+          if (typeof db.addEventListener === 'function') {
+            db.addEventListener('close', () => {
+              if (vectorDbPromise === pendingPromise) {
+                vectorDbPromise = null;
+              }
+            });
+            db.addEventListener('versionchange', () => {
+              if (vectorDbPromise === pendingPromise) {
+                vectorDbPromise = null;
+              }
+              try {
+                if (typeof db.close === 'function') db.close();
+              } catch (_) {}
+            });
+          }
+        } catch (_) {}
+
+        resolve(db);
       };
 
       request.onerror = (err) => {
-        console.warn('[Vector Storage] IndexedDB open error, using memory fallback:', err);
-        resolve(null);
+        resolveFailure('[Vector Storage] IndexedDB open error, using memory fallback:', err);
       };
     } catch (e) {
-      console.warn('[Vector Storage] IndexedDB initialization exception, using memory fallback:', e);
-      resolve(null);
+      resolveFailure(
+        '[Vector Storage] IndexedDB initialization exception, using memory fallback:',
+        e
+      );
     }
   });
 
-  return vectorDbPromise;
+  if (!didFail) {
+    vectorDbPromise = pendingPromise;
+  }
+
+  return pendingPromise;
 }
 
 /**

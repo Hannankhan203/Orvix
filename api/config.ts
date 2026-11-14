@@ -5,7 +5,14 @@ import {
   isServerless,
   getServerProviderConfigStatus
 } from '../server/serverConfig.ts';
+import { sanitizeErrorLog } from '../server/diagnosticLogger.ts';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+
+const CONFIG_ERROR_RESPONSE = {
+  error: 'Unable to resolve server configuration.',
+  code: 500,
+  status: 'INTERNAL_CONFIG_ERROR'
+};
 
 const app = express();
 applyCorsMiddleware(app);
@@ -19,20 +26,11 @@ app.get(['/api/config', '/config'], (_req, res) => {
   try {
     return res.json(getServerProviderConfigStatus(isServerless));
   } catch (err) {
-    console.warn('[Vercel Handler] Error resolving provider config status:', err);
-    return res.status(200).json({
-      geminiConfigured: false,
-      groqConfigured: false,
-      openrouterConfigured: false,
-      cloudflareConfigured: false,
-      supabaseConfigured: false,
-      webllmSupported: true,
-      demoModeEnabled: false,
-      whisperConfigured: false,
-      whisperProvider: null,
-      websocketStreamingSupported: false,
-      websocketStreamingEndpoint: null
-    });
+    console.warn(
+      '[Vercel Handler] Error resolving provider config status:',
+      sanitizeErrorLog(String((err as any)?.message || err || 'Unknown configuration error'))
+    );
+    return res.status(500).json(CONFIG_ERROR_RESPONSE);
   }
 });
 
@@ -58,20 +56,19 @@ export default function handler(req: Request, res: Response) {
     }
     return app(req, res);
   } catch (err) {
-    console.warn('[Vercel Handler] Error handling /api/config request:', err);
-    return res.status(200).json({
-      geminiConfigured: false,
-      groqConfigured: false,
-      openrouterConfigured: false,
-      cloudflareConfigured: false,
-      supabaseConfigured: false,
-      webllmSupported: true,
-      demoModeEnabled: false,
-      whisperConfigured: false,
-      whisperProvider: null,
-      websocketStreamingSupported: false,
-      websocketStreamingEndpoint: null
-    });
+    console.warn(
+      '[Vercel Handler] Error handling /api/config request:',
+      sanitizeErrorLog(String((err as any)?.message || err || 'Unknown handler error'))
+    );
+    if (res.headersSent) {
+      return;
+    }
+    if (typeof (res as any).status === 'function' && typeof (res as any).json === 'function') {
+      return (res as any).status(500).json(CONFIG_ERROR_RESPONSE);
+    }
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.end(JSON.stringify(CONFIG_ERROR_RESPONSE));
   }
 }
 

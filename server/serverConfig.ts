@@ -585,7 +585,23 @@ export const PROVIDER_ENV_REQUIREMENTS: Record<string, string> = {
   cloudflare: 'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN'
 };
 
+let forceConfigStatusErrorForTesting: Error | null = null;
+
+/**
+ * Test hook to simulate an internal configuration resolution error when TESTING=1.
+ */
+export function setForceConfigStatusErrorForTesting(err: Error | null): void {
+  forceConfigStatusErrorForTesting = err;
+}
+
 export function getServerProviderConfigStatus(serverlessRuntime = false) {
+  if (
+    forceConfigStatusErrorForTesting &&
+    (process.env.TESTING === '1' || process.env.TESTING === 'true')
+  ) {
+    throw forceConfigStatusErrorForTesting;
+  }
+
   const geminiKey = getGeminiApiKey();
   const groqKey = getGroqApiKey();
   const openrouterKey = getOpenRouterApiKey();
