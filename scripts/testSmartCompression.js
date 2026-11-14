@@ -14,6 +14,7 @@
 
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
+import JSZip from 'jszip';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { extractText, getDocumentProxy } from 'unpdf';
 
@@ -24,11 +25,19 @@ import {
   analyzeImagePixels,
   computeSafeTargetDimensions,
   detectAnimatedImage,
+  detectFineDetailAndText,
   detectFormatFromSignature,
   hasRawPdfProtectionMarkers,
+  inspectOpenXmlZipContainer,
+  isEncryptedOle2OpenXml,
   isGenericMimeType,
+  measureDecodedImageQuality,
+  optimizeEmbeddedOpenXmlMedia,
+  optimizeJpegMetadataLossless,
+  optimizeWebpMetadataLossless,
   parseGifMetadata,
   parseImageHeaderInfo,
+  parseWebpContainerInfo,
   resolveInputFormat,
   setGifOptimizerForTesting,
   setImageCompressionAdapterForTesting,
@@ -1169,6 +1178,544 @@ async function runTests() {
     assert.strictEqual(errGifRes.reason, COMPRESSION_REASONS.ERROR);
 
     setGifOptimizerForTesting(null);
+    passed++;
+  }
+
+  // 16. Prompt 9: OpenXML (DOCX, PPTX, XLSX) lossless ZIP-container compression, embedded media, integrity & protection
+  {
+    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    const svgBytes = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#2563eb"/><text x="12" y="45" fill="#fff">Vector</text></svg>',
+      'utf8'
+    );
+    const emfBytes = Buffer.concat([Buffer.from([0x01, 0x00, 0x00, 0x00]), Buffer.alloc(120, 0x2a)]);
+    const wmfBytes = Buffer.concat([Buffer.from([0xd7, 0xcd, 0xc6, 0x9a]), Buffer.alloc(120, 0x3b)]);
+    const macroBytes = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(512, 0x5c)]);
+    const embeddedGifBytes = makeAnimatedGifBuffer();
+    const embeddedPngRaw = makePngBuffer(640, 480, { colorType: 6, extraPaddingBytes: 24_000 });
+    const embeddedPngOpt = makePngBuffer(640, 480, { colorType: 6, extraPaddingBytes: 0 });
+
+    const buildOpenXmlBuffer = async (kind, { deflateLevel = 0, extraProtectionXml = '', extraFiles = {} } = {}) => {
+      const z = new JSZip();
+      const repeatedRows = Array.from(
+        { length: 420 },
+        (_, i) => `<w:p><w:r><w:t>Section ${i + 1}: Architectural telemetry paragraph for OpenXML lossless compression validation.</w:t></w:r></w:p>`
+      ).join('\n');
+
+      if (kind === 'docx') {
+        z.file(
+          '[Content_Types].xml',
+          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="gif" ContentType="image/gif"/><Default Extension="svg" ContentType="image/svg+xml"/><Default Extension="emf" ContentType="image/x-emf"/><Default Extension="wmf" ContentType="image/x-wmf"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`
+        );
+        z.file(
+          '_rels/.rels',
+          `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
+        );
+        z.file(
+          'word/document.xml',
+          `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${repeatedRows}</w:body></w:document>`
+        );
+        z.file(
+          'word/_rels/document.xml.rels',
+          `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/chart.png"/><Relationship Id="rGif1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/anim.gif"/><Relationship Id="rSvg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/diagram.svg"/></Relationships>`
+        );
+        z.file('word/styles.xml', `<?xml version="1.0" encoding="UTF-8"?><w:styles>${'<w:style w:type="paragraph"/>'.repeat(80)}</w:styles>`);
+        z.file('word/header1.xml', `<?xml version="1.0" encoding="UTF-8"?><w:hdr><w:p><w:r><w:t>Confidential Header</w:t></w:r></w:p></w:hdr>`);
+        z.file('word/vbaProject.bin', macroBytes);
+        z.file('word/media/chart.png', embeddedPngRaw);
+        z.file('word/media/anim.gif', embeddedGifBytes);
+        z.file('word/media/diagram.svg', svgBytes);
+        z.file('word/media/vector.emf', emfBytes);
+        z.file('word/media/legacy.wmf', wmfBytes);
+        if (extraProtectionXml) {
+          z.file('word/settings.xml', extraProtectionXml);
+        }
+      } else if (kind === 'pptx') {
+        const slideBlocks = Array.from(
+          { length: 420 },
+          (_, i) => `<p:sp><p:txBody><a:p><a:r><a:t>Slide bullet ${i + 1}: Lossless PPTX presentation layout &amp; speaker notes.</a:t></a:r></a:p></p:txBody></p:sp>`
+        ).join('\n');
+        z.file(
+          '[Content_Types].xml',
+          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/></Types>`
+        );
+        z.file(
+          '_rels/.rels',
+          `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/></Relationships>`
+        );
+        z.file(
+          'ppt/presentation.xml',
+          `<?xml version="1.0" encoding="UTF-8"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>${extraProtectionXml}</p:presentation>`
+        );
+        z.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>`);
+        z.file('ppt/slides/slide1.xml', `<?xml version="1.0" encoding="UTF-8"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree>${slideBlocks}</p:spTree></p:cSld></p:sld>`);
+        z.file('ppt/slides/_rels/slide1.xml.rels', `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/></Relationships>`);
+        z.file('ppt/notesSlides/notesSlide1.xml', `<?xml version="1.0" encoding="UTF-8"?><p:notes><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Presenter notes must remain 100% intact.</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`);
+        z.file('ppt/media/diagram.png', embeddedPngRaw);
+        z.file('ppt/media/anim.gif', embeddedGifBytes);
+        z.file('ppt/media/chart.emf', emfBytes);
+      } else if (kind === 'xlsx') {
+        const sheetRows = Array.from(
+          { length: 500 },
+          (_, i) => `<row r="${i + 1}"><c r="A${i + 1}" t="n"><v>${(i + 1) * 10}</v></c><c r="B${i + 1}"><f>SUM(A1:A${i + 1})</f><v>0</v></c></row>`
+        ).join('\n');
+        z.file(
+          '[Content_Types].xml',
+          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/></Types>`
+        );
+        z.file(
+          '_rels/.rels',
+          `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`
+        );
+        z.file(
+          'xl/workbook.xml',
+          `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="Financials" sheetId="1" r:id="rId1"/></sheets>${extraProtectionXml}</workbook>`
+        );
+        z.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`);
+        z.file('xl/sharedStrings.xml', `<?xml version="1.0" encoding="UTF-8"?><sst count="2" uniqueCount="2"><si><t>Revenue</t></si><si><t>Margin</t></si></sst>`);
+        z.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8"?><styleSheet><fonts count="1"/></styleSheet>`);
+        z.file('xl/worksheets/sheet1.xml', `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}<row r="501"><c r="C501"><f>IF(B500&gt;0,B500*1.15,0)</f><v>0</v></c></row></sheetData></worksheet>`);
+        z.file('xl/media/badge.png', embeddedPngRaw);
+        z.file('xl/media/shape.svg', svgBytes);
+      }
+
+      for (const [k, v] of Object.entries(extraFiles)) {
+        z.file(k, v);
+      }
+
+      const compressionOpts =
+        deflateLevel > 0
+          ? { compression: 'DEFLATE', compressionOptions: { level: deflateLevel } }
+          : { compression: 'STORE' };
+      return Buffer.from(await z.generateAsync({ type: 'uint8array', ...compressionOpts }));
+    };
+
+    // Mock PNG optimizer so Node unit tests also exercise embedded PNG replacement without needing DOM Canvas
+    let pngOptCalls = 0;
+    let seenNonPngMedia = false;
+    setPngOptimizerForTesting(async (bytes) => {
+      pngOptCalls++;
+      if (detectFormatFromSignature(bytes) !== 'image/png') {
+        seenNonPngMedia = true;
+      }
+      return new Uint8Array(embeddedPngOpt);
+    });
+
+    // A. DOCX compression >= 10%, embedded PNG optimized, macros + GIF + SVG/EMF/WMF + XML byte-for-byte intact
+    const docxBuf = await buildOpenXmlBuffer('docx');
+    assert.strictEqual(detectFormatFromSignature(new Uint8Array(docxBuf)), DOCX_MIME);
+    const docxFile = new File([docxBuf], 'architecture-spec.docx', {
+      type: DOCX_MIME,
+      lastModified: 1717000001000
+    });
+    const docxStages = [];
+    const docxRes = await compressFile(docxFile, { onStage: (s) => docxStages.push(s.stage) });
+    assertResultShape(docxRes);
+    assert.strictEqual(docxRes.compressed, true, `DOCX failed: ${docxRes.reason}`);
+    assert.strictEqual(docxRes.file.name, 'architecture-spec.docx');
+    assert.strictEqual(docxRes.file.type, DOCX_MIME);
+    assert.ok((docxRes.originalSize - docxRes.finalSize) / docxRes.originalSize >= 0.1);
+    assert.deepStrictEqual(docxStages, [
+      COMPRESSION_STAGES.ANALYZING,
+      COMPRESSION_STAGES.OPTIMIZING,
+      COMPRESSION_STAGES.VALIDATING,
+      COMPRESSION_STAGES.COMPLETE
+    ]);
+    assert.strictEqual(pngOptCalls, 1, 'Only embedded chart.png should invoke PNG optimizer');
+    assert.strictEqual(seenNonPngMedia, false);
+
+    const origDocxZip = await JSZip.loadAsync(docxBuf);
+    const compDocxZip = await JSZip.loadAsync(new Uint8Array(await docxRes.file.arrayBuffer()));
+    assert.deepStrictEqual(
+      Object.keys(compDocxZip.files).filter((k) => !compDocxZip.files[k].dir).sort(),
+      Object.keys(origDocxZip.files).filter((k) => !origDocxZip.files[k].dir).sort()
+    );
+    for (const untouchedPath of [
+      '[Content_Types].xml',
+      '_rels/.rels',
+      'word/document.xml',
+      'word/_rels/document.xml.rels',
+      'word/styles.xml',
+      'word/header1.xml',
+      'word/vbaProject.bin',
+      'word/media/anim.gif',
+      'word/media/diagram.svg',
+      'word/media/vector.emf',
+      'word/media/legacy.wmf'
+    ]) {
+      const a = await origDocxZip.file(untouchedPath).async('nodebuffer');
+      const b = await compDocxZip.file(untouchedPath).async('nodebuffer');
+      assert.strictEqual(Buffer.compare(a, b), 0, `${untouchedPath} must be 100% byte-for-byte identical`);
+    }
+    const compEmbeddedPng = await compDocxZip.file('word/media/chart.png').async('uint8array');
+    assert.strictEqual(compEmbeddedPng.byteLength, embeddedPngOpt.length);
+    assert.strictEqual(detectFormatFromSignature(compEmbeddedPng), 'image/png');
+
+    // B. PPTX compression >= 10% preserving slides, notes, rels, GIF & EMF
+    const pptxBuf = await buildOpenXmlBuffer('pptx');
+    const pptxFile = new File([pptxBuf], 'roadmap-deck.pptx', { type: PPTX_MIME });
+    const pptxRes = await compressFile(pptxFile);
+    assert.strictEqual(pptxRes.compressed, true, `PPTX failed: ${pptxRes.reason}`);
+    assert.strictEqual(pptxRes.file.type, PPTX_MIME);
+    assert.ok((pptxRes.originalSize - pptxRes.finalSize) / pptxRes.originalSize >= 0.1);
+    const compPptxZip = await JSZip.loadAsync(new Uint8Array(await pptxRes.file.arrayBuffer()));
+    assert.ok((await compPptxZip.file('ppt/notesSlides/notesSlide1.xml').async('string')).includes('Presenter notes must remain 100% intact.'));
+    assert.strictEqual(
+      Buffer.compare(await compPptxZip.file('ppt/media/anim.gif').async('nodebuffer'), embeddedGifBytes),
+      0
+    );
+    assert.strictEqual(
+      Buffer.compare(await compPptxZip.file('ppt/media/chart.emf').async('nodebuffer'), emfBytes),
+      0
+    );
+
+    // C. XLSX compression >= 10% preserving worksheets, formulas, sharedStrings & SVG
+    const xlsxBuf = await buildOpenXmlBuffer('xlsx');
+    const xlsxFile = new File([xlsxBuf], 'financial-model.xlsx', { type: XLSX_MIME });
+    const xlsxRes = await compressFile(xlsxFile);
+    assert.strictEqual(xlsxRes.compressed, true, `XLSX failed: ${xlsxRes.reason}`);
+    assert.strictEqual(xlsxRes.file.type, XLSX_MIME);
+    assert.ok((xlsxRes.originalSize - xlsxRes.finalSize) / xlsxRes.originalSize >= 0.1);
+    const compXlsxZip = await JSZip.loadAsync(new Uint8Array(await xlsxRes.file.arrayBuffer()));
+    const compSheetXml = await compXlsxZip.file('xl/worksheets/sheet1.xml').async('string');
+    assert.ok(compSheetXml.includes('<f>SUM(A1:A500)</f>'));
+    assert.ok(compSheetXml.includes('<f>IF(B500&gt;0,B500*1.15,0)</f>'));
+    assert.strictEqual(
+      Buffer.compare(await compXlsxZip.file('xl/media/shape.svg').async('nodebuffer'), svgBytes),
+      0
+    );
+
+    // D. application/octet-stream MIME resolution (.docx/.pptx/.xlsx) & extensionless DOCX signature
+    const octetDocx = new File([docxBuf], 'upload.docx', { type: 'application/octet-stream' });
+    const octetDocxRes = await compressFile(octetDocx);
+    assert.strictEqual(octetDocxRes.compressed, true);
+    assert.strictEqual(octetDocxRes.file.type, DOCX_MIME);
+
+    const extlessDocx = new File([docxBuf], 'unnamed-office-upload', { type: 'application/octet-stream' });
+    const extlessDocxFmt = resolveInputFormat(extlessDocx, new Uint8Array(docxBuf));
+    assert.strictEqual(extlessDocxFmt.ok, true);
+    assert.strictEqual(extlessDocxFmt.mimeType, DOCX_MIME);
+
+    // E. Cross-format spoofing & generic ZIP rejection
+    const spoofedXlsx = new File([docxBuf], 'spoofed.xlsx', { type: 'application/octet-stream' });
+    const spoofedXlsxRes = await compressFile(spoofedXlsx);
+    assert.strictEqual(spoofedXlsxRes.file, spoofedXlsx);
+    assert.strictEqual(spoofedXlsxRes.reason, COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE);
+
+    const plainZip = new JSZip();
+    plainZip.file('hello.txt', 'hello '.repeat(15_000));
+    const plainZipBuf = Buffer.from(await plainZip.generateAsync({ type: 'uint8array', compression: 'STORE' }));
+    assert.strictEqual(detectFormatFromSignature(new Uint8Array(plainZipBuf)), 'application/zip');
+    const fakeDocxZip = new File([plainZipBuf], 'archive.docx', { type: DOCX_MIME });
+    const fakeDocxZipRes = await compressFile(fakeDocxZip);
+    assert.strictEqual(fakeDocxZipRes.file, fakeDocxZip);
+    assert.strictEqual(fakeDocxZipRes.reason, COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE);
+
+    // F. Protected / encrypted / digitally signed OpenXML packages skipped untouched
+    // 1) OLE2-wrapped EncryptedPackage
+    const ole2Header = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    const encPkgUtf16 = Buffer.from('EncryptedPackage', 'utf16le');
+    const ole2EncDocx = Buffer.concat([ole2Header, Buffer.alloc(65_000, 0x11), encPkgUtf16, Buffer.alloc(512, 0)]);
+    assert.strictEqual(isEncryptedOle2OpenXml(new Uint8Array(ole2EncDocx)), true);
+    const ole2EncFile = new File([ole2EncDocx], 'encrypted.docx', { type: DOCX_MIME });
+    const ole2EncRes = await compressFile(ole2EncFile);
+    assert.strictEqual(ole2EncRes.file, ole2EncFile);
+    assert.strictEqual(ole2EncRes.reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    // 2) ZIP Central Directory General Purpose Bit 0 encrypted entry
+    const cdEncDocx = Buffer.from(docxBuf);
+    const firstCdOffset = cdEncDocx.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    assert.ok(firstCdOffset > 0);
+    cdEncDocx[firstCdOffset + 8] |= 0x01; // Bit 0 encrypted flag
+    assert.strictEqual(inspectOpenXmlZipContainer(new Uint8Array(cdEncDocx)).hasEncryptedEntry, true);
+    const cdEncFile = new File([cdEncDocx], 'zip-encrypted.docx', { type: DOCX_MIME });
+    const cdEncRes = await compressFile(cdEncFile);
+    assert.strictEqual(cdEncRes.file, cdEncFile);
+    assert.strictEqual(cdEncRes.reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    // 3) XML Digital signature (_xmlsignatures/sig1.xml) & vbaProjectSignature.bin
+    const signedDocxFile = new File(
+      [await buildOpenXmlBuffer('docx', { extraFiles: { '_xmlsignatures/sig1.xml': '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"/>' } })],
+      'signed.docx',
+      { type: DOCX_MIME }
+    );
+    const signedDocxRes = await compressFile(signedDocxFile);
+    assert.strictEqual(signedDocxRes.file, signedDocxFile);
+    assert.strictEqual(signedDocxRes.reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    const macroSignedFile = new File(
+      [await buildOpenXmlBuffer('docx', { extraFiles: { 'word/vbaProjectSignature.bin': Buffer.alloc(256, 0xaa) } })],
+      'signed-macro.docx',
+      { type: DOCX_MIME }
+    );
+    const macroSignedRes = await compressFile(macroSignedFile);
+    assert.strictEqual(macroSignedRes.file, macroSignedFile);
+    assert.strictEqual(macroSignedRes.reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    // 4) Word documentProtection / PPTX modifyVerifier / XLSX workbookProtection
+    const wordProtFile = new File(
+      [await buildOpenXmlBuffer('docx', { extraProtectionXml: '<w:settings><w:documentProtection w:edit="readOnly" w:enforcement="1" w:hash="1234"/></w:settings>' })],
+      'protected.docx',
+      { type: DOCX_MIME }
+    );
+    assert.strictEqual((await compressFile(wordProtFile)).reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    const pptProtFile = new File(
+      [await buildOpenXmlBuffer('pptx', { extraProtectionXml: '<p:modifyVerifier cryptProviderType="rsaFull" hashData="abcd"/>' })],
+      'protected.pptx',
+      { type: PPTX_MIME }
+    );
+    assert.strictEqual((await compressFile(pptProtFile)).reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    const xlsxProtFile = new File(
+      [await buildOpenXmlBuffer('xlsx', { extraProtectionXml: '<workbookProtection workbookPassword="1234" lockStructure="1"/>' })],
+      'protected.xlsx',
+      { type: XLSX_MIME }
+    );
+    assert.strictEqual((await compressFile(xlsxProtFile)).reason, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+
+    // G. Already DEFLATE-9 compressed package (< 10% savings) returns untouched original File
+    const alreadyTightBuf = await buildOpenXmlBuffer('docx', { deflateLevel: 9 });
+    // Remove extraPadding from png so recompression yields < 10% total savings
+    const tightZip = await JSZip.loadAsync(alreadyTightBuf);
+    tightZip.file('word/media/chart.png', embeddedPngOpt);
+    const tightFinalBuf = Buffer.from(
+      await tightZip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 9 } })
+    );
+    const tightFile = new File([tightFinalBuf], 'already-tight.docx', { type: DOCX_MIME });
+    const tightRes = await compressFile(tightFile, { minOpenXmlBytes: 100 });
+    assert.strictEqual(tightRes.file, tightFile);
+    assert.strictEqual(tightRes.compressed, false);
+    assert.strictEqual(tightRes.reason, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
+
+    // H. Out-of-scope legacy Office / text / markdown remain UNSUPPORTED_FORMAT
+    for (const [name, mime] of [
+      ['legacy.doc', 'application/msword'],
+      ['legacy.ppt', 'application/vnd.ms-powerpoint'],
+      ['legacy.xls', 'application/vnd.ms-excel'],
+      ['notes.txt', 'text/plain'],
+      ['readme.md', 'text/markdown']
+    ]) {
+      const f = new File([Buffer.alloc(80 * 1024, 0x41)], name, { type: mime });
+      const r = await compressFile(f);
+      assert.strictEqual(r.file, f);
+      assert.strictEqual(r.compressed, false);
+      assert.strictEqual(r.reason, COMPRESSION_REASONS.UNSUPPORTED_FORMAT, `${name} must remain UNSUPPORTED_FORMAT`);
+    }
+
+    // I. Pre-aborted AbortSignal returns untouched original File
+    const abortCtrl = new AbortController();
+    abortCtrl.abort();
+    const abortedDocx = await compressFile(docxFile, { signal: abortCtrl.signal });
+    assert.strictEqual(abortedDocx.file, docxFile);
+    assert.strictEqual(abortedDocx.compressed, false);
+    assert.strictEqual(abortedDocx.reason, COMPRESSION_REASONS.ABORTED);
+
+    setPngOptimizerForTesting(null);
+    passed++;
+  }
+
+  // 17. OpenXML embedded image quality verification & lossless-first JPEG/WebP metadata optimization
+  {
+    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    // Helper to build minimal EXIF APP1 segment with explicit Orientation value (0x0112)
+    const makeExifSegment = (orientationVal, extraPadding = 12000) => {
+      const payload = Buffer.alloc(6 + 8 + 2 + 12 + 4 + extraPadding, 0x20);
+      payload.write('Exif\0\0', 0, 'ascii');
+      payload.write('II', 6, 'ascii'); // little-endian TIFF
+      payload.writeUInt16LE(0x002a, 8);
+      payload.writeUInt32LE(8, 10); // IFD0 offset
+      const ifd0 = 14;
+      payload.writeUInt16LE(1, ifd0); // 1 tag
+      payload.writeUInt16LE(0x0112, ifd0 + 2); // Orientation tag
+      payload.writeUInt16LE(3, ifd0 + 4); // SHORT
+      payload.writeUInt32LE(1, ifd0 + 6); // count
+      payload.writeUInt16LE(orientationVal, ifd0 + 10); // value (entryOffset + 8)
+      const seg = Buffer.alloc(4 + payload.length);
+      seg[0] = 0xff;
+      seg[1] = 0xe1; // APP1
+      seg.writeUInt16BE(payload.length + 2, 2);
+      payload.copy(seg, 4);
+      return seg;
+    };
+
+    const makeIccApp2Segment = () => {
+      const payload = Buffer.concat([Buffer.from('ICC_PROFILE\0\x01\x01', 'latin1'), Buffer.alloc(64, 0x77)]);
+      const seg = Buffer.alloc(4 + payload.length);
+      seg[0] = 0xff;
+      seg[1] = 0xe2; // APP2
+      seg.writeUInt16BE(payload.length + 2, 2);
+      payload.copy(seg, 4);
+      return seg;
+    };
+
+    const makeXmpApp1Segment = (size = 16000) => {
+      const prefix = Buffer.from('http://ns.adobe.com/xap/1.0/\0<x:xmpmeta>', 'ascii');
+      const payload = Buffer.concat([prefix, Buffer.alloc(size, 0x20)]);
+      const seg = Buffer.alloc(4 + payload.length);
+      seg[0] = 0xff;
+      seg[1] = 0xe1;
+      seg.writeUInt16BE(payload.length + 2, 2);
+      payload.copy(seg, 4);
+      return seg;
+    };
+
+    // A. Lossless JPEG metadata optimization strips COM/XMP/Orientation=1 EXIF while keeping ICC_PROFILE & scan stream bit-for-bit
+    const rawMinimalJpg = makeMinimalJpegBuffer(1200, 800, 0);
+    // Append valid SOS header + entropy scan payload before trailing EOI (0xFF 0xD9)
+    const sosAndScan = Buffer.from([
+      0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00,
+      0xaa, 0xbb, 0xcc, 0xdd
+    ]);
+    const baseJpg = Buffer.concat([
+      rawMinimalJpg.subarray(0, rawMinimalJpg.length - 2),
+      sosAndScan,
+      rawMinimalJpg.subarray(rawMinimalJpg.length - 2)
+    ]);
+    const iccSeg = makeIccApp2Segment();
+    const xmpSeg = makeXmpApp1Segment(15000);
+    const orient1Exif = makeExifSegment(1, 14000);
+    const bloatedJpg = Buffer.concat([
+      baseJpg.subarray(0, 2),
+      iccSeg,
+      xmpSeg,
+      orient1Exif,
+      baseJpg.subarray(2)
+    ]);
+    const strippedJpg = optimizeJpegMetadataLossless(new Uint8Array(bloatedJpg));
+    assert.ok(strippedJpg instanceof Uint8Array);
+    const expectedExactJpg = Buffer.concat([baseJpg.subarray(0, 2), iccSeg, baseJpg.subarray(2)]);
+    assert.strictEqual(Buffer.compare(Buffer.from(strippedJpg), expectedExactJpg), 0);
+
+    // B. Orientation != 1 (e.g. rotated phone JPEG Orientation=6) MUST preserve its EXIF APP1 segment
+    const orient6Exif = makeExifSegment(6, 14000);
+    const rotatedJpg = Buffer.concat([
+      baseJpg.subarray(0, 2),
+      orient6Exif,
+      baseJpg.subarray(2)
+    ]);
+    const strippedRotated = optimizeJpegMetadataLossless(new Uint8Array(rotatedJpg));
+    assert.strictEqual(strippedRotated, null, 'Orientation=6 EXIF must NEVER be stripped');
+
+    // C. Lossless WebP metadata optimization strips EXIF & XMP chunks while clearing only EXIF/XMP flags in VP8X
+    const makeWebpWithChunks = ({ withAlpha = true, losslessVp8l = true, exifSize = 18000, xmpSize = 12000 } = {}) => {
+      const makeChunk = (id, payload) => {
+        const pad = payload.length % 2;
+        const out = Buffer.alloc(8 + payload.length + pad, 0);
+        out.write(id, 0, 4, 'ascii');
+        out.writeUInt32LE(payload.length, 4);
+        payload.copy(out, 8);
+        return out;
+      };
+      const vp8xPayload = Buffer.alloc(10, 0);
+      let flags = 0x20; // ICCP
+      if (withAlpha) flags |= 0x10;
+      if (exifSize > 0) flags |= 0x08;
+      if (xmpSize > 0) flags |= 0x04;
+      vp8xPayload[0] = flags;
+      vp8xPayload[4] = 99; // w = 100
+      vp8xPayload[7] = 79; // h = 80
+      const iccpChunk = makeChunk('ICCP', Buffer.alloc(32, 0x33));
+      const vp8lPayload = Buffer.alloc(12, 0);
+      vp8lPayload[0] = 0x2f;
+      vp8lPayload.writeUInt32LE((99 & 0x3fff) | ((79 & 0x3fff) << 14) | ((withAlpha ? 1 : 0) << 28), 1);
+      const imageChunk = losslessVp8l
+        ? makeChunk('VP8L', vp8lPayload)
+        : makeChunk('VP8 ', Buffer.from([0, 0, 0, 0x9d, 0x01, 0x2a, 100, 0, 80, 0, 1, 2]));
+      const chunks = [makeChunk('VP8X', vp8xPayload), iccpChunk, imageChunk];
+      if (exifSize > 0) chunks.push(makeChunk('EXIF', Buffer.alloc(exifSize, 0x45)));
+      if (xmpSize > 0) chunks.push(makeChunk('XMP ', Buffer.alloc(xmpSize, 0x58)));
+      const body = Buffer.concat([Buffer.from('WEBP', 'ascii'), ...chunks]);
+      const riff = Buffer.alloc(8);
+      riff.write('RIFF', 0, 4, 'ascii');
+      riff.writeUInt32LE(body.length, 4);
+      return Buffer.concat([riff, body]);
+    };
+
+    const bloatedWebp = makeWebpWithChunks({ withAlpha: true, losslessVp8l: true, exifSize: 18000, xmpSize: 12000 });
+    const webpInfoBefore = parseWebpContainerInfo(new Uint8Array(bloatedWebp));
+    assert.strictEqual(webpInfoBefore.isLosslessBitstream, true);
+    assert.strictEqual(webpInfoBefore.hasAlpha, true);
+    assert.strictEqual(webpInfoBefore.hasExif, true);
+    assert.strictEqual(webpInfoBefore.hasXmp, true);
+
+    const strippedWebp = optimizeWebpMetadataLossless(new Uint8Array(bloatedWebp));
+    assert.ok(strippedWebp instanceof Uint8Array);
+    const webpInfoAfter = parseWebpContainerInfo(strippedWebp);
+    assert.strictEqual(webpInfoAfter.valid, true);
+    assert.strictEqual(webpInfoAfter.isLosslessBitstream, true);
+    assert.strictEqual(webpInfoAfter.hasAlpha, true);
+    assert.strictEqual(webpInfoAfter.hasIccp, true);
+    assert.strictEqual(webpInfoAfter.hasExif, false);
+    assert.strictEqual(webpInfoAfter.hasXmp, false);
+    assert.ok(strippedWebp.byteLength < bloatedWebp.byteLength * 0.15);
+
+    // D. Clean lossless VP8L WebP without metadata bloat is NEVER lossily altered inside OpenXML
+    const cleanLosslessWebp = makeWebpWithChunks({ withAlpha: true, losslessVp8l: true, exifSize: 0, xmpSize: 0 });
+    const losslessWebpOptRes = await optimizeEmbeddedOpenXmlMedia(
+      new Uint8Array(cleanLosslessWebp),
+      'image/webp',
+      'diagram.webp',
+      {},
+      { signal: null, deadlineAt: Date.now() + 5000, timeoutMs: 5000 }
+    );
+    assert.strictEqual(losslessWebpOptRes, null, 'Clean lossless WebP must remain untouched');
+
+    // E. Decoded quality & fine-detail helpers accurately distinguish zero diff, degraded output, and hairline text
+    const w = 160;
+    const h = 120;
+    const sharpRgba = new Uint8ClampedArray(w * h * 4);
+    const blurredRgba = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const isHairline = (y >= 20 && y <= 90 && x % 6 === 0) || (y % 12 === 0 && x >= 10 && x <= 140);
+        const v = isHairline ? 15 : 245;
+        sharpRgba[i] = v;
+        sharpRgba[i + 1] = v;
+        sharpRgba[i + 2] = v;
+        sharpRgba[i + 3] = 255;
+
+        const bv = isHairline ? 120 : 210; // heavily degraded contrast & blurred edges
+        blurredRgba[i] = bv;
+        blurredRgba[i + 1] = bv;
+        blurredRgba[i + 2] = bv;
+        blurredRgba[i + 3] = 255;
+      }
+    }
+    const detail = detectFineDetailAndText(sharpRgba, w, h);
+    assert.strictEqual(detail.hasFineTextOrHairlines, true);
+    const identicalMetrics = measureDecodedImageQuality(sharpRgba, sharpRgba, w, h);
+    assert.strictEqual(identicalMetrics.psnrDb, Infinity);
+    assert.strictEqual(identicalMetrics.ssim, 1);
+    assert.strictEqual(identicalMetrics.maxChannelDiff, 0);
+    assert.strictEqual(identicalMetrics.alphaMaxDiff, 0);
+    assert.strictEqual(identicalMetrics.edgeSharpnessRetentionPct, 100);
+
+    const degradedMetrics = measureDecodedImageQuality(sharpRgba, blurredRgba, w, h);
+    assert.ok(degradedMetrics.psnrDb < 20);
+    assert.ok(degradedMetrics.ssim < 0.85);
+    assert.ok(degradedMetrics.edgeSharpnessRetentionPct < 60);
+
+    // F. Embedded JPEG with bloated metadata inside DOCX compresses losslessly even in Node
+    const zDocx = new JSZip();
+    zDocx.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>');
+    zDocx.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>');
+    zDocx.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8"?><w:document><w:body>${'<w:p><w:r><w:t>Doc paragraph for OpenXML verification</w:t></w:r></w:p>'.repeat(1500)}</w:body></w:document>`);
+    zDocx.file('word/media/camera.jpg', bloatedJpg);
+    const docxWithMetaBuf = Buffer.from(await zDocx.generateAsync({ type: 'uint8array', compression: 'STORE' }));
+    const docxWithMetaRes = await compressFile(
+      new File([docxWithMetaBuf], 'with-bloated-jpg.docx', { type: DOCX_MIME })
+    );
+    assert.strictEqual(docxWithMetaRes.compressed, true);
+    const reopenedDocx = await JSZip.loadAsync(new Uint8Array(await docxWithMetaRes.file.arrayBuffer()));
+    const optCameraJpg = await reopenedDocx.file('word/media/camera.jpg').async('nodebuffer');
+    assert.strictEqual(Buffer.compare(optCameraJpg, expectedExactJpg), 0, 'Embedded JPEG must strip metadata losslessly');
+
     passed++;
   }
 

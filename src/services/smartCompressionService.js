@@ -33,6 +33,7 @@ export const COMPRESSION_REASONS = Object.freeze({
   UNSUPPORTED_FORMAT: 'unsupported_format',
   ANIMATED_IMAGE: 'animated_image',
   PROTECTED_PDF: 'protected_pdf',
+  PROTECTED_PACKAGE: 'protected_package',
   CORRUPTED_OR_UNREADABLE: 'corrupted_or_unreadable',
   INSUFFICIENT_SAVINGS: 'insufficient_savings',
   VALIDATION_FAILED: 'validation_failed',
@@ -45,6 +46,7 @@ export const COMPRESSION_REASONS = Object.freeze({
 export const SMART_COMPRESSION_DEFAULTS = Object.freeze({
   MIN_IMAGE_BYTES: 80 * 1024, // 80 KB
   MIN_PDF_BYTES: 64 * 1024, // 64 KB
+  MIN_OPENXML_BYTES: 64 * 1024, // 64 KB
   MIN_SAVINGS_RATIO: 0.1, // Minimum 10% size reduction required
   TIMEOUT_MS: 20_000, // 20s per-file safety timeout
   MAX_PHOTO_DIMENSION: 3072, // Conservative cap only for very large non-text camera photos
@@ -62,6 +64,17 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   'image/gif'
 ]);
 const SUPPORTED_PDF_MIME_TYPE = 'application/pdf';
+const OPENXML_DOCX_MIME =
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const OPENXML_PPTX_MIME =
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const OPENXML_XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const SUPPORTED_OPENXML_MIME_TYPES = new Set([
+  OPENXML_DOCX_MIME,
+  OPENXML_PPTX_MIME,
+  OPENXML_XLSX_MIME
+]);
 const GENERIC_MIME_TYPES = new Set([
   'application/octet-stream',
   'binary/octet-stream',
@@ -76,7 +89,10 @@ const EXTENSION_TO_MIME = Object.freeze({
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif',
-  '.pdf': 'application/pdf'
+  '.pdf': 'application/pdf',
+  '.docx': OPENXML_DOCX_MIME,
+  '.pptx': OPENXML_PPTX_MIME,
+  '.xlsx': OPENXML_XLSX_MIME
 });
 
 const MIME_TO_EXTENSIONS = Object.freeze({
@@ -84,7 +100,16 @@ const MIME_TO_EXTENSIONS = Object.freeze({
   'image/jpeg': ['.jpg', '.jpeg'],
   'image/webp': ['.webp'],
   'image/gif': ['.gif'],
-  'application/pdf': ['.pdf']
+  'application/pdf': ['.pdf'],
+  [OPENXML_DOCX_MIME]: ['.docx'],
+  [OPENXML_PPTX_MIME]: ['.pptx'],
+  [OPENXML_XLSX_MIME]: ['.xlsx']
+});
+
+const OPENXML_CORE_PARTS = Object.freeze({
+  [OPENXML_DOCX_MIME]: { partPath: 'word/document.xml', rootMarker: '<w:document' },
+  [OPENXML_PPTX_MIME]: { partPath: 'ppt/presentation.xml', rootMarker: '<p:presentation' },
+  [OPENXML_XLSX_MIME]: { partPath: 'xl/workbook.xml', rootMarker: '<workbook' }
 });
 
 let customImageAdapterForTesting = null;
@@ -271,7 +296,172 @@ export function detectFormatFromSignature(bytes) {
     }
   }
 
+  // ZIP / OpenXML container inspection (PK\x03\x04 or PK\x05\x06)
+  if (
+    bytes.length >= 22 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06))
+  ) {
+    const zipInfo = inspectOpenXmlZipContainer(bytes);
+    if (zipInfo.openXmlMime) {
+      return zipInfo.openXmlMime;
+    }
+    return 'application/zip';
+  }
+
   return null;
+}
+
+/**
+ * Checks whether binary bytes contain a UTF-16LE ASCII string (used in OLE2 directory streams
+ * such as `EncryptedPackage` or `EncryptionInfo` inside encrypted Office documents).
+ */
+function containsUtf16LeAscii(bytes, asciiTarget) {
+  if (!(bytes instanceof Uint8Array) || !asciiTarget) return false;
+  const needLen = asciiTarget.length * 2;
+  if (bytes.length < needLen) return false;
+  const limit = bytes.length - needLen;
+  const firstLo = asciiTarget.charCodeAt(0);
+  for (let i = 0; i <= limit; i++) {
+    if (bytes[i] !== firstLo || bytes[i + 1] !== 0) continue;
+    let match = true;
+    for (let j = 1; j < asciiTarget.length; j++) {
+      if (bytes[i + j * 2] !== asciiTarget.charCodeAt(j) || bytes[i + j * 2 + 1] !== 0) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+/**
+ * Detects Microsoft OLE2 Compound Binary encrypted OOXML wrapper (`D0 CF 11 E0 A1 B1 1A E1`)
+ * containing `EncryptedPackage` or `EncryptionInfo`.
+ */
+export function isEncryptedOle2OpenXml(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 512) return false;
+  if (
+    bytes[0] !== 0xd0 ||
+    bytes[1] !== 0xcf ||
+    bytes[2] !== 0x11 ||
+    bytes[3] !== 0xe0 ||
+    bytes[4] !== 0xa1 ||
+    bytes[5] !== 0xb1 ||
+    bytes[6] !== 0x1a ||
+    bytes[7] !== 0xe1
+  ) {
+    return false;
+  }
+  return containsUtf16LeAscii(bytes, 'EncryptedPackage') || containsUtf16LeAscii(bytes, 'EncryptionInfo');
+}
+
+/**
+ * Inspects raw ZIP Central Directory headers synchronously to identify OpenXML package type,
+ * encryption flags, and digital signature entry names without decompressing payloads.
+ */
+export function inspectOpenXmlZipContainer(bytes) {
+  const result = {
+    isZip: false,
+    openXmlMime: null,
+    hasEncryptedEntry: false,
+    hasProtectionEntry: false,
+    entryNames: []
+  };
+
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.length < 22 ||
+    bytes[0] !== 0x50 ||
+    bytes[1] !== 0x4b
+  ) {
+    return result;
+  }
+
+  result.isZip = true;
+  const eocdMinOffset = Math.max(0, bytes.length - 65557);
+  let eocdOffset = -1;
+  for (let i = bytes.length - 22; i >= eocdMinOffset; i--) {
+    if (
+      bytes[i] === 0x50 &&
+      bytes[i + 1] === 0x4b &&
+      bytes[i + 2] === 0x05 &&
+      bytes[i + 3] === 0x06
+    ) {
+      const commentLen = readUint16LE(bytes, i + 20);
+      if (i + 22 + commentLen <= bytes.length) {
+        eocdOffset = i;
+        break;
+      }
+    }
+  }
+
+  if (eocdOffset === -1) {
+    return result;
+  }
+
+  const cdSize = readUint32LE(bytes, eocdOffset + 12);
+  const cdOffset = readUint32LE(bytes, eocdOffset + 16);
+  const decoder = new TextDecoder('utf-8');
+
+  if (cdOffset + cdSize <= eocdOffset) {
+    let pos = cdOffset;
+    const cdEnd = cdOffset + cdSize;
+    while (pos + 46 <= cdEnd) {
+      if (
+        bytes[pos] !== 0x50 ||
+        bytes[pos + 1] !== 0x4b ||
+        bytes[pos + 2] !== 0x01 ||
+        bytes[pos + 3] !== 0x02
+      ) {
+        break;
+      }
+      const gpFlag = readUint16LE(bytes, pos + 8);
+      const compMethod = readUint16LE(bytes, pos + 10);
+      if ((gpFlag & 0x0001) !== 0 || compMethod === 99) {
+        result.hasEncryptedEntry = true;
+      }
+      const nameLen = readUint16LE(bytes, pos + 28);
+      const extraLen = readUint16LE(bytes, pos + 30);
+      const commentLen = readUint16LE(bytes, pos + 32);
+      if (pos + 46 + nameLen + extraLen + commentLen > cdEnd) {
+        break;
+      }
+      const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLen));
+      result.entryNames.push(name);
+      pos += 46 + nameLen + extraLen + commentLen;
+    }
+  }
+
+  const lowerNames = new Set(result.entryNames.map((n) => n.toLowerCase()));
+  for (const name of lowerNames) {
+    if (
+      name.startsWith('_xmlsignatures/') ||
+      name.endsWith('.sigs') ||
+      name.includes('vbaprojectsignature.bin') ||
+      name === 'encryptioninfo' ||
+      name === 'encryptedpackage' ||
+      name.includes('drmcontent') ||
+      name.includes('dataspaces') ||
+      name.includes('rightsmanagement')
+    ) {
+      result.hasProtectionEntry = true;
+    }
+  }
+
+  if (lowerNames.has('[content_types].xml')) {
+    if (lowerNames.has('word/document.xml')) {
+      result.openXmlMime = OPENXML_DOCX_MIME;
+    } else if (lowerNames.has('ppt/presentation.xml')) {
+      result.openXmlMime = OPENXML_PPTX_MIME;
+    } else if (lowerNames.has('xl/workbook.xml')) {
+      result.openXmlMime = OPENXML_XLSX_MIME;
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -1163,6 +1353,23 @@ export function resolveInputFormat(file, inputBytes) {
   const declaredMime =
     rawDeclaredMime && !GENERIC_MIME_TYPES.has(rawDeclaredMime) ? rawDeclaredMime : '';
   const extMime = ext ? EXTENSION_TO_MIME[ext] || '' : '';
+
+  // Check OLE2-wrapped encrypted OpenXML (.docx / .pptx / .xlsx) before generic ZIP matching
+  if (
+    isEncryptedOle2OpenXml(inputBytes) &&
+    ((declaredMime && SUPPORTED_OPENXML_MIME_TYPES.has(declaredMime)) ||
+      (extMime && SUPPORTED_OPENXML_MIME_TYPES.has(extMime)) ||
+      (!declaredMime && !ext))
+  ) {
+    return {
+      ok: true,
+      mimeType: declaredMime || extMime || OPENXML_DOCX_MIME,
+      sigMime: null,
+      extension: ext,
+      encryptedOle2: true
+    };
+  }
+
   const sigMime = detectFormatFromSignature(inputBytes);
 
   const targetMime = declaredMime || extMime || sigMime || '';
@@ -2244,6 +2451,1415 @@ async function optimizePdfFile(file, inputBytes, options, ctx) {
   );
 }
 
+const OPENXML_OPTIMIZABLE_MEDIA_REGEX = /^(word|ppt|xl)\/media\/.+\.(png|jpe?g|webp)$/i;
+const OPENXML_PRESERVE_ASSET_EXTENSIONS = new Set([
+  '.gif',
+  '.svg',
+  '.emf',
+  '.wmf',
+  '.emz',
+  '.wmz'
+]);
+
+/**
+ * Checks whether an already-loaded JSZip OpenXML package contains digital signatures,
+ * encryption streams, IRM/DRM streams, or password/enforcement protection markers.
+ */
+async function detectOpenXmlProtection(zip, mimeType, rawZipInfo, { signal, deadlineAt, timeoutMs }) {
+  if (rawZipInfo?.hasEncryptedEntry || rawZipInfo?.hasProtectionEntry) {
+    return true;
+  }
+
+  const entries = Object.values(zip.files || {}).filter((e) => e && !e.dir);
+  for (const entry of entries) {
+    const lower = entry.name.toLowerCase();
+    if (
+      lower.startsWith('_xmlsignatures/') ||
+      lower.endsWith('.sigs') ||
+      lower.includes('vbaprojectsignature.bin') ||
+      lower === 'encryptioninfo' ||
+      lower === 'encryptedpackage' ||
+      lower.includes('drmcontent') ||
+      lower.includes('dataspaces') ||
+      lower.includes('rightsmanagement')
+    ) {
+      return true;
+    }
+  }
+
+  const readTextEntry = async (pathName) => {
+    const foundKey = Object.keys(zip.files).find(
+      (k) => !zip.files[k].dir && k.toLowerCase() === pathName.toLowerCase()
+    );
+    if (!foundKey) return '';
+    return await runWithCancellation(() => zip.files[foundKey].async('string'), {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+  };
+
+  const relsXml = await readTextEntry('_rels/.rels');
+  if (
+    relsXml &&
+    (/relationships\/digital-signature\//i.test(relsXml) || /<\s*(?:ds:)?Signature\b/i.test(relsXml))
+  ) {
+    return true;
+  }
+
+  const contentTypesXml = await readTextEntry('[Content_Types].xml');
+  if (
+    contentTypesXml &&
+    (/digital-signature-xmlsignature|digital-signature-origin|application\/vnd\.openxmlformats-package\.digital-signature/i.test(
+      contentTypesXml
+    ))
+  ) {
+    return true;
+  }
+
+  if (mimeType === OPENXML_DOCX_MIME) {
+    const settingsXml = await readTextEntry('word/settings.xml');
+    if (
+      settingsXml &&
+      /<w:documentProtection\b[^>]*(?:w:enforcement=["'](?:1|true)["']|w:hash=|w:cryptProviderType=|w:algorithmName=)/i.test(
+        settingsXml
+      )
+    ) {
+      return true;
+    }
+  } else if (mimeType === OPENXML_PPTX_MIME) {
+    const presXml = await readTextEntry('ppt/presentation.xml');
+    if (presXml && /<p:modifyVerifier\b/i.test(presXml)) {
+      return true;
+    }
+  } else if (mimeType === OPENXML_XLSX_MIME) {
+    const wbXml = await readTextEntry('xl/workbook.xml');
+    if (
+      wbXml &&
+      (/<workbookProtection\b[^>]*(?:workbookPassword=|workbookAlgorithmName=|workbookHashValue=)/i.test(
+        wbXml
+      ) ||
+        /<fileSharing\b[^>]*(?:reservationPassword=|algorithmName=|hashValue=)/i.test(wbXml))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function bytesEqualExact(a, b) {
+  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array) || a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Reopens the candidate OpenXML archive via JSZip and validates:
+ * - ZIP container decodes cleanly
+ * - Exact entry path set matches original archive (no dropped or injected parts)
+ * - Required OpenXML core parts exist (`[Content_Types].xml`, `_rels/.rels`, document/presentation/workbook root)
+ * - Every unmodified part (XML, rels, worksheets, formulas, slides, notes, macros, GIFs, SVGs, EMFs, WMFs)
+ *   decompresses with 100% byte-for-byte parity
+ * - Every optimized embedded raster image decompresses with valid binary signature
+ */
+async function validateOptimizedOpenXml(
+  JSZip,
+  outBytes,
+  mimeType,
+  originalEntriesMap,
+  optimizedMediaSignatures,
+  { signal, deadlineAt, timeoutMs }
+) {
+  if (!(outBytes instanceof Uint8Array) || outBytes.byteLength < 22) {
+    return false;
+  }
+  if (outBytes[0] !== 0x50 || outBytes[1] !== 0x4b) {
+    return false;
+  }
+
+  let verifyZip;
+  try {
+    verifyZip = await runWithCancellation(() => JSZip.loadAsync(outBytes), {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+    return false;
+  }
+
+  const verifyFileKeys = Object.keys(verifyZip.files).filter((k) => !verifyZip.files[k].dir);
+  if (verifyFileKeys.length !== originalEntriesMap.size) {
+    return false;
+  }
+  for (const origPath of originalEntriesMap.keys()) {
+    const outEntry = verifyZip.files[origPath];
+    if (!outEntry || outEntry.dir) {
+      return false;
+    }
+  }
+
+  const findCaseInsensitive = (targetPath) => {
+    const lower = targetPath.toLowerCase();
+    return verifyFileKeys.find((k) => k.toLowerCase() === lower) || '';
+  };
+
+  const contentTypesKey = findCaseInsensitive('[Content_Types].xml');
+  const rootRelsKey = findCaseInsensitive('_rels/.rels');
+  const coreMeta = OPENXML_CORE_PARTS[mimeType];
+  const coreKey = coreMeta ? findCaseInsensitive(coreMeta.partPath) : '';
+
+  if (!contentTypesKey || !rootRelsKey || !coreKey) {
+    return false;
+  }
+
+  // Decompress every entry to verify CRC/stream integrity and exact untouched parity
+  for (const entryPath of verifyFileKeys) {
+    if (signal?.aborted) throw createAbortError();
+    if (deadlineAt <= Date.now()) throw createTimeoutError(timeoutMs);
+
+    let verifyBytes;
+    try {
+      verifyBytes = await runWithCancellation(() => verifyZip.files[entryPath].async('uint8array'), {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+      return false;
+    }
+
+    if (!(verifyBytes instanceof Uint8Array)) {
+      return false;
+    }
+
+    const expectedOptMime = optimizedMediaSignatures.get(entryPath);
+    if (expectedOptMime) {
+      if (verifyBytes.byteLength === 0 || detectFormatFromSignature(verifyBytes) !== expectedOptMime) {
+        return false;
+      }
+    } else {
+      const origBytes = originalEntriesMap.get(entryPath);
+      if (!bytesEqualExact(verifyBytes, origBytes)) {
+        return false;
+      }
+    }
+  }
+
+  // Verify core XML markers parse cleanly
+  const decoder = new TextDecoder('utf-8');
+  const contentTypesText = decoder.decode(
+    await verifyZip.files[contentTypesKey].async('uint8array')
+  );
+  const rootRelsText = decoder.decode(await verifyZip.files[rootRelsKey].async('uint8array'));
+  const coreText = decoder.decode(await verifyZip.files[coreKey].async('uint8array'));
+
+  if (
+    !contentTypesText.includes('<Types') ||
+    !rootRelsText.includes('<Relationships') ||
+    !coreText.includes(coreMeta.rootMarker)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Inspects a RIFF/WEBP container's top-level chunks without modifying bytes.
+ * @param {Uint8Array} bytes
+ */
+export function parseWebpContainerInfo(bytes) {
+  const empty = {
+    valid: false,
+    hasVp8x: false,
+    hasVp8: false,
+    hasVp8l: false,
+    isLosslessBitstream: false,
+    hasAlpha: false,
+    hasAnim: false,
+    hasIccp: false,
+    hasExif: false,
+    hasXmp: false,
+    chunks: []
+  };
+  if (!(bytes instanceof Uint8Array) || bytes.length < 20) return empty;
+  if (readAscii(bytes, 0, 4) !== 'RIFF' || readAscii(bytes, 8, 4) !== 'WEBP') return empty;
+  const declaredSize = readUint32LE(bytes, 4);
+  if (declaredSize + 8 > bytes.length) return empty;
+
+  const chunks = [];
+  let offset = 12;
+  let hasVp8x = false;
+  let hasVp8 = false;
+  let hasVp8l = false;
+  let hasAlpha = false;
+  let hasAnim = false;
+  let hasIccp = false;
+  let hasExif = false;
+  let hasXmp = false;
+
+  while (offset + 8 <= bytes.length) {
+    const id = readAscii(bytes, offset, 4);
+    const size = readUint32LE(bytes, offset + 4);
+    const paddedSize = size + (size % 2);
+    const payloadOffset = offset + 8;
+    if (payloadOffset + paddedSize > bytes.length) {
+      return empty;
+    }
+    chunks.push({ id, offset, size, paddedSize, payloadOffset });
+
+    if (id === 'VP8X' && size >= 10) {
+      hasVp8x = true;
+      const flags = bytes[payloadOffset];
+      if ((flags & 0x10) !== 0) hasAlpha = true;
+      if ((flags & 0x02) !== 0) hasAnim = true;
+      if ((flags & 0x20) !== 0) hasIccp = true;
+      if ((flags & 0x08) !== 0) hasExif = true;
+      if ((flags & 0x04) !== 0) hasXmp = true;
+    } else if (id === 'VP8 ') {
+      hasVp8 = true;
+    } else if (id === 'VP8L' && size >= 5 && bytes[payloadOffset] === 0x2f) {
+      hasVp8l = true;
+      const packed = readUint32LE(bytes, payloadOffset + 1);
+      if (((packed >> 28) & 0x01) !== 0) hasAlpha = true;
+    } else if (id === 'ALPH') {
+      hasAlpha = true;
+    } else if (id === 'ANIM' || id === 'ANMF') {
+      hasAnim = true;
+    } else if (id === 'ICCP') {
+      hasIccp = true;
+    } else if (id === 'EXIF') {
+      hasExif = true;
+    } else if (id === 'XMP ') {
+      hasXmp = true;
+    }
+
+    offset = payloadOffset + paddedSize;
+  }
+
+  const valid = chunks.length > 0 && (hasVp8 || hasVp8l || hasAnim);
+  return {
+    valid,
+    hasVp8x,
+    hasVp8,
+    hasVp8l,
+    isLosslessBitstream: hasVp8l && !hasVp8,
+    hasAlpha,
+    hasAnim,
+    hasIccp,
+    hasExif,
+    hasXmp,
+    chunks
+  };
+}
+
+/**
+ * Losslessly strips redundant non-visual metadata chunks (EXIF, XMP ) from a WebP RIFF
+ * container while keeping VP8/VP8L bitstreams, ALPH, ICCP, and dimensions bit-for-bit intact.
+ * Returns null if nothing can be stripped or container is invalid.
+ * @param {Uint8Array} bytes
+ * @returns {Uint8Array|null}
+ */
+export function optimizeWebpMetadataLossless(bytes) {
+  const info = parseWebpContainerInfo(bytes);
+  if (!info.valid || (!info.hasExif && !info.hasXmp)) {
+    return null;
+  }
+
+  const keptParts = [];
+  let strippedAny = false;
+  let bodyLen = 4; // 'WEBP'
+
+  for (const chunk of info.chunks) {
+    if (chunk.id === 'EXIF' || chunk.id === 'XMP ') {
+      strippedAny = true;
+      continue;
+    }
+    const rawChunk = bytes.subarray(chunk.offset, chunk.offset + 8 + chunk.paddedSize);
+    if (chunk.id === 'VP8X' && chunk.size >= 10) {
+      const cloned = new Uint8Array(rawChunk);
+      // Clear only EXIF (0x08) and XMP (0x04) metadata bits; preserve ICCP (0x20), ALPH (0x10), ANIM (0x02)
+      cloned[8] &= ~(0x08 | 0x04);
+      keptParts.push(cloned);
+      bodyLen += cloned.length;
+    } else {
+      keptParts.push(rawChunk);
+      bodyLen += rawChunk.length;
+    }
+  }
+
+  if (!strippedAny) return null;
+
+  const out = new Uint8Array(8 + bodyLen);
+  out[0] = 0x52; // R
+  out[1] = 0x49; // I
+  out[2] = 0x46; // F
+  out[3] = 0x46; // F
+  out[4] = bodyLen & 0xff;
+  out[5] = (bodyLen >>> 8) & 0xff;
+  out[6] = (bodyLen >>> 16) & 0xff;
+  out[7] = (bodyLen >>> 24) & 0xff;
+  out[8] = 0x57; // W
+  out[9] = 0x45; // E
+  out[10] = 0x42; // B
+  out[11] = 0x50; // P
+
+  let cursor = 12;
+  for (const part of keptParts) {
+    out.set(part, cursor);
+    cursor += part.length;
+  }
+
+  if (out.byteLength >= bytes.byteLength) return null;
+  const verified = parseImageHeaderInfo(out, 'image/webp');
+  const origHeader = parseImageHeaderInfo(bytes, 'image/webp');
+  if (!verified.valid || verified.width !== origHeader.width || verified.height !== origHeader.height) {
+    return null;
+  }
+  return out;
+}
+
+/**
+ * Inspects an EXIF APP1 payload (`Exif\0\0...`) and confirms whether stripping it
+ * cannot alter pixel orientation (Orientation tag `0x0112` absent or `1`).
+ */
+function isExifPayloadSafeToStrip(payload) {
+  if (!(payload instanceof Uint8Array) || payload.length < 16) return false;
+  if (readAscii(payload, 0, 4) !== 'Exif' || payload[4] !== 0 || payload[5] !== 0) {
+    return false;
+  }
+  const tiffStart = 6;
+  const endian = readAscii(payload, tiffStart, 2);
+  const le = endian === 'II' ? true : endian === 'MM' ? false : null;
+  if (le === null) return false;
+
+  const u16 = (off) => (le ? readUint16LE(payload, off) : readUint16BE(payload, off));
+  const u32 = (off) => (le ? readUint32LE(payload, off) : readUint32BE(payload, off));
+
+  if (u16(tiffStart + 2) !== 0x002a) return false;
+  const ifd0Rel = u32(tiffStart + 4);
+  const ifd0 = tiffStart + ifd0Rel;
+  if (ifd0 + 2 > payload.length) return false;
+
+  const entryCount = u16(ifd0);
+  if (entryCount > 256 || ifd0 + 2 + entryCount * 12 > payload.length) return false;
+
+  for (let i = 0; i < entryCount; i++) {
+    const entryOffset = ifd0 + 2 + i * 12;
+    const tag = u16(entryOffset);
+    if (tag === 0x0112) {
+      // Orientation tag: only safe to strip when Orientation === 1 (normal)
+      const val = u16(entryOffset + 8);
+      if (val !== 1) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Losslessly removes redundant non-image JPEG metadata markers (COM, APP12, APP13, XMP APP1,
+ * and Orientation=1 EXIF APP1) while keeping SOF, DQT, DHT, DRI, ICC_PROFILE (APP2),
+ * Adobe color transform (APP14), and the entropy-coded SOS scan bitstream bit-for-bit intact.
+ * Returns null if no metadata can be safely removed or the JPEG is malformed.
+ * @param {Uint8Array} bytes
+ * @returns {Uint8Array|null}
+ */
+export function optimizeJpegMetadataLossless(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 8) return null;
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+
+  const parts = [bytes.subarray(0, 2)];
+  let pos = 2;
+  let strippedAny = false;
+  let reachedSos = false;
+
+  while (pos + 1 < bytes.length) {
+    if (bytes[pos] !== 0xff) {
+      return null;
+    }
+    const markerStart = pos;
+    while (pos < bytes.length && bytes[pos] === 0xff) pos++;
+    if (pos >= bytes.length) return null;
+    const marker = bytes[pos++];
+
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      parts.push(bytes.subarray(markerStart, pos));
+      continue;
+    }
+
+    if (marker === 0xd9) {
+      // EOI before SOS is unusual; stop copying here
+      parts.push(bytes.subarray(markerStart, pos));
+      break;
+    }
+
+    if (marker === 0xda) {
+      // Start of Scan: copy scan header, compressed DCT stream, any progressive scans, and EOI verbatim
+      parts.push(bytes.subarray(markerStart));
+      reachedSos = true;
+      break;
+    }
+
+    if (pos + 2 > bytes.length) return null;
+    const segLen = readUint16BE(bytes, pos);
+    if (segLen < 2 || pos + segLen > bytes.length) return null;
+
+    const segEnd = pos + segLen;
+    const payload = bytes.subarray(pos + 2, segEnd);
+    let dropSegment = false;
+
+    if (marker === 0xfe || marker === 0xec || marker === 0xed) {
+      // COM, APP12, APP13 (Photoshop IPTC/IRB)
+      dropSegment = true;
+    } else if (marker === 0xe1) {
+      // APP1: XMP or EXIF (Orientation === 1/absent)
+      const head = readAscii(payload, 0, Math.min(payload.length, 36));
+      if (
+        head.startsWith('http://ns.adobe.com/xap/1.0/\0') ||
+        head.startsWith('http://ns.adobe.com/xmp/extension/\0')
+      ) {
+        dropSegment = true;
+      } else if (isExifPayloadSafeToStrip(payload)) {
+        dropSegment = true;
+      }
+    }
+
+    if (dropSegment) {
+      strippedAny = true;
+    } else {
+      parts.push(bytes.subarray(markerStart, segEnd));
+    }
+    pos = segEnd;
+  }
+
+  if (!reachedSos || !strippedAny) return null;
+
+  let totalLen = 0;
+  for (const p of parts) totalLen += p.length;
+  if (totalLen >= bytes.byteLength) return null;
+
+  const out = new Uint8Array(totalLen);
+  let cursor = 0;
+  for (const p of parts) {
+    out.set(p, cursor);
+    cursor += p.length;
+  }
+
+  const origInfo = parseImageHeaderInfo(bytes, 'image/jpeg');
+  const outInfo = parseImageHeaderInfo(out, 'image/jpeg');
+  if (
+    !origInfo.valid ||
+    !outInfo.valid ||
+    outInfo.width !== origInfo.width ||
+    outInfo.height !== origInfo.height
+  ) {
+    return null;
+  }
+
+  return out;
+}
+
+/**
+ * Inspects decoded RGBA pixel data for text, diagrams, transparency, thin 1-2px borders,
+ * and sharp high-contrast chromatic details that suffer visible artifacts under lossy compression.
+ * @param {Uint8ClampedArray} data
+ * @param {number} width
+ * @param {number} height
+ */
+export function detectFineDetailAndText(data, width, height) {
+  const base = analyzeImagePixels(data, width, height);
+  if (!data || width < 4 || height < 4) {
+    return {
+      ...base,
+      hasFineTextOrHairlines: false,
+      hairlinePulseRatio: 0,
+      sharpTransitionRatio: 0
+    };
+  }
+
+  const totalPixels = width * height;
+  const rowStep = height > 400 ? Math.max(1, Math.floor(height / 320)) : 1;
+  const colStep = width > 600 ? Math.max(1, Math.floor(width / 480)) : 1;
+  let checked = 0;
+  let hairlinePulses = 0;
+  let flatCount = 0;
+  let sharpCount = 0;
+
+  for (let y = 0; y < height; y += rowStep) {
+    const rowBase = y * width;
+    for (let x = 1; x + 2 < width; x += colStep) {
+      const p0 = (rowBase + x - 1) * 4;
+      const p1 = (rowBase + x) * 4;
+      const p2 = (rowBase + x + 1) * 4;
+      const p3 = (rowBase + x + 2) * 4;
+      if (p3 + 3 >= data.length) break;
+
+      checked++;
+      const l0 = data[p0] * 0.299 + data[p0 + 1] * 0.587 + data[p0 + 2] * 0.114;
+      const l1 = data[p1] * 0.299 + data[p1 + 1] * 0.587 + data[p1 + 2] * 0.114;
+      const l2 = data[p2] * 0.299 + data[p2 + 1] * 0.587 + data[p2 + 2] * 0.114;
+      const l3 = data[p3] * 0.299 + data[p3 + 1] * 0.587 + data[p3 + 2] * 0.114;
+
+      const stepDiff = Math.abs(l1 - l0);
+      if (stepDiff <= 1.0) {
+        flatCount++;
+      } else if (stepDiff >= 45) {
+        sharpCount++;
+      }
+
+      // Also track strong per-channel chromatic pulses (e.g. colored small text or gridlines)
+      const cDiff01 = Math.max(
+        Math.abs(data[p0] - data[p1]),
+        Math.abs(data[p0 + 1] - data[p1 + 1]),
+        Math.abs(data[p0 + 2] - data[p1 + 2])
+      );
+      const is1PxSpike = Math.abs(l1 - l0) >= 35 && Math.abs(l1 - l2) >= 35 && Math.abs(l0 - l2) <= 25;
+      const is2PxStroke = Math.abs(l1 - l0) >= 35 && Math.abs(l2 - l3) >= 35 && Math.abs(l0 - l3) <= 25;
+      const isChromaticThin =
+        cDiff01 >= 45 &&
+        Math.max(
+          Math.abs(data[p0] - data[p2]),
+          Math.abs(data[p0 + 1] - data[p2 + 1]),
+          Math.abs(data[p0 + 2] - data[p2 + 2])
+        ) <= 30;
+
+      if (is1PxSpike || is2PxStroke || isChromaticThin) {
+        hairlinePulses++;
+      }
+    }
+  }
+
+  const hairlinePulseRatio = checked > 0 ? hairlinePulses / checked : 0;
+  const flatRatio = checked > 0 ? flatCount / checked : 0;
+  const sharpTransitionRatio = checked > 0 ? sharpCount / checked : 0;
+
+  // Text, UI screenshots, diagrams, and crisp line art combine solid flat runs with sharp edges
+  // or thin 1-2px strokes; smooth bokeh/gradients alone are evaluated by PSNR/SSIM/edge-sharpness gates.
+  const isTrueTextOrDiagram =
+    (flatRatio >= 0.42 && sharpTransitionRatio >= 0.012) ||
+    flatRatio >= 0.88 ||
+    (totalPixels >= 16_000 && hairlinePulseRatio >= 0.006);
+
+  return {
+    ...base,
+    isTextOrDiagramLikely: isTrueTextOrDiagram,
+    hasFineTextOrHairlines: isTrueTextOrDiagram,
+    hairlinePulseRatio,
+    sharpTransitionRatio
+  };
+}
+
+/**
+ * Measures decoded RGBA pixel fidelity between original and candidate images:
+ * - PSNR (dB)
+ * - Mean 8x8 block luminance SSIM
+ * - Mean absolute RGB error & peak channel deviation
+ * - Alpha channel preservation
+ * - Percentage of pixels with channel error > 10
+ * - Edge sharpness retention ratio (%)
+ * @param {Uint8ClampedArray} origRgba
+ * @param {Uint8ClampedArray} candRgba
+ * @param {number} width
+ * @param {number} height
+ */
+export function measureDecodedImageQuality(origRgba, candRgba, width, height) {
+  if (
+    !origRgba ||
+    !candRgba ||
+    !width ||
+    !height ||
+    origRgba.length !== candRgba.length ||
+    origRgba.length < width * height * 4
+  ) {
+    return {
+      valid: false,
+      psnrDb: 0,
+      ssim: 0,
+      meanAbsDiff: 255,
+      maxChannelDiff: 255,
+      alphaMaxDiff: 255,
+      pctPixelsDiffGt10: 100,
+      edgeSharpnessRetentionPct: 0
+    };
+  }
+
+  const n = width * height;
+  let maxChannelDiff = 0;
+  let alphaMaxDiff = 0;
+  let sumAbs = 0;
+  let sumSq = 0;
+  let gt10Count = 0;
+  let origEdgeSum = 0;
+  let candEdgeSum = 0;
+
+  const origLum = new Float32Array(n);
+  const candLum = new Float32Array(n);
+
+  for (let y = 0; y < height; y++) {
+    const rowOff = y * width;
+    for (let x = 0; x < width; x++) {
+      const px = rowOff + x;
+      const i = px * 4;
+
+      const dR = Math.abs(origRgba[i] - candRgba[i]);
+      const dG = Math.abs(origRgba[i + 1] - candRgba[i + 1]);
+      const dB = Math.abs(origRgba[i + 2] - candRgba[i + 2]);
+      const dA = Math.abs(origRgba[i + 3] - candRgba[i + 3]);
+
+      const rgbMax = dR > dG ? (dR > dB ? dR : dB) : dG > dB ? dG : dB;
+      if (rgbMax > maxChannelDiff) maxChannelDiff = rgbMax;
+      if (dA > alphaMaxDiff) alphaMaxDiff = dA;
+      if (rgbMax > 10) gt10Count++;
+
+      sumAbs += dR + dG + dB;
+      sumSq += dR * dR + dG * dG + dB * dB;
+
+      const lA = origRgba[i] * 0.299 + origRgba[i + 1] * 0.587 + origRgba[i + 2] * 0.114;
+      const lB = candRgba[i] * 0.299 + candRgba[i + 1] * 0.587 + candRgba[i + 2] * 0.114;
+      origLum[px] = lA;
+      candLum[px] = lB;
+
+      if (x > 0) {
+        const gA = Math.abs(lA - origLum[px - 1]);
+        if (gA >= 20) {
+          origEdgeSum += gA;
+          candEdgeSum += Math.abs(lB - candLum[px - 1]);
+        }
+      }
+      if (y > 0) {
+        const gA = Math.abs(lA - origLum[px - width]);
+        if (gA >= 20) {
+          origEdgeSum += gA;
+          candEdgeSum += Math.abs(lB - candLum[px - width]);
+        }
+      }
+    }
+  }
+
+  const mse = sumSq / (n * 3);
+  const psnrDb = mse === 0 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+  const meanAbsDiff = sumAbs / (n * 3);
+  const pctPixelsDiffGt10 = (gt10Count / n) * 100;
+  const edgeSharpnessRetentionPct =
+    origEdgeSum > 0 ? (candEdgeSum / origEdgeSum) * 100 : 100;
+
+  // Mean 8x8 block luminance SSIM across entire image
+  const C1 = 6.5025;
+  const C2 = 58.5225;
+  let ssimSum = 0;
+  let ssimBlocks = 0;
+  const bxEnd = width - (width % 8);
+  const byEnd = height - (height % 8);
+
+  for (let by = 0; by + 8 <= byEnd; by += 8) {
+    for (let bx = 0; bx + 8 <= bxEnd; bx += 8) {
+      let sX = 0;
+      let sY = 0;
+      let sXX = 0;
+      let sYY = 0;
+      let sXY = 0;
+      for (let dy = 0; dy < 8; dy++) {
+        const row = (by + dy) * width + bx;
+        for (let dx = 0; dx < 8; dx++) {
+          const vx = origLum[row + dx];
+          const vy = candLum[row + dx];
+          sX += vx;
+          sY += vy;
+          sXX += vx * vx;
+          sYY += vy * vy;
+          sXY += vx * vy;
+        }
+      }
+      const muX = sX / 64;
+      const muY = sY / 64;
+      const varX = Math.max(0, sXX / 64 - muX * muX);
+      const varY = Math.max(0, sYY / 64 - muY * muY);
+      const covXY = sXY / 64 - muX * muY;
+      const num = (2 * muX * muY + C1) * (2 * covXY + C2);
+      const den = (muX * muX + muY * muY + C1) * (varX + varY + C2);
+      ssimSum += den > 0 ? num / den : 1;
+      ssimBlocks++;
+    }
+  }
+
+  const ssim = ssimBlocks > 0 ? ssimSum / ssimBlocks : mse === 0 ? 1 : 0;
+
+  return {
+    valid: true,
+    psnrDb,
+    ssim,
+    meanAbsDiff,
+    maxChannelDiff,
+    alphaMaxDiff,
+    pctPixelsDiffGt10,
+    edgeSharpnessRetentionPct
+  };
+}
+
+/**
+ * Decodes image bytes into full-resolution RGBA pixel data in browser DOM/Worker runtimes.
+ * Returns null if DOM/Canvas decoding APIs are unavailable (e.g., plain Node.js).
+ */
+async function decodeImageBytesToRgba(bytes, mimeType, { signal, deadlineAt, timeoutMs }) {
+  const hasCanvas =
+    typeof OffscreenCanvas !== 'undefined' ||
+    (typeof document !== 'undefined' && typeof document.createElement === 'function');
+  const canBitmap = typeof createImageBitmap === 'function';
+  const canImage =
+    typeof Image !== 'undefined' &&
+    typeof URL !== 'undefined' &&
+    typeof URL.createObjectURL === 'function';
+
+  if (!hasCanvas || (!canBitmap && !canImage)) {
+    return null;
+  }
+
+  return await runWithCancellation(
+    async () => {
+      const blob = new Blob([bytes], { type: mimeType });
+      let bitmap = null;
+      let objectUrl = null;
+      try {
+        let source;
+        let width;
+        let height;
+        if (canBitmap) {
+          bitmap = await createImageBitmap(blob);
+          source = bitmap;
+          width = bitmap.width;
+          height = bitmap.height;
+        } else {
+          objectUrl = URL.createObjectURL(blob);
+          const img = await new Promise((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error(`Failed to decode ${mimeType}`));
+            el.src = objectUrl;
+          });
+          source = img;
+          width = img.naturalWidth || img.width;
+          height = img.naturalHeight || img.height;
+        }
+
+        if (!width || !height) {
+          throw new Error('Decoded image has zero dimensions');
+        }
+
+        const canvas =
+          typeof OffscreenCanvas !== 'undefined'
+            ? new OffscreenCanvas(width, height)
+            : document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true });
+        if (!ctx) throw new Error('2D canvas context unavailable');
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(source, 0, 0, width, height);
+        const imgData = ctx.getImageData(0, 0, width, height);
+        return { width, height, rgba: imgData.data };
+      } finally {
+        try {
+          bitmap?.close?.();
+        } catch (_) {}
+        if (objectUrl) {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch (_) {}
+        }
+      }
+    },
+    { signal, deadlineAt, timeoutMs }
+  );
+}
+
+/**
+ * Re-encodes an image 1:1 via browser Canvas at an explicit quality without downscaling.
+ */
+async function encodeCanvasImageExact(bytes, mimeType, quality, { signal, deadlineAt, timeoutMs }) {
+  const adapter = getBrowserImageAdapter();
+  if (!adapter) return null;
+  let decoded = null;
+  try {
+    decoded = await runWithCancellation(
+      () => adapter.decodeAndAnalyze(new Blob([bytes], { type: mimeType })),
+      { signal, deadlineAt, timeoutMs }
+    );
+    if (!decoded || !decoded.width || !decoded.height) return null;
+    const outBlob = await runWithCancellation(
+      () =>
+        adapter.encode(decoded, {
+          targetWidth: decoded.width,
+          targetHeight: decoded.height,
+          mimeType,
+          quality,
+          preserveTransparency: Boolean(decoded.hasTransparentPixels)
+        }),
+      { signal, deadlineAt, timeoutMs }
+    );
+    if (!outBlob || normalizeMimeType(outBlob.type) !== mimeType) return null;
+    return new Uint8Array(
+      await runWithCancellation(() => outBlob.arrayBuffer(), { signal, deadlineAt, timeoutMs })
+    );
+  } finally {
+    try {
+      decoded?.release?.();
+    } catch (_) {}
+  }
+}
+
+const OPENXML_QUALITY_THRESHOLDS = Object.freeze({
+  MIN_PSNR_DB: 41.0,
+  MIN_SSIM: 0.985,
+  MAX_MEAN_ABS_DIFF: 1.8,
+  MAX_JPEG_CHANNEL_DIFF: 26,
+  MAX_WEBP_CHANNEL_DIFF: 24,
+  MAX_PCT_DIFF_GT10: 0.8,
+  MIN_EDGE_SHARPNESS_PCT: 95.0,
+  MAX_EDGE_SHARPNESS_PCT: 104.0,
+  EMBEDDED_JPEG_QUALITY: 0.93,
+  EMBEDDED_WEBP_QUALITY: 0.93
+});
+
+function passesOpenXmlLossyQualityGate(metrics, mimeType) {
+  if (!metrics?.valid) return false;
+  const maxChanAllowed =
+    mimeType === 'image/webp'
+      ? OPENXML_QUALITY_THRESHOLDS.MAX_WEBP_CHANNEL_DIFF
+      : OPENXML_QUALITY_THRESHOLDS.MAX_JPEG_CHANNEL_DIFF;
+  return (
+    metrics.alphaMaxDiff === 0 &&
+    metrics.psnrDb >= OPENXML_QUALITY_THRESHOLDS.MIN_PSNR_DB &&
+    metrics.ssim >= OPENXML_QUALITY_THRESHOLDS.MIN_SSIM &&
+    metrics.meanAbsDiff <= OPENXML_QUALITY_THRESHOLDS.MAX_MEAN_ABS_DIFF &&
+    metrics.maxChannelDiff <= maxChanAllowed &&
+    metrics.pctPixelsDiffGt10 <= OPENXML_QUALITY_THRESHOLDS.MAX_PCT_DIFF_GT10 &&
+    metrics.edgeSharpnessRetentionPct >= OPENXML_QUALITY_THRESHOLDS.MIN_EDGE_SHARPNESS_PCT &&
+    metrics.edgeSharpnessRetentionPct <= OPENXML_QUALITY_THRESHOLDS.MAX_EDGE_SHARPNESS_PCT
+  );
+}
+
+/**
+ * Quality-first optimizer for embedded OpenXML PNG/JPEG/WebP media:
+ * - Prefers 100% lossless optimization (oxipng for PNG, metadata-preserving lossless stripping for JPEG & WebP).
+ * - Never converts lossless WebP (VP8L), transparent images, text, diagrams, or hairline graphics to lossy formats.
+ * - For opaque continuous-tone photos where lossless stripping alone does not save >= 10%, allows high-quality
+ *   re-encoding ONLY when decoded RGBA comparisons prove imperceptible difference (PSNR >= 41 dB, SSIM >= 0.985,
+ *   edge sharpness >= 95%, alpha unchanged). Otherwise retains the exact original embedded image.
+ */
+export async function optimizeEmbeddedOpenXmlMedia(
+  origMediaBytes,
+  expectedMediaMime,
+  baseName,
+  options,
+  ctx
+) {
+  const { signal, deadlineAt, timeoutMs } = ctx;
+  const minRatio = Number.isFinite(Number(options?.minEmbeddedSavingsRatio))
+    ? Math.max(0, Number(options.minEmbeddedSavingsRatio))
+    : SMART_COMPRESSION_DEFAULTS.MIN_SAVINGS_RATIO;
+
+  const origSize = origMediaBytes?.byteLength || 0;
+  if (!origSize) return null;
+
+  // 1. Embedded PNG: lossless-only (@jsquash/oxipng); never allow lossy/premultiplied Canvas fallback
+  if (expectedMediaMime === 'image/png') {
+    const origHeader = parseImageHeaderInfo(origMediaBytes, 'image/png');
+    if (!origHeader.valid) return null;
+    let outBytes;
+    try {
+      outBytes = await runOxipngOptimization(origMediaBytes, { signal, deadlineAt, timeoutMs });
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || signal?.aborted) {
+        throw err;
+      }
+      return null;
+    }
+    if (!(outBytes instanceof Uint8Array) || outBytes.byteLength === 0) return null;
+    if ((origSize - outBytes.byteLength) / origSize < minRatio) return null;
+
+    const outHeader = parseImageHeaderInfo(outBytes, 'image/png');
+    if (
+      detectFormatFromSignature(outBytes) !== 'image/png' ||
+      detectAnimatedImage(outBytes, 'image/png') ||
+      !outHeader.valid ||
+      outHeader.width !== origHeader.width ||
+      outHeader.height !== origHeader.height
+    ) {
+      return null;
+    }
+
+    // Verify decoded 0-diff pixel parity in browser runtimes
+    const origDecoded = await decodeImageBytesToRgba(origMediaBytes, 'image/png', {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+    if (origDecoded) {
+      const candDecoded = await decodeImageBytesToRgba(outBytes, 'image/png', {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+      if (
+        !candDecoded ||
+        candDecoded.width !== origDecoded.width ||
+        candDecoded.height !== origDecoded.height
+      ) {
+        return null;
+      }
+      const metrics = measureDecodedImageQuality(
+        origDecoded.rgba,
+        candDecoded.rgba,
+        origDecoded.width,
+        origDecoded.height
+      );
+      if (metrics.maxChannelDiff !== 0 || metrics.alphaMaxDiff !== 0) {
+        return null;
+      }
+    }
+
+    return { bytes: outBytes, mode: 'lossless-oxipng' };
+  }
+
+  // 2. Embedded JPEG & WebP: prefer lossless metadata optimization first
+  if (expectedMediaMime === 'image/jpeg' || expectedMediaMime === 'image/webp') {
+    const losslessCandidate =
+      expectedMediaMime === 'image/jpeg'
+        ? optimizeJpegMetadataLossless(origMediaBytes)
+        : optimizeWebpMetadataLossless(origMediaBytes);
+
+    if (
+      losslessCandidate instanceof Uint8Array &&
+      losslessCandidate.byteLength > 0 &&
+      (origSize - losslessCandidate.byteLength) / origSize >= minRatio
+    ) {
+      const origDecoded = await decodeImageBytesToRgba(origMediaBytes, expectedMediaMime, {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+      if (!origDecoded) {
+        return { bytes: losslessCandidate, mode: `lossless-${expectedMediaMime}-metadata` };
+      }
+      const candDecoded = await decodeImageBytesToRgba(losslessCandidate, expectedMediaMime, {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+      if (
+        candDecoded &&
+        candDecoded.width === origDecoded.width &&
+        candDecoded.height === origDecoded.height
+      ) {
+        const metrics = measureDecodedImageQuality(
+          origDecoded.rgba,
+          candDecoded.rgba,
+          origDecoded.width,
+          origDecoded.height
+        );
+        if (metrics.maxChannelDiff === 0 && metrics.alphaMaxDiff === 0) {
+          return {
+            bytes: losslessCandidate,
+            mode: `lossless-${expectedMediaMime}-metadata`,
+            metrics
+          };
+        }
+      }
+    }
+
+    // Never allow lossy recompression on lossless VP8L or transparent WebP bitstreams
+    if (expectedMediaMime === 'image/webp') {
+      const webpInfo = parseWebpContainerInfo(origMediaBytes);
+      if (!webpInfo.valid || webpInfo.isLosslessBitstream || webpInfo.hasAlpha || webpInfo.hasAnim) {
+        return null;
+      }
+    }
+
+    // Decode original 1:1 RGBA to protect text, diagrams, transparency, and fine details
+    const origDecoded = await decodeImageBytesToRgba(origMediaBytes, expectedMediaMime, {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+    if (!origDecoded) {
+      // Without DOM pixel verification, do not risk blind lossy re-encoding inside OpenXML packages
+      return null;
+    }
+
+    const detailInfo = detectFineDetailAndText(
+      origDecoded.rgba,
+      origDecoded.width,
+      origDecoded.height
+    );
+    if (
+      detailInfo.hasTransparentPixels ||
+      detailInfo.isTextOrDiagramLikely ||
+      detailInfo.hasFineTextOrHairlines
+    ) {
+      // Retain untouched original to protect text, diagrams, transparency, and crisp hairlines
+      return null;
+    }
+
+    // Photo-only conservative high-quality check with strict pixel-diff verification
+    const quality =
+      expectedMediaMime === 'image/webp'
+        ? OPENXML_QUALITY_THRESHOLDS.EMBEDDED_WEBP_QUALITY
+        : OPENXML_QUALITY_THRESHOLDS.EMBEDDED_JPEG_QUALITY;
+    let candidateBytes = null;
+    try {
+      candidateBytes = await encodeCanvasImageExact(origMediaBytes, expectedMediaMime, quality, {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || signal?.aborted) {
+        throw err;
+      }
+      return null;
+    }
+
+    if (
+      !(candidateBytes instanceof Uint8Array) ||
+      candidateBytes.byteLength === 0 ||
+      (origSize - candidateBytes.byteLength) / origSize < minRatio
+    ) {
+      return null;
+    }
+
+    const candHeader = parseImageHeaderInfo(candidateBytes, expectedMediaMime);
+    if (
+      !candHeader.valid ||
+      candHeader.width !== origDecoded.width ||
+      candHeader.height !== origDecoded.height
+    ) {
+      return null;
+    }
+
+    const candDecoded = await decodeImageBytesToRgba(candidateBytes, expectedMediaMime, {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+    if (
+      !candDecoded ||
+      candDecoded.width !== origDecoded.width ||
+      candDecoded.height !== origDecoded.height
+    ) {
+      return null;
+    }
+
+    const metrics = measureDecodedImageQuality(
+      origDecoded.rgba,
+      candDecoded.rgba,
+      origDecoded.width,
+      origDecoded.height
+    );
+    if (!passesOpenXmlLossyQualityGate(metrics, expectedMediaMime)) {
+      // Meaningful quality loss detected -> retain original embedded image
+      return null;
+    }
+
+    return {
+      bytes: candidateBytes,
+      mode: 'verified-high-quality-photo',
+      metrics
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Losslessly recompresses OpenXML (DOCX, PPTX, XLSX) ZIP containers via JSZip DEFLATE level 9,
+ * optionally optimizing eligible embedded PNG/JPEG/WebP media when safe while leaving GIFs,
+ * SVG/EMF/WMF vectors, XML, relationships, formulas, slides, notes, and macros untouched.
+ */
+async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, options, ctx) {
+  const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
+
+  if (formatInfo.encryptedOle2 || isEncryptedOle2OpenXml(inputBytes)) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.PROTECTED_PACKAGE
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+  }
+
+  const rawZipInfo = inspectOpenXmlZipContainer(inputBytes);
+  if (!rawZipInfo.isZip || rawZipInfo.openXmlMime !== mimeType) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    });
+    return buildResult(
+      file,
+      false,
+      file.size,
+      file.size,
+      COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    );
+  }
+
+  if (rawZipInfo.hasEncryptedEntry || rawZipInfo.hasProtectionEntry) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.PROTECTED_PACKAGE
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+  }
+
+  const jszipModule = await runWithCancellation(() => import('jszip'), {
+    signal,
+    deadlineAt,
+    timeoutMs
+  });
+  const JSZip = jszipModule?.default || jszipModule;
+  if (!JSZip || typeof JSZip.loadAsync !== 'function') {
+    return buildResult(
+      file,
+      false,
+      file.size,
+      file.size,
+      COMPRESSION_REASONS.UNSUPPORTED_ENVIRONMENT
+    );
+  }
+
+  let zip;
+  try {
+    zip = await runWithCancellation(() => JSZip.loadAsync(inputBytes), {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    });
+    return buildResult(
+      file,
+      false,
+      file.size,
+      file.size,
+      COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    );
+  }
+
+  const isProtected = await detectOpenXmlProtection(zip, mimeType, rawZipInfo, {
+    signal,
+    deadlineAt,
+    timeoutMs
+  });
+  if (isProtected) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.PROTECTED_PACKAGE
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.PROTECTED_PACKAGE);
+  }
+
+  // Snapshot all non-directory entries and validate core parts before modifying anything
+  const fileEntryKeys = Object.keys(zip.files).filter((k) => !zip.files[k].dir);
+  const lowerKeys = new Set(fileEntryKeys.map((k) => k.toLowerCase()));
+  const coreMeta = OPENXML_CORE_PARTS[mimeType];
+  if (
+    !lowerKeys.has('[content_types].xml') ||
+    !lowerKeys.has('_rels/.rels') ||
+    !coreMeta ||
+    !lowerKeys.has(coreMeta.partPath.toLowerCase())
+  ) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    });
+    return buildResult(
+      file,
+      false,
+      file.size,
+      file.size,
+      COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    );
+  }
+
+  const originalEntriesMap = new Map();
+  try {
+    for (const entryPath of fileEntryKeys) {
+      const bytes = await runWithCancellation(() => zip.files[entryPath].async('uint8array'), {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+      originalEntriesMap.set(entryPath, bytes);
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    });
+    return buildResult(
+      file,
+      false,
+      file.size,
+      file.size,
+      COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    );
+  }
+
+  emitStage(onStage, COMPRESSION_STAGES.OPTIMIZING, {
+    fileName: file.name,
+    mimeType,
+    originalSize: file.size,
+    optimizer: 'jszip-deflate-9'
+  });
+
+  // Optimize eligible embedded PNG/JPEG/WebP assets inside word/media/, ppt/media/, xl/media/
+  const embeddedMinBytes = Number.isFinite(Number(options?.minEmbeddedImageBytes))
+    ? Math.max(0, Number(options.minEmbeddedImageBytes))
+    : 8 * 1024;
+  const optimizedMediaSignatures = new Map();
+
+  for (const entryPath of fileEntryKeys) {
+    if (signal?.aborted) throw createAbortError();
+    if (deadlineAt <= Date.now()) throw createTimeoutError(timeoutMs);
+
+    const ext = extractExtension(entryPath);
+    if (OPENXML_PRESERVE_ASSET_EXTENSIONS.has(ext)) {
+      continue;
+    }
+    if (!OPENXML_OPTIMIZABLE_MEDIA_REGEX.test(entryPath)) {
+      continue;
+    }
+
+    const expectedMediaMime = EXTENSION_TO_MIME[ext];
+    if (!expectedMediaMime || expectedMediaMime === 'image/gif') {
+      continue;
+    }
+
+    const origMediaBytes = originalEntriesMap.get(entryPath);
+    if (!(origMediaBytes instanceof Uint8Array) || origMediaBytes.byteLength < embeddedMinBytes) {
+      continue;
+    }
+
+    const sigMediaMime = detectFormatFromSignature(origMediaBytes);
+    if (sigMediaMime !== expectedMediaMime) {
+      continue;
+    }
+    if (detectAnimatedImage(origMediaBytes, sigMediaMime)) {
+      continue;
+    }
+
+    const baseName = entryPath.slice(entryPath.lastIndexOf('/') + 1) || `image${ext}`;
+    const optMediaResult = await optimizeEmbeddedOpenXmlMedia(
+      origMediaBytes,
+      expectedMediaMime,
+      baseName,
+      {
+        ...options,
+        minEmbeddedImageBytes: embeddedMinBytes
+      },
+      ctx
+    );
+
+    if (
+      optMediaResult?.bytes instanceof Uint8Array &&
+      optMediaResult.bytes.byteLength > 0 &&
+      optMediaResult.bytes.byteLength < origMediaBytes.byteLength &&
+      detectFormatFromSignature(optMediaResult.bytes) === expectedMediaMime
+    ) {
+      const origEntry = zip.files[entryPath];
+      zip.file(entryPath, optMediaResult.bytes, {
+        binary: true,
+        date: origEntry?.date,
+        unixPermissions: origEntry?.unixPermissions,
+        dosPermissions: origEntry?.dosPermissions
+      });
+      optimizedMediaSignatures.set(entryPath, expectedMediaMime);
+    }
+  }
+
+  // Recompress the OpenXML package with DEFLATE level 9
+  const outBytes = await runWithCancellation(
+    () =>
+      zip.generateAsync({
+        type: 'uint8array',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
+      }),
+    { signal, deadlineAt, timeoutMs }
+  );
+
+  if (!(outBytes instanceof Uint8Array) || outBytes.byteLength >= file.size) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.INSUFFICIENT_SAVINGS
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
+  }
+
+  const savingsRatio = (file.size - outBytes.byteLength) / file.size;
+  if (savingsRatio < minSavingsRatio) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.INSUFFICIENT_SAVINGS
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
+  }
+
+  emitStage(onStage, COMPRESSION_STAGES.VALIDATING, {
+    fileName: file.name,
+    mimeType,
+    originalSize: file.size,
+    candidateSize: outBytes.byteLength
+  });
+
+  const valid = await validateOptimizedOpenXml(
+    JSZip,
+    outBytes,
+    mimeType,
+    originalEntriesMap,
+    optimizedMediaSignatures,
+    { signal, deadlineAt, timeoutMs }
+  );
+  if (!valid) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.VALIDATION_FAILED
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.VALIDATION_FAILED);
+  }
+
+  const compressedFile = new File([outBytes], file.name, {
+    type: mimeType,
+    lastModified: file.lastModified
+  });
+
+  emitStage(onStage, COMPRESSION_STAGES.COMPLETE, {
+    fileName: compressedFile.name,
+    mimeType,
+    originalSize: file.size,
+    finalSize: compressedFile.size
+  });
+
+  return buildResult(
+    compressedFile,
+    true,
+    file.size,
+    compressedFile.size,
+    COMPRESSION_REASONS.COMPRESSED
+  );
+}
+
 /**
  * Safely optimizes a File (supported image or PDF) while enforcing strict quality,
  * validation, >= 10% savings, AbortSignal, and fail-safe fallback guarantees.
@@ -2315,7 +3931,8 @@ export async function compressFile(file, options = {}) {
     if (
       candidateMime &&
       !SUPPORTED_IMAGE_MIME_TYPES.has(candidateMime) &&
-      candidateMime !== SUPPORTED_PDF_MIME_TYPE
+      candidateMime !== SUPPORTED_PDF_MIME_TYPE &&
+      !SUPPORTED_OPENXML_MIME_TYPES.has(candidateMime)
     ) {
       emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
         fileName: file.name,
@@ -2337,12 +3954,17 @@ export async function compressFile(file, options = {}) {
     const minPdfBytes = Number.isFinite(Number(options?.minPdfBytes))
       ? Math.max(0, Number(options.minPdfBytes))
       : SMART_COMPRESSION_DEFAULTS.MIN_PDF_BYTES;
+    const minOpenXmlBytes = Number.isFinite(Number(options?.minOpenXmlBytes))
+      ? Math.max(0, Number(options.minOpenXmlBytes))
+      : SMART_COMPRESSION_DEFAULTS.MIN_OPENXML_BYTES;
     const minThreshold =
       candidateMime === SUPPORTED_PDF_MIME_TYPE
         ? minPdfBytes
+        : SUPPORTED_OPENXML_MIME_TYPES.has(candidateMime)
+        ? minOpenXmlBytes
         : SUPPORTED_IMAGE_MIME_TYPES.has(candidateMime)
         ? minImageBytes
-        : Math.min(minImageBytes, minPdfBytes);
+        : Math.min(minImageBytes, minPdfBytes, minOpenXmlBytes);
 
     if (originalSize <= 0 || originalSize < minThreshold) {
       emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
@@ -2382,7 +4004,11 @@ export async function compressFile(file, options = {}) {
 
     // Enforce exact format-specific lightweight gate when resolved via signature (e.g. extensionless octet-stream)
     const resolvedMinThreshold =
-      formatInfo.mimeType === SUPPORTED_PDF_MIME_TYPE ? minPdfBytes : minImageBytes;
+      formatInfo.mimeType === SUPPORTED_PDF_MIME_TYPE
+        ? minPdfBytes
+        : SUPPORTED_OPENXML_MIME_TYPES.has(formatInfo.mimeType)
+        ? minOpenXmlBytes
+        : minImageBytes;
     if (originalSize < resolvedMinThreshold) {
       emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
         fileName: file.name,
@@ -2407,6 +4033,10 @@ export async function compressFile(file, options = {}) {
 
     if (formatInfo.mimeType === SUPPORTED_PDF_MIME_TYPE) {
       return await optimizePdfFile(file, inputBytes, options, ctx);
+    }
+
+    if (SUPPORTED_OPENXML_MIME_TYPES.has(formatInfo.mimeType)) {
+      return await optimizeOpenXmlFile(file, inputBytes, formatInfo.mimeType, formatInfo, options, ctx);
     }
 
     if (formatInfo.mimeType === 'image/gif') {
