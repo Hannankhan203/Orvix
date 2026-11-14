@@ -765,7 +765,12 @@ export function useVoiceDictation({
 
   const pauseListeningRef = useRef(null);
 
+  const isMountedRef = useRef(true);
   const restartTimeoutRef = useRef(null);
+  const transitionTimeoutRef = useRef(null);
+  const stateResetTimeoutRef = useRef(null);
+  const recognitionShutdownTimeoutRef = useRef(null);
+  const recorderFinishTimeoutRef = useRef(null);
   const consecutiveErrorsRef = useRef(0);
   const consecutiveSilenceRestartsRef = useRef(0);
   const isStartingRef = useRef(false);
@@ -813,7 +818,9 @@ export function useVoiceDictation({
   // Synchronous state updater to avoid React re-render closure lag in event handlers
   const updateRecordingState = useCallback((newState) => {
     recordingStateRef.current = newState;
-    setRecordingState(newState);
+    if (isMountedRef.current) {
+      setRecordingState(newState);
+    }
   }, []);
 
   // Helper to record an emitted dictation value, ensuring synchronous ref tracking and bounded history
@@ -950,9 +957,11 @@ export function useVoiceDictation({
     }
 
     analyserRef.current = null;
-    setAudioLevel(0);
-    setAudioFrequencies([0.15, 0.25, 0.35, 0.25, 0.15]);
-    setWaveformBars(Array(NUM_WAVEFORM_BARS).fill(0.08));
+    if (isMountedRef.current) {
+      setAudioLevel(0);
+      setAudioFrequencies([0.15, 0.25, 0.35, 0.25, 0.15]);
+      setWaveformBars(Array(NUM_WAVEFORM_BARS).fill(0.08));
+    }
   }, []);
 
   // Safely acquires a single shared microphone MediaStream (Phase 5.2 & 5.4).
@@ -999,6 +1008,10 @@ export function useVoiceDictation({
     // Mobile & hardware interruption handling (incoming phone calls, bluetooth disconnects)
     stream.getAudioTracks().forEach((track) => {
       track.onended = () => {
+        if (!isMountedRef.current) {
+          stopAudioResources();
+          return;
+        }
         if (
           recordingStateRef.current === 'listening' ||
           recordingStateRef.current === 'requesting'
@@ -1013,6 +1026,7 @@ export function useVoiceDictation({
       };
 
       track.onmute = () => {
+        if (!isMountedRef.current) return;
         // Hardware microphone muted by OS (incoming call, headset unplugged)
         if (recordingStateRef.current === 'listening') {
           pauseListeningRef.current?.(true);
@@ -1056,7 +1070,7 @@ export function useVoiceDictation({
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       const updateMeter = () => {
-        if (!analyserRef.current) return;
+        if (!isMountedRef.current || !analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
 
         let sum = 0;
@@ -1310,11 +1324,16 @@ export function useVoiceDictation({
           // Native audio capture fallback for browsers without Web Speech API (Firefox, iOS PWA)
           acquireMicrophoneStream()
             .then((stream) => {
+              if (!isMountedRef.current) {
+                stopAudioResources();
+                return;
+              }
               attachAudioAnalyser(stream);
               startMediaRecorder(stream);
               updateRecordingState('listening');
             })
             .catch((streamErr) => {
+              if (!isMountedRef.current) return;
               console.warn('[Dictation] Microphone stream acquisition failed:', streamErr);
               hasFatalErrorRef.current = true;
               stopAudioResources();
@@ -1347,6 +1366,7 @@ export function useVoiceDictation({
         acquireMicrophoneStream()
           .then((sharedStream) => {
             if (
+              !isMountedRef.current ||
               isExplicitStopRef.current ||
               (recordingStateRef.current !== 'listening' && recordingStateRef.current !== 'requesting')
             ) {
@@ -1359,6 +1379,7 @@ export function useVoiceDictation({
             }
           })
           .catch((streamErr) => {
+            if (!isMountedRef.current) return;
             console.warn('[Dictation] Microphone stream acquisition notice:', streamErr);
             if (!recognitionRef.current) {
               isStartingRef.current = false;
@@ -1393,7 +1414,7 @@ export function useVoiceDictation({
         hasFatalErrorRef.current = false;
 
         recognition.onstart = () => {
-          if (instanceCounterRef.current !== currentInstanceId) return;
+          if (!isMountedRef.current || instanceCounterRef.current !== currentInstanceId) return;
           if (isDictationDiagnosticsEnabled()) {
             console.log('[Dictation] Speech recognition service active');
           }
@@ -1405,6 +1426,11 @@ export function useVoiceDictation({
           // Start elapsed duration timer if not running
           if (!durationIntervalRef.current) {
             durationIntervalRef.current = setInterval(() => {
+              if (!isMountedRef.current) {
+                clearInterval(durationIntervalRef.current);
+                durationIntervalRef.current = null;
+                return;
+              }
               if (recordingStateRef.current === 'listening') {
                 const now = Date.now();
                 const start = recordingStartTimeRef.current || now;
@@ -1429,7 +1455,7 @@ export function useVoiceDictation({
         };
 
         recognition.onresult = (event) => {
-          if (instanceCounterRef.current !== currentInstanceId) return;
+          if (!isMountedRef.current || instanceCounterRef.current !== currentInstanceId) return;
           if (isCancelledRef.current) return;
           consecutiveErrorsRef.current = 0;
           consecutiveSilenceRestartsRef.current = 0;
@@ -1504,7 +1530,7 @@ export function useVoiceDictation({
         };
 
         recognition.onerror = (event) => {
-          if (instanceCounterRef.current !== currentInstanceId) return;
+          if (!isMountedRef.current || instanceCounterRef.current !== currentInstanceId) return;
           isStartingRef.current = false;
           const errorType = event?.error;
 
@@ -1596,7 +1622,7 @@ export function useVoiceDictation({
         };
 
         recognition.onend = () => {
-          if (instanceCounterRef.current !== currentInstanceId) return;
+          if (!isMountedRef.current || instanceCounterRef.current !== currentInstanceId) return;
           isStartingRef.current = false;
           recognitionRef.current = null;
           if (!hasFatalErrorRef.current) {
@@ -1694,6 +1720,8 @@ export function useVoiceDictation({
 
             clearTimeout(restartTimeoutRef.current);
             restartTimeoutRef.current = setTimeout(() => {
+              restartTimeoutRef.current = null;
+              if (!isMountedRef.current) return;
               if (recordingStateRef.current === 'listening' && !isExplicitStopRef.current && !isStoppingRef.current) {
                 try {
                   startRecognitionSession(false);
@@ -1843,6 +1871,10 @@ export function useVoiceDictation({
 
           // Acquire shared microphone stream
           const stream = await acquireMicrophoneStream();
+          if (!isMountedRef.current) {
+            stopAudioResources();
+            return;
+          }
           attachAudioAnalyser(stream);
 
           // Resolve auth token (if available)
@@ -1852,11 +1884,15 @@ export function useVoiceDictation({
               token = await auth.currentUser.getIdToken();
             } catch (_) {}
           }
+          if (!isMountedRef.current) {
+            stopAudioResources();
+            return;
+          }
 
           const client = new VoiceStreamClient({
             url: webSocketUrlRef.current,
             onInterim: (rawInterim) => {
-              if (isCancelledRef.current) return;
+              if (!isMountedRef.current || isCancelledRef.current) return;
               const clean = (rawInterim || '').trim();
               if (!clean) return;
 
@@ -1876,7 +1912,7 @@ export function useVoiceDictation({
               }
             },
             onFinal: (rawFinal) => {
-              if (isCancelledRef.current) return;
+              if (!isMountedRef.current || isCancelledRef.current) return;
               const clean = (rawFinal || '').trim();
               if (!clean) return;
 
@@ -1899,6 +1935,7 @@ export function useVoiceDictation({
               }
             },
             onError: (wsErr) => {
+              if (!isMountedRef.current) return;
               console.warn('[Dictation] WebSocket streaming error:', wsErr);
               if (wsErr?.code === 'PROVIDER_UNAVAILABLE' || wsErr?.canFallback) {
                 if (voiceStreamClientRef.current) {
@@ -1917,10 +1954,20 @@ export function useVoiceDictation({
           });
 
           await client.connect(token);
+          if (!isMountedRef.current) {
+            client.disconnect();
+            stopAudioResources();
+            return;
+          }
           await client.start({
             stream,
             language: selectedLanguageRef.current
           });
+          if (!isMountedRef.current) {
+            client.disconnect();
+            stopAudioResources();
+            return;
+          }
 
           voiceStreamClientRef.current = client;
           isWebSocketActiveRef.current = true;
@@ -1930,6 +1977,11 @@ export function useVoiceDictation({
           // Start duration timer
           if (!durationIntervalRef.current) {
             durationIntervalRef.current = setInterval(() => {
+              if (!isMountedRef.current) {
+                clearInterval(durationIntervalRef.current);
+                durationIntervalRef.current = null;
+                return;
+              }
               if (recordingStateRef.current === 'listening') {
                 const now = Date.now();
                 const start = recordingStartTimeRef.current || now;
@@ -1946,15 +1998,26 @@ export function useVoiceDictation({
             voiceStreamClientRef.current = null;
           }
           isWebSocketActiveRef.current = false;
-          setIsStreamingWebSocket(false);
+          if (isMountedRef.current) {
+            setIsStreamingWebSocket(false);
+          }
         }
       }
 
-      await startRecognitionSession(true);
+      if (isMountedRef.current) {
+        await startRecognitionSession(true);
+      }
     } finally {
-      setTimeout(() => {
+      clearTimeout(transitionTimeoutRef.current);
+      if (isMountedRef.current) {
+        transitionTimeoutRef.current = setTimeout(() => {
+          transitionTimeoutRef.current = null;
+          isTransitioningRef.current = false;
+        }, 150);
+      } else {
+        transitionTimeoutRef.current = null;
         isTransitioningRef.current = false;
-      }, 150);
+      }
     }
   }, [
     acquireMicrophoneStream,
@@ -2054,6 +2117,11 @@ export function useVoiceDictation({
 
         if (!durationIntervalRef.current) {
           durationIntervalRef.current = setInterval(() => {
+            if (!isMountedRef.current) {
+              clearInterval(durationIntervalRef.current);
+              durationIntervalRef.current = null;
+              return;
+            }
             if (recordingStateRef.current === 'listening') {
               const now = Date.now();
               const start = recordingStartTimeRef.current || now;
@@ -2083,11 +2151,17 @@ export function useVoiceDictation({
           try {
             stream = await acquireMicrophoneStream();
           } catch (streamErr) {
+            if (!isMountedRef.current) return;
             stopAudioResources();
             setDictationError('Unable to reactivate microphone. Please tap to start dictation again.');
             updateRecordingState('error');
             return;
           }
+        }
+
+        if (!isMountedRef.current) {
+          stopAudioResources();
+          return;
         }
 
         // Restore / re-enable microphone tracks if they were disabled
@@ -2143,6 +2217,11 @@ export function useVoiceDictation({
         // Ensure duration timer is running
         if (!durationIntervalRef.current) {
           durationIntervalRef.current = setInterval(() => {
+            if (!isMountedRef.current) {
+              clearInterval(durationIntervalRef.current);
+              durationIntervalRef.current = null;
+              return;
+            }
             if (recordingStateRef.current === 'listening') {
               const now = Date.now();
               const start = recordingStartTimeRef.current || now;
@@ -2167,6 +2246,8 @@ export function useVoiceDictation({
           }
         }
 
+        if (!isMountedRef.current) return;
+
         // State consistency check:
         // If MediaRecorder is actively recording, UI must reflect 'listening' even if
         // SpeechRecognition failed to restart or hasn't fired onstart yet.
@@ -2179,9 +2260,16 @@ export function useVoiceDictation({
         }
       }
     } finally {
-      setTimeout(() => {
+      clearTimeout(transitionTimeoutRef.current);
+      if (isMountedRef.current) {
+        transitionTimeoutRef.current = setTimeout(() => {
+          transitionTimeoutRef.current = null;
+          isTransitioningRef.current = false;
+        }, 150);
+      } else {
+        transitionTimeoutRef.current = null;
         isTransitioningRef.current = false;
-      }, 150);
+      }
     }
   }, [
     acquireMicrophoneStream,
@@ -2226,6 +2314,7 @@ export function useVoiceDictation({
           voiceStreamClientRef.current.disconnect();
           voiceStreamClientRef.current = null;
           isWebSocketActiveRef.current = false;
+          if (!isMountedRef.current) return '';
           setIsStreamingWebSocket(false);
 
           updateRecordingState('transcribing');
@@ -2246,7 +2335,10 @@ export function useVoiceDictation({
           setInterimTranscript('');
           updateRecordingState('success');
 
-          setTimeout(() => {
+          clearTimeout(stateResetTimeoutRef.current);
+          stateResetTimeoutRef.current = setTimeout(() => {
+            stateResetTimeoutRef.current = null;
+            if (!isMountedRef.current) return;
             if (recordingStateRef.current === 'success') {
               updateRecordingState('idle');
             }
@@ -2261,21 +2353,27 @@ export function useVoiceDictation({
             voiceStreamClientRef.current = null;
           }
           isWebSocketActiveRef.current = false;
-          setIsStreamingWebSocket(false);
+          if (isMountedRef.current) {
+            setIsStreamingWebSocket(false);
+          }
         }
       }
+
+      if (!isMountedRef.current) return '';
 
       // 1. Gracefully signal the speech recognizer to finish and wait for final results to settle via onend
       if (recognitionRef.current) {
         const rec = recognitionRef.current;
         await new Promise((resolve) => {
           let resolved = false;
-          let timeoutId = null;
 
           const finishShutdown = (isTimeout = false) => {
             if (!resolved) {
               resolved = true;
-              if (timeoutId) clearTimeout(timeoutId);
+              if (recognitionShutdownTimeoutRef.current) {
+                clearTimeout(recognitionShutdownTimeoutRef.current);
+                recognitionShutdownTimeoutRef.current = null;
+              }
               pendingRecognitionShutdownResolveRef.current = null;
               if (isTimeout) {
                 console.warn('[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
@@ -2288,7 +2386,9 @@ export function useVoiceDictation({
           pendingRecognitionShutdownResolveRef.current = () => finishShutdown(false);
 
           // Bounded safety timeout (3500ms) prevents hanging if browser fails to trigger onend
-          timeoutId = setTimeout(() => {
+          clearTimeout(recognitionShutdownTimeoutRef.current);
+          recognitionShutdownTimeoutRef.current = setTimeout(() => {
+            recognitionShutdownTimeoutRef.current = null;
             finishShutdown(true);
           }, 3500);
 
@@ -2301,17 +2401,25 @@ export function useVoiceDictation({
         });
       }
 
+      if (!isMountedRef.current) {
+        stopAudioResources();
+        cleanupRecognitionInstance();
+        return '';
+      }
+
       // 2. Await MediaRecorder finalization properly so the final audio slice and stop event are delivered
       const recorder = mediaRecorderRef.current;
       if (recorder && recorder.state !== 'inactive') {
         await new Promise((resolve) => {
           let resolved = false;
-          let timer = null;
 
           const onRecorderFinish = () => {
             if (!resolved) {
               resolved = true;
-              if (timer) clearTimeout(timer);
+              if (recorderFinishTimeoutRef.current) {
+                clearTimeout(recorderFinishTimeoutRef.current);
+                recorderFinishTimeoutRef.current = null;
+              }
               try {
                 recorder.removeEventListener('stop', onRecorderFinish);
                 recorder.removeEventListener('error', onRecorderFinish);
@@ -2320,7 +2428,11 @@ export function useVoiceDictation({
             }
           };
 
-          timer = setTimeout(onRecorderFinish, 1500);
+          clearTimeout(recorderFinishTimeoutRef.current);
+          recorderFinishTimeoutRef.current = setTimeout(() => {
+            recorderFinishTimeoutRef.current = null;
+            onRecorderFinish();
+          }, 1500);
 
           try {
             recorder.addEventListener('stop', onRecorderFinish, { once: true });
@@ -2336,6 +2448,12 @@ export function useVoiceDictation({
             onRecorderFinish();
           }
         });
+      }
+
+      if (!isMountedRef.current) {
+        stopAudioResources();
+        cleanupRecognitionInstance();
+        return '';
       }
 
       // Calculate active recording duration excluding paused time
@@ -2429,6 +2547,8 @@ export function useVoiceDictation({
             language: selectedLanguageRef.current
           });
 
+          if (!isMountedRef.current) return '';
+
           if (diag) {
             diag.provider = providerRes.provider || 'groq';
             diag.model = providerRes.model || 'whisper-large-v3-turbo';
@@ -2477,6 +2597,7 @@ export function useVoiceDictation({
             }
           }
         } catch (fErr) {
+          if (!isMountedRef.current) return '';
           console.warn('[Dictation] Recorded audio transcription notice:', fErr);
           const failureReason = fErr?.message || 'provider_request_failed';
 
@@ -2543,7 +2664,7 @@ export function useVoiceDictation({
       }
 
       // Check stale session safeguard again
-      if (transcriptionSessionCounterRef.current !== currentSessionId) {
+      if (!isMountedRef.current || transcriptionSessionCounterRef.current !== currentSessionId) {
         return '';
       }
 
@@ -2607,7 +2728,10 @@ export function useVoiceDictation({
       setInterimTranscript('');
       // Brief honest success state before returning to idle
       updateRecordingState('success');
-      setTimeout(() => {
+      clearTimeout(stateResetTimeoutRef.current);
+      stateResetTimeoutRef.current = setTimeout(() => {
+        stateResetTimeoutRef.current = null;
+        if (!isMountedRef.current) return;
         if (recordingStateRef.current === 'success') {
           updateRecordingState('idle');
         }
@@ -2615,15 +2739,22 @@ export function useVoiceDictation({
       return finalCombined;
     } catch (err) {
       console.warn('[Dictation] Finalize transcription error:', err);
-      if (transcriptionSessionCounterRef.current === currentSessionId) {
+      if (isMountedRef.current && transcriptionSessionCounterRef.current === currentSessionId) {
         updateRecordingState('idle');
       }
       return '';
     } finally {
       isStoppingRef.current = false;
-      setTimeout(() => {
+      clearTimeout(transitionTimeoutRef.current);
+      if (isMountedRef.current) {
+        transitionTimeoutRef.current = setTimeout(() => {
+          transitionTimeoutRef.current = null;
+          isTransitioningRef.current = false;
+        }, 100);
+      } else {
+        transitionTimeoutRef.current = null;
         isTransitioningRef.current = false;
-      }, 100);
+      }
     }
   }, [
     cleanupRecognitionInstance,
@@ -2693,7 +2824,10 @@ export function useVoiceDictation({
     setLastSessionTranscript('');
     setTranscriptionNotice(null);
     updateRecordingState('cancelled');
-    setTimeout(() => {
+    clearTimeout(stateResetTimeoutRef.current);
+    stateResetTimeoutRef.current = setTimeout(() => {
+      stateResetTimeoutRef.current = null;
+      if (!isMountedRef.current) return;
       if (recordingStateRef.current === 'cancelled') {
         updateRecordingState('idle');
       }
@@ -2747,7 +2881,7 @@ export function useVoiceDictation({
         signal: abortCtrl.signal
       });
 
-      if (transcriptionSessionCounterRef.current !== currentSessionId) return;
+      if (!isMountedRef.current || transcriptionSessionCounterRef.current !== currentSessionId) return;
 
       const rawWhisper = (result.text || '').trim();
       if (rawWhisper) {
@@ -2795,7 +2929,7 @@ export function useVoiceDictation({
         });
       }
     } catch (err) {
-      if (transcriptionSessionCounterRef.current !== currentSessionId) return;
+      if (!isMountedRef.current || transcriptionSessionCounterRef.current !== currentSessionId) return;
       if (err?.name === 'AbortError') return;
 
       console.warn('[Transcription] Retry failed:', err);
@@ -2808,7 +2942,7 @@ export function useVoiceDictation({
         canRetry: true
       });
     } finally {
-      if (transcriptionSessionCounterRef.current === currentSessionId) {
+      if (isMountedRef.current && transcriptionSessionCounterRef.current === currentSessionId) {
         updateRecordingState('idle');
       }
     }
@@ -2901,8 +3035,27 @@ export function useVoiceDictation({
 
   // Component unmount cleanup (Phase 5.2, 5.3 & 5.4)
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       clearTimeout(restartTimeoutRef.current);
+      restartTimeoutRef.current = null;
+      clearTimeout(transitionTimeoutRef.current);
+      transitionTimeoutRef.current = null;
+      clearTimeout(stateResetTimeoutRef.current);
+      stateResetTimeoutRef.current = null;
+      clearTimeout(recognitionShutdownTimeoutRef.current);
+      recognitionShutdownTimeoutRef.current = null;
+      clearTimeout(recorderFinishTimeoutRef.current);
+      recorderFinishTimeoutRef.current = null;
+      isTransitioningRef.current = false;
+      transcriptionSessionCounterRef.current += 1;
+      if (pendingRecognitionShutdownResolveRef.current) {
+        try {
+          pendingRecognitionShutdownResolveRef.current();
+        } catch (_) {}
+        pendingRecognitionShutdownResolveRef.current = null;
+      }
       if (transcriptionAbortCtrlRef.current) {
         try {
           transcriptionAbortCtrlRef.current.abort();

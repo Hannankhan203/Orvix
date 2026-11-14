@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Check, Copy, Terminal, Code2 } from 'lucide-react';
 import { tokenizeCode } from '../../utils/syntaxHighlighter.js';
 
@@ -138,6 +138,48 @@ function CodeBlock({
 }) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const isMountedRef = useRef(true);
+  const copiedTimerRef = useRef(null);
+  const copyFailedTimerRef = useRef(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (copiedTimerRef.current !== null) {
+        clearTimeout(copiedTimerRef.current);
+        copiedTimerRef.current = null;
+      }
+      if (copyFailedTimerRef.current !== null) {
+        clearTimeout(copyFailedTimerRef.current);
+        copyFailedTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const scheduleCopiedReset = useCallback(() => {
+    if (copiedTimerRef.current !== null) {
+      clearTimeout(copiedTimerRef.current);
+    }
+    copiedTimerRef.current = setTimeout(() => {
+      copiedTimerRef.current = null;
+      if (isMountedRef.current) {
+        setCopied(false);
+      }
+    }, 2000);
+  }, []);
+
+  const scheduleCopyFailedReset = useCallback(() => {
+    if (copyFailedTimerRef.current !== null) {
+      clearTimeout(copyFailedTimerRef.current);
+    }
+    copyFailedTimerRef.current = setTimeout(() => {
+      copyFailedTimerRef.current = null;
+      if (isMountedRef.current) {
+        setCopyFailed(false);
+      }
+    }, 2500);
+  }, []);
 
   // Normalize code string (stripping only single trailing newline once from markdown parser)
   const normalizedCode = useMemo(() => {
@@ -179,13 +221,16 @@ function CodeBlock({
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(normalizedCode);
+        if (!isMountedRef.current) return;
         setCopied(true);
         setCopyFailed(false);
-        setTimeout(() => setCopied(false), 2000);
+        scheduleCopiedReset();
         return;
       }
       throw new Error('Clipboard API unavailable');
     } catch (_) {
+      if (!isMountedRef.current) return;
+
       try {
         const textarea = document.createElement('textarea');
         textarea.value = normalizedCode;
@@ -198,18 +243,21 @@ function CodeBlock({
         const success = document.execCommand('copy');
         document.body.removeChild(textarea);
 
+        if (!isMountedRef.current) return;
+
         if (success) {
           setCopied(true);
           setCopyFailed(false);
-          setTimeout(() => setCopied(false), 2000);
+          scheduleCopiedReset();
           return;
         }
       } catch (err) {
         console.warn('Fallback code copy failed:', err);
       }
 
+      if (!isMountedRef.current) return;
       setCopyFailed(true);
-      setTimeout(() => setCopyFailed(false), 2500);
+      scheduleCopyFailedReset();
     }
   };
 

@@ -61,7 +61,7 @@ import {
   subscribeUploadQuotaState,
   syncUploadQuotaUserAccount,
   updateUploadQuotaFromResponse,
-  checkUploadQuotaUtcRollover,
+  checkUploadQuotaPktRollover,
   fetchAuthenticatedUploadQuota
 } from '../services/attachmentStorageService.js';
 import { isVisionCapableProvider } from '../services/documentContextService.js';
@@ -456,18 +456,18 @@ export default function ChatPage({
     syncUploadQuotaUserAccount(authenticatedUid, { autoFetch: isBrowserOnline() });
   }, [currentUser?.uid, isGuestUser, isSharedView]);
 
-  // Periodically check for UTC calendar day rollover and refresh on tab visibility/online
+  // Periodically check for Asia/Karachi (PKT) calendar day rollover and refresh on tab visibility/online
   useEffect(() => {
     if (isSharedView || isGuestUser || !currentUser?.uid) return undefined;
 
     const handleVisibilityOrFocus = () => {
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-        checkUploadQuotaUtcRollover({ triggerRefresh: isBrowserOnline() });
+        checkUploadQuotaPktRollover({ triggerRefresh: isBrowserOnline() });
       }
     };
 
     const rolloverIntervalId = setInterval(() => {
-      checkUploadQuotaUtcRollover({ triggerRefresh: isBrowserOnline() });
+      checkUploadQuotaPktRollover({ triggerRefresh: isBrowserOnline() });
     }, 15_000);
 
     if (typeof window !== 'undefined') {

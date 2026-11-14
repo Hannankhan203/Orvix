@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useId } from 'react';
 import { ChevronDown, Check, Sparkles, Code, PenTool, BookOpen } from 'lucide-react';
 import { CHAT_MODES, CHAT_MODE_LIST, getChatMode } from '../../config/chatModes.js';
 
@@ -31,6 +31,10 @@ export default function ModeSelector({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
+  const triggerRef = useRef(null);
+  const instanceId = useId();
+  const menuId = `mode-menu-${instanceId}`;
+  const titleId = `mode-menu-title-${instanceId}`;
 
   const currentMode = getChatMode(activeMode);
   const ActiveIcon = ICON_COMPONENTS[currentMode.iconName] || Sparkles;
@@ -68,8 +72,11 @@ export default function ModeSelector({
       if (e.key === 'Escape') {
         e.preventDefault();
         setIsOpen(false);
-        const triggerBtn = containerRef.current?.querySelector('.mode-compact-trigger');
-        triggerBtn?.focus();
+        triggerRef.current?.focus();
+        return;
+      }
+      if (e.key === 'Tab') {
+        setIsOpen(false);
         return;
       }
       if (!containerRef.current) return;
@@ -105,12 +112,21 @@ export default function ModeSelector({
     };
   }, [isOpen]);
 
+  const handleTriggerKeyDown = (e) => {
+    if (disabled) return;
+    if (!isOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      setIsOpen(true);
+    }
+  };
+
   const handleSelect = (modeId) => {
     if (disabled) return;
     if (onSelectMode) {
       onSelectMode(modeId);
     }
     setIsOpen(false);
+    triggerRef.current?.focus();
   };
 
   // Compact Dropdown Popover (Header and composer bars)
@@ -120,12 +136,15 @@ export default function ModeSelector({
       className={`mode-selector-compact-container ${className} ${isOpen ? 'dropdown-open' : ''}`}
     >
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         onClick={() => setIsOpen((prev) => !prev)}
+        onKeyDown={handleTriggerKeyDown}
         className={`mode-compact-trigger mode-${currentMode.id} ${isOpen ? 'active' : ''}`}
-        aria-haspopup="dialog"
+        aria-haspopup="menu"
         aria-expanded={isOpen}
+        aria-controls={isOpen ? menuId : undefined}
         title={`Active Mode: ${currentMode.name}. Click to switch.`}
         aria-label={`Active Mode: ${currentMode.name}. Click to switch mode.`}
       >
@@ -138,16 +157,19 @@ export default function ModeSelector({
 
       {isOpen && (
         <div
+          id={menuId}
           className={`mode-dropdown-menu align-${dropdownAlign}`}
           role="menu"
-          aria-label="Conversation modes"
+          aria-labelledby={titleId}
         >
-          <div className="mode-dropdown-header">
-            <span className="mode-dropdown-title">Chat Mode</span>
-            <span className="mode-dropdown-caption">Guides assistant behavior & response style</span>
+          <div className="mode-dropdown-header" role="presentation">
+            <span id={titleId} className="mode-dropdown-title">Chat Mode</span>
+            <span className="mode-dropdown-caption" aria-hidden="true">
+              Guides assistant behavior & response style
+            </span>
           </div>
 
-          <div className="mode-dropdown-items" role="radiogroup">
+          <div className="mode-dropdown-items" role="group" aria-labelledby={titleId}>
             {CHAT_MODE_LIST.map((mode) => {
               const IconComp = ICON_COMPONENTS[mode.iconName] || Sparkles;
               const isSelected = mode.id === currentMode.id;
@@ -156,12 +178,12 @@ export default function ModeSelector({
                 <button
                   key={mode.id}
                   type="button"
-                  role="radio"
+                  role="menuitemradio"
                   aria-checked={isSelected}
                   onClick={() => handleSelect(mode.id)}
                   className={`mode-dropdown-item ${isSelected ? 'selected' : ''}`}
                 >
-                  <div className={`mode-item-icon-wrap mode-${mode.id}`}>
+                  <div className={`mode-item-icon-wrap mode-${mode.id}`} aria-hidden="true">
                     <IconComp size={16} />
                   </div>
                   <div className="mode-item-text">

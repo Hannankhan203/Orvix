@@ -6782,8 +6782,35 @@ body.theme-light .composer-attachment-alert .dictation-error-dismiss,
   cursor: pointer;
 }
 
-.composer-attachment-chip:hover {
+.composer-attachment-chip:hover,
+.composer-attachment-chip:focus-within {
   border-color: var(--accent-primary);
+}
+
+.composer-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+
+.composer-attachment-chip.composer-image-chip .composer-chip-main {
+  gap: 9px;
+}
+
+.composer-chip-main:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }
 
 .attachment-chip-badge {

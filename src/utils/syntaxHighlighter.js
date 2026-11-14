@@ -358,6 +358,303 @@ GRAMMARS.yml = GRAMMARS.universal;
 GRAMMARS.markdown = GRAMMARS.universal;
 GRAMMARS.md = GRAMMARS.universal;
 
+function isAsciiWordCode(code) {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    code === 95 ||
+    (code >= 97 && code <= 122)
+  );
+}
+
+const ASCII_ALL_PRINTABLE_MASK_CHARS = (() => {
+  const chars = [];
+  for (let c = 33; c <= 126; c++) {
+    chars.push(c);
+  }
+  return chars;
+})();
+
+function addCharCode(set, code, ignoreCase) {
+  if (code < 0 || code >= 128) return;
+  set.add(code);
+  if (ignoreCase) {
+    if (code >= 65 && code <= 90) set.add(code + 32);
+    else if (code >= 97 && code <= 122) set.add(code - 32);
+  }
+}
+
+function readEscapeChars(source, pos, ignoreCase) {
+  const ch = source[pos];
+  const chars = new Set();
+  if (ch === 'd') {
+    for (let c = 48; c <= 57; c++) chars.add(c);
+    return { chars, nextPos: pos + 1 };
+  }
+  if (ch === 'w') {
+    for (let c = 48; c <= 57; c++) chars.add(c);
+    for (let c = 65; c <= 90; c++) chars.add(c);
+    chars.add(95);
+    for (let c = 97; c <= 122; c++) chars.add(c);
+    return { chars, nextPos: pos + 1 };
+  }
+  if (ch === 's') {
+    chars.add(32);
+    chars.add(9);
+    chars.add(10);
+    chars.add(13);
+    return { chars, nextPos: pos + 1 };
+  }
+  if (ch === 'x' && pos + 2 < source.length) {
+    const hex = source.slice(pos + 1, pos + 3);
+    const val = parseInt(hex, 16);
+    if (!Number.isNaN(val) && val < 128) addCharCode(chars, val, ignoreCase);
+    return { chars, nextPos: pos + 3 };
+  }
+  addCharCode(chars, ch.charCodeAt(0), ignoreCase);
+  return { chars, nextPos: pos + 1 };
+}
+
+function readCharClass(source, pos, ignoreCase) {
+  // pos points to '['
+  const chars = new Set();
+  let i = pos + 1;
+  const negated = source[i] === '^';
+  if (negated) i++;
+
+  let prevChar = -1;
+  let pendingRange = false;
+
+  while (i < source.length) {
+    const c = source[i];
+    if (c === ']' && i > pos + (negated ? 2 : 1)) {
+      i++;
+      break;
+    }
+
+    let currentCodes = null;
+    let singleCode = -1;
+
+    if (c === '\\' && i + 1 < source.length) {
+      const esc = readEscapeChars(source, i + 1, false);
+      currentCodes = esc.chars;
+      if (esc.chars.size === 1) {
+        singleCode = esc.chars.values().next().value;
+      }
+      i = esc.nextPos;
+    } else {
+      singleCode = c.charCodeAt(0);
+      i++;
+    }
+
+    if (pendingRange && singleCode !== -1 && prevChar !== -1 && singleCode >= prevChar) {
+      for (let code = prevChar; code <= singleCode; code++) {
+        addCharCode(chars, code, ignoreCase);
+      }
+      pendingRange = false;
+      prevChar = -1;
+    } else if (c === '-' && prevChar !== -1 && source[i] !== ']') {
+      pendingRange = true;
+    } else {
+      if (pendingRange) {
+        addCharCode(chars, 45, ignoreCase);
+        pendingRange = false;
+      }
+      if (currentCodes) {
+        for (const code of currentCodes) addCharCode(chars, code, ignoreCase);
+      } else if (singleCode !== -1) {
+        addCharCode(chars, singleCode, ignoreCase);
+      }
+      prevChar = singleCode;
+    }
+  }
+
+  if (pendingRange) addCharCode(chars, 45, ignoreCase);
+
+  if (negated) {
+    const inverted = new Set();
+    for (const code of ASCII_ALL_PRINTABLE_MASK_CHARS) {
+      if (!chars.has(code)) inverted.add(code);
+    }
+    return { chars: inverted, nextPos: i };
+  }
+
+  return { chars, nextPos: i };
+}
+
+function findMatchingParen(source, openPos) {
+  let depth = 0;
+  let inClass = false;
+  for (let i = openPos; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === ']') inClass = false;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return source.length - 1;
+}
+
+function splitTopLevelAlts(expr) {
+  const alts = [];
+  let start = 0;
+  let depth = 0;
+  let inClass = false;
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === ']') inClass = false;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (ch === '|' && depth === 0) {
+      alts.push(expr.slice(start, i));
+      start = i + 1;
+    }
+  }
+  alts.push(expr.slice(start));
+  return alts;
+}
+
+function collectExprStarters(expr, ignoreCase, starterCodes, midWordStarterCodes) {
+  const alts = splitTopLevelAlts(expr);
+
+  for (const alt of alts) {
+    let i = 0;
+    let boundaryRequired = false;
+
+    while (i < alt.length) {
+      // Zero-width word boundary assertion
+      if (alt[i] === '\\' && alt[i + 1] === 'b') {
+        boundaryRequired = true;
+        i += 2;
+        continue;
+      }
+
+      // Skip lookahead/lookbehind groups if any appeared at start
+      if (alt.startsWith('(?!', i) || alt.startsWith('(?=', i) || alt.startsWith('(?<=', i) || alt.startsWith('(?<!', i)) {
+        i = findMatchingParen(alt, i) + 1;
+        continue;
+      }
+
+      let atomChars = null;
+      let atomMidWordChars = null;
+      let isNullable = false;
+      let nextPos = i + 1;
+
+      if (alt[i] === '[') {
+        const res = readCharClass(alt, i, ignoreCase);
+        atomChars = res.chars;
+        nextPos = res.nextPos;
+      } else if (alt[i] === '(') {
+        const closePos = findMatchingParen(alt, i);
+        let innerStart = i + 1;
+        if (alt.startsWith('(?:', i)) innerStart = i + 3;
+        const subStarter = new Set();
+        const subMidWord = new Set();
+        collectExprStarters(alt.slice(innerStart, closePos), ignoreCase, subStarter, subMidWord);
+        atomChars = subStarter;
+        atomMidWordChars = subMidWord;
+        nextPos = closePos + 1;
+      } else if (alt[i] === '\\' && i + 1 < alt.length) {
+        const esc = readEscapeChars(alt, i + 1, ignoreCase);
+        atomChars = esc.chars;
+        nextPos = esc.nextPos;
+      } else if (alt[i] === '.') {
+        atomChars = new Set(ASCII_ALL_PRINTABLE_MASK_CHARS);
+        nextPos = i + 1;
+      } else {
+        atomChars = new Set();
+        addCharCode(atomChars, alt.charCodeAt(i), ignoreCase);
+        nextPos = i + 1;
+      }
+
+      if (alt[nextPos] === '?' || alt[nextPos] === '*') {
+        isNullable = true;
+        nextPos++;
+        if (alt[nextPos] === '?') nextPos++;
+      } else if (alt[nextPos] === '+' || alt[nextPos] === '{') {
+        if (alt[nextPos] === '+') {
+          nextPos++;
+          if (alt[nextPos] === '?') nextPos++;
+        }
+      }
+
+      for (const code of atomChars) {
+        starterCodes.add(code);
+        if (!boundaryRequired || !isAsciiWordCode(code)) {
+          if (atomMidWordChars) {
+            if (atomMidWordChars.has(code)) {
+              midWordStarterCodes.add(code);
+            }
+          } else {
+            midWordStarterCodes.add(code);
+          }
+        }
+      }
+
+      if (!isNullable) break;
+      i = nextPos;
+    }
+  }
+}
+
+const grammarIndexCache = new WeakMap();
+
+function getGrammarIndex(rules) {
+  let cached = grammarIndexCache.get(rules);
+  if (cached) return cached;
+
+  const starterMasks = new Uint32Array(128);
+  const midWordMasks = new Uint32Array(128);
+
+  for (let r = 0; r < rules.length; r++) {
+    const bit = 1 << r;
+    const { regex } = rules[r];
+    const starterCodes = new Set();
+    const midWordCodes = new Set();
+
+    collectExprStarters(regex.source, regex.ignoreCase, starterCodes, midWordCodes);
+
+    for (const code of starterCodes) {
+      if (code >= 0 && code < 128) {
+        starterMasks[code] |= bit;
+      }
+    }
+    for (const code of midWordCodes) {
+      if (code >= 0 && code < 128) {
+        midWordMasks[code] |= bit;
+      }
+    }
+  }
+
+  cached = { starterMasks, midWordMasks };
+  grammarIndexCache.set(rules, cached);
+  return cached;
+}
+
 /**
  * Tokenizes a string of source code according to the given language.
  * Guarantees 100% preservation of every single character, whitespace, and line break.
@@ -373,59 +670,70 @@ export function tokenizeCode(code = '', language = '') {
 
   const langKey = String(language || '').toLowerCase().trim();
   const rules = GRAMMARS[langKey] || GRAMMARS.universal;
+  const { starterMasks, midWordMasks } = getGrammarIndex(rules);
 
   const tokens = [];
   let index = 0;
   const len = code.length;
+  let plainStart = -1;
 
   while (index < len) {
-    let matched = false;
+    const ch = code.charCodeAt(index);
+    let mask = 0;
+    if (ch < 128) {
+      const prevIsWord = index > 0 && isAsciiWordCode(code.charCodeAt(index - 1));
+      mask = prevIsWord ? midWordMasks[ch] : starterMasks[ch];
+    }
 
-    // Try rules at current index
-    for (let r = 0; r < rules.length; r++) {
-      const { type, regex } = rules[r];
-      regex.lastIndex = index;
-      const match = regex.exec(code);
+    let matchedRule = null;
+    let matchedText = '';
 
-      if (match && match.index === index) {
-        if (typeof rules[r].tokenize === 'function') {
-          const sub = rules[r].tokenize(match[0]);
-          tokens.push(...sub);
-        } else {
-          tokens.push({
-            type,
-            content: match[0]
-          });
+    if (mask !== 0) {
+      for (let r = 0; r < rules.length; r++) {
+        if ((mask & (1 << r)) === 0) continue;
+        const rule = rules[r];
+        rule.regex.lastIndex = index;
+        const match = rule.regex.exec(code);
+        if (match && match.index === index && match[0].length > 0) {
+          matchedRule = rule;
+          matchedText = match[0];
+          break;
         }
-        index += match[0].length;
-        matched = true;
-        break;
       }
     }
 
-    if (!matched) {
-      // Accumulate plain characters until the next potential token boundary
-      let plainEnd = index + 1;
-      while (plainEnd < len) {
-        let isBoundary = false;
-        for (let r = 0; r < rules.length; r++) {
-          rules[r].regex.lastIndex = plainEnd;
-          const lookahead = rules[r].regex.exec(code);
-          if (lookahead && lookahead.index === plainEnd) {
-            isBoundary = true;
-            break;
-          }
-        }
-        if (isBoundary) break;
-        plainEnd++;
+    if (matchedRule !== null) {
+      if (plainStart !== -1) {
+        tokens.push({
+          type: TOKEN_TYPES.PLAIN,
+          content: code.slice(plainStart, index)
+        });
+        plainStart = -1;
       }
 
-      tokens.push({
-        type: TOKEN_TYPES.PLAIN,
-        content: code.slice(index, plainEnd)
-      });
-      index = plainEnd;
+      if (typeof matchedRule.tokenize === 'function') {
+        const sub = matchedRule.tokenize(matchedText);
+        tokens.push(...sub);
+      } else {
+        tokens.push({
+          type: matchedRule.type,
+          content: matchedText
+        });
+      }
+      index += matchedText.length;
+    } else {
+      if (plainStart === -1) {
+        plainStart = index;
+      }
+      index++;
     }
+  }
+
+  if (plainStart !== -1) {
+    tokens.push({
+      type: TOKEN_TYPES.PLAIN,
+      content: code.slice(plainStart)
+    });
   }
 
   return tokens;

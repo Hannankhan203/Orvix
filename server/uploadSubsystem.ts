@@ -65,8 +65,9 @@ import {
   releaseUploadSlot,
   attachQuotaHeaders,
   getQuotaStatus,
+  getPktDayString,
+  getNextPktMidnight,
   getUtcDayString,
-  getNextUtcMidnight,
   type QuotaIdentity,
   type QuotaReservation,
   type QuotaStatus
@@ -85,6 +86,8 @@ export {
   releaseUploadSlot,
   attachQuotaHeaders,
   getQuotaStatus,
+  getPktDayString,
+  getNextPktMidnight,
   getUtcDayString,
   setForceProductionSignedUrlSecretCheckForTesting
 };
@@ -1688,13 +1691,15 @@ export function registerUploadRoutes(app: express.Express) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     attachQuotaHeaders(res, status, quotaIdentity);
 
+    const currentPktDay = status.pktDay || status.utcDay || getPktDayString();
     return res.status(200).json({
       limit: status.limit,
       remaining: status.remaining,
       committed: status.committed,
       activeReservations: status.activeReservations,
       resetAt: status.resetAt,
-      utcDay: status.utcDay || getUtcDayString()
+      pktDay: currentPktDay,
+      utcDay: currentPktDay
     });
   });
 
@@ -3204,7 +3209,7 @@ export function registerUploadRoutes(app: express.Express) {
         const statusForHeader = commitErr.currentDayStatus || cleanupRes.quotaStatus || {
           limit: DAILY_UPLOAD_LIMIT,
           remaining: typeof commitErr.remaining === 'number' ? commitErr.remaining : 0,
-          resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+          resetAt: commitErr.resetAt || getNextPktMidnight().toISOString()
         };
         attachQuotaHeaders(res, statusForHeader, quotaIdentity);
         return res.status(429).json({
@@ -3351,6 +3356,7 @@ export function registerUploadRoutes(app: express.Express) {
       attachQuotaHeaders(res, quotaStatus, quotaIdentity);
     }
 
+    const resolvedPktDay = quotaStatus ? (quotaStatus.pktDay || quotaStatus.utcDay || getPktDayString()) : undefined;
     return res.status(200).json({
       success: true,
       cancelled: true,
@@ -3362,7 +3368,8 @@ export function registerUploadRoutes(app: express.Express) {
             committed: quotaStatus.committed,
             activeReservations: quotaStatus.activeReservations,
             resetAt: quotaStatus.resetAt,
-            utcDay: quotaStatus.utcDay || getUtcDayString()
+            pktDay: resolvedPktDay,
+            utcDay: resolvedPktDay
           }
         : {})
     });
@@ -3774,7 +3781,7 @@ export function registerUploadRoutes(app: express.Express) {
           const statusForHeader = commitErr.currentDayStatus || {
             limit: DAILY_UPLOAD_LIMIT,
             remaining: typeof commitErr.remaining === 'number' ? commitErr.remaining : 0,
-            resetAt: commitErr.resetAt || getNextUtcMidnight().toISOString()
+            resetAt: commitErr.resetAt || getNextPktMidnight().toISOString()
           };
           attachQuotaHeaders(res, statusForHeader, quotaIdentity);
           return res.status(429).json({

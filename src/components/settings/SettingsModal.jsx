@@ -55,21 +55,43 @@ export default function SettingsModal() {
   const [confirmReset, setConfirmReset] = useState(false);
   const modalRef = useRef(null);
   const closeBtnRef = useRef(null);
+  const selectedVoiceURIRef = useRef(selectedVoiceURI);
+  selectedVoiceURIRef.current = selectedVoiceURI;
+  const speechRateRef = useRef(speechRate);
+  speechRateRef.current = speechRate;
+  const pendingLocalVoiceRef = useRef(null);
+  const pendingLocalRateRef = useRef(null);
 
   const isPreviewActive = currentMessageId === 'settings-preview' && speakingState !== 'idle';
 
-  // Synchronize settings if loaded from cloud or external source
+  // Synchronize settings only when loaded externally (never snap back in-flight user changes)
   useEffect(() => {
-    if (settings?.speechVoiceURI !== undefined && settings.speechVoiceURI !== selectedVoiceURI) {
-      setSelectedVoiceURI(settings.speechVoiceURI);
+    const targetVoice = settings?.speechVoiceURI;
+    if (targetVoice === undefined) return;
+    if (pendingLocalVoiceRef.current !== null) {
+      if (targetVoice === pendingLocalVoiceRef.current) {
+        pendingLocalVoiceRef.current = null;
+      }
+      return;
     }
-  }, [settings?.speechVoiceURI, selectedVoiceURI, setSelectedVoiceURI]);
+    if (targetVoice !== selectedVoiceURIRef.current) {
+      setSelectedVoiceURI(targetVoice);
+    }
+  }, [settings?.speechVoiceURI, setSelectedVoiceURI]);
 
   useEffect(() => {
-    if (settings?.speechRate !== undefined && Math.abs(settings.speechRate - speechRate) > 0.01) {
-      setSpeechRate(settings.speechRate);
+    const targetRate = settings?.speechRate;
+    if (targetRate === undefined) return;
+    if (pendingLocalRateRef.current !== null) {
+      if (Math.abs(targetRate - pendingLocalRateRef.current) <= 0.01) {
+        pendingLocalRateRef.current = null;
+      }
+      return;
     }
-  }, [settings?.speechRate, speechRate, setSpeechRate]);
+    if (Math.abs(targetRate - speechRateRef.current) > 0.01) {
+      setSpeechRate(targetRate);
+    }
+  }, [settings?.speechRate, setSpeechRate]);
 
   const handleModalClose = useCallback(() => {
     if (currentMessageId === 'settings-preview') {
@@ -101,22 +123,32 @@ export default function SettingsModal() {
 
   // Focus modal on open
   useEffect(() => {
-    if (isSettingsModalOpen) {
-      setTimeout(() => {
-        closeBtnRef.current?.focus();
-      }, 50);
-    }
+    if (!isSettingsModalOpen) return;
+    const focusTimer = setTimeout(() => {
+      closeBtnRef.current?.focus();
+    }, 50);
+    return () => clearTimeout(focusTimer);
   }, [isSettingsModalOpen]);
 
   const handleVoiceChange = (e) => {
     const uri = e.target.value;
+    pendingLocalVoiceRef.current = uri;
     setSelectedVoiceURI(uri);
-    updateSettings({ speechVoiceURI: uri });
+    updateSettings({ speechVoiceURI: uri }).catch(() => {
+      if (pendingLocalVoiceRef.current === uri) {
+        pendingLocalVoiceRef.current = null;
+      }
+    });
   };
 
   const handleSpeechRateChange = (rate) => {
+    pendingLocalRateRef.current = rate;
     setSpeechRate(rate);
-    updateSettings({ speechRate: rate });
+    updateSettings({ speechRate: rate }).catch(() => {
+      if (pendingLocalRateRef.current === rate) {
+        pendingLocalRateRef.current = null;
+      }
+    });
   };
 
   const handleTogglePreviewVoice = () => {
@@ -156,9 +188,16 @@ export default function SettingsModal() {
 
   const handleConfirmReset = async () => {
     stopSpeech();
+    pendingLocalRateRef.current = 1;
+    pendingLocalVoiceRef.current = '';
     setSpeechRate(1);
     setSelectedVoiceURI('');
-    await resetToDefaults();
+    try {
+      await resetToDefaults();
+    } finally {
+      pendingLocalRateRef.current = null;
+      pendingLocalVoiceRef.current = null;
+    }
     setConfirmReset(false);
   };
 

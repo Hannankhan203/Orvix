@@ -7,7 +7,7 @@
  * 2. Never calculates or decrements quota independently using frontend counters.
  * 3. Strictly scopes quota state to the currently authenticated Firebase account (`userId`).
  * 4. Handles initial loading, network failures, and missing headers gracefully without fabricating values.
- * 5. Automatically detects UTC calendar day rollover and resets displayed quota for the new UTC day.
+ * 5. Automatically detects Asia/Karachi (PKT) calendar day rollover and resets displayed quota for the new PKT day.
  */
 
 import { getAuthHeaders, getAuthUserId } from './authService.js';
@@ -18,7 +18,7 @@ let customClientDateHook = null;
 let customFetchHook = null;
 
 /**
- * Test hook to override current Date for deterministic UTC midnight rollover tests.
+ * Test hook to override current Date for deterministic PKT midnight rollover tests.
  * @param {(() => Date) | null} hook
  */
 export function setClientQuotaDateHookForTesting(hook) {
@@ -101,7 +101,7 @@ export function getClientPktDayString(date = getClientQuotaCurrentDate()) {
 
 /**
  * Returns YYYY-MM-DD quota calendar day string (Asia/Karachi PKT).
- * Preserved export name for backwards compatibility.
+ * @deprecated Use `getClientPktDayString` instead. Preserved for backwards compatibility.
  * @param {Date} [date]
  * @returns {string}
  */
@@ -142,7 +142,7 @@ export function getClientNextPktMidnightIso(date = getClientQuotaCurrentDate()) 
 
 /**
  * Returns the UTC ISO string of the next quota reset midnight (00:00:00.000 PKT).
- * Preserved export name for backwards compatibility.
+ * @deprecated Use `getClientNextPktMidnightIso` instead. Preserved for backwards compatibility.
  * @param {Date} [date]
  * @returns {string}
  */
@@ -220,7 +220,7 @@ export function extractQuotaFromHeaders(responseOrHeaders) {
   const resetAt =
     rawResetAt && !Number.isNaN(Date.parse(rawResetAt))
       ? rawResetAt
-      : getClientNextUtcMidnightIso();
+      : getClientNextPktMidnightIso();
 
   return {
     remaining: clampedRemaining,
@@ -281,6 +281,7 @@ function createInitialQuotaState(userId = null) {
     remaining: null,
     limit: DEFAULT_DAILY_UPLOAD_LIMIT,
     resetAt: null,
+    pktDay: null,
     utcDay: null,
     status: cleanUid ? 'idle' : 'unauthenticated',
     lastUpdatedAt: null
@@ -308,12 +309,13 @@ function notifyQuotaStateListeners() {
  * @param {{ triggerRefresh?: boolean }} [options]
  * @returns {boolean} True if a PKT day rollover reset occurred
  */
-export function checkUploadQuotaUtcRollover(options = {}) {
+export function checkUploadQuotaPktRollover(options = {}) {
   if (!currentQuotaState.userId || !isEligibleQuotaUserId(currentQuotaState.userId)) {
     return false;
   }
 
-  if (typeof currentQuotaState.remaining !== 'number' || !currentQuotaState.utcDay) {
+  const recordedDay = currentQuotaState.pktDay || currentQuotaState.utcDay;
+  if (typeof currentQuotaState.remaining !== 'number' || !recordedDay) {
     return false;
   }
 
@@ -322,12 +324,13 @@ export function checkUploadQuotaUtcRollover(options = {}) {
   const resetAtMs = currentQuotaState.resetAt ? Date.parse(currentQuotaState.resetAt) : NaN;
   const hasResetTimePassed = !Number.isNaN(resetAtMs) && now.getTime() >= resetAtMs;
 
-  if (currentPktDay !== currentQuotaState.utcDay || hasResetTimePassed) {
+  if (currentPktDay !== recordedDay || hasResetTimePassed) {
     const limit = currentQuotaState.limit || DEFAULT_DAILY_UPLOAD_LIMIT;
     currentQuotaState = {
       ...currentQuotaState,
       remaining: limit,
       limit,
+      pktDay: currentPktDay,
       utcDay: currentPktDay,
       resetAt: getClientNextPktMidnightIso(now),
       status: 'ready',
@@ -344,15 +347,19 @@ export function checkUploadQuotaUtcRollover(options = {}) {
   return false;
 }
 
-export const checkUploadQuotaPktRollover = checkUploadQuotaUtcRollover;
+/**
+ * @deprecated Use `checkUploadQuotaPktRollover` instead. Preserved for backwards compatibility.
+ */
+export const checkUploadQuotaUtcRollover = checkUploadQuotaPktRollover;
 
 /**
- * Returns a copy of the current upload quota state, automatically applying UTC day rollover if needed.
+ * Returns a copy of the current upload quota state, automatically applying PKT day rollover if needed.
  * @returns {{
  *   userId: string | null,
  *   remaining: number | null,
  *   limit: number,
  *   resetAt: string | null,
+ *   pktDay: string | null,
  *   utcDay: string | null,
  *   status: 'unauthenticated' | 'idle' | 'loading' | 'ready' | 'unavailable',
  *   lastUpdatedAt: number | null,
@@ -360,7 +367,7 @@ export const checkUploadQuotaPktRollover = checkUploadQuotaUtcRollover;
  * }}
  */
 export function getUploadQuotaState() {
-  checkUploadQuotaUtcRollover({ triggerRefresh: false });
+  checkUploadQuotaPktRollover({ triggerRefresh: false });
   return {
     ...currentQuotaState,
     formattedText: formatDailyUploadQuotaText(currentQuotaState)
@@ -410,7 +417,7 @@ export function syncUploadQuotaUserAccount(userId, options = { autoFetch: true }
     return getUploadQuotaState();
   }
 
-  checkUploadQuotaUtcRollover({ triggerRefresh: options?.autoFetch !== false });
+  checkUploadQuotaPktRollover({ triggerRefresh: options?.autoFetch !== false });
   if (currentQuotaState.status === 'idle' && options?.autoFetch !== false) {
     void fetchAuthenticatedUploadQuota({ userId: cleanUid }).catch(() => {});
   }
@@ -493,7 +500,7 @@ export function updateUploadQuotaFromResponse(
     requestStartedPktDay !== currentPktDay;
 
   if (isResetAtExpired || crossedPktDayWithoutResetHeader) {
-    checkUploadQuotaUtcRollover({ triggerRefresh: false });
+    checkUploadQuotaPktRollover({ triggerRefresh: false });
     return getUploadQuotaState();
   }
 
@@ -502,6 +509,7 @@ export function updateUploadQuotaFromResponse(
     remaining: parsed.remaining,
     limit: parsed.limit,
     resetAt: parsed.resetAt,
+    pktDay: currentPktDay,
     utcDay: currentPktDay,
     status: 'ready',
     lastUpdatedAt: now.getTime()
@@ -605,7 +613,7 @@ export async function fetchAuthenticatedUploadQuota(options = {}) {
       Number.isNaN(parsedResetAtMs) && requestStartedPktDay !== responsePktDay;
 
     if (isStaleResetAt || isStaleMissingHeaderCrossDay) {
-      checkUploadQuotaUtcRollover({ triggerRefresh: false });
+      checkUploadQuotaPktRollover({ triggerRefresh: false });
       if (!options._retriedStalePktDay && typeof currentQuotaState.remaining !== 'number') {
         return fetchAuthenticatedUploadQuota({
           ...options,

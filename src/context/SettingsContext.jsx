@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from './AuthContext.jsx';
 import {
   DEFAULT_SETTINGS,
@@ -45,6 +45,21 @@ export function SettingsProvider({ children }) {
   const [isSaving, setIsSaving] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState(null); // 'saved' | 'reset'
   const feedbackTimerRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
+  // Track provider lifecycle and clear pending feedback timer on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (feedbackTimerRef.current) {
+        clearTimeout(feedbackTimerRef.current);
+        feedbackTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Apply theme attributes to <html> root element
   const applyThemeToDOM = useCallback((themeName) => {
@@ -111,7 +126,8 @@ export function SettingsProvider({ children }) {
 
     async function fetchUserSettings() {
       const loaded = await loadSettings(userId);
-      if (!isCancelled) {
+      if (!isCancelled && isMountedRef.current) {
+        settingsRef.current = loaded;
         setSettings(loaded);
         const resolved = resolveEffectiveTheme(loaded.theme);
         setEffectiveTheme(resolved);
@@ -126,15 +142,20 @@ export function SettingsProvider({ children }) {
     };
   }, [userId, applyThemeToDOM]);
 
-  const showFeedback = (type) => {
+  const showFeedback = useCallback((type) => {
+    if (!isMountedRef.current) return;
     if (feedbackTimerRef.current) {
       clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = null;
     }
     setSaveFeedback(type);
     feedbackTimerRef.current = setTimeout(() => {
-      setSaveFeedback(null);
+      feedbackTimerRef.current = null;
+      if (isMountedRef.current) {
+        setSaveFeedback(null);
+      }
     }, 2000);
-  };
+  }, []);
 
   /**
    * Updates partial settings, persists to storage, and notifies feedback.
@@ -143,18 +164,23 @@ export function SettingsProvider({ children }) {
     async (partial) => {
       setIsSaving(true);
       try {
-        const updated = await saveSettings(userId, partial, settings);
-        setSettings(updated);
-        showFeedback('saved');
+        const updated = await saveSettings(userId, partial, settingsRef.current);
+        if (isMountedRef.current) {
+          settingsRef.current = updated;
+          setSettings(updated);
+          showFeedback('saved');
+        }
         return updated;
       } catch (err) {
         console.error('Failed to update settings:', err);
         throw err;
       } finally {
-        setIsSaving(false);
+        if (isMountedRef.current) {
+          setIsSaving(false);
+        }
       }
     },
-    [userId, settings]
+    [userId, showFeedback]
   );
 
   /**
@@ -164,16 +190,21 @@ export function SettingsProvider({ children }) {
     setIsSaving(true);
     try {
       const reset = await saveSettings(userId, DEFAULT_SETTINGS, DEFAULT_SETTINGS);
-      setSettings(reset);
-      showFeedback('reset');
+      if (isMountedRef.current) {
+        settingsRef.current = reset;
+        setSettings(reset);
+        showFeedback('reset');
+      }
       return reset;
     } catch (err) {
       console.error('Failed to reset settings:', err);
       throw err;
     } finally {
-      setIsSaving(false);
+      if (isMountedRef.current) {
+        setIsSaving(false);
+      }
     }
-  }, [userId]);
+  }, [userId, showFeedback]);
 
   const openSettingsModal = useCallback(() => {
     setIsSettingsModalOpen(true);
@@ -183,18 +214,34 @@ export function SettingsProvider({ children }) {
     setIsSettingsModalOpen(false);
   }, []);
 
-  const value = {
-    settings,
-    effectiveTheme,
-    updateSettings,
-    resetToDefaults,
-    isSettingsModalOpen,
-    openSettingsModal,
-    closeSettingsModal,
-    isSaving,
-    saveFeedback,
-    isRegisteredUser: Boolean(userId && !userId.startsWith('guest-'))
-  };
+  const isRegisteredUser = Boolean(userId && !userId.startsWith('guest-'));
+
+  const value = useMemo(
+    () => ({
+      settings,
+      effectiveTheme,
+      updateSettings,
+      resetToDefaults,
+      isSettingsModalOpen,
+      openSettingsModal,
+      closeSettingsModal,
+      isSaving,
+      saveFeedback,
+      isRegisteredUser
+    }),
+    [
+      settings,
+      effectiveTheme,
+      updateSettings,
+      resetToDefaults,
+      isSettingsModalOpen,
+      openSettingsModal,
+      closeSettingsModal,
+      isSaving,
+      saveFeedback,
+      isRegisteredUser
+    ]
+  );
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
 }

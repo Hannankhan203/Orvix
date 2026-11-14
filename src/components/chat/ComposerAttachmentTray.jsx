@@ -24,49 +24,55 @@ export default function ComposerAttachmentTray({
         att.isImage ? (
           <div
             key={att.id}
-            className="composer-attachment-chip composer-image-chip is-previewable"
-            title={`Click to preview ${att.name} (${att.extension || 'IMG'} • ${att.formattedSize})`}
-            onClick={() => onPreview && onPreview(att)}
+            className="composer-attachment-chip composer-image-chip is-previewable relative overflow-hidden"
           >
-            <div className="composer-image-thumb-wrap">
-              {att.previewUrl ? (
-                <img
-                  src={att.previewUrl}
-                  alt={att.name}
-                  className="composer-image-thumb"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                    const fallback = e.currentTarget.parentElement?.querySelector(
-                      '.composer-image-fallback-icon'
-                    );
-                    if (fallback) fallback.style.display = 'flex';
-                  }}
-                />
-              ) : null}
-              <div
-                className="composer-image-fallback-icon"
-                style={{ display: att.previewUrl ? 'none' : 'flex' }}
-                aria-hidden="true"
-              >
-                <FileImage size={16} />
-              </div>
-            </div>
-            <div className="composer-image-meta">
-              <span className="attachment-chip-name" title={att.name}>
-                {att.name}
-              </span>
-              <div className="attachment-chip-submeta">
-                <span className="attachment-chip-badge">{att.extension || 'IMG'}</span>
-                <span className="attachment-chip-size">{att.formattedSize}</span>
-                {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
-                  <span className="attachment-chip-progress text-xs font-mono text-blue-400 font-medium">
-                    {Math.round(att.uploadProgress)}%
-                  </span>
+            <button
+              type="button"
+              className="composer-chip-main"
+              title={`Click to preview ${att.name} (${att.extension || 'IMG'} • ${att.formattedSize})`}
+              aria-label={`Preview attachment ${att.name} (${att.extension || 'IMG'}, ${att.formattedSize})`}
+              onClick={() => onPreview && onPreview(att)}
+            >
+              <div className="composer-image-thumb-wrap">
+                {att.previewUrl ? (
+                  <img
+                    src={att.previewUrl}
+                    alt=""
+                    className="composer-image-thumb"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                      const fallback = e.currentTarget.parentElement?.querySelector(
+                        '.composer-image-fallback-icon'
+                      );
+                      if (fallback) fallback.style.display = 'flex';
+                    }}
+                  />
                 ) : null}
+                <div
+                  className="composer-image-fallback-icon"
+                  style={{ display: att.previewUrl ? 'none' : 'flex' }}
+                  aria-hidden="true"
+                >
+                  <FileImage size={16} />
+                </div>
               </div>
-            </div>
+              <div className="composer-image-meta">
+                <span className="attachment-chip-name" title={att.name}>
+                  {att.name}
+                </span>
+                <div className="attachment-chip-submeta">
+                  <span className="attachment-chip-badge">{att.extension || 'IMG'}</span>
+                  <span className="attachment-chip-size">{att.formattedSize}</span>
+                  {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
+                    <span className="attachment-chip-progress text-xs font-mono text-blue-400 font-medium">
+                      {Math.round(att.uploadProgress)}%
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            </button>
             {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
-              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-500/20 overflow-hidden rounded-b">
+              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-500/20 overflow-hidden rounded-b" aria-hidden="true">
                 <div
                   className="h-full bg-blue-500 transition-all duration-150 ease-out"
                   style={{ width: `${Math.round(att.uploadProgress)}%` }}
@@ -84,7 +90,7 @@ export default function ComposerAttachmentTray({
                 title={`Preview ${att.name}`}
                 aria-label={`Preview attachment ${att.name}`}
               >
-                <Eye size={14} />
+                <Eye size={14} aria-hidden="true" />
               </button>
               <button
                 type="button"
@@ -96,7 +102,7 @@ export default function ComposerAttachmentTray({
                 title={`Remove ${att.name}`}
                 aria-label={`Remove attachment ${att.name}`}
               >
-                <X size={14} />
+                <X size={14} aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -104,21 +110,27 @@ export default function ComposerAttachmentTray({
           <div
             key={att.id}
             className="composer-attachment-chip is-previewable relative overflow-hidden"
-            title={`Click to preview ${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
-            onClick={() => onPreview && onPreview(att)}
           >
-            <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
-            <span className="attachment-chip-name" title={att.name}>
-              {att.name}
-            </span>
-            <span className="attachment-chip-size">{att.formattedSize}</span>
-            {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
-              <span className="attachment-chip-progress text-xs font-mono text-blue-400 font-medium">
-                {Math.round(att.uploadProgress)}%
+            <button
+              type="button"
+              className="composer-chip-main"
+              title={`Click to preview ${att.name} (${att.extension || 'FILE'} • ${att.formattedSize})`}
+              aria-label={`Preview attachment ${att.name} (${att.extension || 'FILE'}, ${att.formattedSize})`}
+              onClick={() => onPreview && onPreview(att)}
+            >
+              <span className="attachment-chip-badge">{att.extension || 'FILE'}</span>
+              <span className="attachment-chip-name" title={att.name}>
+                {att.name}
               </span>
-            ) : null}
+              <span className="attachment-chip-size">{att.formattedSize}</span>
+              {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
+                <span className="attachment-chip-progress text-xs font-mono text-blue-400 font-medium">
+                  {Math.round(att.uploadProgress)}%
+                </span>
+              ) : null}
+            </button>
             {typeof att.uploadProgress === 'number' && att.uploadProgress < 100 ? (
-              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-500/20 overflow-hidden rounded-b">
+              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-500/20 overflow-hidden rounded-b" aria-hidden="true">
                 <div
                   className="h-full bg-blue-500 transition-all duration-150 ease-out"
                   style={{ width: `${Math.round(att.uploadProgress)}%` }}
@@ -136,7 +148,7 @@ export default function ComposerAttachmentTray({
                 title={`Preview ${att.name}`}
                 aria-label={`Preview attachment ${att.name}`}
               >
-                <Eye size={14} />
+                <Eye size={14} aria-hidden="true" />
               </button>
               <button
                 type="button"
@@ -148,7 +160,7 @@ export default function ComposerAttachmentTray({
                 title={`Remove ${att.name}`}
                 aria-label={`Remove attachment ${att.name}`}
               >
-                <X size={14} />
+                <X size={14} aria-hidden="true" />
               </button>
             </div>
           </div>
