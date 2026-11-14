@@ -21,10 +21,20 @@ function safariLookbehindPlugin() {
   };
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ command, mode }) => {
+  const isProdBuild = command === 'build' && mode !== 'development';
+
+  // Ensure Vite core, @vitejs/plugin-react, and Oxc agree on production mode even if
+  // the host/CI shell exports NODE_ENV=development during `vite build`.
+  if (isProdBuild && process.env.NODE_ENV !== 'production') {
+    process.env.NODE_ENV = 'production';
+  }
+
+  const isProdEnv = isProdBuild || process.env.NODE_ENV === 'production';
+
   return {
     plugins: [
-      react(),
+      react({ jsxRuntime: 'automatic' }),
       tailwindcss(),
       safariLookbehindPlugin(),
       VitePWA({
@@ -72,8 +82,14 @@ export default defineConfig(() => {
         }
       })
     ],
+    oxc: {
+      jsx: {
+        runtime: 'automatic',
+        development: !isProdEnv,
+      },
+    },
     define: {
-      'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV === 'production' || process.env.npm_lifecycle_event === 'build' ? 'production' : 'development'),
+      'process.env.NODE_ENV': JSON.stringify(isProdEnv ? 'production' : 'development'),
     },
     build: {
       target: ['es2020', 'safari15'],
