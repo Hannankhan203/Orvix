@@ -44,7 +44,11 @@ import {
   getServerProviderConfigStatus,
   getConfiguredFallbackProviders,
   getUpstreamHeadersTimeoutMs,
-  createGeminiStageTimeoutError
+  createGeminiStageTimeoutError,
+  isSignedDecodeProductionMode,
+  resolveConfiguredSignedDecodeUrlSecret,
+  validateSignedDecodeUrlSecretValue,
+  setForceProductionSignedUrlSecretCheckForTesting
 } from './server/serverConfig.ts';
 import {
   logGeminiLifecycleEvent,
@@ -66,7 +70,10 @@ import {
   resolveRequestUserId,
   pendingDirectUploads,
   pruneExpiredDirectUploadTickets,
-  resetDirectUploadTicketsForTesting
+  resetDirectUploadTicketsForTesting,
+  getSignedDecodeUrlSecret,
+  validateSignedDecodeUrlConfiguration,
+  resetDevSignedDecodeUrlSecretForTesting
 } from './server/uploadSubsystem.ts';
 import { registerTranscriptionRoutes } from './server/transcriptionSubsystem.ts';
 import { setupVoiceWebSocketServer } from './server/voiceWebSocketSubsystem.ts';
@@ -275,6 +282,10 @@ app.use('/api', (_req, res) => {
 
 // Setup Vite middleware in dev or static serving in production
 async function startServer() {
+  if (isSignedDecodeProductionMode()) {
+    validateSignedDecodeUrlConfiguration();
+  }
+
   const publicPath = path.resolve(__dirname, 'public');
   app.use(express.static(publicPath));
 
@@ -356,7 +367,10 @@ async function startServer() {
 }
 
 if (!process.env.VERCEL && !process.env.TESTING) {
-  startServer();
+  startServer().catch((err: any) => {
+    console.error(err?.message || '[Orvix] Fatal server startup failure.');
+    process.exit(1);
+  });
 }
 
 /**
@@ -415,7 +429,14 @@ export {
   isAttachmentEligibleForExpiryCleanup,
   pendingDirectUploads,
   pruneExpiredDirectUploadTickets,
-  resetDirectUploadTicketsForTesting
+  resetDirectUploadTicketsForTesting,
+  isSignedDecodeProductionMode,
+  resolveConfiguredSignedDecodeUrlSecret,
+  validateSignedDecodeUrlSecretValue,
+  setForceProductionSignedUrlSecretCheckForTesting,
+  getSignedDecodeUrlSecret,
+  validateSignedDecodeUrlConfiguration,
+  resetDevSignedDecodeUrlSecretForTesting
 };
 
 export type {

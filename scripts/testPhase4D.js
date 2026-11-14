@@ -205,7 +205,8 @@ async function startTestServer(port, mockGroqBaseUrl) {
     VITE_GEMINI_API_KEY: '',
     OPENROUTER_API_KEY: 'sk-or-v1-test-fallback-key',
     CLOUDFLARE_API_TOKEN: '',
-    CLOUDFLARE_ACCOUNT_ID: ''
+    CLOUDFLARE_ACCOUNT_ID: '',
+    ORVIX_SIGNED_URL_SECRET: 'test-phase4d-signed-url-secret-0123456789abcdef'
   };
   delete childEnv.TESTING;
 

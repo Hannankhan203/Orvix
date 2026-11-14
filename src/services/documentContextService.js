@@ -13,20 +13,214 @@ import { chunkDocument } from './semanticChunkingService.js';
 
 const MAX_PROMPT_CHARS_PER_DOC = 100_000; // ~20k words limit per document for safe LLM context
 
+const IMAGE_FORMAT_SET = new Set([
+  'JPG',
+  'JPEG',
+  'PNG',
+  'WEBP',
+  'GIF',
+  'BMP',
+  'HEIC',
+  'HEIF',
+  'TIF',
+  'TIFF',
+  'AVIF',
+  'SVG',
+  'ICO',
+  'IMAGE'
+]);
+
+const IMAGE_EXTENSION_SET = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.gif',
+  '.bmp',
+  '.heic',
+  '.heif',
+  '.tif',
+  '.tiff',
+  '.avif',
+  '.svg',
+  '.ico'
+]);
+
+const DOCUMENT_FORMAT_SET = new Set([
+  'PDF',
+  'DOC',
+  'DOCX',
+  'PPT',
+  'PPTX',
+  'XLS',
+  'XLSX',
+  'TXT',
+  'TEXT',
+  'LOG',
+  'MD',
+  'MARKDOWN',
+  'CSV',
+  'TSV',
+  'JSON',
+  'XML',
+  'RTF',
+  'ODT',
+  'ODP',
+  'ODS'
+]);
+
+const DOCUMENT_EXTENSION_SET = new Set([
+  '.pdf',
+  '.doc',
+  '.docx',
+  '.ppt',
+  '.pptx',
+  '.xls',
+  '.xlsx',
+  '.txt',
+  '.text',
+  '.log',
+  '.md',
+  '.markdown',
+  '.csv',
+  '.tsv',
+  '.json',
+  '.xml',
+  '.rtf',
+  '.odt',
+  '.odp',
+  '.ods'
+]);
+
+const DOCUMENT_MIME_SET = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/json',
+  'application/xml',
+  'application/rtf',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/vnd.oasis.opendocument.spreadsheet'
+]);
+
+const MIME_TO_FORMAT_LABEL = {
+  'application/pdf': 'PDF',
+  'application/msword': 'DOC',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
+  'application/vnd.ms-powerpoint': 'PPT',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PPTX',
+  'application/vnd.ms-excel': 'XLS',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
+  'text/plain': 'TXT',
+  'text/markdown': 'MD',
+  'text/x-markdown': 'MD',
+  'text/csv': 'CSV',
+  'text/tab-separated-values': 'TSV',
+  'application/json': 'JSON',
+  'text/json': 'JSON',
+  'application/xml': 'XML',
+  'text/xml': 'XML',
+  'application/rtf': 'RTF',
+  'text/rtf': 'RTF',
+  'application/vnd.oasis.opendocument.text': 'ODT',
+  'application/vnd.oasis.opendocument.presentation': 'ODP',
+  'application/vnd.oasis.opendocument.spreadsheet': 'ODS',
+  'image/jpeg': 'JPEG',
+  'image/jpg': 'JPG',
+  'image/png': 'PNG',
+  'image/webp': 'WEBP',
+  'image/gif': 'GIF',
+  'image/bmp': 'BMP',
+  'image/heic': 'HEIC',
+  'image/heif': 'HEIF',
+  'image/tiff': 'TIFF',
+  'image/avif': 'AVIF',
+  'image/svg+xml': 'SVG'
+};
+
+function normalizeDocMime(doc) {
+  return String(doc?.mimeType || doc?.type || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+}
+
+function extractDocExtension(doc) {
+  const explicitExt = typeof doc?.extension === 'string' ? doc.extension.trim().toLowerCase() : '';
+  if (explicitExt) {
+    return explicitExt.startsWith('.') ? explicitExt : `.${explicitExt}`;
+  }
+  const rawName = String(doc?.originalName || doc?.filename || doc?.name || '')
+    .split('?')[0]
+    .split('#')[0]
+    .trim()
+    .toLowerCase();
+  const dotIdx = rawName.lastIndexOf('.');
+  if (dotIdx <= 0 || dotIdx === rawName.length - 1) return '';
+  return rawName.slice(dotIdx);
+}
+
+function isKnownDocumentMime(mime) {
+  if (!mime) return false;
+  return mime.startsWith('text/') || DOCUMENT_MIME_SET.has(mime);
+}
+
 /**
- * Determines whether a document item represents an image file.
+ * Resolves a human-readable uppercase format label (e.g. 'DOC', 'XLSX', 'MD', 'PNG')
+ * from explicit format metadata, MIME type, or filename extension.
+ * @param {Object} doc
+ * @returns {string}
+ */
+export function resolveAttachmentFormatLabel(doc) {
+  if (!doc || typeof doc !== 'object') return 'UNKNOWN';
+  const rawFormat = String(doc.format || '').trim().toUpperCase();
+  if (rawFormat && rawFormat !== 'UNKNOWN' && rawFormat !== 'FILE' && rawFormat !== 'BINARY') {
+    return rawFormat;
+  }
+  const mime = normalizeDocMime(doc);
+  if (mime && MIME_TO_FORMAT_LABEL[mime]) {
+    return MIME_TO_FORMAT_LABEL[mime];
+  }
+  const ext = extractDocExtension(doc);
+  if (ext) {
+    const clean = ext.replace(/^\./, '').toUpperCase();
+    if (clean === 'MARKDOWN') return 'MD';
+    if (clean === 'TEXT') return 'TXT';
+    if (clean) return clean;
+  }
+  return rawFormat || 'UNKNOWN';
+}
+
+/**
+ * Determines whether a document item represents an image file without
+ * misclassifying valid document formats as images or vice versa.
  * @param {Object} doc
  * @returns {boolean}
  */
 export function isImageAttachment(doc) {
-  if (!doc) return false;
-  if (doc.isImage) return true;
-  const mime = (doc.mimeType || doc.type || '').toLowerCase();
+  if (!doc || typeof doc !== 'object') return false;
+  const mime = normalizeDocMime(doc);
   if (mime.startsWith('image/')) return true;
-  const format = (doc.format || '').toUpperCase();
-  if (['JPG', 'JPEG', 'PNG', 'WEBP', 'GIF', 'BMP', 'HEIC', 'HEIF', 'IMAGE'].includes(format)) return true;
-  const name = (doc.originalName || doc.filename || doc.name || '').toLowerCase();
-  return ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.heic', '.heif'].some((ext) => name.endsWith(ext));
+  if (mime && mime !== 'application/octet-stream' && isKnownDocumentMime(mime)) return false;
+
+  const ext = extractDocExtension(doc);
+  if (ext) {
+    if (IMAGE_EXTENSION_SET.has(ext)) return true;
+    if (DOCUMENT_EXTENSION_SET.has(ext)) return false;
+  }
+
+  const format = String(doc.format || '').trim().toUpperCase();
+  if (format) {
+    if (IMAGE_FORMAT_SET.has(format)) return true;
+    if (DOCUMENT_FORMAT_SET.has(format)) return false;
+  }
+
+  return doc.isImage === true;
 }
 
 /**
@@ -351,7 +545,7 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
   for (let docIdx = 0; docIdx < selectedDocs.length; docIdx++) {
     const doc = selectedDocs[docIdx];
     const docName = doc.originalName || doc.filename || doc.name || `Document_${docIdx + 1}`;
-    const format = (doc.format || 'UNKNOWN').toUpperCase();
+    const format = resolveAttachmentFormatLabel(doc);
 
     // Dedicated Image Handling
     if (isImageAttachment(doc)) {
@@ -466,11 +660,31 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
       continue;
     }
 
-    // 3. Check for unhandled scanned / image-only PDFs without extracted text
+    // 3. Check for unsupported non-image document formats (e.g., .doc, .ppt, .xls, .xlsx, binaries)
+    if (doc.status === 'unsupported_format') {
+      const issueExplanation =
+        doc.error ||
+        doc.warning ||
+        doc.message ||
+        `Text extraction is not supported for '${docName}' (${format} format).`;
+      unreadableDocNotes.push(issueExplanation);
+      if (selectedDocs.length === 1) {
+        directAnswer = issueExplanation;
+      }
+      docBlocks.push(`[DOCUMENT ${docIdx + 1}: "${docName}" (${format}) - STATUS: UNSUPPORTED FORMAT]\n${issueExplanation}`);
+      continue;
+    }
+
+    // 4. Check for unhandled scanned / image-only PDFs without extracted text
     if (
       doc.status === 'scanned_or_image_only' ||
       (doc.isScanned && (!doc.success || !doc.text || (doc.totalCharacters === 0 && !doc.hasText))) ||
-      (doc.totalCharacters === 0 && !doc.success && doc.status !== 'empty' && doc.status !== 'encrypted' && doc.status !== 'error')
+      (doc.totalCharacters === 0 &&
+        !doc.success &&
+        doc.status !== 'empty' &&
+        doc.status !== 'encrypted' &&
+        doc.status !== 'error' &&
+        doc.status !== 'unsupported_format')
     ) {
       const issueExplanation =
         doc.warning ||
@@ -790,7 +1004,7 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
 
   const primaryDoc = targetedDocs[0];
   const docName = primaryDoc.originalName || primaryDoc.filename || 'Uploaded Document';
-  const format = (primaryDoc.format || 'FILE').toUpperCase();
+  const format = resolveAttachmentFormatLabel(primaryDoc);
 
   // Dedicated Multi-Image Handling in Simulated / Demo Mode (Requirements 2, 3, 4, 5, 8)
   if (targetedDocs.length > 1 && targetedDocs.every(isImageAttachment)) {

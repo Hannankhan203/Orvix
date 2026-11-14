@@ -287,6 +287,7 @@ async function startTestServer(port, mockOpenRouterBaseUrl, envOverrides = {}, m
       CLOUDFLARE_API_TOKEN: 'cf-token-phase4e-valid',
       CLOUDFLARE_ACCOUNT_ID: 'cf-account-phase4e-valid',
       ORVIX_ENABLE_DEMO_MODE: '',
+      ORVIX_SIGNED_URL_SECRET: 'test-phase4e-signed-url-secret-0123456789abcdef',
       ...envOverrides
     },
     stdio: ['ignore', 'pipe', 'pipe']

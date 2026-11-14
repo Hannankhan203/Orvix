@@ -273,6 +273,183 @@ export function resolveEnvCredential(...candidateNames: string[]): string {
   return '';
 }
 
+export const MIN_SIGNED_DECODE_URL_SECRET_LENGTH = 32;
+
+export const SIGNED_DECODE_URL_SECRET_ENV_KEYS = [
+  'ORVIX_SIGNED_URL_SECRET',
+  'SIGNED_DECODE_URL_SECRET',
+  'SESSION_SECRET'
+] as const;
+
+const WEAK_SECRET_LITERALS = new Set([
+  'secret',
+  'default',
+  'example',
+  'sample',
+  'password',
+  'passphrase',
+  'token',
+  'apikey',
+  'api_key',
+  'dev_secret',
+  'dev-secret',
+  'test_secret',
+  'test-secret',
+  'change_this',
+  'change-this',
+  'replace_this',
+  'replace-this',
+  'insert_secret',
+  'insert-secret'
+]);
+
+let forceProductionSignedUrlCheckForTesting: boolean | null = null;
+
+/**
+ * Test hook to explicitly simulate production startup validation without altering process.env.NODE_ENV globally.
+ */
+export function setForceProductionSignedUrlSecretCheckForTesting(forced: boolean | null): void {
+  forceProductionSignedUrlCheckForTesting = forced;
+}
+
+/**
+ * Returns true when running in a production or multi-instance serverless deployment where
+ * a shared, pre-configured signed decode secret is strictly required.
+ */
+export function isSignedDecodeProductionMode(): boolean {
+  if (forceProductionSignedUrlCheckForTesting !== null) {
+    return forceProductionSignedUrlCheckForTesting;
+  }
+  if (process.env.TESTING === '1' || process.env.TESTING === 'true') {
+    return false;
+  }
+  return (
+    process.env.NODE_ENV === 'production' ||
+    Boolean(process.env.VERCEL) ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    Boolean(process.env.LAMBDA_TASK_ROOT) ||
+    Boolean(process.env.SERVERLESS)
+  );
+}
+
+/**
+ * Strips zero-width characters, surrounding quotes, and outer whitespace from a signing secret
+ * without altering internal token characters or exposing its value.
+ */
+export function sanitizeSigningSecretValue(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/^[\s"'\u201C\u201D\u2018\u2019`]+|[\s"'\u201C\u201D\u2018\u2019`]+$/g, '')
+    .trim();
+}
+
+export function validateSignedDecodeUrlSecretValue(rawValue: unknown):
+  | { valid: true; secret: string }
+  | { valid: false; reason: 'missing' | 'placeholder' | 'too_short' | 'low_entropy'; detail: string } {
+  const cleaned = sanitizeSigningSecretValue(rawValue);
+  if (!cleaned) {
+    return {
+      valid: false,
+      reason: 'missing',
+      detail: 'Secret value is empty.'
+    };
+  }
+
+  if (!isConfiguredCredential(cleaned) || WEAK_SECRET_LITERALS.has(cleaned.toLowerCase())) {
+    return {
+      valid: false,
+      reason: 'placeholder',
+      detail: 'Secret value uses an insecure placeholder or default literal.'
+    };
+  }
+
+  if (cleaned.length < MIN_SIGNED_DECODE_URL_SECRET_LENGTH) {
+    return {
+      valid: false,
+      reason: 'too_short',
+      detail: `Secret must be at least ${MIN_SIGNED_DECODE_URL_SECRET_LENGTH} characters long.`
+    };
+  }
+
+  if (new Set(cleaned).size < 4) {
+    return {
+      valid: false,
+      reason: 'low_entropy',
+      detail: 'Secret has insufficient character diversity.'
+    };
+  }
+
+  return { valid: true, secret: cleaned };
+}
+
+function lookupRawEnvCandidate(candidateName: string): string | undefined {
+  if (typeof process.env[candidateName] === 'string') {
+    return process.env[candidateName];
+  }
+  const targetUpper = candidateName.trim().toUpperCase();
+  for (const [envKey, rawVal] of Object.entries(process.env)) {
+    if (typeof rawVal === 'string' && envKey.trim().toUpperCase() === targetUpper) {
+      return rawVal;
+    }
+  }
+  return undefined;
+}
+
+export interface SignedDecodeUrlSecretResolution {
+  configured: boolean;
+  valid: boolean;
+  secret: string | null;
+  sourceKey: string | null;
+  invalidReason?: 'missing' | 'placeholder' | 'too_short' | 'low_entropy';
+  errorMessage?: string;
+}
+
+/**
+ * Resolves and validates the shared HMAC secret used to sign & verify /api/upload/:id/file decoding URLs.
+ * Never logs or includes secret values in error messages.
+ */
+export function resolveConfiguredSignedDecodeUrlSecret(): SignedDecodeUrlSecretResolution {
+  ensureServerEnvLoaded();
+
+  for (const key of SIGNED_DECODE_URL_SECRET_ENV_KEYS) {
+    const raw = lookupRawEnvCandidate(key);
+    if (typeof raw !== 'string') continue;
+
+    // Treat empty string (e.g. "ORVIX_SIGNED_URL_SECRET=") as unset so fallbacks can still be checked
+    const trimmed = sanitizeSigningSecretValue(raw);
+    if (!trimmed) continue;
+
+    const validation = validateSignedDecodeUrlSecretValue(raw);
+    if (!validation.valid) {
+      return {
+        configured: true,
+        valid: false,
+        secret: null,
+        sourceKey: key,
+        invalidReason: validation.reason,
+        errorMessage: `Invalid ${key}: ${validation.detail} Configure a shared random secret of at least ${MIN_SIGNED_DECODE_URL_SECRET_LENGTH} characters across all server instances.`
+      };
+    }
+
+    return {
+      configured: true,
+      valid: true,
+      secret: validation.secret,
+      sourceKey: key
+    };
+  }
+
+  return {
+    configured: false,
+    valid: false,
+    secret: null,
+    sourceKey: null,
+    invalidReason: 'missing',
+    errorMessage: `Missing required ORVIX_SIGNED_URL_SECRET environment variable (aliases: SIGNED_DECODE_URL_SECRET, SESSION_SECRET). Configure the same secret (>= ${MIN_SIGNED_DECODE_URL_SECRET_LENGTH} characters) across all production instances.`
+  };
+}
+
 export function getGroqApiKey(): string {
   return resolveEnvCredential(
     'GROQ_API_KEY',

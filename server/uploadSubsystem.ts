@@ -6,7 +6,12 @@ import os from 'os';
 import crypto from 'crypto';
 import multer from 'multer';
 
-import { isServerless } from './serverConfig.ts';
+import {
+  isServerless,
+  isSignedDecodeProductionMode,
+  resolveConfiguredSignedDecodeUrlSecret,
+  setForceProductionSignedUrlSecretCheckForTesting
+} from './serverConfig.ts';
 import type { UploadedFileRecord, DocumentExtractionResult } from './serverTypes.ts';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
@@ -78,7 +83,8 @@ export {
   releaseUploadSlot,
   attachQuotaHeaders,
   getQuotaStatus,
-  getUtcDayString
+  getUtcDayString,
+  setForceProductionSignedUrlSecretCheckForTesting
 };
 
 export type {
@@ -637,10 +643,52 @@ const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const cleanupTimer = setInterval(cleanupExpiredUploads, CLEANUP_INTERVAL_MS);
 if (cleanupTimer.unref) cleanupTimer.unref();
 
-const SIGNED_DECODE_URL_SECRET =
-  process.env.ORVIX_SIGNED_URL_SECRET ||
-  process.env.SESSION_SECRET ||
-  crypto.randomBytes(32).toString('hex');
+let devOnlyEphemeralSignedUrlSecret: string | null = null;
+
+/**
+ * Resolves the shared HMAC secret used to sign and verify decoding proxy URLs.
+ * - Production / Serverless: MUST come from environment configuration (ORVIX_SIGNED_URL_SECRET,
+ *   SIGNED_DECODE_URL_SECRET, or SESSION_SECRET) and meet validation rules. Never generates
+ *   per-instance random secrets in production.
+ * - Development / Test: Uses configured environment secret when present, or a process-local
+ *   dev fallback secret only when not running in production mode.
+ */
+export function getSignedDecodeUrlSecret(options?: { forceProduction?: boolean }): string {
+  const isProd = options?.forceProduction ?? isSignedDecodeProductionMode();
+  const resolution = resolveConfiguredSignedDecodeUrlSecret();
+
+  if (resolution.valid && resolution.secret) {
+    return resolution.secret;
+  }
+
+  if (isProd) {
+    const err: any = new Error(
+      `[Orvix Upload] Fatal signed-URL configuration error: ${resolution.errorMessage || 'ORVIX_SIGNED_URL_SECRET is missing or invalid.'}`
+    );
+    err.code = 'SIGNED_URL_SECRET_INVALID';
+    throw err;
+  }
+
+  if (!devOnlyEphemeralSignedUrlSecret) {
+    devOnlyEphemeralSignedUrlSecret = crypto.randomBytes(32).toString('hex');
+  }
+  return devOnlyEphemeralSignedUrlSecret;
+}
+
+/**
+ * Validates that signed decoding URL configuration is ready for the active runtime.
+ * Throws SIGNED_URL_SECRET_INVALID in production if missing or invalid.
+ */
+export function validateSignedDecodeUrlConfiguration(options?: { forceProduction?: boolean }): void {
+  getSignedDecodeUrlSecret(options);
+}
+
+/**
+ * Test helper to clear the in-memory dev fallback secret between unit tests.
+ */
+export function resetDevSignedDecodeUrlSecretForTesting(): void {
+  devOnlyEphemeralSignedUrlSecret = null;
+}
 
 function firstFieldValue(value: unknown): string {
   if (Array.isArray(value)) {
@@ -670,9 +718,10 @@ function computeSignedDecodeSignature(
   exp: number,
   dl: string
 ): string {
+  const secret = getSignedDecodeUrlSecret();
   const payload = `${fileId}\n${uid}\n${chatId}\n${exp}\n${dl}`;
   return crypto
-    .createHmac('sha256', SIGNED_DECODE_URL_SECRET)
+    .createHmac('sha256', secret)
     .update(payload)
     .digest('base64url');
 }
@@ -737,7 +786,19 @@ function verifySignedDecodeQuery(
     };
   }
 
-  const expectedSig = computeSignedDecodeSignature(fileId, uid, chatId, exp, dl);
+  let expectedSig: string;
+  try {
+    expectedSig = computeSignedDecodeSignature(fileId, uid, chatId, exp, dl);
+  } catch (err: any) {
+    return {
+      hasSignature: true,
+      valid: false,
+      status: 500,
+      code: err?.code === 'SIGNED_URL_SECRET_INVALID' ? 'SIGNED_URL_MISCONFIGURED' : 'SIGNED_URL_FAILED',
+      error: 'Signed URL verification is unavailable due to a server configuration error.'
+    };
+  }
+
   const actualBuf = Buffer.from(sigRaw, 'utf8');
   const expectedBuf = Buffer.from(expectedSig, 'utf8');
   if (
@@ -1296,6 +1357,10 @@ export function buildGeminiImageParts({
  * Registers all file upload and attachment serving routes onto the Express app.
  */
 export function registerUploadRoutes(app: express.Express) {
+  if (isSignedDecodeProductionMode()) {
+    validateSignedDecodeUrlConfiguration();
+  }
+
   // Multilingual OCR Language Pack Proxy & Local Cache Endpoint
   app.get(['/api/ocr/packs/:file', '/ocr/packs/:file'], async (req, res) => {
     const rawFile = req.params.file || '';
@@ -2161,19 +2226,26 @@ export function registerUploadRoutes(app: express.Express) {
             code: 'MISSING_CHAT_ID'
           });
         }
-        const safeSigned = createSignedDecodeUrl(req, {
-          fileId,
-          userId: authenticatedUserId,
-          chatId: effectiveChat,
-          expiresInSeconds: 120,
-          forceDownload
-        });
-        return res.json({
-          success: true,
-          signedUrl: safeSigned.signedUrl,
-          expiresInSeconds: safeSigned.expiresInSeconds,
-          decodingProxy: true
-        });
+        try {
+          const safeSigned = createSignedDecodeUrl(req, {
+            fileId,
+            userId: authenticatedUserId,
+            chatId: effectiveChat,
+            expiresInSeconds: 120,
+            forceDownload
+          });
+          return res.json({
+            success: true,
+            signedUrl: safeSigned.signedUrl,
+            expiresInSeconds: safeSigned.expiresInSeconds,
+            decodingProxy: true
+          });
+        } catch (signErr: any) {
+          return res.status(500).json({
+            error: 'Signed URL generation is unavailable due to a server configuration error.',
+            code: signErr?.code === 'SIGNED_URL_SECRET_INVALID' ? 'SIGNED_URL_MISCONFIGURED' : 'SIGNED_URL_FAILED'
+          });
+        }
       }
 
       const signedResult = await createAttachmentSignedUrl(record.storagePath, {
@@ -2269,19 +2341,26 @@ export function registerUploadRoutes(app: express.Express) {
             code: decodeErr?.code || 'CORRUPTED_STORAGE_OBJECT'
           });
         }
-        const safeSigned = createSignedDecodeUrl(req, {
-          fileId,
-          userId: authenticatedUserId,
-          chatId: rawChatId,
-          expiresInSeconds: 120,
-          forceDownload
-        });
-        return res.json({
-          success: true,
-          signedUrl: safeSigned.signedUrl,
-          expiresInSeconds: safeSigned.expiresInSeconds,
-          decodingProxy: true
-        });
+        try {
+          const safeSigned = createSignedDecodeUrl(req, {
+            fileId,
+            userId: authenticatedUserId,
+            chatId: rawChatId,
+            expiresInSeconds: 120,
+            forceDownload
+          });
+          return res.json({
+            success: true,
+            signedUrl: safeSigned.signedUrl,
+            expiresInSeconds: safeSigned.expiresInSeconds,
+            decodingProxy: true
+          });
+        } catch (signErr: any) {
+          return res.status(500).json({
+            error: 'Signed URL generation is unavailable due to a server configuration error.',
+            code: signErr?.code === 'SIGNED_URL_SECRET_INVALID' ? 'SIGNED_URL_MISCONFIGURED' : 'SIGNED_URL_FAILED'
+          });
+        }
       }
     }
 
