@@ -11,6 +11,7 @@ import {
   type AuthRequestResult,
   getConfiguredFirebaseProjectId
 } from './firebaseAuthHelper.ts';
+import { logUploadDiagnostic } from './diagnosticLogger.ts';
 import { resolveUploadDirectory } from './uploadSubsystem.ts';
 
 export const DAILY_UPLOAD_LIMIT = 5;
@@ -750,9 +751,11 @@ export function getFirebaseServiceAccountCredentials(): { raw: string; sourceVar
  * SECURITY: Never logs or exposes credential contents.
  */
 export function parseServiceAccountCredential(raw: string, sourceVar: string): any {
-  const trimmed = (raw || '').trim();
+  const trimmed = (raw || '').replace(/^\uFEFF/, '').trim();
   if (!trimmed) {
-    throw new Error(`${sourceVar} is empty.`);
+    const emptyErr: any = new Error(`${sourceVar} is empty.`);
+    emptyErr.diagnosticStage = 'service_account_parse';
+    throw emptyErr;
   }
 
   let parsed: any;
@@ -803,17 +806,21 @@ export function parseServiceAccountCredential(raw: string, sourceVar: string): a
         } catch (_) {}
       }
     } catch (_) {
-      throw new Error(
+      const parseErr: any = new Error(
         `${sourceVar} contains invalid JSON: ${rawJsonError?.message || 'Failed to parse JSON or Base64-encoded JSON.'}`
       );
+      parseErr.diagnosticStage = 'service_account_parse';
+      throw parseErr;
     }
   }
 
   // 3. Validate that the parsed credential is a service-account object
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(
+    const typeErr: any = new Error(
       `${sourceVar} contains invalid JSON: Parsed credential must be an object.`
     );
+    typeErr.diagnosticStage = 'service_account_parse';
+    throw typeErr;
   }
 
   const isServiceAccount =
@@ -824,23 +831,23 @@ export function parseServiceAccountCredential(raw: string, sourceVar: string): a
     );
 
   if (!isServiceAccount) {
-    throw new Error(
+    const shapeErr: any = new Error(
       `${sourceVar} contains invalid JSON: Expected a service-account object with type "service_account" or project_id.`
     );
+    shapeErr.diagnosticStage = 'service_account_parse';
+    throw shapeErr;
   }
 
   // Normalize literal "\\r\\n" and "\\n" escapes inside PEM private keys pasted into hosting dashboards
   if (
     typeof parsed.private_key === 'string' &&
-    (parsed.private_key.includes('\\n') || parsed.private_key.includes('\\r\\n')) &&
-    !parsed.private_key.includes('\n')
+    (parsed.private_key.includes('\\n') || parsed.private_key.includes('\\r\\n'))
   ) {
     parsed.private_key = parsed.private_key.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
   if (
     typeof parsed.privateKey === 'string' &&
-    (parsed.privateKey.includes('\\n') || parsed.privateKey.includes('\\r\\n')) &&
-    !parsed.privateKey.includes('\n')
+    (parsed.privateKey.includes('\\n') || parsed.privateKey.includes('\\r\\n'))
   ) {
     parsed.privateKey = parsed.privateKey.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
@@ -870,9 +877,26 @@ export function getFirestoreDb(): any {
   if (isProd) {
     const projectId = getConfiguredFirebaseProjectId();
     if (!projectId) {
-      throw new Error(
+      const err: any = new Error(
         '[UploadQuota] Fatal: Production deployment requires a valid FIREBASE_PROJECT_ID (or VITE_FIREBASE_PROJECT_ID). In-memory fallback is strictly forbidden in production.'
       );
+      err.diagnosticStage = 'project_id_resolution';
+      err._loggedUploadDiagnostic = true;
+      logUploadDiagnostic({
+        stage: 'project_id_resolution',
+        code: 'MISSING_PROJECT_ID',
+        message: err.message,
+        details: {
+          envPresence: {
+            FIREBASE_PROJECT_ID: Boolean(process.env.FIREBASE_PROJECT_ID?.trim()),
+            VITE_FIREBASE_PROJECT_ID: Boolean(process.env.VITE_FIREBASE_PROJECT_ID?.trim()),
+            NEXT_PUBLIC_FIREBASE_PROJECT_ID: Boolean(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID?.trim()),
+            FIREBASE_SERVICE_ACCOUNT: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT?.trim()),
+            FIREBASE_SERVICE_ACCOUNT_KEY: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.trim())
+          }
+        }
+      });
+      throw err;
     }
 
     const existingApps = getApps();
@@ -880,25 +904,61 @@ export function getFirestoreDb(): any {
       try {
         return getFirestore();
       } catch (err: any) {
-        throw new Error(
+        const wrappedErr: any = new Error(
           `[UploadQuota] Fatal: Failed to acquire initialized Firestore instance in production: ${err?.message || err}`
         );
+        wrappedErr.diagnosticStage = 'firebase_admin_init';
+        wrappedErr._loggedUploadDiagnostic = true;
+        logUploadDiagnostic({
+          stage: 'firebase_admin_init',
+          code: err?.code ? String(err.code) : 'GET_FIRESTORE_FAILED',
+          message: wrappedErr.message,
+          details: {
+            existingAppsCount: existingApps.length
+          }
+        });
+        throw wrappedErr;
       }
     }
 
     const saCred = getFirebaseServiceAccountCredentials();
     const hasServiceAccount = Boolean(saCred);
-    const hasGoogleCredentials = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    const gacRaw = (process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
+    const hasGoogleCredentials = Boolean(gacRaw);
 
     if (!hasServiceAccount && !hasGoogleCredentials) {
-      throw new Error(
+      const err: any = new Error(
         '[UploadQuota] Fatal: Production deployment requires Firebase Admin credentials (FIREBASE_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS). In-memory fallback is strictly forbidden in production.'
       );
+      err.diagnosticStage = 'service_account_lookup';
+      err._loggedUploadDiagnostic = true;
+      logUploadDiagnostic({
+        stage: 'service_account_lookup',
+        code: 'MISSING_ADMIN_CREDENTIALS',
+        message: err.message,
+        details: {
+          envPresence: {
+            FIREBASE_SERVICE_ACCOUNT: false,
+            FIREBASE_SERVICE_ACCOUNT_KEY: false,
+            GOOGLE_APPLICATION_CREDENTIALS: false
+          }
+        }
+      });
+      throw err;
     }
 
+    let saShape: Record<string, boolean> | undefined;
     try {
       if (saCred) {
         const sa = parseServiceAccountCredential(saCred.raw, saCred.sourceVar);
+        const pk = sa.private_key || sa.privateKey || '';
+        const clientEmail = sa.client_email || sa.clientEmail || '';
+        saShape = {
+          hasProjectId: Boolean(sa.project_id || sa.projectId),
+          hasClientEmail: typeof clientEmail === 'string' && clientEmail.includes('@'),
+          hasPrivateKey: typeof pk === 'string' && pk.length > 0,
+          privateKeyHasPemHeader: typeof pk === 'string' && pk.includes('-----BEGIN')
+        };
         initializeApp({
           credential: cert(sa),
           projectId: sa.project_id || sa.projectId || projectId
@@ -908,12 +968,32 @@ export function getFirestoreDb(): any {
       }
       return getFirestore();
     } catch (initErr: any) {
+      const stage = initErr?.diagnosticStage || 'firebase_admin_init';
+      logUploadDiagnostic({
+        stage,
+        code: initErr?.code ? String(initErr.code) : stage === 'service_account_parse' ? 'INVALID_SERVICE_ACCOUNT' : 'ADMIN_INIT_FAILED',
+        message: initErr?.message || String(initErr),
+        details: {
+          credentialSource: saCred ? saCred.sourceVar : 'GOOGLE_APPLICATION_CREDENTIALS',
+          ...(saShape ? { saShape } : {}),
+          ...(!saCred && hasGoogleCredentials
+            ? {
+                gacLooksLikeJson: gacRaw.startsWith('{'),
+                gacFileExists: !gacRaw.startsWith('{') && fs.existsSync(gacRaw)
+              }
+            : {})
+        }
+      });
       if (initErr?.message && initErr.message.includes('contains invalid JSON')) {
+        initErr._loggedUploadDiagnostic = true;
         throw initErr;
       }
-      throw new Error(
+      const wrappedErr: any = new Error(
         `[UploadQuota] Fatal: Failed to initialize Firebase Admin Firestore in production: ${initErr?.message || initErr}`
       );
+      wrappedErr.diagnosticStage = stage;
+      wrappedErr._loggedUploadDiagnostic = true;
+      throw wrappedErr;
     }
   }
 
@@ -1319,12 +1399,31 @@ export async function getQuotaStatus(
   const docId = `${identity.key}_${utcDay}`;
   const db = getFirestoreDb();
 
-  return await db.runTransaction(async (transaction: any) => {
-    const docRef = db.collection('uploadQuotas').doc(docId);
-    const snap = await transaction.get(docRef);
+  try {
+    return await db.runTransaction(async (transaction: any) => {
+      const docRef = db.collection('uploadQuotas').doc(docId);
+      const snap = await transaction.get(docRef);
 
-    return computeCurrentDayStatusFromSnapshot(snap, nowMs, resetAt, utcDay);
-  });
+      return computeCurrentDayStatusFromSnapshot(snap, nowMs, resetAt, utcDay);
+    });
+  } catch (txErr: any) {
+    if (!txErr?.diagnosticStage) {
+      txErr.diagnosticStage = 'firestore_transaction';
+    }
+    if (!txErr?._loggedUploadDiagnostic) {
+      txErr._loggedUploadDiagnostic = true;
+      logUploadDiagnostic({
+        stage: txErr.diagnosticStage,
+        code: txErr?.code !== undefined ? String(txErr.code) : 'FIRESTORE_TRANSACTION_FAILED',
+        message: txErr?.message || String(txErr),
+        details: {
+          operation: 'getQuotaStatus',
+          collection: 'uploadQuotas'
+        }
+      });
+    }
+    throw txErr;
+  }
 }
 
 /**

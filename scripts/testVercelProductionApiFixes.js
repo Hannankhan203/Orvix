@@ -537,6 +537,198 @@ await runTest('getConfiguredFirebaseProjectId extracts project_id from FIREBASE_
   }
 });
 
+// ---------------------------------------------------------------------------
+// 6. api/upload.ts is decoupled from server.ts monolith
+// ---------------------------------------------------------------------------
+await runTest('api/upload.ts does not import server.ts monolith and exposes /api 404 JSON fallback', async () => {
+  const uploadEntrySrc = fs.readFileSync(path.resolve(process.cwd(), 'api/upload.ts'), 'utf8');
+  assert.strictEqual(
+    /from\s+['"]\.\.\/server\.ts['"]/.test(uploadEntrySrc),
+    false,
+    'api/upload.ts must not import ../server.ts directly'
+  );
+  assert.ok(
+    uploadEntrySrc.includes('registerUploadRoutes'),
+    'api/upload.ts must register upload routes directly'
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 7. Firebase Project ID skips placeholder / unquotes quoted values
+// ---------------------------------------------------------------------------
+await runTest('getConfiguredFirebaseProjectId skips placeholder/empty values and unquotes valid project IDs', async () => {
+  const {
+    getConfiguredFirebaseProjectId,
+    resetFirebaseAuthForTesting
+  } = await import('../server/firebaseAuthHelper.ts');
+
+  resetFirebaseAuthForTesting();
+  const origPid = process.env.FIREBASE_PROJECT_ID;
+  const origVitePid = process.env.VITE_FIREBASE_PROJECT_ID;
+  const origNextPid = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+  const origSa = process.env.FIREBASE_SERVICE_ACCOUNT;
+  const origSaKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+
+  try {
+    delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+
+    process.env.FIREBASE_PROJECT_ID = 'your_project_id';
+    process.env.VITE_FIREBASE_PROJECT_ID = '"quoted-vercel-project-123"';
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID = '';
+    assert.strictEqual(getConfiguredFirebaseProjectId(), 'quoted-vercel-project-123');
+
+    process.env.FIREBASE_PROJECT_ID = 'placeholder-project';
+    process.env.VITE_FIREBASE_PROJECT_ID = 'undefined';
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID = 'next-public-project-456';
+    assert.strictEqual(getConfiguredFirebaseProjectId(), 'next-public-project-456');
+  } finally {
+    if (origPid !== undefined) process.env.FIREBASE_PROJECT_ID = origPid;
+    else delete process.env.FIREBASE_PROJECT_ID;
+    if (origVitePid !== undefined) process.env.VITE_FIREBASE_PROJECT_ID = origVitePid;
+    else delete process.env.VITE_FIREBASE_PROJECT_ID;
+    if (origNextPid !== undefined) process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID = origNextPid;
+    else delete process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    if (origSa !== undefined) process.env.FIREBASE_SERVICE_ACCOUNT = origSa;
+    else delete process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (origSaKey !== undefined) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = origSaKey;
+    else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 8. Safe stage diagnostic logging never leaks secrets, tokens, or PEM keys
+// ---------------------------------------------------------------------------
+await runTest('Safe diagnostic logging identifies failing stage in /api/upload/quota and cold start without leaking secrets', async () => {
+  // A. Stage 0: signed_url_config diagnostic without secret leakage
+  const badSecret = 'short-secret-value-do-not-leak';
+  const stage0Res = runNodeInline(
+    `
+    delete process.env.TESTING;
+    delete process.env.SIGNED_DECODE_URL_SECRET;
+    delete process.env.SESSION_SECRET;
+    await import('./api/upload.ts');
+    `,
+    {
+      VERCEL: '1',
+      NODE_ENV: 'production',
+      ORVIX_SIGNED_URL_SECRET: badSecret
+    }
+  );
+  assert.notStrictEqual(stage0Res.status, 0);
+  const stage0Logs = `${stage0Res.stdout}\n${stage0Res.stderr}`;
+  assert.ok(stage0Logs.includes('[UploadDiagnostic]'), 'Expected [UploadDiagnostic] on signed_url_config failure');
+  assert.ok(stage0Logs.includes('"stage":"signed_url_config"'), `Expected signed_url_config stage in logs: ${stage0Logs}`);
+  assert.strictEqual(stage0Logs.includes(badSecret), false, 'Signed URL diagnostic log must NEVER leak secret value');
+
+  // B. Stage 4: /api/upload/quota emits safe stage diagnostics for Firestore errors and never leaks PEM keys or JWTs
+  const secretTokenMarker = 'super-secret-jwt-payload-marker';
+  const fakePem = '-----BEGIN PRIVATE KEY-----\\nFAKE_SECRET_PEM_BODY_NEVER_LOG\\n-----END PRIVATE KEY-----\\n';
+  const stage4Res = runNodeInline(
+    `
+    import assert from 'node:assert/strict';
+    import crypto from 'node:crypto';
+    import http from 'node:http';
+    process.env.TESTING = '1';
+    process.env.FIREBASE_PROJECT_ID = 'orvix-diag-test-proj';
+    process.env.ORVIX_SIGNED_URL_SECRET = 'orvix-diag-test-secret-must-be-at-least-32-chars';
+
+    const errors = [];
+    const origError = console.error;
+    console.error = (...args) => {
+      errors.push(args.map((a) => String(a)).join(' '));
+      origError(...args);
+    };
+
+    const { default: uploadHandler } = await import('./api/upload.ts');
+    const { setTestPublicKey, resetFirebaseAuthForTesting } = await import('./server/firebaseAuthHelper.ts');
+    const {
+      setForceProductionModeForTesting,
+      setFirestoreForTesting,
+      resetFirestoreForTesting
+    } = await import('./server/uploadQuotaService.ts');
+
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    setTestPublicKey('diag-kid', publicKey.export({ type: 'spki', format: 'pem' }).toString());
+    const now = Math.floor(Date.now() / 1000);
+    const h = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'diag-kid' })).toString('base64url');
+    const p = Buffer.from(JSON.stringify({
+      aud: 'orvix-diag-test-proj',
+      iss: 'https://securetoken.google.com/orvix-diag-test-proj',
+      sub: 'diag_uid_1',
+      user_id: 'diag_uid_1',
+      exp: now + 3600,
+      iat: now,
+      note: '${secretTokenMarker}'
+    })).toString('base64url');
+    const s = crypto.createSign('RSA-SHA256').update(\`\${h}.\${p}\`).sign(privateKey, 'base64url');
+    const jwt = \`\${h}.\${p}.\${s}\`;
+
+    const srv = http.createServer((req, res) => uploadHandler(req, res));
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+
+    try {
+      // 1. Missing service account in forced production mode -> service_account_lookup
+      setForceProductionModeForTesting(true);
+      delete process.env.FIREBASE_SERVICE_ACCOUNT;
+      delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+      delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+      const r1 = await fetch(\`http://127.0.0.1:\${port}/api/upload/quota\`, {
+        headers: { Authorization: \`Bearer \${jwt}\` }
+      });
+      assert.strictEqual(r1.status, 500);
+      const b1 = await r1.json();
+      assert.strictEqual(b1.code, 'QUOTA_SERVICE_UNAVAILABLE');
+      assert.ok(errors.some((l) => l.includes('"stage":"service_account_lookup"')), 'Expected service_account_lookup stage');
+
+      // 2. Corrupted JSON in FIREBASE_SERVICE_ACCOUNT -> service_account_parse without leaking PEM
+      errors.length = 0;
+      process.env.FIREBASE_SERVICE_ACCOUNT = '{"type":"service_account","private_key":"${fakePem}", broken';
+      const r2 = await fetch(\`http://127.0.0.1:\${port}/api/upload/quota\`, {
+        headers: { Authorization: \`Bearer \${jwt}\` }
+      });
+      assert.strictEqual(r2.status, 500);
+      assert.ok(errors.some((l) => l.includes('"stage":"service_account_parse"')), 'Expected service_account_parse stage');
+
+      // 3. Firestore transaction failure -> firestore_transaction without leaking JWT/PEM
+      errors.length = 0;
+      setForceProductionModeForTesting(false);
+      setFirestoreForTesting({
+        collection: () => ({ doc: () => ({}) }),
+        runTransaction: async () => {
+          const txErr = new Error('5 NOT_FOUND: The database (default) does not exist Bearer ' + jwt + ' ${fakePem}');
+          txErr.code = 5;
+          throw txErr;
+        }
+      });
+      const r3 = await fetch(\`http://127.0.0.1:\${port}/api/upload/quota\`, {
+        headers: { Authorization: \`Bearer \${jwt}\` }
+      });
+      assert.strictEqual(r3.status, 500);
+      assert.ok(errors.some((l) => l.includes('"stage":"firestore_transaction"')), 'Expected firestore_transaction stage');
+
+      const combinedLogs = errors.join('\\n');
+      assert.strictEqual(combinedLogs.includes(jwt), false, 'Diagnostic logs must NEVER include raw JWT');
+      assert.strictEqual(combinedLogs.includes('FAKE_SECRET_PEM_BODY_NEVER_LOG'), false, 'Diagnostic logs must NEVER include PEM private key body');
+      console.log('DIAGNOSTIC_LOGGING_VERIFIED');
+    } finally {
+      console.error = origError;
+      srv.close();
+      resetFirebaseAuthForTesting();
+      resetFirestoreForTesting();
+    }
+    `
+  );
+  assert.strictEqual(
+    stage4Res.status,
+    0,
+    `Stage 4 diagnostic test failed (exit=${stage4Res.status}): stdout=${stage4Res.stdout} stderr=${stage4Res.stderr}`
+  );
+  assert.ok(stage4Res.stdout.includes('DIAGNOSTIC_LOGGING_VERIFIED'));
+});
+
 console.log(`\nRESULTS: ${passed} Passed, ${failed} Failed\n`);
 if (failed > 0) {
   process.exit(1);

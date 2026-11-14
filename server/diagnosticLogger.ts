@@ -4,18 +4,60 @@ import type {
   GeminiLifecycleLogEntry
 } from './serverTypes.ts';
 
-// Sanitizes error messages to ensure no API keys, tokens, or headers are ever logged or sent to users
+// Sanitizes error messages to ensure no API keys, tokens, PEM private keys, or headers are ever logged or sent to users
 export function sanitizeErrorLog(msg: string): string {
   if (!msg) return '';
   return String(msg)
-    .replace(/Bearer\s+[A-Za-z0-9_\-\.]+/gi, 'Bearer [REDACTED]')
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
+    .replace(/("private_key"\s*:\s*")[^"]*(")/gi, '$1[REDACTED]$2')
+    .replace(/("privateKey"\s*:\s*")[^"]*(")/gi, '$1[REDACTED]$2')
+    .replace(/Bearer\s+[A-Za-z0-9_\-\.=~+/]+/gi, 'Bearer [REDACTED]')
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]')
     .replace(/AIza[0-9A-Za-z_\-]{35}/g, '[REDACTED_API_KEY]')
     .replace(/gsk_[A-Za-z0-9_\-]{20,}/g, '[REDACTED_API_KEY]')
     .replace(/sk-or-[A-Za-z0-9_\-\.]{15,}/g, '[REDACTED_API_KEY]')
     .replace(/\bsk-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_API_KEY]')
     .replace(/([?&]key=)[A-Za-z0-9_\-]+/gi, '$1[REDACTED]')
-    .replace(/\b(GEMINI_API_KEY|GROQ_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN|CLOUDFLARE_ACCOUNT_ID)\s*=\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(
+      /\b(GEMINI_API_KEY|GROQ_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN|CLOUDFLARE_ACCOUNT_ID|ORVIX_SIGNED_URL_SECRET|SIGNED_DECODE_URL_SECRET|SESSION_SECRET|FIREBASE_SERVICE_ACCOUNT|FIREBASE_SERVICE_ACCOUNT_KEY|SUPABASE_SECRET_KEY|SUPABASE_SERVICE_ROLE_KEY)\s*=\s*[^\s,;]+/gi,
+      '$1=[REDACTED]'
+    )
     .replace(/(authorization:\s*)([^\r\n,;]+)/gi, '$1[REDACTED]');
+}
+
+export type UploadDiagnosticStage =
+  | 'signed_url_config'
+  | 'firebase_auth'
+  | 'project_id_resolution'
+  | 'service_account_lookup'
+  | 'service_account_parse'
+  | 'firebase_admin_init'
+  | 'firestore_transaction'
+  | 'quota_lookup';
+
+export interface UploadDiagnosticEntry {
+  stage: UploadDiagnosticStage;
+  code?: string | null;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Emits a safe, single-line structured diagnostic log for upload and quota failures.
+ * Never logs secrets, Bearer tokens, raw service-account JSON, or PEM private keys.
+ */
+export function logUploadDiagnostic(entry: UploadDiagnosticEntry): void {
+  const payload = {
+    stage: entry.stage,
+    ...(entry.code ? { code: String(entry.code) } : {}),
+    message: sanitizeErrorLog(entry.message),
+    ...(entry.details ? { details: entry.details } : {}),
+    runtime: {
+      vercel: Boolean(process.env.VERCEL),
+      nodeEnv: process.env.NODE_ENV || 'unset'
+    }
+  };
+  console.error(`[UploadDiagnostic] ${JSON.stringify(payload)}`);
 }
 
 /**

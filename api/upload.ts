@@ -1,5 +1,20 @@
+import express from 'express';
 import type { Request, Response } from 'express';
-import { app } from '../server.ts';
+import { applyCorsMiddleware, applyJsonBodyMiddleware } from '../server/serverConfig.ts';
+import { registerUploadRoutes } from '../server/uploadSubsystem.ts';
+
+const app = express();
+applyCorsMiddleware(app);
+applyJsonBodyMiddleware(app);
+registerUploadRoutes(app);
+
+app.use('/api', (_req, res) => {
+  res.status(404).json({
+    error: 'API route not found',
+    code: 404,
+    status: 'NOT_FOUND'
+  });
+});
 
 export const maxDuration = 300;
 

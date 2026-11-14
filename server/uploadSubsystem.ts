@@ -12,6 +12,7 @@ import {
   resolveConfiguredSignedDecodeUrlSecret,
   setForceProductionSignedUrlSecretCheckForTesting
 } from './serverConfig.ts';
+import { logUploadDiagnostic, sanitizeErrorLog } from './diagnosticLogger.ts';
 import type { UploadedFileRecord, DocumentExtractionResult } from './serverTypes.ts';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
@@ -51,7 +52,8 @@ import { isSupabaseConfigured, getSupabaseBucket } from './supabaseClient.ts';
 import {
   verifyFirebaseIdToken,
   resolveVerifiedUserId,
-  authenticateRequest
+  authenticateRequest,
+  getConfiguredFirebaseProjectId
 } from './firebaseAuthHelper.ts';
 import {
   DAILY_UPLOAD_LIMIT,
@@ -120,6 +122,24 @@ async function requireUploadAuthentication(
 ): Promise<string | null> {
   const authStatus = await authenticateRequest(req);
   if (authStatus.status !== 'authenticated' || !authStatus.userId) {
+    if (authStatus.status === 'invalid') {
+      logUploadDiagnostic({
+        stage: 'firebase_auth',
+        code: authStatus.code || 'INVALID_TOKEN',
+        message: authStatus.error || defaultMessage,
+        details: {
+          path: req.path,
+          hasConfiguredProjectId: Boolean(getConfiguredFirebaseProjectId()),
+          envPresence: {
+            FIREBASE_PROJECT_ID: Boolean(process.env.FIREBASE_PROJECT_ID?.trim()),
+            VITE_FIREBASE_PROJECT_ID: Boolean(process.env.VITE_FIREBASE_PROJECT_ID?.trim()),
+            NEXT_PUBLIC_FIREBASE_PROJECT_ID: Boolean(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID?.trim()),
+            FIREBASE_SERVICE_ACCOUNT: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT?.trim()),
+            FIREBASE_SERVICE_ACCOUNT_KEY: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY?.trim())
+          }
+        }
+      });
+    }
     const errorMessage =
       authStatus.status === 'invalid' && authStatus.error
         ? `Authentication failed: ${authStatus.error}`
@@ -673,10 +693,25 @@ export function getSignedDecodeUrlSecret(options?: { forceProduction?: boolean }
   }
 
   if (isProd) {
+    logUploadDiagnostic({
+      stage: 'signed_url_config',
+      code: 'SIGNED_URL_SECRET_INVALID',
+      message: resolution.errorMessage || 'ORVIX_SIGNED_URL_SECRET is missing or invalid.',
+      details: {
+        reason: resolution.invalidReason || 'missing',
+        sourceKey: resolution.sourceKey || null,
+        envPresence: {
+          ORVIX_SIGNED_URL_SECRET: Boolean(process.env.ORVIX_SIGNED_URL_SECRET?.trim()),
+          SIGNED_DECODE_URL_SECRET: Boolean(process.env.SIGNED_DECODE_URL_SECRET?.trim()),
+          SESSION_SECRET: Boolean(process.env.SESSION_SECRET?.trim())
+        }
+      }
+    });
     const err: any = new Error(
       `[Orvix Upload] Fatal signed-URL configuration error: ${resolution.errorMessage || 'ORVIX_SIGNED_URL_SECRET is missing or invalid.'}`
     );
     err.code = 'SIGNED_URL_SECRET_INVALID';
+    err.diagnosticStage = 'signed_url_config';
     throw err;
   }
 
@@ -1475,7 +1510,17 @@ export function registerUploadRoutes(app: express.Express) {
     try {
       status = await getQuotaStatus(quotaIdentity);
     } catch (quotaErr: any) {
-      console.error('[UploadQuota] Quota status lookup failed:', quotaErr?.message || quotaErr);
+      if (!quotaErr?._loggedUploadDiagnostic) {
+        logUploadDiagnostic({
+          stage: quotaErr?.diagnosticStage || 'quota_lookup',
+          code: quotaErr?.code ? String(quotaErr.code) : 'QUOTA_SERVICE_UNAVAILABLE',
+          message: quotaErr?.message || String(quotaErr)
+        });
+      }
+      console.error(
+        `[UploadQuota] Quota status lookup failed (stage=${quotaErr?.diagnosticStage || 'quota_lookup'}):`,
+        sanitizeErrorLog(quotaErr?.message || String(quotaErr))
+      );
       return res.status(500).json({
         error: 'Upload quota status is temporarily unavailable.',
         code: 'QUOTA_SERVICE_UNAVAILABLE',

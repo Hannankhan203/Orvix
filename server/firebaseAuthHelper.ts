@@ -124,14 +124,20 @@ export function getConfiguredFirebaseProjectId(): string {
   if (testFirebaseProjectId !== null) {
     return testFirebaseProjectId.trim();
   }
-  const direct = (
-    process.env.FIREBASE_PROJECT_ID ||
-    process.env.VITE_FIREBASE_PROJECT_ID ||
-    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ||
-    ''
-  ).trim();
-  if (direct) {
-    return direct;
+  const directCandidates = [
+    process.env.FIREBASE_PROJECT_ID,
+    process.env.VITE_FIREBASE_PROJECT_ID,
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate !== 'string') continue;
+    const unquoted = candidate
+      .trim()
+      .replace(/^["'\u201C\u201D\u2018\u2019`]+|["'\u201C\u201D\u2018\u2019`]+$/g, '')
+      .trim();
+    if (isValidFirebaseProjectId(unquoted)) {
+      return unquoted;
+    }
   }
 
   const rawSa = (
