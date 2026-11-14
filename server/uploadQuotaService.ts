@@ -691,16 +691,28 @@ export function isProductionEnvironment(): boolean {
   if (forceProductionModeForTesting !== null) {
     return forceProductionModeForTesting;
   }
-  if (process.env.TESTING === '1') {
-    return false;
-  }
-  return (
+  const isHostedOrProd =
     process.env.NODE_ENV === 'production' ||
     Boolean(process.env.VERCEL) ||
+    process.env.VERCEL_ENV === 'production' ||
+    process.env.VERCEL_ENV === 'preview' ||
     Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
     Boolean(process.env.LAMBDA_TASK_ROOT) ||
-    Boolean(process.env.SERVERLESS)
-  );
+    Boolean(process.env.SERVERLESS) ||
+    Boolean(process.env.RENDER) ||
+    Boolean(process.env.FLY_APP_NAME) ||
+    Boolean(process.env.RAILWAY_ENVIRONMENT);
+
+  if (isHostedOrProd) {
+    return true;
+  }
+  if (process.env.TESTING === '1' || process.env.TESTING === 'true') {
+    return false;
+  }
+  if ((process.env.K_SERVICE || process.env.CLOUD_RUN_JOB) && process.env.NODE_ENV !== 'development') {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -1016,7 +1028,11 @@ export function getFirestoreDb(): any {
               credential: cert(sa),
               projectId: sa.project_id || sa.projectId || projectId
             });
-          } catch (_) {
+          } catch (saErr: any) {
+            console.warn(
+              '[UploadQuota] Warning: Failed to parse configured Firebase service account in dev/test mode:',
+              saErr?.message || saErr
+            );
             initializeApp({ projectId });
           }
         } else {
@@ -1025,7 +1041,17 @@ export function getFirestoreDb(): any {
       }
       return getFirestore();
     }
-  } catch (_) {}
+  } catch (devInitErr: any) {
+    console.warn(
+      '[UploadQuota] Warning: Firebase Admin initialization failed in dev/test mode; using in-memory Firestore fallback:',
+      devInitErr?.message || devInitErr
+    );
+  }
+
+  // Defense-in-depth: never return in-memory simulated Firestore in production
+  if (isProductionEnvironment()) {
+    throw new Error('[UploadQuota] Fatal: In-memory Firestore fallback is strictly forbidden in production.');
+  }
 
   // Fallback to resilient in-memory simulated Firestore exclusively in tests and development
   if (!simulatedFirestoreSingleton) {

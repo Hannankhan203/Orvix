@@ -1961,6 +1961,28 @@ export function isFormatPreviewable(extension = '', mimeType = '') {
   return false;
 }
 
+function openPreviewWindow(url) {
+  if (typeof window === 'undefined' || typeof window.open !== 'function') {
+    return false;
+  }
+  try {
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (win && typeof win === 'object') {
+      try {
+        if ('opener' in win && win.opener) {
+          win.opener = null;
+        }
+      } catch (_) {}
+      return true;
+    }
+    // Per HTML Living Standard, window.open() with 'noopener,noreferrer' returns null
+    // even when the tab opens successfully; treat non-throwing non-false returns as opened.
+    return win !== false;
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
  * Opens an attachment in a new browser tab for preview if supported,
  * or triggers a direct download if the format is not previewable.
@@ -1980,12 +2002,9 @@ export async function openOrPreviewAttachment(attachment, chatId = null) {
   // 0. Check in-memory File or Blob
   if (attachment.file instanceof Blob) {
     const blobUrl = URL.createObjectURL(attachment.file);
-    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
-      const win = window.open(blobUrl, '_blank');
-      if (win) {
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-        return { success: true, action: 'preview' };
-      }
+    if (canPreview && openPreviewWindow(blobUrl)) {
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+      return { success: true, action: 'preview' };
     }
     const link = document.createElement('a');
     link.href = blobUrl;
@@ -2000,9 +2019,8 @@ export async function openOrPreviewAttachment(attachment, chatId = null) {
   // Direct dataUrl or previewUrl
   const directDataUri = attachment.previewUrl || attachment.dataUrl;
   if (typeof directDataUri === 'string' && (directDataUri.startsWith('data:') || directDataUri.startsWith('blob:'))) {
-    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
-      const win = window.open(directDataUri, '_blank');
-      if (win) return { success: true, action: 'preview' };
+    if (canPreview && openPreviewWindow(directDataUri)) {
+      return { success: true, action: 'preview' };
     }
     const link = document.createElement('a');
     link.href = directDataUri;
@@ -2018,15 +2036,12 @@ export async function openOrPreviewAttachment(attachment, chatId = null) {
   if (localRecord && localRecord.blob && isAttachmentOwnedByCurrentUser(attachment, localRecord)) {
     const blobUrl = URL.createObjectURL(localRecord.blob);
 
-    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
-      const win = window.open(blobUrl, '_blank');
-      if (win) {
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-        return { success: true, action: 'preview' };
-      }
+    if (canPreview && openPreviewWindow(blobUrl)) {
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+      return { success: true, action: 'preview' };
     }
 
-    // Direct download if preview is not supported or popup blocked
+    // Direct download if preview is not supported or window.open is unavailable
     const link = document.createElement('a');
     link.href = blobUrl;
     link.download = filename;
@@ -2056,14 +2071,9 @@ export async function openOrPreviewAttachment(attachment, chatId = null) {
 
     const blobUrl = URL.createObjectURL(result.blob);
 
-    if (canPreview && typeof window !== 'undefined' && typeof window.open === 'function') {
-      try {
-        const win = window.open(blobUrl, '_blank');
-        if (win) {
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-          return { success: true, action: 'preview' };
-        }
-      } catch (_) {}
+    if (canPreview && openPreviewWindow(blobUrl)) {
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+      return { success: true, action: 'preview' };
     }
 
     const link = document.createElement('a');

@@ -19,6 +19,7 @@
 
 import {
   getFirestoreDb,
+  isProductionEnvironment,
   releaseUploadSlot,
   type QuotaReservation,
   type QuotaStatus
@@ -119,6 +120,9 @@ export async function createDurableUploadTicket(
       await docRef.set(JSON.parse(JSON.stringify(ticket)), { merge: false });
     }
   } catch (err: any) {
+    if (isProductionEnvironment()) {
+      throw err;
+    }
     console.warn('[DirectUploadTicket] Warning: Could not write ticket to Firestore:', err?.message || err);
   }
 
@@ -152,12 +156,18 @@ export async function getDurableUploadTicket(
       }
     }
   } catch (err: any) {
+    if (isProductionEnvironment()) {
+      throw err;
+    }
     console.warn('[DirectUploadTicket] Notice: Firestore ticket lookup failed, checking cache:', err?.message || err);
   }
 
-  // 2. Fall back to in-memory cache if Firestore is unreachable or offline
-  const cached = pendingDirectUploads.get(attachmentId);
-  return cached || null;
+  // 2. Fall back to in-memory cache exclusively in non-production environments
+  if (!isProductionEnvironment()) {
+    const cached = pendingDirectUploads.get(attachmentId);
+    return cached || null;
+  }
+  return null;
 }
 
 /**
@@ -181,8 +191,8 @@ export async function claimDirectUploadTicketForCompletion(
       let ticket: PendingDirectUploadTicket | null = null;
       if (snap && snap.exists) {
         ticket = (typeof snap.data === 'function' ? snap.data() : snap.data) as PendingDirectUploadTicket;
-      } else {
-        // Check secondary memory cache for backwards compatibility in standalone test environments
+      } else if (!isProductionEnvironment()) {
+        // Check secondary memory cache exclusively in non-production test/dev environments
         ticket = pendingDirectUploads.get(attachmentId) || null;
       }
 

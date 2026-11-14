@@ -1401,6 +1401,165 @@ export function buildGeminiImageParts({
   });
 }
 
+type OcrPackFetchResult =
+  | { kind: 'file'; filePath: string; size: number }
+  | { kind: 'buffer'; buffer: Buffer };
+
+const MIN_OCR_PACK_BYTES = 50 * 1024;
+const MAX_OCR_PACK_BYTES = 50 * 1024 * 1024;
+const OCR_PACK_FETCH_TIMEOUT_MS = 30_000;
+const inFlightOcrPackFetches = new Map<string, Promise<OcrPackFetchResult | null>>();
+
+function hasHtmlOrXmlErrorPrefix(chunk: Uint8Array): boolean {
+  const sample = Buffer.from(chunk.subarray(0, 256)).toString('utf8').trimStart().toLowerCase();
+  return (
+    sample.startsWith('<!doctype html') ||
+    sample.startsWith('<html') ||
+    sample.startsWith('<?xml')
+  );
+}
+
+async function writeChunkWithBackpressure(ws: fs.WriteStream, chunk: Uint8Array): Promise<void> {
+  if (ws.write(chunk)) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    const cleanup = () => {
+      ws.off('drain', onDrain);
+      ws.off('error', onError);
+    };
+    ws.once('drain', onDrain);
+    ws.once('error', onError);
+  });
+}
+
+async function fetchAndCacheOcrPack(
+  rawFile: string,
+  localPackPath: string,
+  ocrPacksDir: string
+): Promise<OcrPackFetchResult | null> {
+  const primaryUrl = `https://tessdata.projectnaptha.com/4.0.0_fast/${rawFile}`;
+  const fallbackUrl = `https://raw.githubusercontent.com/naptha/tessdata/gh-pages/4.0.0_fast/${rawFile}`;
+  const candidateUrls = [primaryUrl, fallbackUrl];
+
+  let dirWritable = false;
+  try {
+    await fs.promises.mkdir(ocrPacksDir, { recursive: true });
+    dirWritable = true;
+  } catch (_) {}
+
+  for (const url of candidateUrls) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OCR_PACK_FETCH_TIMEOUT_MS);
+    const tmpPath = path.join(ocrPacksDir, `.${rawFile}.${crypto.randomUUID()}.tmp`);
+
+    try {
+      const upstream = await fetch(url, { signal: controller.signal });
+      if (!upstream.ok) {
+        continue;
+      }
+
+      if (dirWritable && upstream.body && typeof upstream.body.getReader === 'function') {
+        const reader = upstream.body.getReader();
+        const ws = fs.createWriteStream(tmpPath);
+        let streamError: Error | null = null;
+        ws.on('error', (err) => {
+          streamError = err;
+        });
+
+        let totalBytes = 0;
+        let checkedPrefix = false;
+        let invalidPayload = false;
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.byteLength === 0) continue;
+
+            if (!checkedPrefix) {
+              checkedPrefix = true;
+              if (hasHtmlOrXmlErrorPrefix(value)) {
+                invalidPayload = true;
+                break;
+              }
+            }
+
+            totalBytes += value.byteLength;
+            if (totalBytes > MAX_OCR_PACK_BYTES) {
+              invalidPayload = true;
+              break;
+            }
+
+            if (streamError) throw streamError;
+            await writeChunkWithBackpressure(ws, value);
+          }
+
+          if (invalidPayload || totalBytes < MIN_OCR_PACK_BYTES) {
+            try { await reader.cancel(); } catch (_) {}
+            ws.destroy();
+            await fs.promises.unlink(tmpPath).catch(() => {});
+            continue;
+          }
+
+          await new Promise<void>((resolve, reject) => {
+            ws.once('finish', resolve);
+            ws.once('error', reject);
+            ws.end();
+          });
+
+          await fs.promises.rename(tmpPath, localPackPath);
+          return { kind: 'file', filePath: localPackPath, size: totalBytes };
+        } catch (streamErr) {
+          try { await reader.cancel(); } catch (_) {}
+          ws.destroy();
+          await fs.promises.unlink(tmpPath).catch(() => {});
+          throw streamErr;
+        }
+      }
+
+      // Fallback when disk directory is read-only or upstream body lacks getReader()
+      const arrayBuf = await upstream.arrayBuffer();
+      const buffer = Buffer.from(arrayBuf);
+      if (
+        buffer.length >= MIN_OCR_PACK_BYTES &&
+        buffer.length <= MAX_OCR_PACK_BYTES &&
+        !hasHtmlErrorSafe(buffer)
+      ) {
+        if (dirWritable) {
+          try {
+            await fs.promises.writeFile(tmpPath, buffer);
+            await fs.promises.rename(tmpPath, localPackPath);
+            return { kind: 'file', filePath: localPackPath, size: buffer.length };
+          } catch (_) {
+            await fs.promises.unlink(tmpPath).catch(() => {});
+          }
+        }
+        return { kind: 'buffer', buffer };
+      }
+    } catch (err: any) {
+      await fs.promises.unlink(tmpPath).catch(() => {});
+      console.warn(`[OCR Pack Proxy] Error fetching ${rawFile} from ${url}:`, err?.message || err);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return null;
+}
+
+function hasHtmlErrorSafe(buffer: Buffer): boolean {
+  return hasHtmlOrXmlErrorPrefix(buffer);
+}
+
 /**
  * Registers all file upload and attachment serving routes onto the Express app.
  */
@@ -1436,7 +1595,7 @@ export function registerUploadRoutes(app: express.Express) {
     if (fs.existsSync(localPackPath)) {
       try {
         const stats = await fs.promises.stat(localPackPath);
-        if (stats.size >= 50 * 1024) {
+        if (stats.size >= MIN_OCR_PACK_BYTES) {
           res.setHeader('Content-Type', rawFile.endsWith('.gz') ? 'application/gzip' : 'application/octet-stream');
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
           return res.sendFile(localPackPath);
@@ -1444,33 +1603,31 @@ export function registerUploadRoutes(app: express.Express) {
       } catch (_) {}
     }
 
-    const primaryUrl = `https://tessdata.projectnaptha.com/4.0.0_fast/${rawFile}`;
-    const fallbackUrl = `https://raw.githubusercontent.com/naptha/tessdata/gh-pages/4.0.0_fast/${rawFile}`;
-    const candidateUrls = [primaryUrl, fallbackUrl];
-
-    for (const url of candidateUrls) {
-      try {
-        const upstream = await fetch(url);
-        if (upstream.ok) {
-          const arrayBuf = await upstream.arrayBuffer();
-          const buffer = Buffer.from(arrayBuf);
-          if (buffer.length >= 50 * 1024) {
-            try {
-              if (!fs.existsSync(ocrPacksDir)) {
-                fs.mkdirSync(ocrPacksDir, { recursive: true });
-              }
-              fs.writeFile(localPackPath, buffer, () => {});
-            } catch (_) {}
-
-            res.setHeader('Content-Type', rawFile.endsWith('.gz') ? 'application/gzip' : 'application/octet-stream');
-            res.setHeader('Content-Length', String(buffer.length));
-            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-            return res.send(buffer);
-          }
+    const cacheKey = rawFile.toLowerCase();
+    let inFlight = inFlightOcrPackFetches.get(cacheKey);
+    if (!inFlight) {
+      inFlight = fetchAndCacheOcrPack(rawFile, localPackPath, ocrPacksDir).finally(() => {
+        if (inFlightOcrPackFetches.get(cacheKey) === inFlight) {
+          inFlightOcrPackFetches.delete(cacheKey);
         }
-      } catch (err: any) {
-        console.warn(`[OCR Pack Proxy] Error fetching ${rawFile} from ${url}:`, err?.message || err);
-      }
+      });
+      inFlightOcrPackFetches.set(cacheKey, inFlight);
+    }
+
+    const result = await inFlight;
+    const contentType = rawFile.endsWith('.gz') ? 'application/gzip' : 'application/octet-stream';
+
+    if (result?.kind === 'file') {
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.sendFile(result.filePath);
+    }
+
+    if (result?.kind === 'buffer') {
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Length', String(result.buffer.length));
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.send(result.buffer);
     }
 
     return res.status(502).json({ error: `Could not retrieve language pack for '${langCode}' from CDN.`, code: 'PACK_DOWNLOAD_FAILED' });

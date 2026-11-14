@@ -179,11 +179,16 @@ export default function ChatPage({
       return null;
     }
     if (typeof window !== 'undefined') {
-      return (
-        sessionStorage.getItem('orvix_active_chat') ||
-        sessionStorage.getItem('chatora_active_chat') ||
-        null
-      );
+      try {
+        const current = sessionStorage.getItem('orvix_active_chat');
+        if (current) return current;
+        const legacy = sessionStorage.getItem('chatora_active_chat');
+        if (legacy) {
+          sessionStorage.setItem('orvix_active_chat', legacy);
+          sessionStorage.removeItem('chatora_active_chat');
+          return legacy;
+        }
+      } catch (_) {}
     }
     return null;
   });
@@ -207,15 +212,19 @@ export default function ChatPage({
 
   const [selectedProvider, setSelectedProvider] = useState(() => {
     if (typeof window !== 'undefined') {
-      const saved =
-        localStorage.getItem('orvix_selected_provider') ||
-        localStorage.getItem('chatora_selected_provider') ||
-        DEFAULT_PROVIDER;
-      const normalized = normalizeProviderId(saved);
-      if (saved && saved !== normalized) {
-        localStorage.setItem('orvix_selected_provider', normalized);
-      }
-      return normalized;
+      try {
+        const current = localStorage.getItem('orvix_selected_provider');
+        const legacy = !current ? localStorage.getItem('chatora_selected_provider') : null;
+        const saved = current || legacy || DEFAULT_PROVIDER;
+        const normalized = normalizeProviderId(saved);
+        if (legacy) {
+          localStorage.setItem('orvix_selected_provider', normalized);
+          localStorage.removeItem('chatora_selected_provider');
+        } else if (saved && saved !== normalized) {
+          localStorage.setItem('orvix_selected_provider', normalized);
+        }
+        return normalized;
+      } catch (_) {}
     }
     return DEFAULT_PROVIDER;
   });
@@ -623,11 +632,19 @@ export default function ChatPage({
   const getGuestPinnedIds = () => {
     try {
       if (typeof window !== 'undefined') {
-        const stored =
-          localStorage.getItem('orvix_guest_pins') ||
-          localStorage.getItem('chatora_guest_pins');
-
-        return stored ? JSON.parse(stored) : [];
+        const current = localStorage.getItem('orvix_guest_pins');
+        if (current) {
+          return JSON.parse(current);
+        }
+        const legacy = localStorage.getItem('chatora_guest_pins');
+        if (legacy) {
+          const parsed = JSON.parse(legacy);
+          try {
+            localStorage.setItem('orvix_guest_pins', legacy);
+            localStorage.removeItem('chatora_guest_pins');
+          } catch (_) {}
+          return parsed;
+        }
       }
     } catch (error) {
       console.warn('Could not read guest pins:', error);
@@ -643,6 +660,7 @@ export default function ChatPage({
           'orvix_guest_pins',
           JSON.stringify(pinnedIds)
         );
+        localStorage.removeItem('chatora_guest_pins');
       }
     } catch (error) {
       console.warn('Could not save guest pins:', error);
@@ -652,13 +670,21 @@ export default function ChatPage({
   const getGuestChats = () => {
     try {
       if (typeof window !== 'undefined') {
-        const stored =
-          localStorage.getItem('orvix_guest_chats') ||
-          localStorage.getItem('chatora_guest_chats');
-
-        if (stored) {
-          const parsed = JSON.parse(stored);
+        const current = localStorage.getItem('orvix_guest_chats');
+        if (current) {
+          const parsed = JSON.parse(current);
           return Array.isArray(parsed) ? parsed : null;
+        }
+        const legacy = localStorage.getItem('chatora_guest_chats');
+        if (legacy) {
+          const parsed = JSON.parse(legacy);
+          if (Array.isArray(parsed)) {
+            try {
+              localStorage.setItem('orvix_guest_chats', legacy);
+              localStorage.removeItem('chatora_guest_chats');
+            } catch (_) {}
+            return parsed;
+          }
         }
       }
     } catch (error) {
@@ -682,6 +708,7 @@ export default function ChatPage({
         });
         const serialized = JSON.stringify(sanitizedChats);
         localStorage.setItem('orvix_guest_chats', serialized);
+        localStorage.removeItem('chatora_guest_chats');
       }
     } catch (error) {
       console.warn('Could not save guest chats:', error);

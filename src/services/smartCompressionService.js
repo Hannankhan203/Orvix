@@ -1,19 +1,21 @@
 /**
- * Orvix Smart Compression Service (Standalone)
+ * Orvix Smart Compression Service
  *
- * Provides safe, quality-first client-side optimization for images and PDFs:
- * - Images (PNG, JPEG, WebP): Browser-native decode/canvas optimization that preserves
- *   transparency, avoids aggressive downscaling, and protects text, diagrams, screenshots,
+ * Provides safe, quality-first client-side optimization for images, PDFs, and OpenXML documents:
+ * - Images (PNG, JPEG, WebP, GIF): Uses lossless WASM optimization (`@jsquash/oxipng` for PNG,
+ *   `@fe-daily/gifsicle-wasm-browser` Worker for static/animated GIF) and metadata/quality-guarded
+ *   Canvas optimization for JPEG/WebP (and PNG fallback), protecting text, diagrams, screenshots,
  *   and OCR readability.
  * - PDFs: Lossless structural optimization via `pdf-lib` (object streams & xref cleanup)
  *   without rasterizing pages or altering text, fonts, layout, or selectable content.
- * - Safety Gates: Skips lightweight files, animated images, unsupported formats, and
- *   encrypted/protected PDFs; enforces >= 10% storage savings; validates output signatures,
- *   dimensions, and PDF page counts; preserves MIME types and filename extensions;
- *   supports AbortSignal, timeouts, and stage callbacks; and always returns the untouched
- *   original File object on any failure, abort, timeout, or insufficient savings.
+ * - OpenXML (DOCX, PPTX, XLSX): Container DEFLATE optimization and quality-verified embedded media.
+ * - Safety Gates: Skips lightweight files, unsupported formats, and encrypted/signed files;
+ *   enforces >= 10% storage savings; validates output signatures, dimensions, and document structure;
+ *   preserves MIME types and filename extensions; supports AbortSignal, timeouts, and stage callbacks;
+ *   and always returns the untouched original File object on any failure, abort, timeout, or
+ *   insufficient savings.
  *
- * NOTE: Intentionally standalone — not wired into ChatArea, ChatPage, or upload routes yet.
+ * Integrated into upload workflows via `attachmentCompressionCoordinator.js`.
  */
 
 export const COMPRESSION_STAGES = Object.freeze({

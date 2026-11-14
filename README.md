@@ -120,7 +120,7 @@ Built as a full-stack Node.js application, Orvix combines a React 19 single-page
 ## Key Features
 
 - **Share Chat & Immutable Public Snapshots**: Share complete conversations via unique URLs with instant Copy Link, WhatsApp, and native OS share dialogs. Public visitors can view, copy, and listen read-only without accounts; authenticated users can preview and fork conversations into independent, full-featured private chats upon their first message turn ([learn more](#share-chat--conversation-collaboration)).
-- **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
+- **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmolLM2 135M, SmolLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
 - **Offline PWA App-Shell Caching**: Workbox service worker precaches application assets, WASM bundles, and offline document extractors for instant offline re-access.
 - **Client-Side Document Extraction & Semantic RAG**: Extracts and grounds text locally (and server-side) from Word (`.docx`, `.doc`), PDF (`.pdf`), PowerPoint (`.pptx`, `.ppt`), Excel (`.xlsx`, `.xls`), CSV, TSV, JSON, XML, and Markdown files, paired with client-side semantic chunking and retrieval (`semanticChunkingService.js`, `semanticRetrievalService.js`).
 - **Smart Compression Pipeline & Transparent Storage Envelopes**: Pre-upload client-side optimization for PNG, JPEG, WebP, GIF (static and animated), PDF, DOCX, PPTX, and XLSX attachments with strict quality/protection gates, plus lossless `orvix-gzip-v1` envelope compression for TXT, MD, DOC, PPT, and XLS cloud storage.
@@ -128,7 +128,7 @@ Built as a full-stack Node.js application, Orvix combines a React 19 single-page
 - **Mobile Swipe Navigation**: Natural swipe-right gesture across the main conversation area on mobile and tablet viewports (`<= 1024px`) to open the chat history sidebar, complete with safe exclusions for inputs, headers, code blocks, and iOS back-navigation edges.
 - **Voice Dictation with Whisper Refinement**: Real-time browser speech recognition rendering interim transcript snapshots as you speak, reconciled with server-side Groq Whisper Large v3 Turbo (with Gemini audio fallback) upon completion.
 - **Four Specialized Chat Modes**: Dedicated modes for **General Assistant**, **Learning** (educational callouts), **Writing** (editorial layout), and **Coding** (VS Code styling with locked 22px line heights).
-- **Multi-Model Response Alternatives**: Compare and regenerate answers across multiple AI providers (such as Gemini, Grok, and others) using `< X of Y >` model navigation without overwriting prior outputs, preserving valid response history across regenerations, retries, and prompt restoration.
+- **Multi-Model Response Alternatives**: Compare and regenerate answers across multiple AI providers (such as Gemini, Groq, and others) using `< X of Y >` model navigation without overwriting prior outputs, preserving valid response history across regenerations, retries, and prompt restoration.
 - **Global Input Auto-Focus**: Type anywhere on the page to automatically focus the composer without losing the first keystroke, protecting active text selection and shortcuts.
 - **Controlled Continuation**: Automatic segmentation of long outputs with continuation notices and an interactive composer chip (`[ → Continue response ]`).
 - **Deep Multimodal Attachments**: Drag-and-drop, clipboard paste (`Ctrl+V`), and file picker staging for documents and images with server-side Tesseract OCR and honest `NO_TEXT_DETECTED` handling.
@@ -174,10 +174,10 @@ Orvix integrates four verified Browser AI models ordered in the UI from least re
 
 | Model Option | Model Identifier | Quantization | Est. Download | Required VRAM | Context Window | Target Devices |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SmallLM2 135M (Ultra-Lightweight)** | `SmolLM2-135M-Instruct-q0f16-MLC` | 16-bit (`q0f16`) | ~270 MB | ~360 MB | 4,096 tokens | Ultra-lightweight testing, fast local execution |
-| **SmallLM2 135M (FP32 Fallback)** | `SmolLM2-135M-Instruct-q0f32-MLC` | 32-bit (`q0f32`) | ~270 MB | ~720 MB | 4,096 tokens | Devices without native `shader-f16` |
-| **SmallLM2 360M (Compact)** | `SmolLM2-360M-Instruct-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~210 MB | ~380 MB | 4,096 tokens | Laptops, integrated GPUs, low-memory devices |
-| **SmallLM2 360M (FP32 Fallback)** | `SmolLM2-360M-Instruct-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~210 MB | ~580 MB | 4,096 tokens | Devices without native `shader-f16` |
+| **SmolLM2 135M (Ultra-Lightweight)** | `SmolLM2-135M-Instruct-q0f16-MLC` | 16-bit (`q0f16`) | ~270 MB | ~360 MB | 4,096 tokens | Ultra-lightweight testing, fast local execution |
+| **SmolLM2 135M (FP32 Fallback)** | `SmolLM2-135M-Instruct-q0f32-MLC` | 32-bit (`q0f32`) | ~270 MB | ~720 MB | 4,096 tokens | Devices without native `shader-f16` |
+| **SmolLM2 360M (Compact)** | `SmolLM2-360M-Instruct-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~210 MB | ~380 MB | 4,096 tokens | Laptops, integrated GPUs, low-memory devices |
+| **SmolLM2 360M (FP32 Fallback)** | `SmolLM2-360M-Instruct-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~210 MB | ~580 MB | 4,096 tokens | Devices without native `shader-f16` |
 | **Qwen3 0.6B (Lightweight)** | `Qwen3-0.6B-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~335 MB | ~1,403 MB | 4,096 tokens | Compact modern reasoning, low-memory systems |
 | **Qwen3 0.6B (FP32 Fallback)** | `Qwen3-0.6B-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~335 MB | ~1,925 MB | 4,096 tokens | Devices without native `shader-f16` |
 | **Qwen2.5 1.5B (Standard, Default)** | `Qwen2.5-1.5B-Instruct-q4f16_1-MLC` | 4-bit (`q4f16_1`) | ~960 MB | ~1,630 MB | 4,096 tokens | Modern desktop GPUs, high-memory laptops |
@@ -199,7 +199,7 @@ When Browser AI is selected, an interactive dock (`src/components/chat/BrowserAI
 - **Download Progress**: Shows percentage (`0–100%`) and chunk download descriptions.
 - **VRAM Compilation Status**: Signals shader compilation and weight transfer into GPU memory.
 - **Interactive Controls**:
-  - **Model Selector**: Switch between SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, and Qwen2.5 1.5B.
+  - **Model Selector**: Switch between SmolLM2 135M, SmolLM2 360M, Qwen3 0.6B, and Qwen2.5 1.5B.
   - **Load Model**: Triggers on-demand initialization before typing.
   - **Cancel (`✕`)**: Halts an active download cleanly.
   - **Retry (`RotateCcw`)**: Appears on connection or initialization failures.
@@ -296,8 +296,8 @@ Follow these steps to set up and use Orvix offline:
 1. **Open the Site Online**: Navigate to Orvix in a WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+). The PWA service worker precaches the app shell automatically.
 2. **Select Browser AI**: Choose **Browser AI (WebLLM)** from the model selector dropdown in the header.
 3. **Choose Your Preferred Model**: Select one of the four integrated offline models in the status bar:
-   - **SmallLM2 135M**: Ultra-lightweight (~270 MB download, ~360 MB VRAM), fastest initialization.
-   - **SmallLM2 360M**: Compact (~210 MB download, ~380 MB VRAM), efficient everyday queries.
+   - **SmolLM2 135M**: Ultra-lightweight (~270 MB download, ~360 MB VRAM), fastest initialization.
+   - **SmolLM2 360M**: Compact (~210 MB download, ~380 MB VRAM), efficient everyday queries.
    - **Qwen3 0.6B**: Lightweight (~335 MB download, ~1,403 MB VRAM), solid modern reasoning.
    - **Qwen2.5 1.5B**: Standard default (~960 MB download, ~1,630 MB VRAM), highest quality.
 4. **Download and Initialize**: Click **Load Model** in the status bar (or submit a prompt). Wait for the progress bar to complete and display:
@@ -583,7 +583,7 @@ Every compression stage enforces strict safety gates:
 
 ### Multi-Model Alternative Responses
 
-- Click **Another Model** (`Sparkles` icon) or **Regenerate** on any assistant response to generate a fresh output as a newly appended alternative without overwriting existing answers from Gemini, Grok, or other AI models.
+- Click **Another Model** (`Sparkles` icon) or **Regenerate** on any assistant response to generate a fresh output as a newly appended alternative without overwriting existing answers from Gemini, Groq, or other AI models.
 - Navigate between all generated responses using the `< X of Y >` pager on the message card.
 - Error-recovery actions (**Retry**, **Switch Provider & Retry**, and **Restore Prompt**) preserve previously successful alternatives, while Firestore snapshot handling protects active streaming responses from stale updates.
 
@@ -746,8 +746,12 @@ Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, an
 ## Project Structure
 
 ```text
-├── api/                             # Serverless API routes (chat, config, transcribe, upload)
+├── api/                             # Serverless API routes (chat, config, health, transcribe, upload)
 ├── public/                          # Static assets, icons, manifest.webmanifest
+├── server/                          # Modular backend subsystems (serverConfig, geminiStreamHandler,
+│                                    # chatSubsystem, uploadSubsystem, uploadQuotaService,
+│                                    # directUploadTicketService, supabaseStorageService,
+│                                    # transcriptionSubsystem, voiceWebSocketSubsystem, etc.)
 ├── src/
 │   ├── components/
 │   │   ├── auth/                    # AuthScreen & Guest mode components
@@ -755,14 +759,15 @@ Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, an
 │   │   ├── layout/                  # Layout, Header, Sidebar
 │   │   ├── settings/                # SettingsModal
 │   │   └── ui/                      # Button, OrvixLogo
-│   ├── config/                      # appConfig, chatModes, aiGuidance, firebaseConfig
+│   ├── config/                      # appConfig, chatModes, aiGuidance, firebaseConfig, sampleData
 │   ├── context/                     # AuthContext, SettingsContext, SpeechContext
 │   ├── hooks/                       # useVoiceDictation, usePWAInstall
 │   ├── pages/                       # ChatPage
 │   ├── services/                    # aiRouter, webllmService, browserAiProfiles,
 │   │                                # smartCompressionService, storageEnvelopeService,
-│   │                                # attachmentCompressionCoordinator, officeDocumentExtractors,
-│   │                                # documentExtractor, browserDocumentExtractor, imageOcrService, etc.
+│   │                                # attachmentCompressionCoordinator, attachmentStorageService,
+│   │                                # officeDocumentExtractors, documentExtractor,
+│   │                                # browserDocumentExtractor, imageOcrService, etc.
 │   ├── styles/                      # Tailwind CSS v4 global stylesheet
 │   ├── utils/                       # clipboardFormatter, exportConversation, speechTextCleaner
 │   └── workers/                     # webllmWorker.js (off-thread WebGPU execution)
@@ -793,7 +798,14 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id
 CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
 
-# Firebase Authentication & Firestore (Optional)
+# Production Security & Cloud Persistence (see .env.example for all options)
+ORVIX_SIGNED_URL_SECRET=your_random_32_plus_char_signing_secret_here
+FIREBASE_PROJECT_ID=your_project_id
+FIREBASE_SERVICE_ACCOUNT=
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SECRET_KEY=your_supabase_secret_key_here
+
+# Firebase Authentication & Firestore (Optional Client Config)
 VITE_FIREBASE_API_KEY=your_firebase_api_key
 VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=your_project_id
@@ -802,7 +814,7 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
 ```
 
-*Note*: API keys are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when keys are absent.
+*Note*: API keys and Supabase/Firebase Admin secrets are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when cloud keys are absent; see `.env.example` for all supported options.
 
 ---
 
@@ -950,7 +962,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 
 - **Vulnerability / Context**: Client-side storage of image attachments and document previews in browser IndexedDB can exhaust available disk quotas (especially on mobile devices or browsers with strict per-origin limits), throwing unhandled `QuotaExceededError` exceptions that crash the client or break conversation states.
 - **Resolution**:
-  - Implemented defensive quota exhaustion detection and interceptors in `src/services/attachmentService.js`.
+  - Implemented defensive quota exhaustion detection and interceptors in `src/services/attachmentStorageService.js`.
   - Added self-healing recovery workflows that automatically purge stale cached attachments and run least-recently-used (LRU) cache evictions when storage limits are approached.
   - Provided graceful degradation to in-memory attachment blobs with clear, non-technical UI alerts informing users if storage limits prevent persistent offline caching.
 
@@ -962,11 +974,11 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
     - `server/serverConfig.ts`: Environment validation, CORS whitelist, and port management.
     - `server/serverTypes.ts`: Strongly typed interfaces and request schemas.
     - `server/diagnosticLogger.ts`: Sanitized development-safe structured logging.
-    - `server/geminiStream.ts`: Google Gen AI SDK streaming client with keepalive priming.
+    - `server/geminiStreamHandler.ts`: Google Gen AI SDK streaming client with keepalive priming.
     - `server/uploadSubsystem.ts`: In-memory Multer storage, magic-number validation, and Tesseract OCR.
     - `server/transcriptionSubsystem.ts`: Groq Whisper Large v3 Turbo transcription with fallback.
     - `server/chatSubsystem.ts`: Unified multi-provider chat routing, model fallback failover, and SSE formatting.
-  - Reduced `server.ts` to ~270 lines of clean orchestration while maintaining 100% backward compatibility with existing API contracts.
+  - Reduced `server.ts` to ~405 lines of clean orchestration while maintaining 100% backward compatibility with existing API contracts.
 
 ### ORVIX-006 — High-Efficiency Live Response Timer
 
@@ -994,9 +1006,9 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 
 ### ORVIX-009 — Centralized Gemini Model Configuration & Secondary Fallback
 
-- **Vulnerability / Context**: Google Gemini model identifier literals (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, etc.) were scattered across `appConfig.js`, `providerModelSanitizer.js`, `chatSubsystem.ts`, and `server.ts`. Additionally, transient upstream Gemini outages or model deprecation errors lacked automated secondary model fallback.
+- **Vulnerability / Context**: Google Gemini model identifier literals were previously scattered across `appConfig.js`, `providerModelSanitizer.js`, `chatSubsystem.ts`, and `server.ts`. Additionally, transient upstream Gemini outages or model deprecation errors lacked automated secondary model fallback.
 - **Resolution**:
-  - Centralized all Gemini model configuration in `src/config/appConfig.js`, establishing canonical exports: `GEMINI_PRIMARY_MODEL` (`gemini-2.5-flash`), `GEMINI_FALLBACK_MODEL` (`gemini-2.5-flash-lite`), `GEMINI_FALLBACK_CANDIDATES`, and the frozen `GEMINI_MODELS_CONFIG` object.
+  - Centralized all Gemini model configuration in `src/config/appConfig.js`, establishing canonical exports: `GEMINI_PRIMARY_MODEL` (currently `'gemini-3.8-flash'`), `GEMINI_FALLBACK_MODEL` (currently `'gemini-3.1-flash-lite'`), `GEMINI_FALLBACK_CANDIDATES`, and the frozen `GEMINI_MODELS_CONFIG` object.
   - Updated `providerModelSanitizer.js`, `server.ts`, and `server/chatSubsystem.ts` to consume the single source of truth, eliminating hardcoded model strings across the stack.
   - Configured intelligent automated fallback: when the primary model encounters transient upstream errors (such as 404 Model Not Found, 429 Rate Limit, 503 Unavailable, or 504 Deadline Exceeded), the request seamlessly fails over to the configured secondary model without dropping the connection.
   - Built strict guardrails preventing fallback on non-recoverable client errors (e.g., 400 Bad Request, 401/403 Authentication/API Key Failure) to prevent duplicate invalid requests or infinite loops.
@@ -1027,7 +1039,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 
 ### V 0.4.2 — Non-Destructive Response Regeneration & History Preservation
 - **Non-Destructive Normal Regeneration**: Normal regeneration now appends a new alternative record rather than overwriting the active response in place, keeping original and subsequent generations intact across local and Firestore persistence.
-- **Preserved Multi-Model Navigation**: Previous responses from Gemini, Grok, and other AI models remain preserved and accessible through `< X of Y >` model navigation after regenerating.
+- **Preserved Multi-Model Navigation**: Previous responses from Gemini, Groq, and other AI models remain preserved and accessible through `< X of Y >` model navigation after regenerating.
 - **Retry & Switch-Provider History Preservation**: Retry and switch-provider recovery actions append a fresh alternative when previously successful alternatives exist instead of replacing the existing assistant message.
 - **Restore Prompt History Preservation**: Restoring a prompt after a failed attempt removes or bypasses only the failed attempt and restores access to the most recent valid alternative when valid response history exists.
 - **Active Stream Snapshot Protection**: Firestore snapshot synchronization (`subscribeToChatMessages`) protects in-progress streaming assistant messages and their alternatives from being overwritten or reverted by stale snapshots during active requests.
@@ -1050,7 +1062,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Serverless In-Memory Upload Processing (ORVIX-002)**: Replaced disk-backed file storage with in-memory Multer processing and clear documentation of ephemeral storage boundaries.
 - **Strict CORS Domain Whitelisting (ORVIX-003)**: Hardened cross-origin request policies, eliminating wildcard access on credentialed and sensitive API routes.
 - **Self-Healing IndexedDB Quota Management (ORVIX-004)**: Implemented automated LRU cache eviction and in-memory fallback for browser attachment storage exhaustion.
-- **Server Architecture Modularization (ORVIX-005)**: Decoupled monolithic `server.ts` into structured modules (`serverConfig`, `geminiStream`, `uploadSubsystem`, `transcriptionSubsystem`, `chatSubsystem`).
+- **Server Architecture Modularization (ORVIX-005)**: Decoupled monolithic `server.ts` into structured modules (`serverConfig`, `geminiStreamHandler`, `uploadSubsystem`, `transcriptionSubsystem`, `chatSubsystem`).
 - **High-Efficiency Response Timer (ORVIX-006)**: Reduced streaming timer overhead by >90% through second-boundary synchronization and memoization.
 - **Clean Script Modernization (ORVIX-007)**: Removed obsolete `server.js` references from `package.json` clean script.
 - **WebGPU SwiftShader FP32 Fallback (ORVIX-008)**: Added automatic capability detection ensuring graceful fallback to FP32 models on software rasterizers lacking `shader-f16`.
@@ -1085,19 +1097,19 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **AI Model Selection Guidance UX**: Integrated concise, static informational guidance explaining characteristics and trade-offs of all AI options across Cloud AI and Browser AI. Dynamic model-specific resolution updates immediately upon switching selections in `ModelSelector` and `BrowserAIStatusBar` with accessible `aria-describedby` announcements and zero network/generation overhead.
 - **AI Provider and Model Selector Ordering**: Reordered provider and model selector options strictly in sequence from least resource-intensive to most reliable:
   - *Cloud AI Providers*: Google Gemini, Groq, OpenRouter, Cloudflare Workers AI.
-  - *Browser AI Models*: SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B (Standard Default).
+  - *Browser AI Models*: SmolLM2 135M, SmolLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B (Standard Default).
 
-### V 0.2.8 — Refined Responses and Profiling for SmallLM2 and Qwen3
-- **Refined Responses & Profiling for SmallLM2 135M, SmallLM2 360M, and Qwen3 0.6B**: Tuned response profiles, positive instruction formatting, calibrated temperatures, repetition penalties, stop tokens, and streaming sanitizers to eliminate token loops, thinking block leakage, and unprompted refusals in small parameter models while strictly preserving baseline defaults for Qwen2.5 1.5B and cloud providers.
+### V 0.2.8 — Refined Responses and Profiling for SmolLM2 and Qwen3
+- **Refined Responses & Profiling for SmolLM2 135M, SmolLM2 360M, and Qwen3 0.6B**: Tuned response profiles, positive instruction formatting, calibrated temperatures, repetition penalties, stop tokens, and streaming sanitizers to eliminate token loops, thinking block leakage, and unprompted refusals in small parameter models while strictly preserving baseline defaults for Qwen2.5 1.5B and cloud providers.
 
 ### V 0.2.7 — Qwen3 0.6B Browser AI Lightweight Model
 - **Qwen3 0.6B Browser AI Lightweight Model**: Added `Qwen3-0.6B-q4f16_1-MLC` (~335 MB download, 4,096-token context window) and its FP32 fallback `Qwen3-0.6B-q4f32_1-MLC` as a selectable offline Browser AI model with WebGPU shader compilation and cache isolation.
 
-### V 0.2.6 — SmallLM2 360M Browser AI Compact Model
-- **SmallLM2 360M Browser AI Compact Model**: Added `SmolLM2-360M-Instruct-q4f16_1-MLC` (~210 MB download, ~380 MB VRAM) and its FP32 fallback `SmolLM2-360M-Instruct-q4f32_1-MLC` as a user-selectable model under the Browser AI provider.
+### V 0.2.6 — SmolLM2 360M Browser AI Compact Model
+- **SmolLM2 360M Browser AI Compact Model**: Added `SmolLM2-360M-Instruct-q4f16_1-MLC` (~210 MB download, ~380 MB VRAM) and its FP32 fallback `SmolLM2-360M-Instruct-q4f32_1-MLC` as a user-selectable model under the Browser AI provider.
 
-### V 0.2.5 — SmallLM2 135M Browser AI Ultra-Lightweight Model
-- **SmallLM2 135M Browser AI Ultra-Lightweight Model**: Added the ultra-lightweight `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 fallback `SmolLM2-135M-Instruct-q0f32-MLC` under the Browser AI provider.
+### V 0.2.5 — SmolLM2 135M Browser AI Ultra-Lightweight Model
+- **SmolLM2 135M Browser AI Ultra-Lightweight Model**: Added the ultra-lightweight `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 fallback `SmolLM2-135M-Instruct-q0f32-MLC` under the Browser AI provider.
 
 ### V 0.2.4 — Legacy Fallback Hardening
 - **Legacy Fallback Hardening**: Hardened provider fallback normalization and legacy session handling to ensure smooth failover across supported providers.

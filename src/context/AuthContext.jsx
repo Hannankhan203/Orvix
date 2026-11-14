@@ -90,10 +90,19 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     // Check if guest mode session was active (sessionStorage or localStorage for offline reload continuity)
     try {
-      const savedGuest =
+      let savedGuest =
         sessionStorage.getItem('orvix_guest_session') ||
-        sessionStorage.getItem('chatora_guest_session') ||
         localStorage.getItem('orvix_guest_session');
+      if (!savedGuest) {
+        const legacyGuest = sessionStorage.getItem('chatora_guest_session');
+        if (legacyGuest) {
+          savedGuest = legacyGuest;
+          try {
+            sessionStorage.setItem('orvix_guest_session', legacyGuest);
+            sessionStorage.removeItem('chatora_guest_session');
+          } catch (_) {}
+        }
+      }
       if (savedGuest) {
         const parsedGuest = JSON.parse(savedGuest);
         setCurrentUser(parsedGuest);
