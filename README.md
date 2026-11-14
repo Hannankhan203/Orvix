@@ -1,8 +1,8 @@
 # Orvix
 
-**Version: V 0.4.2**
+**Version: V 0.4.3**
 
-An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side document extraction, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
+An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side and server-side document extraction (including PDF, Word, PowerPoint, and Excel), a quality-verified Smart Compression Pipeline with transparent `orvix-gzip-v1` storage envelopes, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
 
 ---
 
@@ -23,7 +23,7 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
 5. [Browser-Side Document Extraction (Offline & Local)](#browser-side-document-extraction-offline--local)
    - [Supported Offline Document Formats](#supported-offline-document-formats)
    - [Document Structure Preservation & Context Formatting](#document-structure-preservation--context-formatting)
-   - [Scanned PDF & Image OCR Boundaries](#scanned-pdf--image-ocr-boundaries)
+   - [Scanned PDF, Encrypted Office & Image OCR Boundaries](#scanned-pdf-encrypted-office--image-ocr-boundaries)
    - [IndexedDB Attachment Caching](#indexeddb-attachment-caching)
 6. [Step-by-Step Guide: Using Browser AI Offline](#step-by-step-guide-using-browser-ai-offline)
 7. [Message Copying & Dual-Format Clipboard](#message-copying--dual-format-clipboard)
@@ -60,14 +60,19 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [Supported Image Formats & Verification](#supported-image-formats--verification)
     - [Server-Side OCR Engine](#server-side-ocr-engine)
     - [Honest No-Text Handling & Preview Modal](#honest-no-text-handling--preview-modal)
-14. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
+14. [Smart Compression Pipeline](#smart-compression-pipeline)
+    - [Image Compression](#image-compression)
+    - [PDF Compression](#pdf-compression)
+    - [Office Document Compression](#office-document-compression)
+    - [Transparent Storage Compression (`orvix-gzip-v1`)](#transparent-storage-compression-orvix-gzip-v1)
+15. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
     - [Multi-Model Alternative Responses](#multi-model-alternative-responses)
     - [Automatic Chat-Input Focus](#automatic-chat-input-focus)
     - [Live Response-Time Measurement](#live-response-time-measurement)
     - [Controlled Large-Response Continuation](#controlled-large-response-continuation)
     - [Edit & Resend with Branch Truncation](#edit--resend-with-branch-truncation)
     - [Conversation Pinning & Client-Side Export](#conversation-pinning--client-side-export)
-15. [Share Chat & Conversation Collaboration](#share-chat--conversation-collaboration)
+16. [Share Chat & Conversation Collaboration](#share-chat--conversation-collaboration)
     - [Share Entire Conversations](#share-entire-conversations)
     - [Public Shared Conversation Viewer](#public-shared-conversation-viewer)
     - [Sign In and Continue](#sign-in-and-continue)
@@ -75,19 +80,20 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [Imported Chat Management](#imported-chat-management)
     - [Security and Data Isolation](#security-and-data-isolation)
     - [Persistence and Reliability](#persistence-and-reliability)
-16. [Architecture & Technology Stack](#architecture--technology-stack)
+17. [Architecture & Technology Stack](#architecture--technology-stack)
     - [Verified Platform & Device Compatibility](#verified-platform--device-compatibility)
-17. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
-18. [Project Structure](#project-structure)
-19. [Environment Variables & Configuration](#environment-variables--configuration)
-20. [Installation & Running Locally](#installation--running-locally)
-21. [Build & Deployment Instructions](#build--deployment-instructions)
+18. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
+19. [Project Structure](#project-structure)
+20. [Environment Variables & Configuration](#environment-variables--configuration)
+21. [Installation & Running Locally](#installation--running-locally)
+22. [Build & Deployment Instructions](#build--deployment-instructions)
     - [Firestore Security Rules Deployment for Share Chat](#firestore-security-rules-deployment-for-share-chat)
-22. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
+23. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
     - [Troubleshooting Gemini Timeouts & Streaming](#troubleshooting-gemini-timeouts--streaming)
-23. [Security Architecture](#security-architecture)
-24. [Current Limitations](#current-limitations)
-25. [Security, Performance & Architecture Improvements (v0.3.2)](#security-performance--architecture-improvements-v032)
+24. [Security Architecture](#security-architecture)
+25. [Verification & Security Coverage](#verification--security-coverage)
+26. [Current Limitations](#current-limitations)
+27. [Security, Performance & Architecture Improvements (v0.3.2)](#security-performance--architecture-improvements-v032)
     - [ORVIX-001 — Secure Server-Side Credential Resolution](#orvix-001--secure-server-side-credential-resolution)
     - [ORVIX-002 — Serverless-Safe File Upload Handling](#orvix-002--serverless-safe-file-upload-handling)
     - [ORVIX-003 — Strict CORS Origin Whitelisting](#orvix-003--strict-cors-origin-whitelisting)
@@ -98,8 +104,8 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [ORVIX-008 — WebGPU SwiftShader FP32 Defensive Fallback](#orvix-008--webgpu-swiftshader-fp32-defensive-fallback)
     - [ORVIX-009 — Centralized Gemini Model Configuration & Secondary Fallback](#orvix-009--centralized-gemini-model-configuration--secondary-fallback)
     - [Audit Verification Summary](#audit-verification-summary)
-26. [Version History & Release Changelog](#version-history--release-changelog)
-27. [Future Roadmap](#future-roadmap)
+28. [Version History & Release Changelog](#version-history--release-changelog)
+29. [Future Roadmap](#future-roadmap)
 
 ---
 
@@ -116,7 +122,8 @@ Built as a full-stack Node.js application, Orvix combines a React 19 single-page
 - **Share Chat & Immutable Public Snapshots**: Share complete conversations via unique URLs with instant Copy Link, WhatsApp, and native OS share dialogs. Public visitors can view, copy, and listen read-only without accounts; authenticated users can preview and fork conversations into independent, full-featured private chats upon their first message turn ([learn more](#share-chat--conversation-collaboration)).
 - **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
 - **Offline PWA App-Shell Caching**: Workbox service worker precaches application assets, WASM bundles, and offline document extractors for instant offline re-access.
-- **Client-Side Document Extraction**: Extracts and grounds text locally from Word (`.docx`), PDF (`.pdf`), PowerPoint (`.pptx`), CSV, TSV, JSON, XML, and Markdown files without cloud dependencies.
+- **Client-Side Document Extraction & Semantic RAG**: Extracts and grounds text locally (and server-side) from Word (`.docx`, `.doc`), PDF (`.pdf`), PowerPoint (`.pptx`, `.ppt`), Excel (`.xlsx`, `.xls`), CSV, TSV, JSON, XML, and Markdown files, paired with client-side semantic chunking and retrieval (`semanticChunkingService.js`, `semanticRetrievalService.js`).
+- **Smart Compression Pipeline & Transparent Storage Envelopes**: Pre-upload client-side optimization for PNG, JPEG, WebP, GIF (static and animated), PDF, DOCX, PPTX, and XLSX attachments with strict quality/protection gates, plus lossless `orvix-gzip-v1` envelope compression for TXT, MD, DOC, PPT, and XLS cloud storage.
 - **Dual-Format Table & Clipboard Copying**: Copies assistant responses as both styled `text/html` (with zebra striping and borders for Word, Docs, and Slack) and structured `text/plain` key-value records (`• Header: Value`) that never distort in messaging apps like WhatsApp or Telegram.
 - **Mobile Swipe Navigation**: Natural swipe-right gesture across the main conversation area on mobile and tablet viewports (`<= 1024px`) to open the chat history sidebar, complete with safe exclusions for inputs, headers, code blocks, and iOS back-navigation edges.
 - **Voice Dictation with Whisper Refinement**: Real-time browser speech recognition rendering interim transcript snapshots as you speak, reconciled with server-side Groq Whisper Large v3 Turbo (with Gemini audio fallback) upon completion.
@@ -140,7 +147,7 @@ Orvix features an on-device local AI engine implemented in `src/services/webllmS
 │ 1. VISITOR'S BROWSER (Main UI Thread)                                  │
 │    • React 19 UI & Message Composer                                    │
 │    • Browser AI Status Bar (progress %, memory state, model selector)  │
-│    • Client-Side Document Extractor (PDF, DOCX, PPTX, TXT, CSV, JSON)  │
+│    • Client-Side Extractor (PDF, Word, PowerPoint, Excel, Text, CSV)   │
 │                                    ↕                                   │
 │ 2. DEDICATED WEB WORKER (`src/workers/webllmWorker.js`)               │
 │    • WebWorkerMLCEngineHandler off the main thread (zero UI freeze)    │
@@ -258,20 +265,23 @@ When running offline, document processing cannot rely on backend endpoints. Orvi
 | **JSON** | `.json` | Native `JSON.parse` | Root keys count, pretty-printed JSON code block |
 | **XML** | `.xml` | Native `DOMParser` | Structural text nodes, syntax validation |
 | **Word** | `.docx` | Lazy-loaded `mammoth` | Headings, lists, bold/italics, tabular data |
+| **Word (Legacy)** | `.doc` | Lazy-loaded `cfb` + pure-JS MS-DOC parser | OLE2 compound document text & piece-table extraction |
 | **PDF** | `.pdf` | Lazy-loaded `unpdf` | Page numbers, page boundaries (`--- Page N ---`), text layer |
 | **PowerPoint** | `.pptx` | Lazy-loaded `jszip` | Slide titles, body text, slide numbers, speaker notes |
+| **PowerPoint (Legacy)** | `.ppt` | Lazy-loaded `cfb` + pure-JS MS-PPT parser | Slide text atoms, headers, and speaker notes |
+| **Excel** | `.xlsx`, `.xls` | Lazy-loaded `@e965/xlsx` + `jszip` / `cfb` | Worksheet names, cell formatting, formulas, Markdown tables |
 
 ### Document Structure Preservation & Context Formatting
 
 - **Reusing Extractions**: Documents parsed during the session are cached in memory to eliminate re-parsing overhead.
-- **Context Allocation**: Extracted text is bounded and sanitized before injection into the prompt context via `prepareDocumentContext`.
-- **Targeted Lookups**: Page markers (`--- Page N ---`) and slide markers (`--- Slide N: Title ---`, `[Speaker Notes]: ...`) enable pinpoint queries (e.g., *"Summarize slide 3 notes"*).
+- **Context Allocation & Semantic RAG**: Extracted text is bounded and sanitized before injection into the prompt context via `prepareDocumentContext`, and large extracted documents are indexed into semantic chunks (`semanticChunkingService.js`, `semanticRetrievalService.js`) across PDF pages, PPT/PPTX slides and speaker notes, DOCX/DOC sections, and XLSX/XLS sheets.
+- **Targeted Lookups**: Page markers (`--- Page N ---`), slide markers (`--- Slide N: Title ---`, `[Speaker Notes]: ...`), and worksheet Markdown tables enable pinpoint queries (e.g., *"Summarize slide 3 notes"* or *"Compare Q2 totals in Sheet 2"*).
 
-### Scanned PDF & Image OCR Boundaries
+### Scanned PDF, Encrypted Office & Image OCR Boundaries
 
 - **Scanned PDFs**: If a PDF contains only rasterized images without an embedded text layer (`nonWhitespaceChars < 10`), Orvix detects the condition and notifies the user that OCR is required.
-- **Image OCR**: Image text recognition requires the server-side Tesseract engine and is unavailable offline.
-- **Legacy Formats**: Binary legacy formats (`.doc`, `.ppt`, `.xls`) cannot be parsed by browser OpenXML engines; Orvix prompts users to re-save in modern formats (`.docx`, `.pptx`, `.csv`).
+- **Image OCR**: Image text recognition requires the server-side Tesseract engine (or cached browser OCR language packs in preview workflows) and is otherwise unavailable offline.
+- **Encrypted & Corrupted Office Files**: Both server-side (`documentExtractor.js`) and browser-side (`browserDocumentExtractor.js` via `officeDocumentExtractors.js`) parsers support legacy OLE2 binary formats (`.doc`, `.ppt`, `.xls`) as well as OpenXML (`.docx`, `.pptx`, `.xlsx`). Encrypted, password-protected (`EncryptedPackage`, `EncryptionInfo`, BIFF `FILEPASS`), or corrupted files are cleanly detected and reported with actionable errors rather than crashing extraction.
 
 ### IndexedDB Attachment Caching
 
@@ -297,7 +307,7 @@ Follow these steps to set up and use Orvix offline:
 7. **Disconnect Internet**: Turn off Wi-Fi or toggle DevTools Network to **Offline**.
 8. **Reopen Orvix Offline**: Relaunch Orvix or open the installed PWA. The app shell loads instantly from cache, and the status bar displays:
    `"Offline — Model is cached locally. Ready to run on your device via WebGPU."`
-9. **Chat and Analyze Documents Offline**: Submit prompts or attach supported files (`.pdf`, `.docx`, `.pptx`, `.txt`, `.csv`, `.json`). Responses generate locally on your GPU.
+9. **Chat and Analyze Documents Offline**: Submit prompts or attach supported files (`.pdf`, `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.txt`, `.md`, `.csv`, `.json`). Responses generate locally on your GPU.
 
 ---
 
@@ -506,10 +516,13 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 ### Supported Formats & Targeted Questioning
 
 - **PDF (`.pdf`)**: Page-by-page text layer extraction with `unpdf`.
-- **Word (`.docx`)**: Heading, list, and table extraction with `mammoth`.
-- **PowerPoint (`.pptx`)**: Slide-by-slide body text and presenter notes extraction with `jszip`.
+- **Word (`.docx`, `.doc`)**: Heading, list, and table extraction for `.docx` via `mammoth`, and OLE2 MS-DOC binary text extraction for `.doc` via `cfb` and `officeDocumentExtractors.js`.
+- **PowerPoint (`.pptx`, `.ppt`)**: Slide-by-slide body text and presenter notes extraction for `.pptx` via `jszip` and legacy `.ppt` binary streams via `cfb`.
+- **Excel Spreadsheets (`.xlsx`, `.xls`)**: Multi-sheet workbook parsing via `@e965/xlsx` (with `jszip` for `.xlsx` and `cfb` for BIFF5/BIFF8 `.xls`), rendering structured Markdown tables and worksheet metadata (bounded safely up to 50 sheets, 2,000 rows, and 64 columns per sheet).
 - **Data & Text**: CSV, TSV, JSON, XML, Markdown, and TXT.
-- **Targeted Lookups**: Inquire about specific slides or pages (e.g., *"What does slide 3 say?"*, *"Summarize page 2"*).
+- **Server-Side, Browser/Offline & Preview Support**: All supported formats extract identically across the Express backend (`src/services/documentExtractor.js`) and client-side offline workflows (`src/services/browserDocumentExtractor.js`), integrate with Semantic RAG chunking/retrieval (`semanticChunkingService.js`, `semanticRetrievalService.js`), and open in `DocumentPreviewModal` (transparently decompressing `orvix-gzip-v1` storage envelopes when needed).
+- **Encrypted & Corrupted File Handling**: Password-protected/encrypted documents (`EncryptedPackage`, `EncryptionInfo`, BIFF `FILEPASS`, or encrypted PDFs) and malformed containers return explicit, non-fatal diagnostic errors.
+- **Targeted Lookups**: Inquire about specific slides, pages, or sheets (e.g., *"What does slide 3 say?"*, *"Summarize page 2"*, *"Analyze the Revenue sheet"*).
 
 ---
 
@@ -529,6 +542,40 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 
 - If an image contains no readable text, Orvix displays `NO_TEXT_DETECTED` to prevent model hallucinations.
 - Clicking an image card opens a preview modal with two tabs: **Image View** (high-res inspection with zoom) and **Extracted Text** (clean OCR text with copy button).
+
+---
+
+## Smart Compression Pipeline
+
+Orvix includes a quality-first, client-side **Smart Compression Pipeline** (`src/services/smartCompressionService.js`, coordinated by `src/services/attachmentCompressionCoordinator.js`) alongside **Transparent Storage Compression** (`src/services/storageEnvelopeService.js`) to reduce upload bandwidth and cloud storage footprint without compromising visual fidelity, document integrity, or OCR readability.
+
+Every compression stage enforces strict safety gates:
+- **Minimum 10% Savings Gate**: Candidates saving less than `10%` (`minSavingsRatio = 0.10`) are rejected in favor of the untouched original `File`.
+- **Deduplication & Fail-Safe Fallback**: `WeakMap`/`WeakSet` caches guarantee an already-evaluated or compressed `File` is never re-compressed across retries, and any error, timeout (20s per-file default), validation failure, or `AbortSignal` cancellation falls back cleanly to the original file (or halts before upload on user abort).
+- **Binary Signature Verification**: Formats are resolved via magic bytes (`detectFormatFromSignature`) rather than trusting declared MIME types or extensions alone.
+
+### Image Compression
+
+- **PNG**: Uses `@jsquash/oxipng` WASM optimization for lossless byte reduction, with a browser Canvas fallback when WASM is unavailable or fails. Preserves exact dimensions and alpha transparency.
+- **JPEG and WebP**: First attempts lossless metadata stripping (`optimizeJpegMetadataLossless` / `optimizeWebpMetadataLossless`, removing redundant EXIF/XMP/COM markers while preserving Orientation, ICC profiles, VP8/VP8L bitstreams, ALPH, and ANIM chunks). When canvas optimization runs, pixel analysis (`detectFineDetailAndText`) applies conservative quality settings for text, screenshots, and diagrams while preserving dimensions and transparency.
+- **GIF**: Runs lossless optimization via `@fe-daily/gifsicle-wasm-browser` (`-O2`) inside a dedicated Web Worker with `AbortSignal` and timeout termination. Supports both static and animated GIFs while verifying dimensions, transparency, frame count/order, loop counts, and per-frame timing/delays.
+
+### PDF Compression
+
+- Uses `pdf-lib` (`useObjectStreams: true`) for lossless structural object-stream compaction and cross-reference cleanup without rasterizing pages or modifying selectable text, fonts, or layout.
+- **Digital Signature & Encryption Protection**: Pre-parse marker checks and parsed object inspection (`hasRawPdfProtectionMarkers`, `hasParsedPdfProtectionMarkers`) detect encrypted PDFs and digitally signed PDFs (`/Encrypt`, `/Sig`, `/ByteRange`, `SigFlags`, `Perms`) and skip them untouched so cryptographic signatures are never invalidated.
+
+### Office Document Compression
+
+- **DOCX, PPTX, and XLSX**: Recompresses OpenXML ZIP containers via `jszip` (`DEFLATE` level 9) and selectively optimizes eligible embedded PNG, JPEG, and WebP assets under `word/media/`, `ppt/media/`, and `xl/media/`.
+- **Strict Decoded-Pixel Quality Verification**: Lossy re-encoding of opaque embedded continuous-tone photos is permitted only when decoded RGBA verification passes strict fidelity thresholds (`PSNR >= 41.0 dB`, `SSIM >= 0.985`, `edgeSharpnessRetentionPct >= 95.0%`, zero alpha channel drift); lossless WebP (`VP8L`), transparent assets, text/diagrams, GIFs, and vector graphics (`SVG`, `EMF`, `WMF`) are never degraded.
+- **Structural & Protection Preservation**: Preserves XML parts, formulas (`<f>`), relationships (`_rels`), styles, speaker notes, and VBA macros (`vbaProject.bin`), and skips encrypted, signed, or write-protected packages (`EncryptedPackage`, `EncryptionInfo`, `_xmlsignatures/`, `documentProtection`, `modifyVerifier`, `workbookProtection`).
+
+### Transparent Storage Compression (`orvix-gzip-v1`)
+
+- **Supported Formats**: Losslessly compresses **TXT, MD (`.md`, `.markdown`), DOC, PPT, and XLS** attachments into a self-describing binary `orvix-gzip-v1` envelope (`ORVXENV\0` magic header) powered by `fflate` streaming `Gzip`/`Gunzip`, while keeping the user's local `File` object untouched.
+- **Integrity & Safety Bounds**: Enforces the `>= 10%` net byte savings threshold, stores and verifies IEEE 802.3 **CRC-32** and **SHA-256** digests (with a pure-JS SHA-256 fallback for HTTP/Safari 15 contexts lacking `crypto.subtle`), checks extension/MIME consistency, and enforces bounded streaming decompression (25 MB limit) to block decompression bombs and truncated/corrupted payloads.
+- **Transparent Decompression Lifecycle**: `server/uploadSubsystem.ts` and `src/services/attachmentStorageService.js` transparently decode `orvix-gzip-v1` envelopes during `/api/upload/:id/file` downloads, `DocumentPreviewModal` previews, server-side and client-side document extraction, and IndexedDB/chat rehydration—ensuring raw compressed envelopes are never exposed to users or parsers.
 
 ---
 
@@ -649,21 +696,24 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 ├───────────────────────────────────┬────────────────────────────────────┤
 │ CLIENT (React 19 SPA)             │ SERVER (Express + Vite Middleware) │
 │ • React 19, Tailwind CSS v4       │ • Express in TypeScript (server.ts)│
-│ • Lucide React, React-Markdown    │ • @google/genai TypeScript SDK     │
-│ • WebLLM Web Worker (WebGPU)      │ • Groq, OpenRouter & Cloudflare SSE│
-│ • Share Chat & Forking Service    │ • In-Memory Multer & Tesseract OCR │
-│ • Dual-Format Clipboard Formatter │ • Document Parsers (unpdf, mammoth)│
-│ • Web Speech API & Visualizer     │ • Host 0.0.0.0, Port 3000          │
-│ • IndexedDB (Attachment Caching)  │                                    │
+│ • WebLLM & WASM Workers (WebGPU)  │ • @google/genai TypeScript SDK     │
+│ • Smart Compression & orvix-gzip  │ • Groq, OpenRouter & Cloudflare SSE│
+│ • Office/PDF/RAG Extractors       │ • In-Memory Multer & Tesseract OCR │
+│ • Share Chat & Forking Service    │ • Document Parsers (unpdf, mammoth,│
+│ • Dual-Format Clipboard Formatter │   jszip, cfb, @e965/xlsx, fflate)  │
+│ • Web Speech API & AudioWorklet   │ • Supabase Storage & Signed URLs   │
+│ • IndexedDB (Attachment Caching)  │ • Host 0.0.0.0, Port 3000          │
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
-- **Frontend**: React 19, Vite 8, Tailwind CSS v4, Lucide React, `react-markdown`, `remark-gfm`.
-- **Local AI**: `@mlc-ai/web-llm` running inside `webllmWorker.js` via WebGPU.
+- **Frontend**: React 19, Vite 8 (`target: ['es2020', 'safari15']`), Tailwind CSS v4, Lucide React, `react-markdown`, `remark-gfm`.
+- **Local AI & Web Workers**: `@mlc-ai/web-llm` running inside `src/workers/webllmWorker.js` via WebGPU and WASM shaders, alongside a dedicated Web Worker for WASM GIF optimization (`@fe-daily/gifsicle-wasm-browser`) with `AbortSignal` termination so heavy processing never blocks the UI thread.
 - **Backend**: Express 4 running via `tsx` in TypeScript (`server.ts`) with Vite middlewares mounted on port 3000 (`0.0.0.0`).
 - **Cloud AI**: `@google/genai` TypeScript SDK (Gemini), REST streaming for Groq, OpenRouter, and Cloudflare Workers AI.
-- **Audio & Documents**: Web Speech API, MediaRecorder, Groq Whisper Large v3 Turbo, `unpdf`, `mammoth`, `jszip`, `tesseract.js`.
-- **Persistence & Sharing**: IndexedDB for local file blobs and offline queues, Firebase Auth, Cloud Firestore (`users/{uid}/chats` for private sync and `sharedChats/{shareId}` for immutable snapshots), and `localStorage` for Guest Mode.
+- **Smart Compression & Storage Envelopes**: `@jsquash/oxipng` (WASM lossless PNG optimization with Canvas fallback), `@fe-daily/gifsicle-wasm-browser` (Web Worker WASM GIF compression), `pdf-lib` (lossless structural PDF compaction), `jszip` (OpenXML DEFLATE container optimization), and `fflate` (streaming gzip `orvix-gzip-v1` storage envelopes with CRC-32 and SHA-256 integrity checks).
+- **Audio & Documents**: Web Speech API, MediaRecorder, `AudioWorklet` PCM streaming, Groq Whisper Large v3 Turbo, `unpdf`, `mammoth`, `jszip`, `cfb` (OLE2 `.doc`/`.ppt`/`.xls` binary parsing), `@e965/xlsx` (Excel `.xlsx`/`.xls` workbook extraction), and `tesseract.js`.
+- **Browser & iOS 15 Compatibility**: Vite builds target `['es2020', 'safari15']` with build-time regex lookbehind sanitization (`safariLookbehindPlugin`), pure-JS SHA-256 and Windows-1252/UTF-16LE decoding fallbacks for Safari 15 or non-secure HTTP contexts lacking `crypto.subtle`, and capability detection for WebGPU, WebAssembly, Web Workers, and Canvas APIs so unsupported environments fall back safely without blocking uploads or UI rendering.
+- **Persistence & Sharing**: IndexedDB for local file blobs and offline queues, Firebase Auth, Cloud Firestore (`users/{uid}/chats` for private sync and `sharedChats/{shareId}` for immutable snapshots), Supabase Storage for private attachments, and `localStorage` for Guest Mode.
 
 ### Verified Platform & Device Compatibility
 
@@ -710,7 +760,9 @@ Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, an
 │   ├── hooks/                       # useVoiceDictation, usePWAInstall
 │   ├── pages/                       # ChatPage
 │   ├── services/                    # aiRouter, webllmService, browserAiProfiles,
-│   │                                # documentExtractor, imageOcrService, etc.
+│   │                                # smartCompressionService, storageEnvelopeService,
+│   │                                # attachmentCompressionCoordinator, officeDocumentExtractors,
+│   │                                # documentExtractor, browserDocumentExtractor, imageOcrService, etc.
 │   ├── styles/                      # Tailwind CSS v4 global stylesheet
 │   ├── utils/                       # clipboardFormatter, exportConversation, speechTextCleaner
 │   └── workers/                     # webllmWorker.js (off-thread WebGPU execution)
@@ -830,6 +882,26 @@ Configured via `vercel.json` with handlers in `api/`:
 4. **Memory Management**: Object URLs are revoked upon unmounting to avoid browser memory leaks.
 5. **Microphone Release**: Audio tracks stop immediately when the tab is hidden or closed to release hardware.
 6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 950 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
+7. **Envelope Integrity & Signed Download URLs**: `orvix-gzip-v1` payloads enforce CRC-32, SHA-256, extension/MIME parity, and bounded decompression caps (25 MB). Attachment retrieval URLs (`/api/upload/:id/file`) are HMAC-SHA256 signed (`ORVIX_SIGNED_URL_SECRET`, failing closed in production when missing or weak) and enforce Firebase user ownership checks.
+
+---
+
+## Verification & Security Coverage
+
+Orvix includes automated verification suites under `scripts/` covering compression, extraction, security, and offline resilience (executed in Node.js and headless Chromium where noted; not every browser or production deployment environment is manually tested):
+
+- **Smart Compression Unit Tests (`scripts/testSmartCompression.js`)**: Validates format/signature detection, `>= 10%` savings gates, quality protection for text/diagrams, signed/encrypted PDF skipping, OpenXML protection gates, and fail-safe original-file fallback.
+- **Real Headless Chromium Compression Tests**:
+  - `scripts/testCompressionPhase1Browser.js`: Exercises `@jsquash/oxipng` WASM lossless PNG compression, pixel-exact RGBA/alpha preservation, Canvas fallback, signed PDF protection, and `AbortSignal` cancellation in Chromium.
+  - `scripts/testCompressionGifBrowser.js`: Exercises `@fe-daily/gifsicle-wasm-browser` in a real Chromium Web Worker for static and animated GIFs (frame counts, delays, loop counts, transparency, `0` RGBA diff, and cancellation).
+  - `scripts/testCompressionOpenXmlBrowser.js`: Exercises DOCX, PPTX, and XLSX optimization in Chromium, verifying formulas, macros, relationships, embedded media quality gates, and protected package skipping.
+- **Upload Integration & Envelope Integrity Tests**:
+  - `scripts/testSmartCompressionUploadIntegration.js`: Verifies end-to-end compression inside `ChatPage`/`ChatArea`, `/api/upload`, direct signed-to-Supabase uploads, deduplication, and abort safety.
+  - `scripts/testTransparentStorageCompression.js`, `scripts/testTransparentStorageCompressionBrowser.js`, & `scripts/testCompressionAuditFixes.js`: Validate `orvix-gzip-v1` encoding/decoding, CRC-32 and SHA-256 checks, decompression bomb limits, transparent retrieval/rehydration, and production `ORVIX_SIGNED_URL_SECRET` fail-closed enforcement.
+- **Office Extraction & Semantic RAG Tests**:
+  - `scripts/testOfficeDocumentExtraction.js` & `scripts/testSemanticRAG.js`: Verify `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, and `.xls` extraction across server and browser extractors, encrypted/corrupted file handling, and semantic chunking/retrieval.
+- **Authentication, Quotas & Offline Resilience**:
+  - `scripts/testAuthSecurityUpload.js`, `scripts/testUploadDailyQuota.js`, `scripts/testPktQuotaResetRegression.js`, & `scripts/auditOfflineReliability.js`: Verify Firebase ID token enforcement, per-user path ownership, atomic 5-upload/day PKT quota accounting, signed download URLs, cancellation/fallback behavior, and offline PWA/IndexedDB reliability.
 
 ---
 
@@ -946,6 +1018,12 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 ---
 
 ## Version History & Release Changelog
+
+### V 0.4.3 — Smart Compression Pipeline & Expanded Office Document Extraction
+- **Smart Compression Pipeline**: Added client-side pre-upload optimization (`smartCompressionService.js`, `attachmentCompressionCoordinator.js`) supporting lossless PNG optimization (`@jsquash/oxipng` WASM + Canvas fallback), lossless metadata stripping & quality-verified JPEG/WebP compression, lossless static/animated GIF optimization (`@fe-daily/gifsicle-wasm-browser` in a dedicated Web Worker), lossless structural PDF compaction (`pdf-lib`, skipping encrypted or digitally signed PDFs), and OpenXML container & embedded media optimization for DOCX/PPTX/XLSX (`jszip` DEFLATE level 9 with PSNR/SSIM/edge-sharpness pixel gates).
+- **Transparent Storage Compression (`orvix-gzip-v1`)**: Added `storageEnvelopeService.js` (`fflate` streaming gzip) for TXT, MD, DOC, PPT, and XLS attachments with a `>= 10%` savings threshold, CRC-32 and SHA-256 integrity verification, 25 MB decompression-bomb bounds, and transparent decompression across downloads, previews, extraction, and IndexedDB rehydration.
+- **Expanded Office Document Extraction**: Added `.doc`, `.ppt`, `.xls`, and `.xlsx` extraction across both server (`documentExtractor.js`) and browser/offline (`browserDocumentExtractor.js`) pipelines via `officeDocumentExtractors.js`, `cfb`, and `@e965/xlsx`, including Markdown spreadsheet tables, Semantic RAG integration, `DocumentPreviewModal` support, and safe encrypted/corrupted file handling.
+- **Automated Verification Suites**: Added unit, upload integration, storage envelope audit, office extraction, and real headless Chromium browser test suites under `scripts/`.
 
 ### V 0.4.2 — Non-Destructive Response Regeneration & History Preservation
 - **Non-Destructive Normal Regeneration**: Normal regeneration now appends a new alternative record rather than overwriting the active response in place, keeping original and subsequent generations intact across local and Firestore persistence.
