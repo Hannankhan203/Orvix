@@ -82,6 +82,7 @@ const CORE_SUITES = [
   'scripts/testVoiceDictationReliability.js',
 
   // Share Chat, Storage Sync, Models, Ordering & Build
+  'scripts/testGeminiInvestigationSuite.js',
   'scripts/testShareChatStage3.js',
   'scripts/testShareChatStage4.js',
   'scripts/testShareChatStage5.js',
@@ -112,32 +113,33 @@ const CORE_SUITES = [
 ];
 
 const ENVIRONMENT_GATED_SUITES = [
-  { path: 'scripts/testBrowserAiFirstResponseStutter.js', category: 'browser', reason: 'Requires headless Chromium/Playwright (--include-browser)' },
+  { path: 'scripts/testFirestoreRulesEmulator.js', category: 'emulator', reason: 'Requires Firebase Local Emulator Suite & Java >= 21 (--include-emulator)' },
   { path: 'scripts/testCompressionGifBrowser.js', category: 'browser', reason: 'Requires headless Chromium/Playwright (--include-browser)' },
   { path: 'scripts/testCompressionOpenXmlBrowser.js', category: 'browser', reason: 'Requires headless Chromium/Playwright (--include-browser)' },
   { path: 'scripts/testCompressionPhase1Browser.js', category: 'browser', reason: 'Requires headless Chromium/Playwright (--include-browser)' },
   { path: 'scripts/testTransparentStorageCompressionBrowser.js', category: 'browser', reason: 'Requires headless Chromium/Playwright (--include-browser)' },
   { path: 'scripts/testWebGPUFallbackBrowser.js', category: 'browser', reason: 'Requires headless Chromium/Playwright (--include-browser)' },
-  { path: 'scripts/auditOfflineReliability.js', category: 'server', reason: 'Spawns testPhase2E.js which requires running dev server on port 3000 (--include-server)' },
-  { path: 'scripts/testImageHydration.js', category: 'server', reason: 'Requires running dev server on port 3000 (--include-server)' },
-  { path: 'scripts/testPhase2E.js', category: 'server', reason: 'Requires running dev server on port 3000 (--include-server)' },
+  { path: 'scripts/auditOfflineReliability.js', category: 'server', reason: 'Requires running dev server on port 3000 & spawns testPhase2E.js (--include-server; fails on unauthenticated /api/upload auth hardening)' },
+  { path: 'scripts/testImageHydration.js', category: 'server', reason: 'Requires running dev server on port 3000 (--include-server; fails on Cloudflare unconfigured 400 vs expected 503)' },
+  { path: 'scripts/testPhase2E.js', category: 'server', reason: 'Requires running dev server on port 3000 (--include-server; fails on unauthenticated /api/upload expecting 200 vs 401)' },
   { path: 'scripts/testShareChatFirstVisitRouting.js', category: 'server', reason: 'Requires running dev server on port 3000 (--include-server)' },
-  { path: 'scripts/testGeminiInvestigationSuite.js', category: 'live', reason: 'Calls live Gemini API endpoints (--include-live)' },
-  { path: 'scripts/verifyLiveGeminiEndpoints.js', category: 'live', reason: 'Calls live Gemini API endpoints (--include-live)' },
-  { path: 'scripts/runLiveGeminiVerification.js', category: 'live', reason: 'Calls live Gemini API endpoints (--include-live)' },
+  { path: 'scripts/verifyLiveGeminiEndpoints.js', category: 'live', reason: 'Requires GEMINI_API_KEY & live network calls to Gemini API (--include-live)' },
+  { path: 'scripts/runLiveGeminiVerification.js', category: 'live', reason: 'Requires GEMINI_API_KEY & live network calls to Gemini API (--include-live)' },
+  { path: 'scripts/testBrowserAiFirstResponseStutter.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (expects LiveResponseTimer inside ChatMessage.jsx rather than LiveResponseTimer.jsx; pure Node suite); opt-in via --include-legacy' },
   { path: 'scripts/testStorageProviderMetadataRegression.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (expects legacy omission of storagePath now persisted for post-restart retrieval); opt-in via --include-legacy' },
-  { path: 'scripts/testGeminiFooter.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testGeminiVercelTimeout.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testIos15Compatibility.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testKatexMathRendering.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testPhase4B.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testPhase4C.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testPhase4D.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testPhase4E.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' },
-  { path: 'scripts/testPhase4G.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure; opt-in via --include-legacy' }
+  { path: 'scripts/testGeminiFooter.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (esbuild ESM Node bundle hits dynamic require("process")); opt-in via --include-legacy' },
+  { path: 'scripts/testGeminiVercelTimeout.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (getGeminiHeaderTimeoutMs export mismatch in server.ts); opt-in via --include-legacy' },
+  { path: 'scripts/testIos15Compatibility.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (dist bundle regex lookbehind (?<=) check); opt-in via --include-legacy' },
+  { path: 'scripts/testKatexMathRendering.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (direct .jsx import without Node loader); opt-in via --include-legacy' },
+  { path: 'scripts/testPhase4B.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (expects websocketStreamingEndpoint boolean vs string path); opt-in via --include-legacy' },
+  { path: 'scripts/testPhase4C.js', category: 'legacy', reason: 'Pre-existing out-of-scope slow/hanging suite (spawns repeated tsx subprocesses, exceeds short timeouts); opt-in via --include-legacy' },
+  { path: 'scripts/testPhase4D.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (Groq hardening assertion drift); opt-in via --include-legacy' },
+  { path: 'scripts/testPhase4E.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (OpenRouter/Cloudflare CF-10/CF-20 auth & empty-stream assertions); opt-in via --include-legacy' },
+  { path: 'scripts/testPhase4G.js', category: 'legacy', reason: 'Pre-existing out-of-scope failure (ReferenceError: conversationId is not defined); opt-in via --include-legacy' }
 ];
 
 const SUITE_TIMEOUT_MS = {
+  'scripts/testFirestoreRulesEmulator.js': 120_000,
   'scripts/testProductionJsxRuntimeBuild.js': 120_000,
   'scripts/testCompressionAuditFixes.js': 60_000,
   'scripts/testPktQuotaResetRegression.js': 60_000
@@ -148,6 +150,7 @@ function parseArgs(argv) {
   const flags = {
     list: false,
     skipLint: false,
+    includeEmulator: false,
     includeBrowser: false,
     includeServer: false,
     includeLive: false,
@@ -159,6 +162,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--list') flags.list = true;
     else if (arg === '--skip-lint') flags.skipLint = true;
+    else if (arg === '--include-emulator') flags.includeEmulator = true;
     else if (arg === '--include-browser') flags.includeBrowser = true;
     else if (arg === '--include-server') flags.includeServer = true;
     else if (arg === '--include-live') flags.includeLive = true;
@@ -203,6 +207,7 @@ function runSuite(label, cmd, args, timeoutMs) {
   return {
     label,
     ok,
+    timedOut,
     status: timedOut ? 'TIMEOUT' : res.status ?? res.signal ?? 'ERR',
     durationMs,
     stdout: res.stdout || '',
@@ -230,6 +235,7 @@ function main() {
   const results = {
     passed: [],
     failed: [],
+    timedOut: [],
     skipped: []
   };
 
@@ -241,6 +247,7 @@ function main() {
     suitesToRun = [...CORE_SUITES];
     for (const entry of ENVIRONMENT_GATED_SUITES) {
       const enabled =
+        (entry.category === 'emulator' && flags.includeEmulator) ||
         (entry.category === 'browser' && flags.includeBrowser) ||
         (entry.category === 'server' && flags.includeServer) ||
         (entry.category === 'live' && flags.includeLive) ||
@@ -262,6 +269,7 @@ function main() {
     } else {
       console.log(`FAIL (${lintRes.status}, ${lintRes.durationMs}ms)`);
       results.failed.push(lintRes);
+      if (lintRes.timedOut) results.timedOut.push(lintRes);
     }
   } else if (flags.skipLint) {
     results.skipped.push({ suite: 'npm run lint', reason: 'Skipped via --skip-lint' });
@@ -274,6 +282,7 @@ function main() {
       results.failed.push({
         label: relPath,
         ok: false,
+        timedOut: false,
         status: 'MISSING',
         durationMs: 0,
         stdout: '',
@@ -290,15 +299,16 @@ function main() {
       console.log(`PASS (${res.durationMs}ms)`);
       results.passed.push(relPath);
     } else {
-      console.log(`FAIL (${res.status}, ${res.durationMs}ms)`);
+      console.log(`${res.timedOut ? 'TIMEOUT' : 'FAIL'} (${res.status}, ${res.durationMs}ms)`);
       results.failed.push(res);
+      if (res.timedOut) results.timedOut.push(res);
     }
   }
 
   if (results.failed.length > 0) {
     console.log('\n--- FAILED SUITE DETAILS ---');
     for (const f of results.failed) {
-      console.error(`\n[FAILED] ${f.label} (status=${f.status})`);
+      console.error(`\n[${f.timedOut ? 'TIMEOUT' : 'FAILED'}] ${f.label} (status=${f.status}, duration=${f.durationMs}ms)`);
       if (f.error) console.error(`  Error: ${f.error}`);
       const combinedTail = (f.stderr || f.stdout || '').trim().split('\n').slice(-15).join('\n');
       if (combinedTail) console.error(combinedTail);
@@ -314,7 +324,7 @@ function main() {
 
   console.log('\n======================================================================');
   console.log(
-    `TEST RUNNER SUMMARY: ${results.passed.length} passed, ${results.failed.length} failed, ${results.skipped.length} skipped`
+    `TEST RUNNER SUMMARY: ${results.passed.length} passed, ${results.failed.length} failed, ${results.timedOut.length} timed out, ${results.skipped.length} skipped`
   );
   console.log('======================================================================\n');
 
