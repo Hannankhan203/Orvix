@@ -188,11 +188,31 @@ app.get('/sw.js', (_req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+
+  const isProduction = process.env.NODE_ENV === 'production';
   const distSw = path.resolve(__dirname, 'dist', 'sw.js');
-  if (fs.existsSync(distSw)) {
+
+  if (isProduction && fs.existsSync(distSw)) {
     return res.sendFile(distSw);
   }
-  return res.type('application/javascript').send('// Orvix service worker');
+
+  // In development (or if no production SW build exists), never serve stale Workbox precache bundles.
+  // Return a safe self-unregistering stub so previously registered SWs on localhost detach cleanly.
+  if (!isProduction) {
+    res.setHeader('Service-Worker-Allowed', '/');
+    return res.type('application/javascript; charset=utf-8').send(
+      [
+        '// Orvix development service worker stub (PWA precaching intentionally disabled in dev)',
+        "self.addEventListener('install', () => { self.skipWaiting(); });",
+        "self.addEventListener('activate', (event) => {",
+        '  event.waitUntil(self.registration.unregister().catch(() => false));',
+        '});',
+        ''
+      ].join('\n')
+    );
+  }
+
+  return res.type('application/javascript; charset=utf-8').send('// Orvix service worker');
 });
 
 app.get('/manifest.webmanifest', (_req, res) => {

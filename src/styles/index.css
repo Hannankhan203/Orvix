@@ -78,6 +78,18 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
+  /* Stacking Layers (Z-index Scale) */
+  --z-dock: 15;
+  --z-sticky: 25;
+  --z-header: 30;
+  --z-popover: 40;
+  --z-sidebar-backdrop: 45;
+  --z-sidebar: 50;
+  --z-dropdown: 60;
+  --z-modal: 100;
+  --z-modal-elevated: 120;
+  --z-toast: 200;
+
   /* Welcoming Empty State Hero Tokens */
   --welcome-logo-size: 72px;
   --welcome-logo-gap: 22px;
@@ -247,7 +259,7 @@ html, body {
   transition: transform var(--sidebar-duration) var(--sidebar-easing),
               margin-left var(--sidebar-duration) var(--sidebar-easing),
               visibility 0s linear 0s;
-  z-index: 50;
+  z-index: var(--z-sidebar);
   user-select: none;
 }
 
@@ -925,7 +937,7 @@ html, body {
    ========================================================================== */
 .orvix-header-wrapper {
   position: relative;
-  z-index: 30;
+  z-index: var(--z-header);
   width: 100%;
   background-color: var(--bg-app);
   flex-shrink: 0;
@@ -1396,7 +1408,7 @@ html, body {
   border-radius: var(--radius-lg);
   padding: 14px 16px;
   box-shadow: var(--shadow-lg);
-  z-index: 60;
+  z-index: var(--z-dropdown);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1867,7 +1879,7 @@ html, body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   padding: 6px;
-  z-index: 100;
+  z-index: var(--z-dropdown);
   display: flex;
   flex-direction: column;
   animation: modeDropdownIn 140ms ease-out;
@@ -2180,7 +2192,7 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  z-index: 25;
+  z-index: var(--z-sticky);
   width: 100%;
   flex-shrink: 0;
 }
@@ -2220,7 +2232,7 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  z-index: 25;
+  z-index: var(--z-sticky);
   width: 100%;
   flex-shrink: 0;
 }
@@ -2822,7 +2834,7 @@ html, body {
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;
-  z-index: 40;
+  z-index: var(--z-popover);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -5709,7 +5721,7 @@ html, body {
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;
-  z-index: 60;
+  z-index: var(--z-dropdown);
   min-width: 250px;
   background-color: var(--bg-card);
   border: 1px solid var(--border-medium);
@@ -6475,7 +6487,7 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  z-index: 15;
+  z-index: var(--z-dock);
   background: linear-gradient(180deg, transparent 0%, var(--bg-app) 30%);
   flex-shrink: 0;
 }
@@ -6497,7 +6509,7 @@ html, body {
   top: -46px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 25;
+  z-index: var(--z-sticky);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6628,10 +6640,10 @@ body.theme-light .composer-form:hover:not(:focus-within):not(.is-drag-over),
 }
 
 .composer-form.is-drag-over {
-  border-color: var(--accent-primary) !important;
-  border-style: dashed !important;
-  background-color: var(--bg-card-hover) !important;
-  box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-md) !important;
+  border-color: var(--accent-primary);
+  border-style: dashed;
+  background-color: var(--bg-card-hover);
+  box-shadow: 0 0 0 2px var(--accent-ring), var(--shadow-md);
 }
 
 .composer-drop-banner {
@@ -6668,8 +6680,8 @@ body.theme-light .composer-form:hover:not(:focus-within):not(.is-drag-over),
 html[data-theme="light"] .composer-form.is-drag-over,
 body.theme-light .composer-form.is-drag-over,
 [data-theme="light"] .composer-form.is-drag-over {
-  background-color: #f1f5f9 !important;
-  border-color: #2563eb !important;
+  background-color: #f1f5f9;
+  border-color: #2563eb;
 }
 
 :root[data-theme="light"] .composer-drop-banner,
@@ -7503,7 +7515,7 @@ body.theme-light .listening-text,
   border-radius: var(--radius-lg);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 1px rgba(255, 255, 255, 0.1);
   padding: 6px;
-  z-index: 60;
+  z-index: var(--z-dropdown);
   backdrop-filter: blur(16px);
   animation: slideUpFade 0.15s ease-out;
 }
@@ -7973,7 +7985,7 @@ body.theme-light .dictation-strip-btn.text-btn:hover,
     -webkit-tap-highlight-color: transparent;
   }
   .dictation-strip-btn .btn-label {
-    display: inline-block !important;
+    display: inline-block;
     white-space: nowrap;
     font-size: inherit;
     font-weight: inherit;
@@ -9332,10 +9344,10 @@ body.theme-light .notice-retry-btn,
 @media (max-width: 767px) {
   /* Toggle Views */
   .header-desktop-view {
-    display: none !important;
+    display: none;
   }
   .header-mobile-view {
-    display: flex !important;
+    display: flex;
   }
 
   /* Slide-in Navigation Drawer */
@@ -9354,8 +9366,8 @@ body.theme-light .notice-retry-btn,
     transform: translateX(0);
     visibility: visible;
     pointer-events: auto;
-    z-index: 50;
-    margin-left: 0 !important;
+    z-index: var(--z-sidebar);
+    margin-left: 0;
     will-change: transform;
     transition: transform var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear 0s;
   }
@@ -9364,7 +9376,7 @@ body.theme-light .notice-retry-btn,
     transform: translateX(-105%);
     visibility: hidden;
     pointer-events: none;
-    margin-left: 0 !important;
+    margin-left: 0;
     transition: transform var(--sidebar-duration) var(--sidebar-easing), visibility 0s linear var(--sidebar-duration);
   }
 
@@ -9392,7 +9404,7 @@ body.theme-light .notice-retry-btn,
     background-color: rgba(0, 0, 0, 0.68);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-    z-index: 45;
+    z-index: var(--z-sidebar-backdrop);
     touch-action: none;
     opacity: 0;
     visibility: hidden;
@@ -9797,7 +9809,7 @@ body.theme-light .notice-retry-btn,
 
   /* When dictation is active on mobile, prevent duplicate mic/stop button in composer and ensure clean spacing */
   .chat-composer-dock.is-recording-active .composer-mic-btn {
-    display: none !important;
+    display: none;
   }
 
   .chat-composer-dock.is-recording-active .chat-composer-inner {
@@ -10078,7 +10090,7 @@ body.theme-light .notice-retry-btn,
     white-space: nowrap;
   }
   .dictation-strip-btn .btn-label {
-    display: inline-block !important;
+    display: inline-block;
     white-space: nowrap;
     font-size: inherit;
     font-weight: inherit;
@@ -10144,7 +10156,7 @@ body.theme-light .notice-retry-btn,
   align-items: center;
   justify-content: center;
   padding: 16px;
-  z-index: 100;
+  z-index: var(--z-modal);
   animation: modalBackdropFadeIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -11030,7 +11042,7 @@ body.theme-light .notice-retry-btn,
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255, 255, 255, 0.05);
-  z-index: 100;
+  z-index: var(--z-dropdown);
   padding: 8px;
   display: flex;
   flex-direction: column;
@@ -11045,7 +11057,7 @@ body.theme-light .notice-retry-btn,
     right: 12px;
     left: auto;
     max-width: calc(100vw - 16px);
-    z-index: 100;
+    z-index: var(--z-dropdown);
   }
 }
 
@@ -11983,7 +11995,7 @@ body.theme-light .notice-retry-btn,
 .document-preview-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12729,7 +12741,7 @@ body.theme-light .notice-retry-btn,
 .share-chat-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 120;
+  z-index: var(--z-modal-elevated);
   background-color: rgba(5, 8, 15, 0.72);
   backdrop-filter: blur(6px);
   display: flex;
@@ -13253,7 +13265,7 @@ body.theme-light .notice-retry-btn,
 .shared-auth-modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 10000;
+  z-index: var(--z-toast);
   background-color: rgba(0, 0, 0, 0.72);
   backdrop-filter: blur(4px);
   display: flex;

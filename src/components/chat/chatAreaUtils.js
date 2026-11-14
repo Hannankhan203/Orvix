@@ -2,6 +2,12 @@ import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { PROVIDER_DEFAULT_MODELS } from '../../services/providerModelSanitizer.js';
 import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
 
+function findProviderOption(providerId) {
+  return Array.isArray(PROVIDER_OPTIONS)
+    ? PROVIDER_OPTIONS.find((p) => p.id === providerId) || null
+    : null;
+}
+
 export function formatGeminiModelDisplayName(modelId) {
   if (typeof modelId !== 'string' || !modelId.trim()) return '';
   return modelId
@@ -17,10 +23,40 @@ export function formatGeminiModelDisplayName(modelId) {
     .join(' ');
 }
 
+export function formatProviderModelDisplayName(modelId) {
+  if (typeof modelId !== 'string' || !modelId.trim()) return '';
+  const normalized = modelId
+    .trim()
+    .replace(/^models\//i, '')
+    .replace(/^@cf\/[^/]+\//i, '')
+    .replace(/^[^/]+\//, '');
+  return normalized
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((segment) =>
+      /^[a-z]/i.test(segment)
+        ? segment.charAt(0).toUpperCase() + segment.slice(1)
+        : segment
+    )
+    .join(' ');
+}
+
+function resolveCatalogModelLabel(providerId, fallbackLabel = 'AI Model') {
+  const option = findProviderOption(providerId);
+  const configuredModelId =
+    PROVIDER_DEFAULT_MODELS?.[providerId] || option?.defaultModel || '';
+  if (
+    option?.modelTag &&
+    (!configuredModelId || option.defaultModel === configuredModelId)
+  ) {
+    return option.modelTag;
+  }
+  const formatted = formatProviderModelDisplayName(configuredModelId);
+  return formatted || option?.modelTag || fallbackLabel;
+}
+
 export function getGeminiFootnote() {
-  const geminiOption = Array.isArray(PROVIDER_OPTIONS)
-    ? PROVIDER_OPTIONS.find((p) => p.id === 'gemini')
-    : null;
+  const geminiOption = findProviderOption('gemini');
   const configuredModelId =
     PROVIDER_DEFAULT_MODELS?.gemini || geminiOption?.defaultModel || '';
   const modelLabel =
@@ -35,29 +71,43 @@ export function getGeminiFootnote() {
 
 export function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
   if (providerId === 'webllm') {
+    const webllmOption = findProviderOption('webllm');
     const modelLabel =
-      WEBLLM_MODEL_CATALOG[webllmModelId]?.shortLabel || 'Qwen 2.5 1.5B';
+      WEBLLM_MODEL_CATALOG[webllmModelId]?.shortLabel ||
+      WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID]?.shortLabel ||
+      webllmOption?.modelTag ||
+      'Browser AI';
     return `Orvix is powered by Browser AI (WebLLM) (${modelLabel}). On-device WebGPU inference — verify important facts independently.`;
   }
   if (providerId === 'groq') {
-    return 'Orvix is powered by Groq (GPT OSS 120B). Ultra-fast inference — verify important facts independently.';
+    const groqOption = findProviderOption('groq');
+    const providerName = groqOption?.name || 'Groq';
+    const modelLabel = resolveCatalogModelLabel('groq', 'AI Model');
+    const description = groqOption?.description || 'Ultra-fast inference';
+    return `Orvix is powered by ${providerName} (${modelLabel}). ${description} — verify important facts independently.`;
   }
   if (providerId === 'openrouter') {
-    const openrouterOption = Array.isArray(PROVIDER_OPTIONS)
-      ? PROVIDER_OPTIONS.find((p) => p.id === 'openrouter')
-      : null;
+    const openrouterOption = findProviderOption('openrouter');
     const modelLabel = openrouterOption?.modelTag || 'Free Models Router';
     return `Orvix is powered by OpenRouter (${modelLabel}), dynamically selecting from available free community models.`;
   }
   if (providerId === 'cloudflare') {
-    return 'Orvix is powered by Cloudflare Workers AI (Llama 3.1 8B). Serverless inference — verify important facts independently.';
+    const cloudflareOption = findProviderOption('cloudflare');
+    const providerName = cloudflareOption?.name || 'Cloudflare Workers AI';
+    const modelLabel = resolveCatalogModelLabel('cloudflare', 'AI Model');
+    const description = cloudflareOption?.description || 'Serverless inference';
+    return `Orvix is powered by ${providerName} (${modelLabel}). ${description} — verify important facts independently.`;
   }
   if (providerId === 'gemini') {
     return getGeminiFootnote();
   }
-  const config = Array.isArray(PROVIDER_OPTIONS) ? PROVIDER_OPTIONS.find((p) => p.id === providerId) : null;
+  const config = findProviderOption(providerId);
   if (config) {
-    const model = config.defaultModel || config.modelTag || 'AI Model';
+    const model =
+      config.modelTag ||
+      formatProviderModelDisplayName(config.defaultModel) ||
+      config.defaultModel ||
+      'AI Model';
     return `Orvix is powered by ${config.name} (${model}). ${config.description || 'Inference'} — verify important facts independently.`;
   }
   return getGeminiFootnote();
