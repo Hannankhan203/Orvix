@@ -115,7 +115,7 @@ export default defineConfig(() => {
       }
     },
     optimizeDeps: {
-      exclude: ['@jsquash/oxipng'],
+      exclude: ['@jsquash/oxipng', '@fe-daily/gifsicle-wasm-browser'],
     },
     resolve: {
       alias: {

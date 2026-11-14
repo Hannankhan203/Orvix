@@ -27,8 +27,10 @@ import {
   detectFormatFromSignature,
   hasRawPdfProtectionMarkers,
   isGenericMimeType,
+  parseGifMetadata,
   parseImageHeaderInfo,
   resolveInputFormat,
+  setGifOptimizerForTesting,
   setImageCompressionAdapterForTesting,
   setPngOptimizerForTesting
 } from '../src/services/smartCompressionService.js';
@@ -290,7 +292,7 @@ async function runTests() {
     passed++;
   }
 
-  // 4. Animated images skipped (APNG, Animated WebP, Animated GIF)
+  // 4. Non-GIF animated images skipped (APNG, Animated WebP); animated GIF detector stays accurate
   {
     const apngBytes = makePngBuffer(600, 400, { animated: true, extraPaddingBytes: 95_000 });
     const apngFile = new File([apngBytes], 'anim.png', { type: 'image/png' });
@@ -306,13 +308,8 @@ async function runTests() {
     assert.strictEqual(resAwebp.compressed, false);
     assert.strictEqual(resAwebp.reason, COMPRESSION_REASONS.ANIMATED_IMAGE);
 
-    const gifBytes = Buffer.concat([makeAnimatedGifBuffer(), Buffer.alloc(90_000, 0)]);
+    const gifBytes = makeAnimatedGifBuffer();
     assert.strictEqual(detectAnimatedImage(gifBytes, 'image/gif'), true);
-    const gifFile = new File([gifBytes], 'anim.gif', { type: 'image/gif' });
-    const resGif = await compressFile(gifFile);
-    assert.strictEqual(resGif.file, gifFile);
-    assert.strictEqual(resGif.compressed, false);
-    assert.strictEqual(resGif.reason, COMPRESSION_REASONS.ANIMATED_IMAGE);
     passed++;
   }
 
@@ -953,6 +950,225 @@ async function runTests() {
     assert.strictEqual(unsignedRes.compressed, true, 'Normal unsigned PDF must still compress');
     assert.strictEqual(unsignedRes.reason, COMPRESSION_REASONS.COMPRESSED);
 
+    passed++;
+  }
+
+  // 15. Prompt 8: Lossless GIF compression validation, MIME resolution, timing/loop/transparency gates, and fallback
+  {
+    const buildStructuredGif = ({
+      w = 120,
+      h = 90,
+      delays = [12, 24],
+      disposals = [2, 1],
+      transparent = true,
+      loopCount = 4,
+      commentPadBytes = 0
+    } = {}) => {
+      const chunks = [Buffer.from('GIF89a', 'ascii')];
+      const lsd = Buffer.alloc(7);
+      lsd.writeUInt16LE(w, 0);
+      lsd.writeUInt16LE(h, 2);
+      lsd[4] = 0x80; // GCT flag + 2 colors (6 bytes)
+      chunks.push(lsd, Buffer.alloc(6, 0xff));
+
+      if (loopCount !== null) {
+        chunks.push(
+          Buffer.from([
+            0x21, 0xff, 0x0b,
+            ...Buffer.from('NETSCAPE2.0', 'ascii'),
+            0x03, 0x01, loopCount & 0xff, (loopCount >> 8) & 0xff,
+            0x00
+          ])
+        );
+      }
+
+      if (commentPadBytes > 0) {
+        chunks.push(Buffer.from([0x21, 0xfe]));
+        let remaining = commentPadBytes;
+        while (remaining > 0) {
+          const n = Math.min(255, remaining);
+          chunks.push(Buffer.from([n]), Buffer.alloc(n, 0x43));
+          remaining -= n;
+        }
+        chunks.push(Buffer.from([0x00]));
+      }
+
+      for (let i = 0; i < delays.length; i++) {
+        const gcePacked = (((disposals[i] ?? 1) & 0x07) << 2) | (transparent ? 0x01 : 0x00);
+        const d = delays[i];
+        chunks.push(Buffer.from([0x21, 0xf9, 0x04, gcePacked, d & 0xff, (d >> 8) & 0xff, 0x00, 0x00]));
+        const id = Buffer.alloc(10);
+        id[0] = 0x2c;
+        id.writeUInt16LE(w, 5);
+        id.writeUInt16LE(h, 7);
+        chunks.push(id, Buffer.from([0x02, 0x02, 0x44, 0x01, 0x00]));
+      }
+
+      chunks.push(Buffer.from([0x3b]));
+      return Buffer.concat(chunks);
+    };
+
+    const origGifBuf = buildStructuredGif({
+      w: 320,
+      h: 240,
+      delays: [10, 20, 35],
+      disposals: [2, 1, 2],
+      transparent: true,
+      loopCount: 5,
+      commentPadBytes: 110_000
+    });
+    const meta = parseGifMetadata(new Uint8Array(origGifBuf));
+    assert.strictEqual(meta.valid, true);
+    assert.strictEqual(meta.width, 320);
+    assert.strictEqual(meta.height, 240);
+    assert.strictEqual(meta.frameCount, 3);
+    assert.strictEqual(meta.loopCount, 5);
+    assert.strictEqual(meta.hasAlphaMetadata, true);
+    assert.deepStrictEqual(
+      meta.frames.map((f) => f.delayCs),
+      [10, 20, 35]
+    );
+
+    const optGifBuf = buildStructuredGif({
+      w: 320,
+      h: 240,
+      delays: [10, 20, 35],
+      disposals: [2, 1, 1],
+      transparent: true,
+      loopCount: 5,
+      commentPadBytes: 0
+    });
+
+    // A. application/octet-stream GIF resolves to image/gif and succeeds when >= 10% saved & valid
+    const octetGifFile = new File([origGifBuf], 'animation.gif', {
+      type: 'application/octet-stream',
+      lastModified: 1715555555000
+    });
+    setGifOptimizerForTesting(async () => new Uint8Array(optGifBuf));
+    const okRes = await compressFile(octetGifFile);
+    assert.strictEqual(okRes.compressed, true);
+    assert.strictEqual(okRes.reason, COMPRESSION_REASONS.COMPRESSED);
+    assert.strictEqual(okRes.file.name, 'animation.gif');
+    assert.strictEqual(okRes.file.type, 'image/gif');
+    assert.strictEqual(okRes.finalSize, optGifBuf.length);
+
+    // B. Validation rejects dropped frame
+    setGifOptimizerForTesting(async () =>
+      new Uint8Array(
+        buildStructuredGif({
+          w: 320,
+          h: 240,
+          delays: [10, 20],
+          disposals: [2, 1],
+          transparent: true,
+          loopCount: 5
+        })
+      )
+    );
+    const badFramesRes = await compressFile(octetGifFile);
+    assert.strictEqual(badFramesRes.file, octetGifFile);
+    assert.strictEqual(badFramesRes.compressed, false);
+    assert.strictEqual(badFramesRes.reason, COMPRESSION_REASONS.VALIDATION_FAILED);
+
+    // C. Validation rejects altered frame delay
+    setGifOptimizerForTesting(async () =>
+      new Uint8Array(
+        buildStructuredGif({
+          w: 320,
+          h: 240,
+          delays: [10, 25, 35],
+          disposals: [2, 1, 2],
+          transparent: true,
+          loopCount: 5
+        })
+      )
+    );
+    const badDelayRes = await compressFile(octetGifFile);
+    assert.strictEqual(badDelayRes.file, octetGifFile);
+    assert.strictEqual(badDelayRes.compressed, false);
+    assert.strictEqual(badDelayRes.reason, COMPRESSION_REASONS.VALIDATION_FAILED);
+
+    // D. Validation rejects altered loop count
+    setGifOptimizerForTesting(async () =>
+      new Uint8Array(
+        buildStructuredGif({
+          w: 320,
+          h: 240,
+          delays: [10, 20, 35],
+          disposals: [2, 1, 2],
+          transparent: true,
+          loopCount: 0
+        })
+      )
+    );
+    const badLoopRes = await compressFile(octetGifFile);
+    assert.strictEqual(badLoopRes.file, octetGifFile);
+    assert.strictEqual(badLoopRes.compressed, false);
+    assert.strictEqual(badLoopRes.reason, COMPRESSION_REASONS.VALIDATION_FAILED);
+
+    // E. Validation rejects dropped transparency in non-DOM validation
+    setGifOptimizerForTesting(async () =>
+      new Uint8Array(
+        buildStructuredGif({
+          w: 320,
+          h: 240,
+          delays: [10, 20, 35],
+          disposals: [2, 1, 2],
+          transparent: false,
+          loopCount: 5
+        })
+      )
+    );
+    const badAlphaRes = await compressFile(octetGifFile);
+    assert.strictEqual(badAlphaRes.file, octetGifFile);
+    assert.strictEqual(badAlphaRes.compressed, false);
+    assert.strictEqual(badAlphaRes.reason, COMPRESSION_REASONS.VALIDATION_FAILED);
+
+    // F. Validation rejects < 10% savings
+    setGifOptimizerForTesting(async () =>
+      new Uint8Array(
+        buildStructuredGif({
+          w: 320,
+          h: 240,
+          delays: [10, 20, 35],
+          disposals: [2, 1, 2],
+          transparent: true,
+          loopCount: 5,
+          commentPadBytes: 105_000
+        })
+      )
+    );
+    const smallSavRes = await compressFile(octetGifFile);
+    assert.strictEqual(smallSavRes.file, octetGifFile);
+    assert.strictEqual(smallSavRes.compressed, false);
+    assert.strictEqual(smallSavRes.reason, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
+
+    // G. AbortSignal and Timeout and optimizer exception all return untouched original File
+    const abortCtrl = new AbortController();
+    abortCtrl.abort();
+    const abortGifRes = await compressFile(octetGifFile, { signal: abortCtrl.signal });
+    assert.strictEqual(abortGifRes.file, octetGifFile);
+    assert.strictEqual(abortGifRes.compressed, false);
+    assert.strictEqual(abortGifRes.reason, COMPRESSION_REASONS.ABORTED);
+
+    setGifOptimizerForTesting(async () => {
+      await new Promise((r) => setTimeout(r, 150));
+      return new Uint8Array(optGifBuf);
+    });
+    const timeoutGifRes = await compressFile(octetGifFile, { timeoutMs: 20 });
+    assert.strictEqual(timeoutGifRes.file, octetGifFile);
+    assert.strictEqual(timeoutGifRes.compressed, false);
+    assert.strictEqual(timeoutGifRes.reason, COMPRESSION_REASONS.TIMEOUT);
+
+    setGifOptimizerForTesting(async () => {
+      throw new Error('Simulated gifsicle crash');
+    });
+    const errGifRes = await compressFile(octetGifFile);
+    assert.strictEqual(errGifRes.file, octetGifFile);
+    assert.strictEqual(errGifRes.compressed, false);
+    assert.strictEqual(errGifRes.reason, COMPRESSION_REASONS.ERROR);
+
+    setGifOptimizerForTesting(null);
     passed++;
   }
 

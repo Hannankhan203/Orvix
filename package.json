@@ -35,6 +35,7 @@
     "test": "npm run lint && node scripts/testDirectBase64ImageQuotaBypassRegression.js && node scripts/testWebLLMQuotaBypassRegression.js && node scripts/testServerlessDirectUploadDurable.js && node scripts/testDirectSupabaseUpload.js && node scripts/testWebSocketVoiceStreaming.js && node scripts/testMultilingualOcrPacks.js && node scripts/testSemanticRAG.js && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMultiTabConversationSync.js && node scripts/testMessageAlignmentOrdering.js && node scripts/testStoragePaginationReliability.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js && node scripts/testLiveResponseTimerOptimization.js && node scripts/testSupabaseConversationDeletionLifecycle.js && node scripts/testEditResendAttachmentCleanup.js && node scripts/testStorageProviderMetadataRegression.js && node scripts/testPrematureLocalAttachmentDeletion.js && node scripts/testOrphanedStagingUploadsRegression.js && node scripts/testSupabaseUploadFailureRegression.js && node scripts/testUploadDailyQuota.js"
   },
   "dependencies": {
+    "@fe-daily/gifsicle-wasm-browser": "^1.5.23",
     "@google/genai": "^2.32.0",
     "@jsquash/oxipng": "^2.3.0",
     "@mlc-ai/web-llm": "0.2.86",

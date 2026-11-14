@@ -55,7 +55,12 @@ export const SMART_COMPRESSION_DEFAULTS = Object.freeze({
   WEBP_TEXT_QUALITY: 0.92
 });
 
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif'
+]);
 const SUPPORTED_PDF_MIME_TYPE = 'application/pdf';
 const GENERIC_MIME_TYPES = new Set([
   'application/octet-stream',
@@ -78,11 +83,13 @@ const MIME_TO_EXTENSIONS = Object.freeze({
   'image/png': ['.png'],
   'image/jpeg': ['.jpg', '.jpeg'],
   'image/webp': ['.webp'],
+  'image/gif': ['.gif'],
   'application/pdf': ['.pdf']
 });
 
 let customImageAdapterForTesting = null;
 let customPngOptimizerForTesting = null;
+let customGifOptimizerForTesting = null;
 
 /**
  * Allows unit tests running outside a full browser DOM (e.g. Node.js) to inject
@@ -100,6 +107,15 @@ export function setImageCompressionAdapterForTesting(adapter) {
  */
 export function setPngOptimizerForTesting(optimizer) {
   customPngOptimizerForTesting = typeof optimizer === 'function' ? optimizer : null;
+}
+
+/**
+ * Allows automated tests to inject or override the lossless GIF optimizer
+ * (e.g. to verify validation gates, timeout, or safe original-file fallback).
+ * @param {((bytes: Uint8Array, options?: Object) => Promise<Uint8Array|ArrayBuffer>)|null} optimizer
+ */
+export function setGifOptimizerForTesting(optimizer) {
+  customGifOptimizerForTesting = typeof optimizer === 'function' ? optimizer : null;
 }
 
 function readUint16BE(bytes, offset) {
@@ -412,7 +428,211 @@ export function parseImageHeaderInfo(bytes, mimeType) {
     };
   }
 
+  if (mimeType === 'image/gif') {
+    const gifMeta = parseGifMetadata(bytes);
+    return {
+      valid: gifMeta.valid,
+      width: gifMeta.width,
+      height: gifMeta.height,
+      hasAlphaMetadata: gifMeta.hasAlphaMetadata
+    };
+  }
+
   return { valid: false, width: 0, height: 0 };
+}
+
+/**
+ * Parses GIF87a/GIF89a binary container structure:
+ * - Logical screen dimensions, version, GCT size
+ * - Every frame descriptor & Graphic Control Extension (delayCs, disposalMethod, transparency)
+ * - NETSCAPE2.0 / ANIMEXTS1.0 animation loop count
+ * - Structural completeness and trailer (`0x3B`) termination
+ * @param {Uint8Array} bytes
+ */
+export function parseGifMetadata(bytes) {
+  const empty = {
+    valid: false,
+    width: 0,
+    height: 0,
+    frameCount: 0,
+    frames: [],
+    loopCount: null,
+    hasLoopExtension: false,
+    hasAlphaMetadata: false,
+    headerVersion: ''
+  };
+
+  if (!(bytes instanceof Uint8Array) || bytes.length < 14) {
+    return empty;
+  }
+
+  if (detectFormatFromSignature(bytes) !== 'image/gif') {
+    return empty;
+  }
+
+  const headerVersion = readAscii(bytes, 0, 6);
+  const width = readUint16LE(bytes, 6);
+  const height = readUint16LE(bytes, 8);
+  if (width <= 0 || height <= 0) {
+    return empty;
+  }
+
+  const packed = bytes[10];
+  let offset = 13;
+  if ((packed & 0x80) !== 0) {
+    const gctSize = 3 * (1 << ((packed & 0x07) + 1));
+    if (offset + gctSize > bytes.length) {
+      return empty;
+    }
+    offset += gctSize;
+  }
+
+  let pendingGce = null;
+  let loopCount = null;
+  let hasLoopExtension = false;
+  let hasTrailer = false;
+  let truncated = false;
+  const frames = [];
+
+  while (offset < bytes.length) {
+    const introducer = bytes[offset++];
+
+    if (introducer === 0x3b) {
+      hasTrailer = true;
+      break;
+    }
+
+    if (introducer === 0x21) {
+      if (offset >= bytes.length) {
+        truncated = true;
+        break;
+      }
+      const label = bytes[offset++];
+      const subBlocks = [];
+
+      while (true) {
+        if (offset >= bytes.length) {
+          truncated = true;
+          break;
+        }
+        const subLen = bytes[offset++];
+        if (subLen === 0) break;
+        if (offset + subLen > bytes.length) {
+          truncated = true;
+          break;
+        }
+        subBlocks.push(bytes.subarray(offset, offset + subLen));
+        offset += subLen;
+      }
+      if (truncated) break;
+
+      if (label === 0xf9 && subBlocks.length > 0 && subBlocks[0].length >= 4) {
+        const gceData = subBlocks[0];
+        const gcePacked = gceData[0];
+        pendingGce = {
+          disposalMethod: (gcePacked >> 2) & 0x07,
+          hasTransparency: (gcePacked & 0x01) !== 0,
+          delayCs: readUint16LE(gceData, 1),
+          transparentColorIndex: gceData[3]
+        };
+      } else if (label === 0xff && subBlocks.length >= 2 && subBlocks[0].length >= 11) {
+        const appId = readAscii(subBlocks[0], 0, 11);
+        if (
+          (appId === 'NETSCAPE2.0' || appId === 'ANIMEXTS1.0') &&
+          subBlocks[1].length >= 3 &&
+          subBlocks[1][0] === 0x01
+        ) {
+          hasLoopExtension = true;
+          loopCount = readUint16LE(subBlocks[1], 1);
+        }
+      }
+      continue;
+    }
+
+    if (introducer === 0x2c) {
+      if (offset + 9 > bytes.length) {
+        truncated = true;
+        break;
+      }
+      const left = readUint16LE(bytes, offset);
+      const top = readUint16LE(bytes, offset + 2);
+      const frameWidth = readUint16LE(bytes, offset + 4);
+      const frameHeight = readUint16LE(bytes, offset + 6);
+      const localPacked = bytes[offset + 8];
+      offset += 9;
+
+      if (frameWidth <= 0 || frameHeight <= 0) {
+        truncated = true;
+        break;
+      }
+
+      const hasLocalColorTable = (localPacked & 0x80) !== 0;
+      if (hasLocalColorTable) {
+        const lctSize = 3 * (1 << ((localPacked & 0x07) + 1));
+        if (offset + lctSize > bytes.length) {
+          truncated = true;
+          break;
+        }
+        offset += lctSize;
+      }
+
+      if (offset >= bytes.length) {
+        truncated = true;
+        break;
+      }
+      const lzwMinCodeSize = bytes[offset++];
+      if (lzwMinCodeSize < 2 || lzwMinCodeSize > 11) {
+        truncated = true;
+        break;
+      }
+
+      while (true) {
+        if (offset >= bytes.length) {
+          truncated = true;
+          break;
+        }
+        const subLen = bytes[offset++];
+        if (subLen === 0) break;
+        if (offset + subLen > bytes.length) {
+          truncated = true;
+          break;
+        }
+        offset += subLen;
+      }
+      if (truncated) break;
+
+      frames.push({
+        left,
+        top,
+        width: frameWidth,
+        height: frameHeight,
+        delayCs: pendingGce ? pendingGce.delayCs : 0,
+        disposalMethod: pendingGce ? pendingGce.disposalMethod : 0,
+        hasTransparency: pendingGce ? pendingGce.hasTransparency : false,
+        transparentColorIndex: pendingGce ? pendingGce.transparentColorIndex : 0,
+        hasLocalColorTable
+      });
+      pendingGce = null;
+      continue;
+    }
+
+    // Any unexpected block introducer before trailer indicates corrupt/malformed stream
+    truncated = true;
+    break;
+  }
+
+  const valid = !truncated && hasTrailer && frames.length >= 1;
+  return {
+    valid,
+    width,
+    height,
+    frameCount: frames.length,
+    frames,
+    loopCount,
+    hasLoopExtension,
+    hasAlphaMetadata: frames.some((f) => f.hasTransparency),
+    headerVersion
+  };
 }
 
 /**
@@ -945,14 +1165,6 @@ export function resolveInputFormat(file, inputBytes) {
   const extMime = ext ? EXTENSION_TO_MIME[ext] || '' : '';
   const sigMime = detectFormatFromSignature(inputBytes);
 
-  // If binary signature is recognized as GIF, report GIF so animated check / skip runs accurately
-  if (sigMime === 'image/gif') {
-    if (ext && ext !== '.gif') {
-      return { ok: false, mimeType: extMime || declaredMime || 'image/gif', sigMime, mismatch: true };
-    }
-    return { ok: false, mimeType: 'image/gif', sigMime };
-  }
-
   const targetMime = declaredMime || extMime || sigMime || '';
   if (!targetMime) {
     return { ok: false, mimeType: '', sigMime };
@@ -1125,6 +1337,498 @@ async function verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHea
   }
 
   return true;
+}
+
+/**
+ * Losslessly optimizes static or animated GIF bytes using `@fe-daily/gifsicle-wasm-browser`
+ * inside a dedicated Web Worker (with immediate AbortSignal & timeout termination),
+ * or an injected test optimizer in Node tests.
+ */
+async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeoutMs }) {
+  const command = ['-O2 --no-warnings input.gif -o /out/output.gif'];
+
+  if (customGifOptimizerForTesting) {
+    const out = await runWithCancellation(
+      () => customGifOptimizerForTesting(inputBytes, { command }),
+      { signal, deadlineAt, timeoutMs }
+    );
+    return out instanceof Uint8Array ? out : new Uint8Array(out);
+  }
+
+  if (typeof Worker === 'undefined') {
+    const envErr = new Error('Web Worker runtime unavailable for WASM GIF optimization');
+    envErr.code = 'UNSUPPORTED_ENVIRONMENT';
+    throw envErr;
+  }
+
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+
+  let workerUrl = '';
+  try {
+    const workerUrlMod = await runWithCancellation(
+      () => import('@fe-daily/gifsicle-wasm-browser/worker?url'),
+      { signal, deadlineAt, timeoutMs }
+    );
+    workerUrl = workerUrlMod?.default || '';
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+      throw err;
+    }
+  }
+
+  // Copy slice so transferring buffer to Worker never mutates or detaches caller's bytes
+  const transferBuffer = inputBytes.buffer.slice(
+    inputBytes.byteOffset,
+    inputBytes.byteOffset + inputBytes.byteLength
+  );
+
+  if (!workerUrl) {
+    const gifsicleMod = await runWithCancellation(() => import('@fe-daily/gifsicle-wasm-browser'), {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+    const run = gifsicleMod?.run || gifsicleMod?.default?.run;
+    if (typeof run !== 'function') {
+      throw new Error('@fe-daily/gifsicle-wasm-browser run function is unavailable');
+    }
+    const remainingMs = Math.max(1, deadlineAt - Date.now());
+    const files = await runWithCancellation(
+      () =>
+        run({
+          input: [{ name: 'input.gif', file: transferBuffer }],
+          command,
+          isStrict: false,
+          timeoutMs: remainingMs
+        }),
+      { signal, deadlineAt, timeoutMs }
+    );
+    const outFile = Array.isArray(files) ? files[0] : null;
+    if (!outFile || typeof outFile.arrayBuffer !== 'function') {
+      throw new Error('gifsicle returned no output file');
+    }
+    const outBuf = await runWithCancellation(() => outFile.arrayBuffer(), {
+      signal,
+      deadlineAt,
+      timeoutMs
+    });
+    return new Uint8Array(outBuf);
+  }
+
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw createTimeoutError(timeoutMs);
+  }
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let timerId = null;
+    let onAbort = null;
+    let worker = null;
+
+    const cleanup = () => {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+        onAbort = null;
+      }
+      if (worker) {
+        try {
+          worker.terminate();
+        } catch (_) {}
+        worker = null;
+      }
+    };
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    try {
+      worker = new Worker(workerUrl);
+    } catch (err) {
+      fail(err);
+      return;
+    }
+
+    timerId = setTimeout(() => {
+      fail(createTimeoutError(timeoutMs));
+    }, remainingMs);
+
+    if (signal) {
+      onAbort = () => fail(createAbortError());
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    worker.onmessage = (event) => {
+      if (settled) return;
+      const payload = event?.data;
+      if (!payload?.success || !Array.isArray(payload.files) || payload.files.length === 0) {
+        fail(new Error(payload?.error || 'gifsicle worker produced no output'));
+        return;
+      }
+      const outEntry =
+        payload.files.find((f) => typeof f?.name === 'string' && f.name.toLowerCase().endsWith('.gif')) ||
+        payload.files[0];
+      const view = outEntry?.file;
+      if (!(view instanceof Uint8Array) || view.byteLength === 0) {
+        fail(new Error('gifsicle worker returned invalid GIF bytes'));
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)));
+    };
+
+    worker.onerror = (event) => {
+      fail(event?.error || new Error(event?.message || 'gifsicle worker error'));
+    };
+
+    try {
+      worker.postMessage(
+        {
+          data: [{ name: 'input.gif', file: transferBuffer }],
+          command,
+          folder: [],
+          isStrict: false
+        },
+        [transferBuffer]
+      );
+    } catch (err) {
+      fail(err);
+    }
+  });
+}
+
+/**
+ * Verifies decoded GIF dimensions, transparency parity, and multi-frame WebCodecs integrity
+ * in browser environments without failing when ImageDecoder is absent (e.g., iOS 15 Safari).
+ */
+async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signal, deadlineAt, timeoutMs }) {
+  const canDecodeBitmap = typeof createImageBitmap === 'function';
+  const canUseImage =
+    typeof Image !== 'undefined' &&
+    typeof URL !== 'undefined' &&
+    typeof URL.createObjectURL === 'function';
+
+  if (canDecodeBitmap || canUseImage) {
+    const decodeFirstFrame = async (bytes, checkAlphaPixels) => {
+      const blob = new Blob([bytes], { type: 'image/gif' });
+      let bitmap = null;
+      let objectUrl = null;
+      try {
+        let source;
+        let width;
+        let height;
+        if (canDecodeBitmap) {
+          bitmap = await createImageBitmap(blob);
+          source = bitmap;
+          width = bitmap.width;
+          height = bitmap.height;
+        } else {
+          objectUrl = URL.createObjectURL(blob);
+          const img = await new Promise((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error('GIF decode failed'));
+            el.src = objectUrl;
+          });
+          source = img;
+          width = img.naturalWidth || img.width;
+          height = img.naturalHeight || img.height;
+        }
+
+        let hasTransparentPixels = false;
+        if (checkAlphaPixels) {
+          const hasCanvas =
+            typeof OffscreenCanvas !== 'undefined' ||
+            (typeof document !== 'undefined' && typeof document.createElement === 'function');
+          if (hasCanvas) {
+            const canvas =
+              typeof OffscreenCanvas !== 'undefined'
+                ? new OffscreenCanvas(width, height)
+                : document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true });
+            if (ctx) {
+              ctx.clearRect(0, 0, width, height);
+              ctx.drawImage(source, 0, 0, width, height);
+              try {
+                const imgData = ctx.getImageData(0, 0, width, height);
+                hasTransparentPixels = analyzeImagePixels(imgData.data, width, height).hasTransparentPixels;
+              } catch (_) {
+                hasTransparentPixels = false;
+              }
+            }
+          }
+        }
+
+        return { width, height, hasTransparentPixels };
+      } finally {
+        try {
+          bitmap?.close?.();
+        } catch (_) {}
+        if (objectUrl) {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch (_) {}
+        }
+      }
+    };
+
+    const outDecoded = await runWithCancellation(
+      () => decodeFirstFrame(outBytes, Boolean(inputMeta.hasAlphaMetadata)),
+      { signal, deadlineAt, timeoutMs }
+    );
+    if (outDecoded.width !== inputMeta.width || outDecoded.height !== inputMeta.height) {
+      return false;
+    }
+    if (inputMeta.hasAlphaMetadata && !outMeta.hasAlphaMetadata) {
+      const origDecoded = await runWithCancellation(() => decodeFirstFrame(inputBytes, true), {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+      if (origDecoded.hasTransparentPixels && !outDecoded.hasTransparentPixels) {
+        return false;
+      }
+    }
+  }
+
+  // If browser exposes WebCodecs ImageDecoder, verify full track metadata and frame decodability
+  if (typeof ImageDecoder === 'function' && typeof ImageDecoder.isTypeSupported === 'function') {
+    let supported = false;
+    try {
+      supported = await runWithCancellation(() => ImageDecoder.isTypeSupported('image/gif'), {
+        signal,
+        deadlineAt,
+        timeoutMs
+      });
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+      supported = false;
+    }
+
+    if (supported) {
+      let outDecoder = null;
+      try {
+        outDecoder = new ImageDecoder({ data: outBytes, type: 'image/gif' });
+        await runWithCancellation(() => outDecoder.tracks.ready, { signal, deadlineAt, timeoutMs });
+        const track = outDecoder.tracks.selectedTrack;
+        if (track && track.frameCount !== inputMeta.frameCount) {
+          return false;
+        }
+        if (
+          inputMeta.hasLoopExtension &&
+          typeof track?.repetitionCount === 'number' &&
+          Number.isFinite(track.repetitionCount)
+        ) {
+          const expectedReps = inputMeta.loopCount === 0 ? Infinity : inputMeta.loopCount;
+          if (track.repetitionCount !== expectedReps && inputMeta.loopCount !== 0) {
+            return false;
+          }
+        }
+        // Decode first and last frame to verify image bitstream integrity
+        const indicesToVerify = inputMeta.frameCount > 1 ? [0, inputMeta.frameCount - 1] : [0];
+        for (const frameIndex of indicesToVerify) {
+          const decoded = await runWithCancellation(() => outDecoder.decode({ frameIndex }), {
+            signal,
+            deadlineAt,
+            timeoutMs
+          });
+          const frameW = decoded?.image?.displayWidth || decoded?.image?.codedWidth || 0;
+          const frameH = decoded?.image?.displayHeight || decoded?.image?.codedHeight || 0;
+          try {
+            decoded?.image?.close?.();
+          } catch (_) {}
+          if (frameW !== inputMeta.width || frameH !== inputMeta.height) {
+            return false;
+          }
+        }
+      } catch (err) {
+        if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+        return false;
+      } finally {
+        try {
+          outDecoder?.close?.();
+        } catch (_) {}
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Validates that a candidate optimized GIF strictly preserves dimensions, frame count/order,
+ * frame delays, animation loop count, transparency, valid disposal methods, and decodability.
+ */
+async function validateOptimizedGif(inputBytes, outBytes, inputMeta, ctx) {
+  if (!(outBytes instanceof Uint8Array) || outBytes.byteLength === 0) {
+    return { valid: false };
+  }
+  if (detectFormatFromSignature(outBytes) !== 'image/gif') {
+    return { valid: false };
+  }
+
+  const outMeta = parseGifMetadata(outBytes);
+  if (!outMeta.valid) {
+    return { valid: false };
+  }
+
+  if (outMeta.width !== inputMeta.width || outMeta.height !== inputMeta.height) {
+    return { valid: false };
+  }
+
+  if (outMeta.frameCount !== inputMeta.frameCount || outMeta.frameCount <= 0) {
+    return { valid: false };
+  }
+
+  // Loop count parity (handles null vs 0 infinite vs finite N)
+  if (inputMeta.hasLoopExtension !== outMeta.hasLoopExtension || inputMeta.loopCount !== outMeta.loopCount) {
+    return { valid: false };
+  }
+
+  // Strict per-frame timing & valid disposal check in exact frame order
+  for (let i = 0; i < inputMeta.frameCount; i++) {
+    const inFrame = inputMeta.frames[i];
+    const outFrame = outMeta.frames[i];
+    if (!inFrame || !outFrame) {
+      return { valid: false };
+    }
+    if (outFrame.delayCs !== inFrame.delayCs) {
+      return { valid: false };
+    }
+    if (outFrame.disposalMethod < 0 || outFrame.disposalMethod > 3) {
+      return { valid: false };
+    }
+  }
+
+  // Static GIF transparency parity (when no browser pixel verifier runs, metadata must match;
+  // in browser runtimes verifyGifDecode also checks actual transparent pixels)
+  const hasDomDecode =
+    typeof createImageBitmap === 'function' ||
+    (typeof Image !== 'undefined' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function');
+  if (inputMeta.hasAlphaMetadata && !outMeta.hasAlphaMetadata && !hasDomDecode) {
+    return { valid: false };
+  }
+
+  const decodeOk = await verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, ctx);
+  if (!decodeOk) {
+    return { valid: false };
+  }
+
+  return { valid: true, outMeta };
+}
+
+/**
+ * Losslessly optimizes static and animated GIF files via WASM gifsicle (`-O2`),
+ * preserving frame count, frame order, frame delays, loop count, transparency,
+ * dimensions, and visual content, and returning the untouched original File on any
+ * error, timeout, cancellation, validation failure, or < 10% byte savings.
+ */
+async function optimizeGifFile(file, inputBytes, _options, ctx) {
+  const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
+
+  const inputMeta = parseGifMetadata(inputBytes);
+  if (!inputMeta.valid) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    });
+    return buildResult(
+      file,
+      false,
+      file.size,
+      file.size,
+      COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
+    );
+  }
+
+  emitStage(onStage, COMPRESSION_STAGES.OPTIMIZING, {
+    fileName: file.name,
+    mimeType: 'image/gif',
+    originalSize: file.size,
+    optimizer: 'gifsicle',
+    frameCount: inputMeta.frameCount
+  });
+
+  let outBytes;
+  try {
+    outBytes = await runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeoutMs });
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || signal?.aborted) {
+      throw err;
+    }
+    const reason =
+      err?.code === 'UNSUPPORTED_ENVIRONMENT'
+        ? COMPRESSION_REASONS.UNSUPPORTED_ENVIRONMENT
+        : COMPRESSION_REASONS.ERROR;
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason
+    });
+    return buildResult(file, false, file.size, file.size, reason);
+  }
+
+  emitStage(onStage, COMPRESSION_STAGES.VALIDATING, {
+    fileName: file.name,
+    mimeType: 'image/gif',
+    originalSize: file.size,
+    candidateSize: outBytes?.byteLength || 0
+  });
+
+  const validation = await validateOptimizedGif(inputBytes, outBytes, inputMeta, {
+    signal,
+    deadlineAt,
+    timeoutMs
+  });
+  if (!validation.valid) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.VALIDATION_FAILED
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.VALIDATION_FAILED);
+  }
+
+  const encodedSize = outBytes.byteLength;
+  const savingsRatio = encodedSize > 0 ? (file.size - encodedSize) / file.size : 0;
+  if (!encodedSize || encodedSize >= file.size || savingsRatio < minSavingsRatio) {
+    emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
+      fileName: file.name,
+      reason: COMPRESSION_REASONS.INSUFFICIENT_SAVINGS
+    });
+    return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
+  }
+
+  const compressedFile = new File([outBytes], file.name, {
+    type: 'image/gif',
+    lastModified: file.lastModified
+  });
+
+  emitStage(onStage, COMPRESSION_STAGES.COMPLETE, {
+    fileName: compressedFile.name,
+    mimeType: 'image/gif',
+    originalSize: file.size,
+    finalSize: compressedFile.size
+  });
+
+  return buildResult(
+    compressedFile,
+    true,
+    file.size,
+    compressedFile.size,
+    COMPRESSION_REASONS.COMPRESSED
+  );
 }
 
 /**
@@ -1611,8 +2315,7 @@ export async function compressFile(file, options = {}) {
     if (
       candidateMime &&
       !SUPPORTED_IMAGE_MIME_TYPES.has(candidateMime) &&
-      candidateMime !== SUPPORTED_PDF_MIME_TYPE &&
-      candidateMime !== 'image/gif'
+      candidateMime !== SUPPORTED_PDF_MIME_TYPE
     ) {
       emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
         fileName: file.name,
@@ -1666,17 +2369,6 @@ export async function compressFile(file, options = {}) {
     // Resolve and verify matching MIME, extension, and binary signature
     const formatInfo = resolveInputFormat(file, inputBytes);
 
-    if (formatInfo.mimeType === 'image/gif') {
-      const gifReason = detectAnimatedImage(inputBytes, 'image/gif')
-        ? COMPRESSION_REASONS.ANIMATED_IMAGE
-        : COMPRESSION_REASONS.UNSUPPORTED_FORMAT;
-      emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
-        fileName: file.name,
-        reason: gifReason
-      });
-      return buildResult(file, false, originalSize, originalSize, gifReason);
-    }
-
     if (!formatInfo.ok) {
       const reason = formatInfo.mismatch
         ? COMPRESSION_REASONS.CORRUPTED_OR_UNREADABLE
@@ -1715,6 +2407,10 @@ export async function compressFile(file, options = {}) {
 
     if (formatInfo.mimeType === SUPPORTED_PDF_MIME_TYPE) {
       return await optimizePdfFile(file, inputBytes, options, ctx);
+    }
+
+    if (formatInfo.mimeType === 'image/gif') {
+      return await optimizeGifFile(file, inputBytes, options, ctx);
     }
 
     if (SUPPORTED_IMAGE_MIME_TYPES.has(formatInfo.mimeType)) {
