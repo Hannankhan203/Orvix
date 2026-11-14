@@ -160,12 +160,12 @@ await runTest('Vercel production: /api/upload still fails closed without ORVIX_S
 // ---------------------------------------------------------------------------
 // 3. CJS bundling compatibility (import.meta.url guarded)
 // ---------------------------------------------------------------------------
-await runTest('esbuild --format=cjs bundle of api/config.ts and api/upload.ts runs without import.meta.url ERR_INVALID_ARG_TYPE', async () => {
+await runTest('esbuild --format=cjs bundle of all 5 Vercel api/*.ts entrypoints runs without import.meta.url ERR_INVALID_ARG_TYPE', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orvix-cjs-test-'));
   const esbuildBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'esbuild');
 
   try {
-    for (const entry of ['api/config.ts', 'api/upload.ts']) {
+    for (const entry of ['api/config.ts', 'api/health.ts', 'api/chat.ts', 'api/transcribe.ts', 'api/upload.ts']) {
       const outFile = path.join(tmpDir, path.basename(entry, '.ts') + '.cjs');
       const build = spawnSync(
         esbuildBin,
@@ -245,6 +245,14 @@ await runTest('Vercel api/upload handler preserves query params across ?__subpat
         },
         createSignedUrl: async (storagePath, expiresIn) => ({
           data: { signedUrl: `https://mock.supabase.co/storage/v1/object/sign/orvix-attachments/${storagePath}?token=mock&exp=${expiresIn}` },
+          error: null
+        }),
+        createSignedUploadUrl: async (storagePath) => ({
+          data: {
+            signedUrl: `https://mock.supabase.co/storage/v1/object/upload/sign/orvix-attachments/${storagePath}?token=mock_upload_token`,
+            token: 'mock_upload_token',
+            path: storagePath
+          },
           error: null
         }),
         remove: async (paths) => {
@@ -381,7 +389,77 @@ await runTest('Vercel api/upload handler preserves query params across ?__subpat
     const downloadedText = await fileFetch.text();
     assert.strictEqual(downloadedText, contentText);
 
-    // G. Delete endpoint through Vercel rewrite must preserve ?chatId=...
+    // G. Direct-upload flow (direct/signed-url -> PUT -> direct/complete & direct/cancel) through Vercel rewrite
+    const directPayload = Buffer.from('Vercel direct upload verification content 1234567890');
+    const directSignRes = await fetch(`${baseUrl}/api/upload/direct/signed-url`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        chatId: 'chat-vercel-direct',
+        fileName: 'direct-test.txt',
+        fileSize: directPayload.length,
+        mimeType: 'text/plain'
+      })
+    });
+    assert.strictEqual(directSignRes.status, 200, `Direct signed-url failed: ${await directSignRes.clone().text()}`);
+    assert.strictEqual(directSignRes.headers.get('x-ratelimit-remaining'), '3');
+    const directSignJson = await directSignRes.json();
+    assert.ok(directSignJson.attachmentId && directSignJson.storagePath);
+
+    // Simulate client PUT to Supabase Storage
+    mockStorageObjects.set(directSignJson.storagePath, directPayload);
+
+    const directCompleteRes = await fetch(`${baseUrl}/api/upload/direct/complete`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        attachmentId: directSignJson.attachmentId,
+        chatId: 'chat-vercel-direct',
+        storagePath: directSignJson.storagePath
+      })
+    });
+    assert.strictEqual(directCompleteRes.status, 200, `Direct complete failed: ${await directCompleteRes.clone().text()}`);
+    assert.strictEqual(directCompleteRes.headers.get('x-ratelimit-remaining'), '3');
+
+    // Also verify direct/cancel releases reserved quota slot across rewrite
+    const cancelSignRes = await fetch(`${baseUrl}/api/upload/direct/signed-url`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        chatId: 'chat-vercel-direct',
+        fileName: 'cancel-test.txt',
+        fileSize: directPayload.length,
+        mimeType: 'text/plain'
+      })
+    });
+    assert.strictEqual(cancelSignRes.status, 200);
+    assert.strictEqual(cancelSignRes.headers.get('x-ratelimit-remaining'), '2');
+    const cancelSignJson = await cancelSignRes.json();
+
+    const directCancelRes = await fetch(`${baseUrl}/api/upload/direct/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        attachmentId: cancelSignJson.attachmentId,
+        chatId: 'chat-vercel-direct'
+      })
+    });
+    assert.strictEqual(directCancelRes.status, 200);
+    assert.strictEqual(directCancelRes.headers.get('x-ratelimit-remaining'), '3');
+
+    // H. Delete endpoint through Vercel rewrite must preserve ?chatId=...
     const delRes = await fetch(`${baseUrl}/api/upload/${fileId}?chatId=chat-vercel-test`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` }
@@ -422,19 +500,29 @@ await runTest('getConfiguredFirebaseProjectId extracts project_id from FIREBASE_
     const sampleSa = {
       type: 'service_account',
       project_id: 'derived-vercel-project-999',
-      private_key: '-----BEGIN PRIVATE KEY-----\\nABC\\nDEF\\n-----END PRIVATE KEY-----\\n',
+      private_key: '-----BEGIN PRIVATE KEY-----\\r\\nABC\\nDEF\\r\\n-----END PRIVATE KEY-----\\n',
       client_email: 'sa@derived-vercel-project-999.iam.gserviceaccount.com'
     };
 
-    process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify(sampleSa);
+    const jsonStr = JSON.stringify(sampleSa);
+    const b64Str = Buffer.from(jsonStr, 'utf8').toString('base64');
+
+    process.env.FIREBASE_SERVICE_ACCOUNT = jsonStr;
     assert.strictEqual(getConfiguredFirebaseProjectId(), 'derived-vercel-project-999');
 
-    process.env.FIREBASE_SERVICE_ACCOUNT = Buffer.from(JSON.stringify(sampleSa), 'utf8').toString('base64');
+    process.env.FIREBASE_SERVICE_ACCOUNT = `'${jsonStr}'`;
     assert.strictEqual(getConfiguredFirebaseProjectId(), 'derived-vercel-project-999');
 
-    const parsed = parseServiceAccountCredential(JSON.stringify(sampleSa), 'FIREBASE_SERVICE_ACCOUNT');
-    assert.ok(parsed.private_key.includes('\n'), 'Escaped \\\\n in private_key must normalize to real newlines');
+    process.env.FIREBASE_SERVICE_ACCOUNT = b64Str;
+    assert.strictEqual(getConfiguredFirebaseProjectId(), 'derived-vercel-project-999');
+
+    process.env.FIREBASE_SERVICE_ACCOUNT = `"${b64Str}"`;
+    assert.strictEqual(getConfiguredFirebaseProjectId(), 'derived-vercel-project-999');
+
+    const parsed = parseServiceAccountCredential(jsonStr, 'FIREBASE_SERVICE_ACCOUNT');
+    assert.ok(parsed.private_key.includes('\n'), 'Escaped \\\\r\\\\n and \\\\n in private_key must normalize to real newlines');
     assert.ok(!parsed.private_key.includes('\\n'), 'Literal \\\\n sequences should be unescaped');
+    assert.ok(!parsed.private_key.includes('\\r'), 'Literal \\\\r sequences should be unescaped');
   } finally {
     if (origPid !== undefined) process.env.FIREBASE_PROJECT_ID = origPid;
     else delete process.env.FIREBASE_PROJECT_ID;

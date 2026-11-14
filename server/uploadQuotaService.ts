@@ -829,20 +829,20 @@ export function parseServiceAccountCredential(raw: string, sourceVar: string): a
     );
   }
 
-  // Normalize literal "\\n" escapes inside PEM private keys pasted into hosting dashboards
+  // Normalize literal "\\r\\n" and "\\n" escapes inside PEM private keys pasted into hosting dashboards
   if (
     typeof parsed.private_key === 'string' &&
-    parsed.private_key.includes('\\n') &&
+    (parsed.private_key.includes('\\n') || parsed.private_key.includes('\\r\\n')) &&
     !parsed.private_key.includes('\n')
   ) {
-    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+    parsed.private_key = parsed.private_key.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
   if (
     typeof parsed.privateKey === 'string' &&
-    parsed.privateKey.includes('\\n') &&
+    (parsed.privateKey.includes('\\n') || parsed.privateKey.includes('\\r\\n')) &&
     !parsed.privateKey.includes('\n')
   ) {
-    parsed.privateKey = parsed.privateKey.replace(/\\n/g, '\n');
+    parsed.privateKey = parsed.privateKey.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
   }
 
   return parsed;

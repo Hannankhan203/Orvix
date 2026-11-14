@@ -144,11 +144,29 @@ export function getConfiguredFirebaseProjectId(): string {
       let parsed: any;
       try {
         parsed = JSON.parse(rawSa);
+        if (typeof parsed === 'string') {
+          const inner = JSON.parse(parsed);
+          if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+            parsed = inner;
+          }
+        }
       } catch (_) {
-        parsed = JSON.parse(Buffer.from(rawSa, 'base64').toString('utf8'));
-      }
-      if (typeof parsed === 'string') {
-        parsed = JSON.parse(parsed);
+        const unwrapped =
+          (rawSa.startsWith("'") && rawSa.endsWith("'")) ||
+          (rawSa.startsWith('"') && rawSa.endsWith('"'))
+            ? rawSa.slice(1, -1).trim()
+            : rawSa;
+        try {
+          parsed = JSON.parse(unwrapped);
+        } catch (_) {
+          parsed = JSON.parse(Buffer.from(unwrapped, 'base64').toString('utf8'));
+          if (typeof parsed === 'string') {
+            const inner = JSON.parse(parsed);
+            if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+              parsed = inner;
+            }
+          }
+        }
       }
       const saProjectId =
         typeof parsed?.project_id === 'string'
