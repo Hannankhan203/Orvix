@@ -93,7 +93,7 @@ function test(name, fn) {
 // 1. Document Format Support Decisions
 // ----------------------------------------------------------------------------
 test('isBrowserExtractable accurately identifies supported browser document formats', () => {
-  const supported = ['txt', 'log', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'docx', 'pdf', 'pptx'];
+  const supported = ['txt', 'log', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'docx', 'doc', 'pdf', 'pptx', 'ppt', 'xlsx', 'xls'];
   for (const ext of supported) {
     assert.strictEqual(isBrowserExtractable(ext), true, `Extension .${ext} should be extractable in browser`);
     assert.strictEqual(isBrowserExtractable(`.${ext}`), true, `Extension with dot .${ext} should be extractable`);
@@ -101,21 +101,25 @@ test('isBrowserExtractable accurately identifies supported browser document form
 
   // Common MIME types
   assert.strictEqual(isBrowserExtractable('', 'application/pdf'), true);
+  assert.strictEqual(isBrowserExtractable('', 'application/msword'), true);
   assert.strictEqual(isBrowserExtractable('', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), true);
+  assert.strictEqual(isBrowserExtractable('', 'application/vnd.ms-powerpoint'), true);
   assert.strictEqual(isBrowserExtractable('', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'), true);
+  assert.strictEqual(isBrowserExtractable('', 'application/vnd.ms-excel'), true);
+  assert.strictEqual(isBrowserExtractable('', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), true);
   assert.strictEqual(isBrowserExtractable('', 'text/markdown'), true);
   assert.strictEqual(isBrowserExtractable('', 'text/csv'), true);
   assert.strictEqual(isBrowserExtractable('', 'application/json'), true);
 });
 
 test('isBrowserExtractable rejects unsupported, binary, or image formats requiring server OCR', () => {
-  const unsupported = ['doc', 'ppt', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'zip', 'exe', 'mp4'];
+  const unsupported = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'zip', 'exe', 'mp4'];
   for (const ext of unsupported) {
     assert.strictEqual(isBrowserExtractable(ext), false, `Extension .${ext} must NOT be reported as extractable`);
   }
   assert.strictEqual(isBrowserExtractable('', 'image/png'), false);
-  assert.strictEqual(isBrowserExtractable('', 'application/msword'), false);
-  assert.strictEqual(isBrowserExtractable('', 'application/vnd.ms-powerpoint'), false);
+  assert.strictEqual(isBrowserExtractable('', 'application/octet-stream'), false);
+  assert.strictEqual(isBrowserExtractable('', 'application/x-msdownload'), false);
 });
 
 // ----------------------------------------------------------------------------

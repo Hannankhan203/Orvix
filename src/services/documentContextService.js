@@ -405,11 +405,11 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
 
   // 10. Detect whole-file or full summary requests
   const wholeFileRegex =
-    /(?:explain|summarize|review|analyze|describe|read|break down|overview|tell me about)\s+(?:this|the|all of the|our)?\s*(?:whole|entire|full|complete)\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|table|text|image|photo|picture)/i;
+    /(?:explain|summarize|review|analyze|describe|read|break down|overview|tell me about)\s+(?:this|the|all of the|our)?\s*(?:whole|entire|full|complete)\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|spreadsheet|workbook|worksheet|excel|table|text|image|photo|picture)/i;
   const summarizeRegex =
-    /(?:summarize|summary of|give me a summary of|overview of|explain|review|analyze|tell me about|what is in|what is)\s+(?:this|the|all of the)?\s*(?:whole|entire|full|complete)?\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|attachment|data|image|photo|picture)/i;
+    /(?:summarize|summary of|give me a summary of|overview of|explain|review|analyze|tell me about|what is in|what is)\s+(?:this|the|all of the)?\s*(?:whole|entire|full|complete)?\s*(?:file|document|doc|pdf|presentation|slideshow|deck|sheet|spreadsheet|workbook|worksheet|excel|attachment|data|image|photo|picture)/i;
   const directWholePrompt =
-    /^(?:summarize|summary|overview|explain this|explain file|explain document|explain image|summarize this|summarize document|summarize file|summarize image|what is this (?:file|document|presentation|image|photo)|tl;?dr)[.!?]?$/i;
+    /^(?:summarize|summary|overview|explain this|explain file|explain document|explain image|summarize this|summarize document|summarize file|summarize image|what is this (?:file|document|presentation|spreadsheet|workbook|image|photo)|tl;?dr)[.!?]?$/i;
 
   if (wholeFileRegex.test(lowerPrompt) || summarizeRegex.test(lowerPrompt) || directWholePrompt.test(lowerPrompt)) {
     return {
@@ -422,7 +422,7 @@ export function parseDocumentQueryIntent(prompt, availableDocs = []) {
 
   // 11. Detect general document / image queries
   const docReferenceRegex =
-    /(?:document|file|uploaded|attachment|pdf|presentation|slides|docx|dataset|table|sheet|image|photo|picture|screenshot|ocr|graphic|scan)/i;
+    /(?:document|file|uploaded|attachment|pdf|presentation|slides|docx|doc|ppt|pptx|xls|xlsx|spreadsheet|workbook|worksheet|excel|dataset|table|sheet|image|photo|picture|screenshot|ocr|graphic|scan)/i;
   if (docReferenceRegex.test(lowerPrompt) || availableDocs.length > 0) {
     return {
       isDocumentQuery: true,
@@ -1276,6 +1276,7 @@ You can ask to explore any individual slide or speaker notes in detail (e.g., "E
   // 5. Whole File / Summary
   const pageStr = primaryDoc.pageCount ? ` • ${primaryDoc.pageCount} Pages` : '';
   const slideStr = primaryDoc.slideCount ? ` • ${primaryDoc.slideCount} Slides` : '';
+  const sheetStr = primaryDoc.sheetCount ? ` • ${primaryDoc.sheetCount} Sheets` : '';
   const wordCount = primaryDoc.totalWords || countWordsInString(primaryDoc.text);
 
   let summaryBody = '';
@@ -1300,14 +1301,14 @@ You can ask to explore any individual slide or speaker notes in detail (e.g., "E
 
   return `### Comprehensive Summary of "${docName}"
 
-**Document Details:** ${format} Format • ${primaryDoc.totalCharacters.toLocaleString()} Characters • ~${wordCount.toLocaleString()} Words${pageStr}${slideStr}
+**Document Details:** ${format} Format • ${primaryDoc.totalCharacters.toLocaleString()} Characters • ~${wordCount.toLocaleString()} Words${pageStr}${slideStr}${sheetStr}
 
 #### Executive Summary:
 ${summaryBody}
 
 ---
 💡 **Next Steps:** You can ask specific questions about this document, such as:
-${primaryDoc.pageCount ? `• *"Explain page 1"* or *"Summarize pages 1 to 3"*\n` : ''}${primaryDoc.slideCount ? `• *"Explain slide 2"* or *"What are the speaker notes on slide 3?"*\n` : ''}• *"What are the key conclusions?"*
+${primaryDoc.pageCount ? `• *"Explain page 1"* or *"Summarize pages 1 to 3"*\n` : ''}${primaryDoc.slideCount ? `• *"Explain slide 2"* or *"What are the speaker notes on slide 3?"*\n` : ''}${primaryDoc.sheetCount ? `• *"Summarize worksheet${primaryDoc.sheetNames?.[0] ? ` ${primaryDoc.sheetNames[0]}` : ''}"*\n` : ''}• *"What are the key conclusions?"*
 • *"Explain this whole file in simple terms"*`;
 }
 

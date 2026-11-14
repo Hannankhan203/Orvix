@@ -590,28 +590,28 @@ await runTest('1.6 Ownership, expiry, and tampered signature checks remain enfor
   }
 });
 
-console.log('\n--- PART 2: Non-image unsupported_format & MIME/Extension Detection ---');
+console.log('\n--- PART 2: Non-image error/corrupted/unsupported_format & MIME/Extension Detection ---');
 
-await runTest('2.1 Server and browser extractors for DOC, PPT, XLS, XLSX, BIN produce UNSUPPORTED FORMAT (never SCANNED/IMAGE-ONLY)', async () => {
+await runTest('2.1 Server and browser extractors for malformed DOC, PPT, XLS, XLSX produce CORRUPTED and unsupported EXE produces UNSUPPORTED FORMAT (never SCANNED/IMAGE-ONLY)', async () => {
   const serverCases = [
-    { name: 'legacy.doc', ext: '.doc', mime: 'application/msword', buf: Buffer.from('D0CF11E0A1B11AE1', 'hex'), expectedFmt: 'DOC' },
-    { name: 'slides.ppt', ext: '.ppt', mime: 'application/vnd.ms-powerpoint', buf: Buffer.from('D0CF11E0A1B11AE1', 'hex'), expectedFmt: 'PPT' },
-    { name: 'ledger.xls', ext: '.xls', mime: 'application/vnd.ms-excel', buf: Buffer.from('D0CF11E0A1B11AE1', 'hex'), expectedFmt: 'XLS' },
-    { name: 'budget.xlsx', ext: '.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buf: Buffer.from('PK\x03\x04dummy', 'utf8'), expectedFmt: 'XLSX' },
-    { name: 'tool.exe', ext: '.exe', mime: 'application/x-msdownload', buf: Buffer.from([0x4d, 0x5a, 0x90, 0x00]), expectedFmt: 'EXE' }
+    { name: 'legacy.doc', ext: '.doc', mime: 'application/msword', buf: Buffer.from('D0CF11E0A1B11AE1', 'hex'), expectedFmt: 'DOC', expectedStatus: 'corrupted', expectedHeader: 'STATUS: CORRUPTED' },
+    { name: 'slides.ppt', ext: '.ppt', mime: 'application/vnd.ms-powerpoint', buf: Buffer.from('D0CF11E0A1B11AE1', 'hex'), expectedFmt: 'PPT', expectedStatus: 'corrupted', expectedHeader: 'STATUS: CORRUPTED' },
+    { name: 'ledger.xls', ext: '.xls', mime: 'application/vnd.ms-excel', buf: Buffer.from('D0CF11E0A1B11AE1', 'hex'), expectedFmt: 'XLS', expectedStatus: 'corrupted', expectedHeader: 'STATUS: CORRUPTED' },
+    { name: 'budget.xlsx', ext: '.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buf: Buffer.from('PK\x03\x04dummy', 'utf8'), expectedFmt: 'XLSX', expectedStatus: 'corrupted', expectedHeader: 'STATUS: CORRUPTED' },
+    { name: 'tool.exe', ext: '.exe', mime: 'application/x-msdownload', buf: Buffer.from([0x4d, 0x5a, 0x90, 0x00]), expectedFmt: 'EXE', expectedStatus: 'unsupported_format', expectedHeader: 'STATUS: UNSUPPORTED FORMAT' }
   ];
 
   for (const c of serverCases) {
     const extRes = await extractDocumentContent(c.buf, c.name, c.ext, c.mime, `id-${c.expectedFmt}`);
-    assert.equal(extRes.status, 'unsupported_format');
+    assert.equal(extRes.status, c.expectedStatus);
     assert.equal(isImageAttachment(extRes), false, `${c.name} must not be classified as an image`);
 
     const prep = prepareDocumentContext(`Summarize ${c.name}`, [extRes], { provider: 'gemini' });
     assert.equal(prep.hasErrorsOrWarnings, true);
-    assert.ok(prep.directAnswer, `${c.name} single-doc unsupported_format must provide directAnswer`);
+    assert.ok(prep.directAnswer, `${c.name} single-doc ${c.expectedStatus} must provide directAnswer`);
     assert.ok(
-      prep.formattedContext.includes(`STATUS: UNSUPPORTED FORMAT`),
-      `${c.name} context must emit STATUS: UNSUPPORTED FORMAT, got:\n${prep.formattedContext}`
+      prep.formattedContext.includes(c.expectedHeader),
+      `${c.name} context must emit ${c.expectedHeader}, got:\n${prep.formattedContext}`
     );
     assert.ok(prep.formattedContext.includes(`(${c.expectedFmt})`), `${c.name} format label must be ${c.expectedFmt}`);
     assert.equal(
@@ -645,16 +645,16 @@ await runTest('2.1 Server and browser extractors for DOC, PPT, XLS, XLSX, BIN pr
 
   for (const c of serverCases) {
     const browserRes = await extractBrowserDocument(makeBrowserFile(c.name, c.mime, c.buf), `b-${c.expectedFmt}`);
-    assert.equal(browserRes.status, 'unsupported_format');
+    assert.equal(browserRes.status, c.expectedStatus);
     assert.equal(isImageAttachment(browserRes), false);
     const prep = prepareDocumentContext(`Analyze ${c.name}`, [browserRes], { provider: 'webllm' });
-    assert.ok(prep.formattedContext.includes('STATUS: UNSUPPORTED FORMAT'));
+    assert.ok(prep.formattedContext.includes(c.expectedHeader));
     assert.equal(prep.formattedContext.includes('SCANNED/IMAGE-ONLY'), false);
     assert.ok(prep.directAnswer && !prep.directAnswer.includes('scanned, image-only'));
   }
 });
 
-await runTest('2.2 Multi-document mix preserves readable docs while accurately labeling unsupported_format doc', async () => {
+await runTest('2.2 Multi-document mix preserves readable docs while accurately labeling corrupted/unsupported docs', async () => {
   const txtDoc = await extractDocumentContent(
     Buffer.from('Revenue grew 18% YoY in Q4 2026.', 'utf8'),
     'summary.txt',
@@ -674,7 +674,7 @@ await runTest('2.2 Multi-document mix preserves readable docs while accurately l
   assert.equal(prep.directAnswer, undefined, 'Multi-doc context with one readable doc must not short-circuit directAnswer');
   assert.equal(prep.hasErrorsOrWarnings, true);
   assert.ok(prep.formattedContext.includes('Revenue grew 18% YoY in Q4 2026.'));
-  assert.ok(prep.formattedContext.includes('STATUS: UNSUPPORTED FORMAT'));
+  assert.ok(prep.formattedContext.includes('STATUS: CORRUPTED'));
   assert.equal(prep.formattedContext.includes('SCANNED/IMAGE-ONLY'), false);
 });
 
@@ -748,4 +748,4 @@ await runTest('2.3 Accurate MIME and extension detection prevents document<->ima
 console.log(`\n===============================================================`);
 console.log(`AUDIT FIXES SUMMARY: ${passed} Passed, ${failed} Failed`);
 console.log(`===============================================================`);
-if (failed > 0) process.exit(1);
+process.exit(failed > 0 ? 1 : 0);

@@ -1599,6 +1599,7 @@ export async function extractDocumentContent(
     rowCount: partialResult.rowCount,
     columnCount: partialResult.columnCount,
     table: partialResult.table,
+    isImage: Boolean(partialResult.isImage),
     isScanned: partialResult.isScanned,
     hasText: partialResult.hasText !== undefined ? partialResult.hasText : (totalCharacters > 0),
     ocrEngine: partialResult.ocrEngine,

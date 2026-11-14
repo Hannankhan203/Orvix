@@ -1801,7 +1801,9 @@ export default function ChatPage({
 
             if (extResult.status === 'empty') {
               return failPreflightIfActive(
-                `The attached file '${att.name}' is empty (0 bytes). Please attach a file with content.`
+                extResult.warning ||
+                  extResult.error ||
+                  `The attached file '${att.name}' is empty (0 bytes). Please attach a file with content.`
               );
             }
 
@@ -2219,7 +2221,11 @@ export default function ChatPage({
                     throw new Error(extResult.warning || 'No readable text could be extracted from this PDF. This document appears to be scanned without a text layer.');
                   }
                   if (extResult.status === 'empty') {
-                    throw new Error(`The attached file '${att.name}' is empty (0 bytes).`);
+                    throw new Error(
+                      extResult.warning ||
+                        extResult.error ||
+                        `The attached file '${att.name}' is empty (0 bytes).`
+                    );
                   }
                   if (extResult.status === 'encrypted') {
                     throw new Error(extResult.error || `The attached document '${att.name}' is password-protected or encrypted.`);

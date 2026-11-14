@@ -411,6 +411,14 @@ export async function verifyFileSignature(
       ) {
         return { valid: true };
       }
+      if (
+        ext === '.xls' &&
+        buffer.length >= 8 &&
+        buffer[0] === 0x09 &&
+        (buffer[1] === 0x00 || buffer[1] === 0x02 || buffer[1] === 0x04 || buffer[1] === 0x08)
+      ) {
+        return { valid: true };
+      }
       return { valid: false, reason: 'Invalid legacy Office document: missing OLE compound binary signature.' };
     }
 

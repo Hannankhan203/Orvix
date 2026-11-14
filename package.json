@@ -30,11 +30,13 @@
     "test:serverless-direct-upload": "node scripts/testServerlessDirectUploadDurable.js",
     "test:pagination": "node scripts/testStoragePaginationReliability.js",
     "test:semantic-rag": "node scripts/testSemanticRAG.js",
+    "test:office-extraction": "node scripts/testOfficeDocumentExtraction.js",
     "test:ocr-packs": "node scripts/testMultilingualOcrPacks.js",
     "test:websocket-voice": "node scripts/testWebSocketVoiceStreaming.js",
     "test": "npm run lint && node scripts/testDirectBase64ImageQuotaBypassRegression.js && node scripts/testWebLLMQuotaBypassRegression.js && node scripts/testServerlessDirectUploadDurable.js && node scripts/testDirectSupabaseUpload.js && node scripts/testWebSocketVoiceStreaming.js && node scripts/testMultilingualOcrPacks.js && node scripts/testSemanticRAG.js && node scripts/testIndexedDBQuotaExceeded.js && node scripts/testMultiTabConversationSync.js && node scripts/testMessageAlignmentOrdering.js && node scripts/testStoragePaginationReliability.js && node scripts/auditOfflineReliability.js && node scripts/testSmolLM2Integration.js && node scripts/testSmolLM2DownloadPipeline.js && node scripts/testBrowserAiProfilesQuality.js && node scripts/testModelGuidanceUX.js && node scripts/testModelSelectorOrdering.js && node scripts/testLiveResponseTimerOptimization.js && node scripts/testSupabaseConversationDeletionLifecycle.js && node scripts/testEditResendAttachmentCleanup.js && node scripts/testStorageProviderMetadataRegression.js && node scripts/testPrematureLocalAttachmentDeletion.js && node scripts/testOrphanedStagingUploadsRegression.js && node scripts/testSupabaseUploadFailureRegression.js && node scripts/testUploadDailyQuota.js"
   },
   "dependencies": {
+    "@e965/xlsx": "^0.20.3",
     "@fe-daily/gifsicle-wasm-browser": "^1.5.23",
     "@google/genai": "^2.32.0",
     "@jsquash/oxipng": "^2.3.0",
@@ -42,6 +44,7 @@
     "@supabase/supabase-js": "^2.119.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "cfb": "^1.2.2",
     "dotenv": "^17.4.2",
     "express": "^4.22.3",
     "fflate": "^0.8.3",

@@ -360,6 +360,17 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
           } else if (isOffice) {
             if (attachment.extraction?.text) {
               if (active) setTextContent(attachment.extraction.text);
+            } else if (
+              attachment.extraction &&
+              ['encrypted', 'corrupted', 'error', 'empty'].includes(attachment.extraction.status)
+            ) {
+              if (active) {
+                setError(
+                  attachment.extraction.error ||
+                    attachment.extraction.warning ||
+                    'Unable to extract text from this Office document.'
+                );
+              }
             } else {
               try {
                 const extracted = await extractBrowserDocument(attachment.file, {
@@ -369,8 +380,19 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                   mimeType: mime,
                   extension: ext
                 });
-                if (active && extracted?.text) {
-                  setTextContent(extracted.text);
+                if (active) {
+                  if (extracted?.text) {
+                    setTextContent(extracted.text);
+                  } else if (
+                    extracted &&
+                    ['encrypted', 'corrupted', 'error', 'empty'].includes(extracted.status)
+                  ) {
+                    setError(
+                      extracted.error ||
+                        extracted.warning ||
+                        'Unable to extract text from this Office document.'
+                    );
+                  }
                 }
               } catch (_) {}
             }
@@ -403,6 +425,15 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
           } else if (isOffice) {
             if (attachment.extraction?.text) {
               setTextContent(attachment.extraction.text);
+            } else if (
+              attachment.extraction &&
+              ['encrypted', 'corrupted', 'error', 'empty'].includes(attachment.extraction.status)
+            ) {
+              setError(
+                attachment.extraction.error ||
+                  attachment.extraction.warning ||
+                  'Unable to extract text from this Office document.'
+              );
             } else {
               try {
                 const extracted = await extractBrowserDocument(localRecord.blob, {
@@ -412,8 +443,19 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                   mimeType: mime,
                   extension: ext
                 });
-                if (active && extracted?.text) {
-                  setTextContent(extracted.text);
+                if (active) {
+                  if (extracted?.text) {
+                    setTextContent(extracted.text);
+                  } else if (
+                    extracted &&
+                    ['encrypted', 'corrupted', 'error', 'empty'].includes(extracted.status)
+                  ) {
+                    setError(
+                      extracted.error ||
+                        extracted.warning ||
+                        'Unable to extract text from this Office document.'
+                    );
+                  }
                 }
               } catch (_) {}
             }
@@ -455,6 +497,15 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         } else if (isOffice) {
           if (attachment.extraction?.text) {
             setTextContent(attachment.extraction.text);
+          } else if (
+            attachment.extraction &&
+            ['encrypted', 'corrupted', 'error', 'empty'].includes(attachment.extraction.status)
+          ) {
+            setError(
+              attachment.extraction.error ||
+                attachment.extraction.warning ||
+                'Unable to extract text from this Office document.'
+            );
           } else {
             try {
               const extracted = await extractBrowserDocument(blob, {
@@ -464,8 +515,19 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                 mimeType: mime,
                 extension: ext
               });
-              if (active && extracted?.text) {
-                setTextContent(extracted.text);
+              if (active) {
+                if (extracted?.text) {
+                  setTextContent(extracted.text);
+                } else if (
+                  extracted &&
+                  ['encrypted', 'corrupted', 'error', 'empty'].includes(extracted.status)
+                ) {
+                  setError(
+                    extracted.error ||
+                      extracted.warning ||
+                      'Unable to extract text from this Office document.'
+                  );
+                }
               }
             } catch (_) {}
           }
@@ -476,6 +538,16 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
         if (!active) return;
         if (attachment.extraction?.text) {
           setTextContent(attachment.extraction.text);
+          setLoading(false);
+        } else if (
+          attachment.extraction &&
+          ['encrypted', 'corrupted', 'error', 'empty'].includes(attachment.extraction.status)
+        ) {
+          setError(
+            attachment.extraction.error ||
+              attachment.extraction.warning ||
+              'Unable to preview attachment.'
+          );
           setLoading(false);
         } else {
           setError(err.message || 'Unable to preview attachment.');
@@ -544,7 +616,14 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const sizeText = attachment.formattedSize || (attachment.size ? `${(attachment.size / 1024).toFixed(1)} KB` : '');
   const pagesCount = attachment.pageCount || attachment.extraction?.pageCount;
   const slidesCount = attachment.slideCount || attachment.extraction?.slideCount;
-  const metaDetail = pagesCount ? `${pagesCount} page${pagesCount > 1 ? 's' : ''}` : slidesCount ? `${slidesCount} slide${slidesCount > 1 ? 's' : ''}` : null;
+  const sheetsCount = attachment.sheetCount || attachment.extraction?.sheetCount;
+  const metaDetail = pagesCount
+    ? `${pagesCount} page${pagesCount > 1 ? 's' : ''}`
+    : slidesCount
+      ? `${slidesCount} slide${slidesCount > 1 ? 's' : ''}`
+      : sheetsCount
+        ? `${sheetsCount} sheet${sheetsCount > 1 ? 's' : ''}`
+        : null;
   const hasCopyableText = Boolean(textContent || (isImage && activeView === 'ocr' && ocrData?.text));
 
   return (

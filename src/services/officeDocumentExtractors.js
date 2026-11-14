@@ -180,7 +180,11 @@ function formatSpreadsheetCellValue(cell) {
     return cell.v ? 'TRUE' : 'FALSE';
   }
   if (cell.t === 'e') {
-    return cell.w || '#ERROR';
+    if (cell.w) return cell.w;
+    if (typeof cell.f === 'string' && cell.f.trim() && (cell.v === undefined || cell.v === null)) {
+      return `=${cell.f.trim()}`;
+    }
+    return '#ERROR';
   }
   if (cell.v !== undefined && cell.v !== null) {
     return String(cell.v);
@@ -593,37 +597,45 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
 }
 
 function cleanWordFieldCodes(raw) {
+  const stack = [];
   let out = '';
-  let depth = 0;
-  let inInstruction = false;
-  const instrStack = [];
 
   for (let i = 0; i < raw.length; i++) {
     const code = raw.charCodeAt(i);
     if (code === 0x13) {
       // Field begin
-      instrStack.push(inInstruction);
-      depth++;
-      inInstruction = true;
+      stack.push({ inResult: false, rawFallback: '' });
       continue;
     }
     if (code === 0x14) {
       // Field separator -> visible display result follows
-      if (depth > 0) {
-        inInstruction = false;
+      if (stack.length > 0) {
+        stack[stack.length - 1].inResult = true;
       }
       continue;
     }
     if (code === 0x15) {
       // Field end
-      if (depth > 0) {
-        depth--;
-        inInstruction = instrStack.pop() || false;
+      if (stack.length > 0) {
+        stack.pop();
       }
       continue;
     }
-    if (!inInstruction) {
+    if (stack.length === 0) {
       out += raw[i];
+    } else if (stack.every((frame) => frame.inResult)) {
+      out += raw[i];
+    } else {
+      stack[stack.length - 1].rawFallback += raw[i];
+    }
+  }
+
+  // If a malformed file has an unclosed 0x13 without a matching 0x15, preserve trailing text
+  if (stack.length > 0) {
+    for (const frame of stack) {
+      if (frame.rawFallback) {
+        out += frame.rawFallback;
+      }
     }
   }
   return out;
@@ -701,7 +713,31 @@ function buildDocSectionsFromParagraphs(text) {
   let currentHeading = 'Document Body';
   let currentParts = [];
 
-  for (const block of blocks) {
+  for (const rawBlock of blocks) {
+    // Handle explicit Markdown headings (e.g., "### Footnotes\nFootnote text...")
+    const firstNewline = rawBlock.indexOf('\n');
+    const firstLine = (firstNewline === -1 ? rawBlock : rawBlock.slice(0, firstNewline)).trim();
+    const mdHeadingMatch = /^(#{1,6})\s+(.+)$/.exec(firstLine);
+    if (mdHeadingMatch) {
+      const tailContent = currentParts.join('\n\n').trim();
+      if (tailContent) {
+        sections.push({
+          heading: currentHeading,
+          level: 2,
+          content: tailContent,
+          charCount: tailContent.length
+        });
+      }
+      currentHeading = mdHeadingMatch[2].trim();
+      currentParts = [];
+      const remainder = firstNewline === -1 ? '' : rawBlock.slice(firstNewline + 1).trim();
+      if (remainder) {
+        currentParts.push(remainder);
+      }
+      continue;
+    }
+
+    const block = rawBlock;
     const isShortHeadingCandidate =
       !block.startsWith('|') &&
       !block.includes('\n') &&
@@ -1021,6 +1057,8 @@ export async function extractLegacyDocDocument(inputBytes) {
           error: 'Corrupted legacy Word 6/95 (.doc) file: invalid stream boundaries.'
         };
       }
+    } else if (fibParsed && tableEntry && lcbClx === 0 && ccpText === 0) {
+      logicalCpText = '';
     } else {
       return {
         status: 'corrupted',
@@ -1187,6 +1225,11 @@ function parsePptPersistMap(pptStream, pptView, currentUserStream) {
     );
     const hdr = readPptRecordHeader(cuView, 0, currentUserStream.length);
     if (hdr && hdr.recType === PPT_RT_CURRENT_USER_ATOM && hdr.recLen >= 16) {
+      // CurrentUserAtom headerToken at +4: 0xF3D1C4DF indicates encrypted PPT (0xE391C05F unencrypted)
+      const headerToken = cuView.getUint32(hdr.payloadStart + 4, true);
+      if (headerToken === 0xf3d1c4df) {
+        hasEncryptedSession = true;
+      }
       // offsetToCurrentEdit is at +8 within CurrentUserAtom payload (+4 size, +4 headerToken, +4 offsetToCurrentEdit)
       let editOffset = cuView.getUint32(hdr.payloadStart + 8, true);
       const visitedOffsets = new Set();
@@ -1567,11 +1610,11 @@ export async function extractLegacyPptDocument(inputBytes) {
           }
         }
 
-        // Identify slide title (TextHeaderAtom type 0 = Title, 5 = CenterTitle, 7 = VerticalTitle)
+        // Identify slide title (TextHeaderAtom type 0 = Title, 6 = CenterTitle)
         let slideTitle = undefined;
         const bodyItems = [];
         for (const item of collectedTexts) {
-          const isTitleType = item.textType === 0 || item.textType === 5 || item.textType === 7;
+          const isTitleType = item.textType === 0 || item.textType === 6;
           if (isTitleType && !slideTitle) {
             slideTitle = item.text.replace(/\n+/g, ' ').trim();
           } else if (item.text) {
@@ -1623,7 +1666,7 @@ export async function extractLegacyPptDocument(inputBytes) {
         let slideTitle = undefined;
         const bodyItems = [];
         for (const item of collectedTexts) {
-          const isTitleType = item.textType === 0 || item.textType === 5 || item.textType === 7;
+          const isTitleType = item.textType === 0 || item.textType === 6;
           if (isTitleType && !slideTitle) {
             slideTitle = item.text.replace(/\n+/g, ' ').trim();
           } else if (item.text) {

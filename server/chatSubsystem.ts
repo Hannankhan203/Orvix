@@ -820,7 +820,23 @@ export function registerChatRoutes(app: express.Express) {
             record?.extension ||
             att.format ||
             att.extension ||
-            (extName === '.pdf' ? 'PDF' : extName === '.docx' ? 'DOCX' : extName === '.pptx' ? 'PPTX' : extName === '.txt' ? 'TXT' : undefined);
+            (extName === '.pdf'
+              ? 'PDF'
+              : extName === '.docx'
+                ? 'DOCX'
+                : extName === '.doc'
+                  ? 'DOC'
+                  : extName === '.pptx'
+                    ? 'PPTX'
+                    : extName === '.ppt'
+                      ? 'PPT'
+                      : extName === '.xlsx'
+                        ? 'XLSX'
+                        : extName === '.xls'
+                          ? 'XLS'
+                          : extName === '.txt'
+                            ? 'TXT'
+                            : undefined);
 
           const docData: DocumentData = {
             ...(rawExtraction as DocumentData),
