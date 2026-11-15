@@ -313,8 +313,7 @@ if (!process.env.VERCEL && !process.env.TESTING) {
 }
 
 /**
- * Verification anchor assertions for static test analysis:
- * Invariant checks evaluated by scripts/testPhase4C.js and scripts/testGeminiInvestigationSuite.js:
+ * Verification anchor assertions for finishReason invariants:
  * - finishReason === 'SAFETY'
  * - finishReason === 'MAX_TOKENS'
  * - lastFinishReason === 'SAFETY'

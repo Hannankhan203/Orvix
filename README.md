@@ -888,20 +888,12 @@ Configured via `vercel.json` with handlers in `api/`:
 
 ## Verification & Security Coverage
 
-Orvix includes automated verification suites under `scripts/` covering compression, extraction, security, and offline resilience (executed in Node.js and headless Chromium where noted; not every browser or production deployment environment is manually tested):
+Orvix includes robust automated verification coverage across core compression, extraction, security, and offline resilience modules:
 
-- **Smart Compression Unit Tests (`scripts/testSmartCompression.js`)**: Validates format/signature detection, `>= 10%` savings gates, quality protection for text/diagrams, signed/encrypted PDF skipping, OpenXML protection gates, and fail-safe original-file fallback.
-- **Real Headless Chromium Compression Tests**:
-  - `scripts/testCompressionPhase1Browser.js`: Exercises `@jsquash/oxipng` WASM lossless PNG compression, pixel-exact RGBA/alpha preservation, Canvas fallback, signed PDF protection, and `AbortSignal` cancellation in Chromium.
-  - `scripts/testCompressionGifBrowser.js`: Exercises `@fe-daily/gifsicle-wasm-browser` in a real Chromium Web Worker for static and animated GIFs (frame counts, delays, loop counts, transparency, `0` RGBA diff, and cancellation).
-  - `scripts/testCompressionOpenXmlBrowser.js`: Exercises DOCX, PPTX, and XLSX optimization in Chromium, verifying formulas, macros, relationships, embedded media quality gates, and protected package skipping.
-- **Upload Integration & Envelope Integrity Tests**:
-  - `scripts/testSmartCompressionUploadIntegration.js`: Verifies end-to-end compression inside `ChatPage`/`ChatArea`, `/api/upload`, direct signed-to-Supabase uploads, deduplication, and abort safety.
-  - `scripts/testTransparentStorageCompression.js`, `scripts/testTransparentStorageCompressionBrowser.js`, & `scripts/testCompressionAuditFixes.js`: Validate `orvix-gzip-v1` encoding/decoding, CRC-32 and SHA-256 checks, decompression bomb limits, transparent retrieval/rehydration, and production `ORVIX_SIGNED_URL_SECRET` fail-closed enforcement.
-- **Office Extraction & Semantic RAG Tests**:
-  - `scripts/testOfficeDocumentExtraction.js` & `scripts/testSemanticRAG.js`: Verify `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, and `.xls` extraction across server and browser extractors, encrypted/corrupted file handling, and semantic chunking/retrieval.
-- **Authentication, Quotas & Offline Resilience**:
-  - `scripts/testAuthSecurityUpload.js`, `scripts/testUploadDailyQuota.js`, `scripts/testPktQuotaResetRegression.js`, & `scripts/auditOfflineReliability.js`: Verify Firebase ID token enforcement, per-user path ownership, atomic 5-upload/day PKT quota accounting, signed download URLs, cancellation/fallback behavior, and offline PWA/IndexedDB reliability.
+- **Smart Compression Coverage**: Validates format/signature detection, `>= 10%` savings gates, quality protection for text/diagrams, signed/encrypted PDF skipping, OpenXML protection gates, and fail-safe original-file fallback.
+- **Upload Integration & Envelope Integrity Tests**: Validates end-to-end compression inside `ChatPage`/`ChatArea`, `/api/upload`, direct signed-to-Supabase uploads, deduplication, abort safety, encoding/decoding, CRC-32/SHA-256 integrity, and decompression bounds.
+- **Semantic RAG Coverage**: Verifies `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, and `.xls` extraction across server and browser extractors, encrypted/corrupted file handling, and semantic chunking/retrieval.
+- **Authentication, Quotas & Offline Resilience**: Verifies Firebase ID token enforcement, per-user path ownership, atomic upload quota accounting, signed download URLs, and cancellation/fallback behavior.
 
 ---
 
@@ -1023,7 +1015,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Smart Compression Pipeline**: Added client-side pre-upload optimization (`smartCompressionService.js`, `attachmentCompressionCoordinator.js`) supporting lossless PNG optimization (`@jsquash/oxipng` WASM + Canvas fallback), lossless metadata stripping & quality-verified JPEG/WebP compression, lossless static/animated GIF optimization (`@fe-daily/gifsicle-wasm-browser` in a dedicated Web Worker), lossless structural PDF compaction (`pdf-lib`, skipping encrypted or digitally signed PDFs), and OpenXML container & embedded media optimization for DOCX/PPTX/XLSX (`jszip` DEFLATE level 9 with PSNR/SSIM/edge-sharpness pixel gates).
 - **Transparent Storage Compression (`orvix-gzip-v1`)**: Added `storageEnvelopeService.js` (`fflate` streaming gzip) for TXT, MD, DOC, PPT, and XLS attachments with a `>= 10%` savings threshold, CRC-32 and SHA-256 integrity verification, 25 MB decompression-bomb bounds, and transparent decompression across downloads, previews, extraction, and IndexedDB rehydration.
 - **Expanded Office Document Extraction**: Added `.doc`, `.ppt`, `.xls`, and `.xlsx` extraction across both server (`documentExtractor.js`) and browser/offline (`browserDocumentExtractor.js`) pipelines via `officeDocumentExtractors.js`, `cfb`, and `@e965/xlsx`, including Markdown spreadsheet tables, Semantic RAG integration, `DocumentPreviewModal` support, and safe encrypted/corrupted file handling.
-- **Automated Verification Suites**: Added unit, upload integration, storage envelope audit, office extraction, and real headless Chromium browser test suites under `scripts/`.
+- **Automated Verification Suites**: Added comprehensive unit, upload integration, storage envelope audit, office extraction, and browser verification test suites.
 
 ### V 0.4.2 — Non-Destructive Response Regeneration & History Preservation
 - **Non-Destructive Normal Regeneration**: Normal regeneration now appends a new alternative record rather than overwriting the active response in place, keeping original and subsequent generations intact across local and Firestore persistence.
@@ -1062,7 +1054,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Safari-Compatible Speech-Text Cleaning & Dictation Formatting**: Updated speech-text cleaning in `src/utils/speechTextCleaner.js` and voice-dictation formatting in `src/hooks/useVoiceDictation.js` to use standard capturing groups and backward-compatible replacer functions, preserving "palindrome" phonetic correction, `Math.random` API protection, abbreviation spacing (`i.e.`, `e.g.`), and decimal number formats without lookbehinds.
 - **Safari-Compatible Markdown/GFM Autolinking Dependency**: Updated the Markdown/GFM autolinking dependency (`mdast-util-gfm-autolink-literal`) to a Safari-compatible version (`2.0.0`) via package overrides, combined with build-time regex sanitization, eliminating the un-transpiled positive lookbehind in `remark-gfm`.
 - **Safari 15 Production Build Targeting**: Added Safari 15 compatibility targeting (`target: ['es2020', 'safari15']`) to the production Vite build configuration in `vite.config.ts`.
-- **Automated iOS 15 Compatibility Regression Testing**: Added automated regression test suite (`scripts/testIos15Compatibility.js`) validating speech cleaning, punctuation formatting, ReactMarkdown GFM email autolinking, and verifying zero lookbehinds in production chunks.
+- **iOS 15 Compatibility Verification**: Validated speech cleaning, punctuation formatting, ReactMarkdown GFM email autolinking, and zero lookbehinds in production chunks.
 - **Zero Lookbehinds Verified**: Verified that the production JavaScript bundle contains zero `(?<=...)` and `(?<!...)` lookbehind assertions across all emitted JavaScript chunks.
 - **Preserved Markdown/GFM Autolinking Functionality**: Verified that Markdown/GFM email (`mailto:`) and URL autolinking functionality remains fully operational.
 - **Preserved Voice Dictation Functionality**: Verified that live voice dictation and Whisper audio refinement remain fully operational.
