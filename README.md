@@ -800,9 +800,15 @@ VITE_FIREBASE_PROJECT_ID=your_project_id
 VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
 VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
+
+# Sentry Error Monitoring & APM (Optional)
+SENTRY_DSN=your_backend_sentry_dsn_here
+VITE_SENTRY_DSN=your_frontend_sentry_dsn_here
+SENTRY_ENVIRONMENT=production
+VITE_SENTRY_ENVIRONMENT=production
 ```
 
-*Note*: API keys are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when keys are absent.
+*Note*: API keys are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when keys are absent. Sentry monitoring is disabled gracefully when no DSN is provided.
 
 ---
 

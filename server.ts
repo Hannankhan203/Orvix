@@ -40,6 +40,9 @@ for (const envPath of envCandidateFiles) {
   } catch (_) {}
 }
 
+import { initBackendSentry, setupBackendExpressErrorHandler } from './server/sentryService.ts';
+initBackendSentry();
+
 // Import modular subsystems
 import {
   isAllowedOrigin,
@@ -169,6 +172,21 @@ app.get(['/api/config', '/config'], (_req, res) => {
 registerUploadRoutes(app);
 registerTranscriptionRoutes(app);
 registerChatRoutes(app);
+
+// Attach Sentry Express error handler (no-op if Sentry is uninitialized)
+setupBackendExpressErrorHandler(app);
+
+// Global application error fallback for Express
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+  const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
+  res.status(status).json({
+    error: err?.message || 'Internal server error',
+    code: err?.code || 'INTERNAL_SERVER_ERROR'
+  });
+});
 
 // Service worker and web app manifest must NEVER be cached by browsers, proxies, or CDNs
 app.use((req, res, next) => {
