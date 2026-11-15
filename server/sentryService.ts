@@ -1,5 +1,8 @@
 import * as Sentry from '@sentry/node';
+import type { Breadcrumb, ErrorEvent, EventHint, NodeOptions } from '@sentry/node';
 import type express from 'express';
+
+type StreamedSpan = Parameters<NonNullable<NodeOptions['beforeSendSpan']>>[0];
 
 export const SENSITIVE_KEY_REGEX =
   /(key|token|secret|password|auth|cookie|prompt|message|content|attachment|document|file|buffer|base64|extract|email|phone|credential)/i;
@@ -57,7 +60,7 @@ export function initBackendSentry() {
       dsn: dsn.trim(),
       environment: process.env.SENTRY_ENVIRONMENT || process.env.NODE_ENV || 'production',
       tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE) || 0.1,
-      beforeSend(event) {
+      beforeSend(event: ErrorEvent, _hint: EventHint): ErrorEvent | null {
         try {
           if (event.request) {
             if (event.request.headers) {
@@ -97,7 +100,7 @@ export function initBackendSentry() {
           }
 
           if (event.breadcrumbs) {
-            event.breadcrumbs = event.breadcrumbs.map((b) => ({
+            event.breadcrumbs = event.breadcrumbs.map((b: Breadcrumb) => ({
               ...b,
               message: b.message ? (sanitizeString(b.message) as string) : b.message,
               data: b.data ? (scrubSensitiveData(b.data) as Record<string, unknown>) : b.data
@@ -110,7 +113,7 @@ export function initBackendSentry() {
         } catch (_) {}
         return event;
       },
-      beforeBreadcrumb(breadcrumb) {
+      beforeBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
         if (breadcrumb.category === 'http' || breadcrumb.category === 'fetch' || breadcrumb.category === 'xhr') {
           if (breadcrumb.data?.url && typeof breadcrumb.data.url === 'string') {
             breadcrumb.data.url = sanitizeString(breadcrumb.data.url) as string;
@@ -123,7 +126,7 @@ export function initBackendSentry() {
         }
         return breadcrumb;
       },
-      beforeSendSpan(span: any) {
+      beforeSendSpan(span: StreamedSpan): StreamedSpan {
         if (span.attributes) {
           for (const key of Object.keys(span.attributes)) {
             if (SENSITIVE_KEY_REGEX.test(key)) {
