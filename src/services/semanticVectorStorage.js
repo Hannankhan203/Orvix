@@ -122,6 +122,21 @@ export function getVectorDB() {
   return vectorDbPromise;
 }
 
+function matchesChunkScope(chunk, options = {}) {
+  if (!chunk || typeof chunk !== 'object') return false;
+  if (options?.conversationId !== undefined && options?.conversationId !== null) {
+    if (chunk.conversationId !== options.conversationId) return false;
+  }
+  if (options?.userId !== undefined) {
+    if (options.userId === null) {
+      if (chunk.userId) return false;
+    } else if (chunk.userId !== options.userId) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Stores an array of chunk records (with their embeddings) into IndexedDB.
  * Updates in-memory fallback simultaneously for high-reliability retrieval.
@@ -129,16 +144,22 @@ export function getVectorDB() {
  * @param {string} docId - Target document identifier
  * @param {Array<Object>} chunks - Chunks with embeddings
  * @param {string} [conversationId] - Associated conversation identifier
+ * @param {Object} [options] - Optional storage metadata
  * @returns {Promise<boolean>}
  */
-export async function storeDocumentChunks(docId, chunks = [], conversationId = null) {
+export async function storeDocumentChunks(docId, chunks = [], conversationId = null, options = {}) {
   if (!docId || !Array.isArray(chunks) || chunks.length === 0) return false;
 
   const now = Date.now();
+  const resolvedUserId = options?.userId !== undefined ? options.userId : undefined;
+  const resolvedContentHash = options?.contentHash !== undefined ? options.contentHash : undefined;
   const preparedChunks = chunks.map((c) => ({
     ...c,
     docId,
     conversationId: conversationId || c.conversationId || null,
+    userId: resolvedUserId !== undefined ? resolvedUserId : (c.userId || null),
+    expectedChunkCount: typeof c.expectedChunkCount === 'number' ? c.expectedChunkCount : chunks.length,
+    ...(resolvedContentHash !== undefined ? { contentHash: resolvedContentHash } : {}),
     createdAt: c.createdAt || now
   }));
 
@@ -184,24 +205,28 @@ export async function storeDocumentChunks(docId, chunks = [], conversationId = n
  * Retrieves all chunk records associated with a set of document IDs.
  *
  * @param {string[]} docIds - Array of document IDs
+ * @param {Object} [options] - Optional conversationId / userId scope filters
  * @returns {Promise<Array<Object>>}
  */
-export async function getChunksForDocuments(docIds = []) {
+export async function getChunksForDocuments(docIds = [], options = {}) {
   if (!Array.isArray(docIds) || docIds.length === 0) return [];
   const targetIds = new Set(docIds.filter(Boolean));
   if (targetIds.size === 0) return [];
 
+  const filterMemory = () => {
+    const results = [];
+    for (const chunk of memoryVectorStore.values()) {
+      if (targetIds.has(chunk.docId) && matchesChunkScope(chunk, options)) {
+        results.push(chunk);
+      }
+    }
+    return results;
+  };
+
   try {
     const db = await getVectorDB();
     if (!db) {
-      // Use memory fallback
-      const results = [];
-      for (const chunk of memoryVectorStore.values()) {
-        if (targetIds.has(chunk.docId)) {
-          results.push(chunk);
-        }
-      }
-      return results;
+      return filterMemory();
     }
 
     return new Promise((resolve) => {
@@ -209,7 +234,7 @@ export async function getChunksForDocuments(docIds = []) {
       const finish = (res) => {
         if (!resolved) {
           resolved = true;
-          resolve(res);
+          resolve(res.filter((c) => matchesChunkScope(c, options)));
         }
       };
 
@@ -265,26 +290,17 @@ export async function getChunksForDocuments(docIds = []) {
         }
 
         tx.oncomplete = () => finish(collected);
-        tx.onerror = () => finish(collected);
-        tx.onabort = () => finish(collected);
+        tx.onerror = () => finish(collected.length > 0 ? collected : filterMemory());
+        tx.onabort = () => finish(collected.length > 0 ? collected : filterMemory());
       } catch (err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
-        // Fall back to memory
-        const results = [];
-        for (const chunk of memoryVectorStore.values()) {
-          if (targetIds.has(chunk.docId)) results.push(chunk);
-        }
-        finish(results);
+        finish(filterMemory());
       }
     });
   } catch (_) {
-    const results = [];
-    for (const chunk of memoryVectorStore.values()) {
-      if (targetIds.has(chunk.docId)) results.push(chunk);
-    }
-    return results;
+    return filterMemory();
   }
 }
 
@@ -292,19 +308,25 @@ export async function getChunksForDocuments(docIds = []) {
  * Retrieves all chunk records associated with a conversation ID.
  *
  * @param {string} conversationId
+ * @param {Object} [options] - Optional userId scope filter
  * @returns {Promise<Array<Object>>}
  */
-export async function getChunksForConversation(conversationId) {
+export async function getChunksForConversation(conversationId, options = {}) {
   if (!conversationId) return [];
+  const scope = { ...options, conversationId };
+
+  const filterMemory = () => {
+    const results = [];
+    for (const chunk of memoryVectorStore.values()) {
+      if (matchesChunkScope(chunk, scope)) results.push(chunk);
+    }
+    return results;
+  };
 
   try {
     const db = await getVectorDB();
     if (!db) {
-      const results = [];
-      for (const chunk of memoryVectorStore.values()) {
-        if (chunk.conversationId === conversationId) results.push(chunk);
-      }
-      return results;
+      return filterMemory();
     }
 
     return new Promise((resolve) => {
@@ -312,7 +334,7 @@ export async function getChunksForConversation(conversationId) {
       const finish = (res) => {
         if (!resolved) {
           resolved = true;
-          resolve(res);
+          resolve(res.filter((c) => matchesChunkScope(c, scope)));
         }
       };
 
@@ -321,30 +343,22 @@ export async function getChunksForConversation(conversationId) {
         const store = tx.objectStore(VECTOR_STORE_NAME);
         const index = store.index('conversationId');
 
-        const fallbackFromMemory = () => {
-          const results = [];
-          for (const chunk of memoryVectorStore.values()) {
-            if (chunk.conversationId === conversationId) results.push(chunk);
-          }
-          return results;
-        };
-
-        tx.onerror = () => finish(fallbackFromMemory());
-        tx.onabort = () => finish(fallbackFromMemory());
+        tx.onerror = () => finish(filterMemory());
+        tx.onabort = () => finish(filterMemory());
 
         if (typeof index.getAll === 'function') {
           const req = index.getAll(conversationId);
           if (!req) {
-            finish(fallbackFromMemory());
+            finish(filterMemory());
             return;
           }
           req.onsuccess = (e) => finish(e.target.result || []);
-          req.onerror = () => finish(fallbackFromMemory());
+          req.onerror = () => finish(filterMemory());
         } else {
           const collected = [];
           const cursorReq = index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(conversationId) : undefined);
           if (!cursorReq) {
-            finish(fallbackFromMemory());
+            finish(filterMemory());
             return;
           }
           cursorReq.onsuccess = (e) => {
@@ -366,31 +380,27 @@ export async function getChunksForConversation(conversationId) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
-        const results = [];
-        for (const chunk of memoryVectorStore.values()) {
-          if (chunk.conversationId === conversationId) results.push(chunk);
-        }
-        finish(results);
+        finish(filterMemory());
       }
     });
   } catch (_) {
-    const results = [];
-    for (const chunk of memoryVectorStore.values()) {
-      if (chunk.conversationId === conversationId) results.push(chunk);
-    }
-    return results;
+    return filterMemory();
   }
 }
 
 /**
- * Retrieves all indexed chunks across all documents.
+ * Retrieves all indexed chunks across all documents (optionally scoped by conversationId/userId).
+ * @param {Object} [options]
  * @returns {Promise<Array<Object>>}
  */
-export async function getAllIndexedChunks() {
+export async function getAllIndexedChunks(options = {}) {
+  const filterMemory = () =>
+    Array.from(memoryVectorStore.values()).filter((c) => matchesChunkScope(c, options));
+
   try {
     const db = await getVectorDB();
     if (!db) {
-      return Array.from(memoryVectorStore.values());
+      return filterMemory();
     }
 
     return new Promise((resolve) => {
@@ -398,47 +408,48 @@ export async function getAllIndexedChunks() {
       const finish = (res) => {
         if (!resolved) {
           resolved = true;
-          resolve(res);
+          resolve(res.filter((c) => matchesChunkScope(c, options)));
         }
       };
 
       try {
         const tx = db.transaction([VECTOR_STORE_NAME], 'readonly');
         const store = tx.objectStore(VECTOR_STORE_NAME);
-        tx.onerror = () => finish(Array.from(memoryVectorStore.values()));
-        tx.onabort = () => finish(Array.from(memoryVectorStore.values()));
+        tx.onerror = () => finish(filterMemory());
+        tx.onabort = () => finish(filterMemory());
         const req = store.getAll();
         if (!req) {
-          finish(Array.from(memoryVectorStore.values()));
+          finish(filterMemory());
           return;
         }
         req.onsuccess = (e) => finish(e.target.result || []);
-        req.onerror = () => finish(Array.from(memoryVectorStore.values()));
+        req.onerror = () => finish(filterMemory());
       } catch (err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
-        finish(Array.from(memoryVectorStore.values()));
+        finish(filterMemory());
       }
     });
   } catch (_) {
-    return Array.from(memoryVectorStore.values());
+    return filterMemory();
   }
 }
 
 /**
- * Deletes all chunks associated with a specific document ID.
+ * Deletes all chunks associated with a specific document ID (and optional conversationId/userId scope).
  *
  * @param {string} docId
+ * @param {Object} [options]
  * @returns {Promise<number>} Number of deleted chunks
  */
-export async function deleteChunksForDocument(docId) {
+export async function deleteChunksForDocument(docId, options = {}) {
   if (!docId) return 0;
 
   // Clean memory fallback
   let memCount = 0;
   for (const [key, val] of memoryVectorStore.entries()) {
-    if (val.docId === docId) {
+    if (val.docId === docId && matchesChunkScope(val, options)) {
       memoryVectorStore.delete(key);
       memCount++;
     }
@@ -475,8 +486,10 @@ export async function deleteChunksForDocument(docId) {
         cursorReq.onsuccess = (e) => {
           const cursor = e.target.result;
           if (cursor) {
-            cursor.delete();
-            deleted++;
+            if (matchesChunkScope(cursor.value, options)) {
+              cursor.delete();
+              deleted++;
+            }
             try {
               cursor.continue();
             } catch (_) {

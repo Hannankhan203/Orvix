@@ -4678,6 +4678,7 @@ export async function streamWebLLMMessage({
   model = null,
   modelId: modelIdParam = null,
   conversationId = null,
+  userId = undefined,
   attachments = [],
   onStart,
   onChunk,
@@ -4817,11 +4818,59 @@ export async function streamWebLLMMessage({
 
     // Handle local pre-extracted attachments (PDF, DOCX, TXT, offline Tesseract OCR) without server round-trips
     const rawAttachments = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+    const historyAttachments = [];
+    if (Array.isArray(history) && history.length > 0) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const hMsg = history[i];
+        const msgAtts = Array.isArray(hMsg?.attachments)
+          ? hMsg.attachments
+          : Array.isArray(hMsg?.referencedAttachments)
+          ? hMsg.referencedAttachments
+          : [];
+        for (const hAtt of msgAtts) {
+          if (hAtt && typeof hAtt === 'object') {
+            historyAttachments.push(hAtt);
+          }
+        }
+      }
+    }
+
     let effectiveSystemInstruction = baseSystemInstruction;
     let effectivePrompt = cleanPrompt;
 
-    if (rawAttachments.length > 0) {
+    if (rawAttachments.length > 0 || historyAttachments.length > 0) {
       const normalizedDocs = [];
+      const seenDocKeys = new Set();
+
+      const normalizeAttToDoc = (att) => {
+        const ext = att.extraction || att;
+        const textBody =
+          typeof ext.text === 'string'
+            ? ext.text
+            : typeof ext.extractedText === 'string'
+              ? ext.extractedText
+              : '';
+        const wordMatches = textBody.trim() ? textBody.trim().match(/\S+/g) : null;
+        const docId = ext.id || att.id || att.fileId;
+
+        return {
+          ...ext,
+          id: docId,
+          fileId: ext.fileId || att.fileId || docId,
+          originalName: ext.originalName || att.originalName || att.name || att.filename || 'attachment',
+          filename: ext.filename || att.filename || att.name || 'attachment',
+          format: ext.format || att.extension || 'TXT',
+          conversationId: att.conversationId || att.chatId || ext.conversationId || conversationId || null,
+          userId: att.userId !== undefined ? att.userId : ext.userId,
+          text: textBody,
+          totalCharacters:
+            typeof ext.totalCharacters === 'number' ? ext.totalCharacters : textBody.length,
+          totalWords:
+            typeof ext.totalWords === 'number' ? ext.totalWords : wordMatches ? wordMatches.length : 0,
+          isImage: Boolean(ext.isImage ?? att.isImage ?? false)
+        };
+      };
+
       for (const att of rawAttachments) {
         const hasExtractionPayload = Boolean(
           att.extraction ||
@@ -4844,64 +4893,77 @@ export async function streamWebLLMMessage({
           );
         }
 
-        const ext = att.extraction || att;
-        const textBody =
-          typeof ext.text === 'string'
-            ? ext.text
-            : typeof ext.extractedText === 'string'
-              ? ext.extractedText
-              : '';
-        const wordMatches = textBody.trim() ? textBody.trim().match(/\S+/g) : null;
+        const normDoc = normalizeAttToDoc(att);
+        const key = normDoc.id || normDoc.originalName;
+        if (key && !seenDocKeys.has(key)) {
+          seenDocKeys.add(key);
+          normalizedDocs.push(normDoc);
+        }
+      }
 
-        normalizedDocs.push({
-          ...ext,
-          id: ext.id || att.id || att.fileId,
-          originalName: ext.originalName || att.originalName || att.name || att.filename || 'attachment',
-          filename: ext.filename || att.filename || att.name || 'attachment',
-          format: ext.format || att.extension || 'TXT',
-          text: textBody,
-          totalCharacters:
-            typeof ext.totalCharacters === 'number' ? ext.totalCharacters : textBody.length,
-          totalWords:
-            typeof ext.totalWords === 'number' ? ext.totalWords : wordMatches ? wordMatches.length : 0,
-          isImage: Boolean(ext.isImage ?? att.isImage ?? false)
+      for (const hAtt of historyAttachments) {
+        const hasExtractionPayload = Boolean(
+          hAtt.extraction ||
+            typeof hAtt.extractedText === 'string' ||
+            typeof hAtt.text === 'string'
+        );
+        if (!hasExtractionPayload) continue;
+        const hConvId = hAtt.conversationId || hAtt.chatId || hAtt.extraction?.conversationId;
+        if (conversationId && hConvId && hConvId !== conversationId) continue;
+        const hUserId = hAtt.userId !== undefined ? hAtt.userId : hAtt.extraction?.userId;
+        if (userId !== undefined && hUserId !== undefined && (hUserId || null) !== (userId || null)) {
+          continue;
+        }
+        const normDoc = normalizeAttToDoc(hAtt);
+        const key = normDoc.id || normDoc.originalName;
+        if (key && !seenDocKeys.has(key)) {
+          seenDocKeys.add(key);
+          normalizedDocs.push(normDoc);
+        }
+      }
+
+      const primaryCurrentAttachmentId = rawAttachments[0]?.id || rawAttachments[0]?.fileId || undefined;
+      const effectiveUserId =
+        userId !== undefined ? userId : normalizedDocs.find((d) => d?.userId !== undefined)?.userId;
+
+      if (normalizedDocs.length > 0) {
+        const preparedContext = await retrieveSemanticDocumentContext(cleanPrompt, normalizedDocs, {
+          provider: WEBLLM_PROVIDER_ID,
+          conversationId,
+          ...(effectiveUserId !== undefined ? { userId: effectiveUserId } : {}),
+          ...(primaryCurrentAttachmentId ? { activeAttachmentId: primaryCurrentAttachmentId } : {})
         });
+
+        // Direct deterministic response when attached image/document has NO_TEXT_DETECTED or unreadable notice
+        if (preparedContext.directAnswer && !preparedContext.formattedContext) {
+          if (signal?.aborted) {
+            throw createAbortError();
+          }
+          if (typeof onStart === 'function') {
+            onStart({ modelUsed: modelId, provider: WEBLLM_PROVIDER_ID });
+          }
+          if (typeof onChunk === 'function') {
+            onChunk(preparedContext.directAnswer, preparedContext.directAnswer);
+          }
+          return {
+            text: preparedContext.directAnswer,
+            modelUsed: modelId,
+            provider: WEBLLM_PROVIDER_ID
+          };
+        }
+
+        // Format attachment context directly in the user message (proven Qwen 2.5 grounding format)
+        const adapted = adaptDocumentContextForProvider({
+          provider: WEBLLM_PROVIDER_ID,
+          prompt: cleanPrompt,
+          baseSystemInstruction,
+          preparedContext,
+          maxCharsOverride: catalogEntry?.maxDocChars || 10_000
+        });
+
+        effectiveSystemInstruction = adapted.effectiveSystemInstruction;
+        effectivePrompt = adapted.effectivePrompt;
       }
-
-      const preparedContext = await retrieveSemanticDocumentContext(cleanPrompt, normalizedDocs, {
-        provider: WEBLLM_PROVIDER_ID,
-        conversationId
-      });
-
-      // Direct deterministic response when attached image/document has NO_TEXT_DETECTED or unreadable notice
-      if (preparedContext.directAnswer && !preparedContext.formattedContext) {
-        if (signal?.aborted) {
-          throw createAbortError();
-        }
-        if (typeof onStart === 'function') {
-          onStart({ modelUsed: modelId, provider: WEBLLM_PROVIDER_ID });
-        }
-        if (typeof onChunk === 'function') {
-          onChunk(preparedContext.directAnswer, preparedContext.directAnswer);
-        }
-        return {
-          text: preparedContext.directAnswer,
-          modelUsed: modelId,
-          provider: WEBLLM_PROVIDER_ID
-        };
-      }
-
-      // Format attachment context directly in the user message (proven Qwen 2.5 grounding format)
-      const adapted = adaptDocumentContextForProvider({
-        provider: WEBLLM_PROVIDER_ID,
-        prompt: cleanPrompt,
-        baseSystemInstruction,
-        preparedContext,
-        maxCharsOverride: catalogEntry?.maxDocChars || 10_000
-      });
-
-      effectiveSystemInstruction = adapted.effectiveSystemInstruction;
-      effectivePrompt = adapted.effectivePrompt;
     }
 
     const rawMessages = formatOpenAIMessages({

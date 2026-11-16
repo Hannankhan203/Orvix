@@ -1523,6 +1523,7 @@ export default function ChatPage({
           signal,
           isRequestActive,
           conversationId: targetChatId,
+          userId: currentUser?.uid || null,
           attachments: reqAttachments,
           isContinuation: multiPartParams.isContinuation,
           partNumber: multiPartParams.partNumber,
@@ -2111,6 +2112,9 @@ export default function ChatPage({
                       extension: att.extension,
                       isImage: Boolean(att.isImage),
                       status: extResult.status,
+                      chatId: effectiveChatId || null,
+                      conversationId: effectiveChatId || null,
+                      userId: currentUser?.uid || null,
                       file: att.file,
                       previewUrl: att.previewUrl,
                       extraction: extResult
@@ -2173,6 +2177,7 @@ export default function ChatPage({
                     ...cleanProc,
                     chatId: cleanProc.chatId || cleanProc.conversationId || effectiveChatId || null,
                     conversationId: cleanProc.conversationId || cleanProc.chatId || effectiveChatId || null,
+                    userId: cleanProc.userId || currentUser?.uid || null,
                     ...(savedInIdb ? {} : orig?.file ? { file: orig.file } : {}),
                     ...(safePreviewUrl ? { previewUrl: safePreviewUrl } : {}),
                     isImage: Boolean(cleanProc.isImage || orig?.isImage)
@@ -2278,6 +2283,9 @@ export default function ChatPage({
                     extension: att.extension,
                     isImage: Boolean(att.isImage),
                     status: extResult.status,
+                    chatId: effectiveChatId || null,
+                    conversationId: effectiveChatId || null,
+                    userId: currentUser?.uid || null,
                     file: att.file,
                     previewUrl: att.previewUrl,
                     extraction: extResult
@@ -2431,18 +2439,35 @@ export default function ChatPage({
             'orvix_active_chat',
             currentChatId
           );
+        }
+      }
 
-          // Associate newly saved attachments with the confirmed conversation ID and index into vector store
-          if (Array.isArray(processedAttachments)) {
-            for (const att of processedAttachments) {
-              if (att?.id) {
-                void updateAttachmentConversationId(att.id, currentChatId).catch(() => {});
-                const docPayload = att.extraction || att;
-                if (docPayload && (docPayload.text || docPayload.pages || docPayload.slides || docPayload.sections)) {
-                  void indexDocument(docPayload, currentChatId).catch(() => {});
-                }
-              }
-            }
+      // Associate newly saved attachments with the active conversation ID and index into vector store on every turn
+      if (currentChatId && !isAuthenticatedSharedPreview && Array.isArray(processedAttachments) && processedAttachments.length > 0) {
+        for (const att of processedAttachments) {
+          if (!att?.id) continue;
+          void updateAttachmentConversationId(att.id, currentChatId).catch(() => {});
+          const rawDocPayload = att.extraction || att;
+          if (
+            rawDocPayload &&
+            (rawDocPayload.text ||
+              rawDocPayload.extractedText ||
+              rawDocPayload.pages ||
+              rawDocPayload.slides ||
+              rawDocPayload.sections)
+          ) {
+            const indexPayload = {
+              ...rawDocPayload,
+              id: rawDocPayload.id || rawDocPayload.fileId || att.id,
+              fileId: rawDocPayload.fileId || rawDocPayload.id || att.id,
+              originalName: rawDocPayload.originalName || att.originalName || att.name,
+              name: rawDocPayload.name || att.name || rawDocPayload.originalName,
+              format: rawDocPayload.format || att.format || att.extension,
+              userId: att.userId || rawDocPayload.userId || currentUser?.uid || null
+            };
+            void indexDocument(indexPayload, currentChatId, {
+              userId: indexPayload.userId
+            }).catch(() => {});
           }
         }
       }

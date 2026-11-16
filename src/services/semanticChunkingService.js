@@ -150,9 +150,15 @@ export function chunkDocument(doc, options = {}) {
   const docId = doc.id || doc.fileId || `doc_${Date.now()}`;
   const docName = doc.originalName || doc.filename || doc.name || 'document';
   const format = (doc.format || 'FILE').toUpperCase();
-  const conversationId = options.conversationId || doc.conversationId || null;
+  const conversationId = options.conversationId || doc.conversationId || doc.chatId || null;
+  const userId = options.userId !== undefined ? options.userId : (doc.userId || null);
   const targetSize = options.targetSize || DEFAULT_CHUNK_SIZE;
   const overlap = options.overlap || DEFAULT_CHUNK_OVERLAP;
+
+  const idScopeParts = [];
+  if (userId) idScopeParts.push(userId);
+  if (conversationId) idScopeParts.push(conversationId);
+  const scopedDocPrefix = idScopeParts.length > 0 ? `${idScopeParts.join('::')}::${docId}` : docId;
 
   const chunks = [];
   let globalChunkIndex = 0;
@@ -169,9 +175,10 @@ export function chunkDocument(doc, options = {}) {
       for (let wIdx = 0; wIdx < pageWindows.length; wIdx++) {
         const win = pageWindows[wIdx];
         chunks.push({
-          id: `${docId}_p${pageNum}_c${wIdx}`,
+          id: `${scopedDocPrefix}_p${pageNum}_c${wIdx}`,
           docId,
           conversationId,
+          userId,
           docName,
           format,
           chunkIndex: globalChunkIndex++,
@@ -211,9 +218,10 @@ export function chunkDocument(doc, options = {}) {
       for (let sIdx = 0; sIdx < slideWindows.length; sIdx++) {
         const win = slideWindows[sIdx];
         chunks.push({
-          id: `${docId}_s${slideNum}_c${sIdx}`,
+          id: `${scopedDocPrefix}_s${slideNum}_c${sIdx}`,
           docId,
           conversationId,
+          userId,
           docName,
           format,
           chunkIndex: globalChunkIndex++,
@@ -246,9 +254,10 @@ export function chunkDocument(doc, options = {}) {
       for (let secIdx = 0; secIdx < sectionWindows.length; secIdx++) {
         const win = sectionWindows[secIdx];
         chunks.push({
-          id: `${docId}_sec_${globalChunkIndex}`,
+          id: `${scopedDocPrefix}_sec_${globalChunkIndex}`,
           docId,
           conversationId,
+          userId,
           docName,
           format,
           chunkIndex: globalChunkIndex++,
@@ -275,9 +284,10 @@ export function chunkDocument(doc, options = {}) {
   for (let idx = 0; idx < textWindows.length; idx++) {
     const win = textWindows[idx];
     chunks.push({
-      id: `${docId}_chunk_${idx}`,
+      id: `${scopedDocPrefix}_chunk_${idx}`,
       docId,
       conversationId,
+      userId,
       docName,
       format,
       chunkIndex: globalChunkIndex++,

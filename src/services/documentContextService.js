@@ -958,15 +958,40 @@ export async function retrieveSemanticDocumentContext(prompt, docs, options = {}
 
   // Attempt semantic top-k retrieval across attached documents
   try {
-    const docIds = docs.map((d) => d.id || d.fileId).filter(Boolean);
+    const fallbackDocIds = docs.map((d) => d.id || d.fileId).filter(Boolean);
     const topK = options.topK || 5;
     const minScore = options.minScore || 0.15;
-    const conversationId = options.conversationId || docs[0]?.conversationId || null;
+    const conversationId =
+      options.conversationId ||
+      docs.find((d) => d?.conversationId || d?.chatId)?.conversationId ||
+      docs.find((d) => d?.chatId)?.chatId ||
+      null;
+    const resolvedUserId =
+      options.userId !== undefined
+        ? options.userId
+        : docs.find((d) => d?.userId !== undefined)?.userId;
+
+    let docIds = [];
+    if (Array.isArray(options.docIds) && options.docIds.length > 0) {
+      docIds = options.docIds;
+    } else if (intent.targetFilename) {
+      const targetLower = intent.targetFilename.toLowerCase();
+      docIds = docs
+        .filter((d) => (d.originalName || d.filename || d.name || '').toLowerCase() === targetLower)
+        .map((d) => d.id || d.fileId)
+        .filter(Boolean);
+      if (docIds.length === 0 && !conversationId) {
+        docIds = fallbackDocIds;
+      }
+    } else if (!conversationId) {
+      docIds = fallbackDocIds;
+    }
 
     const semanticChunks = await searchSemanticChunks({
       query: prompt,
       docIds,
       conversationId,
+      ...(resolvedUserId !== undefined ? { userId: resolvedUserId } : {}),
       inMemoryDocs: docs,
       topK,
       minScore,
