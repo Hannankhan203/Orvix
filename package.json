@@ -36,7 +36,7 @@
     "lucide-react": "^0.546.0",
     "mammoth": "^1.13.0",
     "motion": "^12.23.24",
-    "multer": "^2.4.0",
+    "multer": "^2.5.0",
     "pdf-lib": "^1.17.1",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
@@ -65,6 +65,14 @@
   },
   "overrides": {
     "mdast-util-gfm-autolink-literal": "2.0.0",
-    "wasm-feature-detect": "1.8.0"
+    "wasm-feature-detect": "1.8.0",
+    "express": {
+      "body-parser": "~1.20.9"
+    },
+    "@grpc/grpc-js": "^1.14.7",
+    "katex": "$katex",
+    "workbox-build": {
+      "glob": "^14.0.6"
+    }
   }
 }
