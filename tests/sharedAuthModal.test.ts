@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { register } from 'node:module';
 import React, { act } from 'react';
 import type { Root } from 'react-dom/client';
 import { AuthProvider, useAuth } from '../src/context/AuthContext.jsx';
@@ -10,17 +10,21 @@ import MessageErrorBox from '../src/components/chat/MessageErrorBox.jsx';
 // Pre-load lazy AuthScreen module so Suspense inside ChatPage resolves cleanly in Node tests
 import '../src/components/auth/AuthScreen.jsx';
 
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (specifier === 'virtual:pwa-register') {
-      return {
-        shortCircuit: true,
-        url: 'data:text/javascript,export function registerSW() { return () => Promise.resolve(); }'
-      };
+register(
+  'data:text/javascript,' +
+    encodeURIComponent(`
+    export async function resolve(specifier, context, nextResolve) {
+      if (specifier === 'virtual:pwa-register') {
+        return {
+          shortCircuit: true,
+          url: 'data:text/javascript,export function registerSW() { return () => Promise.resolve(); }'
+        };
+      }
+      return nextResolve(specifier, context);
     }
-    return nextResolve(specifier, context);
-  }
-});
+  `),
+  import.meta.url
+);
 
 let CachedChatPage: any = null;
 async function getChatPage() {
