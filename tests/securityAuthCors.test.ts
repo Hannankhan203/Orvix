@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import express from 'express';
@@ -241,6 +241,22 @@ function setupTestKeys() {
     wrongAudienceToken
   };
 }
+
+const originalRateLimitKeyPrefix = process.env.RATE_LIMIT_KEY_PREFIX;
+let testCounter = 0;
+
+beforeEach(() => {
+  testCounter += 1;
+  process.env.RATE_LIMIT_KEY_PREFIX = `orvix:test:sec_auth_cors:${process.pid}:${testCounter}`;
+});
+
+after(() => {
+  if (originalRateLimitKeyPrefix === undefined) {
+    delete process.env.RATE_LIMIT_KEY_PREFIX;
+  } else {
+    process.env.RATE_LIMIT_KEY_PREFIX = originalRateLimitKeyPrefix;
+  }
+});
 
 test('ORVIX-CRIT-03 /api/chat: rejects unauthenticated, malformed, expired, and forged Firebase credentials across all routes', async () => {
   resetFirebaseAuthForTesting();
