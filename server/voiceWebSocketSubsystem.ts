@@ -1,4 +1,5 @@
 import type { Server as HttpServer, IncomingMessage } from 'http';
+import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { parse as parseUrl } from 'url';
 import dns from 'dns';
@@ -20,7 +21,20 @@ import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Spoken transcript cleaner
 import { polishSpokenTranscript } from '../src/utils/speechTextCleaner.js';
 import { mapBcp47ToIso639, DEFAULT_WHISPER_CONTEXT_PROMPT } from './transcriptionSubsystem.ts';
-import { checkWebSocketUpgradeRateLimit, extractClientIp } from './rateLimiter.ts';
+import {
+  checkWebSocketHandshakeFloodLimit,
+  checkWebSocketUpgradeRateLimit,
+  extractClientIp,
+  getRateLimitKeyPrefix,
+  hashRateLimitIdentifier,
+  resolveRateLimitFailureMode
+} from './rateLimiter.ts';
+import {
+  ensureRedisReady,
+  getRedisClient,
+  getRedisCommandTimeoutMs,
+  isRedisConfigured
+} from './redisClient.ts';
 
 /**
  * Returns whether at least one real transcription provider (Groq Whisper or Gemini) is configured.
@@ -66,12 +80,53 @@ export function extractGeminiTranscript(result: any): string {
 
 export const MAX_STREAM_SESSION_DURATION_MS = 15 * 60 * 1000; // 15 minutes max
 export const MAX_STREAM_PCM_BYTES = 25 * 1024 * 1024; // 25 MB max memory buffer
+export const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024; // 2 MB max single WebSocket frame payload
 export const MAX_CONNECTIONS_PER_IP = 10;
+export const MAX_CONNECTIONS_PER_USER = 10;
 export const HEARTBEAT_INTERVAL_MS = 25_000;
 export const HEARTBEAT_TIMEOUT_MS = 10_000;
 export const MIN_CHUNK_INTERVAL_FOR_INCREMENTAL_MS = 600; // ~600ms between progressive passes
 export const MIN_INITIAL_AUDIO_BYTES = 12_800; // ~400ms at 16kHz 16-bit mono before first pass
 export const MIN_NEW_BYTES_FOR_INCREMENTAL = 9_600; // ~300ms of new audio to trigger subsequent passes
+const WS_SLOT_TTL_MS = MAX_STREAM_SESSION_DURATION_MS + 60_000;
+
+export const ATOMIC_WS_SLOT_ACQUIRE_LUA = `
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local ttl_ms = tonumber(ARGV[2])
+local max_slots = tonumber(ARGV[3])
+local member = ARGV[4]
+
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now_ms)
+local current = redis.call('ZCARD', key)
+if current >= max_slots then
+  return { 0, current }
+end
+
+redis.call('ZADD', key, now_ms + ttl_ms, member)
+redis.call('PEXPIRE', key, ttl_ms)
+return { 1, current + 1 }
+`;
+
+export const ATOMIC_WS_SLOT_RELEASE_LUA = `
+local key = KEYS[1]
+local member = ARGV[1]
+redis.call('ZREM', key, member)
+return redis.call('ZCARD', key)
+`;
+
+export const ATOMIC_WS_SLOT_REFRESH_LUA = `
+local key = KEYS[1]
+local now_ms = tonumber(ARGV[1])
+local ttl_ms = tonumber(ARGV[2])
+local member = ARGV[3]
+if redis.call('ZSCORE', key, member) then
+  redis.call('ZADD', key, now_ms + ttl_ms, member)
+  redis.call('PEXPIRE', key, ttl_ms)
+  return 1
+end
+return 0
+`;
 
 export interface AudioStreamFormat {
   sampleRate: number;
@@ -106,11 +161,133 @@ export interface VoiceStreamSession {
   isAlive: boolean;
   heartbeatTimer?: NodeJS.Timeout;
   durationTimer?: NodeJS.Timeout;
+  releaseSlots?: () => void;
+  refreshDistributedSlots?: () => void;
 }
 
-// Active sessions by socket and IP tracking
+// Active sessions by socket plus local IP and UID connection tracking
 const activeSessions = new Map<WebSocket, VoiceStreamSession>();
 const ipConnectionCount = new Map<string, number>();
+const userConnectionCount = new Map<string, number>();
+
+function incrementLocalCount(map: Map<string, number>, key: string): number {
+  const next = (map.get(key) || 0) + 1;
+  map.set(key, next);
+  return next;
+}
+
+function decrementLocalCount(map: Map<string, number>, key: string): void {
+  const cur = map.get(key) || 0;
+  if (cur <= 1) {
+    map.delete(key);
+  } else {
+    map.set(key, cur - 1);
+  }
+}
+
+async function runRedisSlotEvalWithTimeout(
+  fn: () => Promise<unknown>,
+  timeoutMs: number
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const p = Promise.resolve(fn());
+    p.catch(() => {});
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`Redis WS slot command timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    return await Promise.race([p, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function tryAcquireDistributedWsSlot(
+  scope: 'ip' | 'uid',
+  rawIdentifier: string,
+  maxSlots: number,
+  member: string
+): Promise<{ status: 'acquired' | 'limit-exceeded' | 'unavailable'; redisKey: string | null }> {
+  const redisClient = getRedisClient();
+  const hasConfiguredRedis = Boolean(redisClient) || isRedisConfigured();
+
+  if (!redisClient) {
+    if (resolveRateLimitFailureMode('voiceWs', undefined, hasConfiguredRedis) === 'fail-closed') {
+      return { status: 'unavailable', redisKey: null };
+    }
+    return { status: 'acquired', redisKey: null };
+  }
+
+  const timeoutMs = getRedisCommandTimeoutMs();
+  const ready = await ensureRedisReady(redisClient, Math.min(timeoutMs, 1000));
+  if (!ready) {
+    if (resolveRateLimitFailureMode('voiceWs', undefined, hasConfiguredRedis) === 'fail-closed') {
+      return { status: 'unavailable', redisKey: null };
+    }
+    return { status: 'acquired', redisKey: null };
+  }
+
+  const redisKey = `${getRateLimitKeyPrefix()}:wsslots:${scope}:${hashRateLimitIdentifier(`${scope}:${rawIdentifier}`)}`;
+  try {
+    const res = await runRedisSlotEvalWithTimeout(
+      () =>
+        redisClient.eval(
+          ATOMIC_WS_SLOT_ACQUIRE_LUA,
+          1,
+          redisKey,
+          String(Date.now()),
+          String(WS_SLOT_TTL_MS),
+          String(maxSlots),
+          member
+        ),
+      timeoutMs
+    );
+    if (!Array.isArray(res) || res.length < 1) {
+      throw new Error('Unexpected Redis WS slot Lua response');
+    }
+    const allowed = Number(res[0]) === 1;
+    return {
+      status: allowed ? 'acquired' : 'limit-exceeded',
+      redisKey: allowed ? redisKey : null
+    };
+  } catch (err: unknown) {
+    if (resolveRateLimitFailureMode('voiceWs', undefined, hasConfiguredRedis) === 'fail-closed') {
+      return { status: 'unavailable', redisKey: null };
+    }
+    return { status: 'acquired', redisKey: null };
+  }
+}
+
+function releaseDistributedWsSlot(redisKey: string | null, member: string): void {
+  if (!redisKey) return;
+  const redisClient = getRedisClient();
+  if (!redisClient || redisClient.status !== 'ready') return;
+  try {
+    Promise.resolve(redisClient.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, redisKey, member)).catch(() => {});
+  } catch (_) {}
+}
+
+function refreshDistributedWsSlot(redisKey: string | null, member: string): void {
+  if (!redisKey) return;
+  const redisClient = getRedisClient();
+  if (!redisClient || redisClient.status !== 'ready') return;
+  try {
+    Promise.resolve(
+      redisClient.eval(
+        ATOMIC_WS_SLOT_REFRESH_LUA,
+        1,
+        redisKey,
+        String(Date.now()),
+        String(WS_SLOT_TTL_MS),
+        member
+      )
+    ).catch(() => {});
+  } catch (_) {}
+}
 
 function safeSendJson(ws: WebSocket, payload: Record<string, unknown>): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -473,11 +650,13 @@ export function cleanupSession(session: VoiceStreamSession, code = 1000, reason 
 
   if (!session.cleanedUp) {
     session.cleanedUp = true;
-    const currentCount = ipConnectionCount.get(session.ip) || 0;
-    if (currentCount <= 1) {
-      ipConnectionCount.delete(session.ip);
+    if (session.releaseSlots) {
+      session.releaseSlots();
     } else {
-      ipConnectionCount.set(session.ip, currentCount - 1);
+      decrementLocalCount(ipConnectionCount, session.ip);
+      if (session.userId) {
+        decrementLocalCount(userConnectionCount, session.userId);
+      }
     }
   }
 
@@ -494,7 +673,10 @@ export function cleanupSession(session: VoiceStreamSession, code = 1000, reason 
  * Set up the WebSocket Server attached to the existing HTTP Server.
  */
 export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServer {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_WS_PAYLOAD_BYTES
+  });
 
   httpServer.on('upgrade', async (req: IncomingMessage, socket, head) => {
     const parsed = parseUrl(req.url || '', true);
@@ -515,10 +697,30 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       return;
     }
 
-    // Atomically extract normalized IP and reserve concurrent slot BEFORE any async awaits
+    // 1. Pre-auth IP handshake flood limit BEFORE slot allocation or expensive JWT RSA verification
+    const handshakeDecision = await checkWebSocketHandshakeFloodLimit(req);
+    if (!handshakeDecision.allowed) {
+      if (!socket.destroyed) {
+        try {
+          if (handshakeDecision.backend === 'fail-closed') {
+            socket.write(
+              `HTTP/1.1 503 Service Unavailable\r\nRetry-After: ${handshakeDecision.retryAfterSeconds}\r\n\r\n`
+            );
+          } else {
+            socket.write(
+              `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${handshakeDecision.retryAfterSeconds}\r\nX-RateLimit-Limit: ${handshakeDecision.limit}\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset-UTC: ${handshakeDecision.resetAtIso}\r\n\r\n`
+            );
+          }
+        } catch (_) {}
+        socket.destroy();
+      }
+      return;
+    }
+
+    // 2. Synchronously reserve local IP concurrent slot BEFORE further async awaits
     const ip = extractClientIp(req);
-    const currentCount = ipConnectionCount.get(ip) || 0;
-    if (currentCount >= MAX_CONNECTIONS_PER_IP) {
+    const currentIpCount = ipConnectionCount.get(ip) || 0;
+    if (currentIpCount >= MAX_CONNECTIONS_PER_IP) {
       try {
         socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
       } catch (_) {}
@@ -526,29 +728,71 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       return;
     }
 
-    ipConnectionCount.set(ip, currentCount + 1);
-    let slotSettled = false;
-    const releaseReservedIpSlot = () => {
-      if (slotSettled) return;
-      slotSettled = true;
-      const cur = ipConnectionCount.get(ip) || 0;
-      if (cur <= 1) {
-        ipConnectionCount.delete(ip);
-      } else {
-        ipConnectionCount.set(ip, cur - 1);
+    incrementLocalCount(ipConnectionCount, ip);
+    const slotMember = `${process.pid}:${crypto.randomUUID()}`;
+    let ipRedisKey: string | null = null;
+    let userRedisKey: string | null = null;
+    let trackedUserId: string | null = null;
+    let slotsReleased = false;
+    let ownershipTransferred = false;
+
+    const releaseAllSlots = () => {
+      if (slotsReleased) return;
+      slotsReleased = true;
+      decrementLocalCount(ipConnectionCount, ip);
+      if (trackedUserId) {
+        decrementLocalCount(userConnectionCount, trackedUserId);
+      }
+      releaseDistributedWsSlot(ipRedisKey, slotMember);
+      releaseDistributedWsSlot(userRedisKey, slotMember);
+    };
+
+    const onUpgradeSocketCloseOrError = () => {
+      if (!ownershipTransferred) {
+        releaseAllSlots();
       }
     };
 
-    socket.once('close', releaseReservedIpSlot);
+    socket.once('close', onUpgradeSocketCloseOrError);
+    socket.once('error', onUpgradeSocketCloseOrError);
 
     try {
-      // Authenticate handshake strictly via Bearer token in Authorization header or ?token= query param
+      // 3. Enforce distributed concurrent IP connection limit when Redis is active/required
+      const ipSlotResult = await tryAcquireDistributedWsSlot(
+        'ip',
+        ip,
+        MAX_CONNECTIONS_PER_IP,
+        slotMember
+      );
+      if (ipSlotResult.status === 'unavailable') {
+        releaseAllSlots();
+        if (!socket.destroyed) {
+          try {
+            socket.write('HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+      if (ipSlotResult.status === 'limit-exceeded') {
+        releaseAllSlots();
+        if (!socket.destroyed) {
+          try {
+            socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+      ipRedisKey = ipSlotResult.redisKey;
+
+      // 4. Authenticate handshake strictly via Bearer token in Authorization header or ?token= query param
       const rawAuthHeader = req.headers.authorization;
       let token = '';
       if (typeof rawAuthHeader === 'string' && rawAuthHeader.trim()) {
         const match = rawAuthHeader.match(/^Bearer\s+([A-Za-z0-9._~+/-]+=*)$/i);
         if (!match || !match[1]) {
-          releaseReservedIpSlot();
+          releaseAllSlots();
           if (!socket.destroyed) {
             try {
               socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -563,7 +807,7 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       }
 
       if (!token) {
-        releaseReservedIpSlot();
+        releaseAllSlots();
         if (!socket.destroyed) {
           try {
             socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -575,7 +819,7 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
       const authResult = await verifyFirebaseIdToken(token);
       if (!authResult.success) {
-        releaseReservedIpSlot();
+        releaseAllSlots();
         if (!socket.destroyed) {
           try {
             socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -587,14 +831,64 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
       const verifiedUserId: string = authResult.user.uid;
 
-      const wsRateDecision = await checkWebSocketUpgradeRateLimit(req, verifiedUserId);
-      if (!wsRateDecision.allowed) {
-        releaseReservedIpSlot();
+      // 5. Enforce per-user concurrent connection cap (local + distributed Redis)
+      const currentUserCount = userConnectionCount.get(verifiedUserId) || 0;
+      if (currentUserCount >= MAX_CONNECTIONS_PER_USER) {
+        releaseAllSlots();
         if (!socket.destroyed) {
           try {
-            socket.write(
-              `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${wsRateDecision.retryAfterSeconds}\r\nX-RateLimit-Limit: ${wsRateDecision.limit}\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset-UTC: ${wsRateDecision.resetAtIso}\r\n\r\n`
-            );
+            socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+      incrementLocalCount(userConnectionCount, verifiedUserId);
+      trackedUserId = verifiedUserId;
+
+      const userSlotResult = await tryAcquireDistributedWsSlot(
+        'uid',
+        verifiedUserId,
+        MAX_CONNECTIONS_PER_USER,
+        slotMember
+      );
+      if (userSlotResult.status === 'unavailable') {
+        releaseAllSlots();
+        if (!socket.destroyed) {
+          try {
+            socket.write('HTTP/1.1 503 Service Unavailable\r\nRetry-After: 5\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+      if (userSlotResult.status === 'limit-exceeded') {
+        releaseAllSlots();
+        if (!socket.destroyed) {
+          try {
+            socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+      userRedisKey = userSlotResult.redisKey;
+
+      // 6. Enforce per-user upgrade rate limit
+      const wsRateDecision = await checkWebSocketUpgradeRateLimit(req, verifiedUserId);
+      if (!wsRateDecision.allowed) {
+        releaseAllSlots();
+        if (!socket.destroyed) {
+          try {
+            if (wsRateDecision.backend === 'fail-closed') {
+              socket.write(
+                `HTTP/1.1 503 Service Unavailable\r\nRetry-After: ${wsRateDecision.retryAfterSeconds}\r\n\r\n`
+              );
+            } else {
+              socket.write(
+                `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${wsRateDecision.retryAfterSeconds}\r\nX-RateLimit-Limit: ${wsRateDecision.limit}\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset-UTC: ${wsRateDecision.resetAtIso}\r\n\r\n`
+              );
+            }
           } catch (_) {}
           socket.destroy();
         }
@@ -602,25 +896,31 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       }
 
       if (socket.destroyed) {
-        releaseReservedIpSlot();
+        releaseAllSlots();
         return;
       }
 
       // Transfer slot ownership to the WebSocket session before handleUpgrade
-      slotSettled = true;
-      socket.removeListener('close', releaseReservedIpSlot);
+      ownershipTransferred = true;
+      socket.removeListener('close', onUpgradeSocketCloseOrError);
+      socket.removeListener('error', onUpgradeSocketCloseOrError);
 
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req, {
           ip,
           userId: verifiedUserId,
           isGuest: false,
-          authenticated: true
+          authenticated: true,
+          releaseSlots: releaseAllSlots,
+          refreshDistributedSlots: () => {
+            refreshDistributedWsSlot(ipRedisKey, slotMember);
+            refreshDistributedWsSlot(userRedisKey, slotMember);
+          }
         });
       });
     } catch (upgradeErr: any) {
       console.warn('[VoiceStream] WebSocket upgrade error:', upgradeErr?.message || upgradeErr);
-      releaseReservedIpSlot();
+      releaseAllSlots();
       if (!socket.destroyed) {
         socket.destroy();
       }
@@ -629,6 +929,9 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage, authContext: any) => {
     if (!authContext?.authenticated || !authContext?.userId) {
+      try {
+        authContext?.releaseSlots?.();
+      } catch (_) {}
       try {
         ws.close(4401, 'Authentication required');
       } catch (_) {}
@@ -660,7 +963,9 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       hasPendingIncremental: false,
       activeTranscriptionPromise: null,
       cleanedUp: false,
-      isAlive: true
+      isAlive: true,
+      releaseSlots: authContext?.releaseSlots,
+      refreshDistributedSlots: authContext?.refreshDistributedSlots
     };
 
     activeSessions.set(ws, session);
@@ -706,6 +1011,7 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
     ws.on('pong', () => {
       session.isAlive = true;
+      session.refreshDistributedSlots?.();
     });
 
     ws.on('message', async (data, isBinary) => {
@@ -965,7 +1271,7 @@ export function getVoiceIpConnectionCount(ip: string): number {
 }
 
 /**
- * Resets internal voice session and IP connection tracking state for isolated tests.
+ * Resets internal voice session and connection tracking state for isolated tests.
  */
 export function resetVoiceWebSocketStateForTesting(): void {
   for (const session of activeSessions.values()) {
@@ -973,4 +1279,5 @@ export function resetVoiceWebSocketStateForTesting(): void {
   }
   activeSessions.clear();
   ipConnectionCount.clear();
+  userConnectionCount.clear();
 }

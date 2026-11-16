@@ -3,11 +3,22 @@ import type express from 'express';
 import type { IncomingMessage } from 'http';
 import { authenticateRequest } from './firebaseAuthHelper.ts';
 import {
+  ensureRedisReady,
   getRedisClient,
   getRedisCommandTimeoutMs,
+  getRedisHealthStatus,
+  isRedisConfigured,
   type RedisLikeClient
 } from './redisClient.ts';
 import { sanitizeErrorLog } from './diagnosticLogger.ts';
+import {
+  extractClientIp,
+  resolveTrustedProxyPolicy,
+  parseAndNormalizeIp,
+  type TrustedProxyPolicy
+} from './trustedProxy.ts';
+
+export { extractClientIp, resolveTrustedProxyPolicy, parseAndNormalizeIp, type TrustedProxyPolicy };
 
 export type RateLimitPolicyName =
   | 'chat'
@@ -15,9 +26,12 @@ export type RateLimitPolicyName =
   | 'upload'
   | 'uploadRead'
   | 'config'
-  | 'voiceWs';
+  | 'voiceWs'
+  | 'voiceWsHandshake';
 
 export type RateLimitHeaderMode = 'all' | 'ietf-only';
+export type RateLimitBackend = 'redis' | 'memory' | 'fail-closed';
+export type RateLimitFailureMode = 'fail-closed' | 'memory';
 
 export interface RateLimitPolicyConfig {
   policy: RateLimitPolicyName;
@@ -37,6 +51,7 @@ export interface RateLimitConsumeOptions {
   memoryStore?: InMemoryRateLimitStore;
   nowMs?: number;
   commandTimeoutMs?: number;
+  failureMode?: RateLimitFailureMode;
 }
 
 export interface RateLimitDecision {
@@ -48,8 +63,10 @@ export interface RateLimitDecision {
   resetAtMs: number;
   resetAtIso: string;
   retryAfterSeconds: number;
-  backend: 'redis' | 'memory';
+  backend: RateLimitBackend;
+  distributed: boolean;
   degraded: boolean;
+  failureReason?: string;
   key: string;
 }
 
@@ -253,37 +270,91 @@ export function getRateLimitPolicyConfig(policy: RateLimitPolicyName): RateLimit
         headerMode: 'all',
         message: 'Too many voice streaming connection attempts. Please wait a moment before reconnecting.'
       };
+    case 'voiceWsHandshake':
+      return {
+        policy: 'voiceWsHandshake',
+        max: parsePositiveEnvInt('RATE_LIMIT_VOICE_WS_HANDSHAKE_MAX', 60),
+        windowMs: parsePositiveEnvInt('RATE_LIMIT_VOICE_WS_HANDSHAKE_WINDOW_MS', 60_000),
+        headerMode: 'all',
+        message: 'Too many WebSocket connection attempts from this IP. Please wait before retrying.'
+      };
   }
 }
 
-/**
- * Extracts and normalizes the client IP address from Express or raw Node HTTP requests.
- */
-export function extractClientIp(req: Pick<IncomingMessage, 'headers' | 'socket'> & { ip?: string }): string {
-  const forwarded = req.headers?.['x-forwarded-for'];
-  const rawForwarded = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  let candidate = '';
+const COSTLY_FAIL_CLOSED_POLICIES = new Set([
+  'chat',
+  'transcribe',
+  'upload',
+  'voiceWs',
+  'voiceWsHandshake'
+]);
 
-  if (typeof rawForwarded === 'string' && rawForwarded.trim()) {
-    candidate = rawForwarded.split(',')[0].trim();
-  } else if (typeof req.ip === 'string' && req.ip.trim()) {
-    candidate = req.ip.trim();
-  } else if (typeof req.socket?.remoteAddress === 'string' && req.socket.remoteAddress.trim()) {
-    candidate = req.socket.remoteAddress.trim();
+export function isDistributedProductionRuntime(): boolean {
+  if (process.env.NODE_ENV === 'production') {
+    return true;
+  }
+  if (Boolean(process.env.VERCEL)) {
+    return !process.env.NODE_TEST_CONTEXT;
+  }
+  if (Boolean(process.env.K_SERVICE)) {
+    return process.env.NODE_ENV !== 'development' && !process.env.NODE_TEST_CONTEXT;
+  }
+  return false;
+}
+
+export function isDistributedRateLimitRequired(): boolean {
+  const raw = String(process.env.RATE_LIMIT_REQUIRE_DISTRIBUTED || '').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
+export function resolveRateLimitFailureMode(
+  policy: string,
+  explicitMode?: RateLimitFailureMode,
+  hasConfiguredRedis = isRedisConfigured()
+): RateLimitFailureMode {
+  if (explicitMode) {
+    return explicitMode;
   }
 
-  if (!candidate) {
-    return 'unknown';
+  if (isDistributedRateLimitRequired()) {
+    return 'fail-closed';
   }
 
-  if (candidate.startsWith('::ffff:')) {
-    candidate = candidate.slice(7);
+  const envMode = String(process.env.RATE_LIMIT_FAILURE_MODE || '').trim().toLowerCase();
+  if (envMode === 'fail-closed' || envMode === 'closed') {
+    return 'fail-closed';
   }
-  if (candidate === '::1') {
-    candidate = '127.0.0.1';
+  if (envMode === 'memory' || envMode === 'fail-open' || envMode === 'open') {
+    return 'memory';
   }
 
-  return candidate;
+  // In production, when Redis is configured for multi-instance limiting, never silently downgrade
+  // high-cost AI / upload / voice endpoints to isolated per-instance memory on Redis failure.
+  if (isDistributedProductionRuntime() && hasConfiguredRedis && COSTLY_FAIL_CLOSED_POLICIES.has(policy)) {
+    return 'fail-closed';
+  }
+
+  return 'memory';
+}
+
+export function getRateLimitBackendStatus() {
+  const redis = getRedisHealthStatus();
+  const proxyPolicy = resolveTrustedProxyPolicy();
+  const productionRuntime = isDistributedProductionRuntime();
+  const requireDistributed = isDistributedRateLimitRequired();
+  return {
+    distributedReady: redis.configured && redis.connected,
+    backend:
+      redis.configured && redis.connected
+        ? 'redis'
+        : requireDistributed
+          ? 'fail-closed'
+          : 'memory',
+    redis,
+    trustedProxyMode: proxyPolicy.mode,
+    requireDistributed,
+    productionRuntime
+  };
 }
 
 /**
@@ -385,10 +456,36 @@ async function runRedisEvalWithTimeout(
   }
 }
 
+function buildFailClosedDecision(
+  policy: string,
+  limit: number,
+  nowMs: number,
+  key: string,
+  failureReason: string
+): RateLimitDecision {
+  const retryAfterSeconds = 5;
+  const resetAtMs = nowMs + retryAfterSeconds * 1000;
+  return {
+    allowed: false,
+    policy,
+    limit,
+    remaining: 0,
+    count: limit + 1,
+    resetAtMs,
+    resetAtIso: new Date(resetAtMs).toISOString(),
+    retryAfterSeconds,
+    backend: 'fail-closed',
+    distributed: false,
+    degraded: true,
+    failureReason,
+    key
+  };
+}
+
 /**
  * Atomically consumes 1 request unit against the configured distributed rate limit.
- * Uses Redis Lua EVAL when Redis is connected and ready; falls back cleanly to in-memory
- * tracking if Redis is unconfigured, disconnected, errors, or times out.
+ * Awaits cold-start Redis readiness when actively connecting. Never silently claims distributed
+ * protection from an in-memory fallback, and fails closed when configured production distributed stores fail.
  */
 export async function consumeRateLimit(
   options: RateLimitConsumeOptions,
@@ -401,53 +498,126 @@ export async function consumeRateLimit(
   const key = buildRateLimitKey(options.policy, identity, keyPrefix);
   const memoryStore = options.memoryStore || defaultMemoryStore;
   const redisClient = options.redisClient !== undefined ? options.redisClient : getRedisClient();
+  const hasConfiguredRedis =
+    options.redisClient !== undefined ? Boolean(options.redisClient) : isRedisConfigured();
+  const timeoutMs = options.commandTimeoutMs ?? getRedisCommandTimeoutMs();
 
-  if (redisClient && redisClient.status === 'ready') {
-    const timeoutMs = options.commandTimeoutMs ?? getRedisCommandTimeoutMs();
-    try {
-      const { count, ttlMs } = await runRedisEvalWithTimeout(redisClient, key, windowMs, timeoutMs);
-      const resetAtMs = nowMs + ttlMs;
-      const allowed = count <= limit;
-      const remaining = Math.max(0, limit - count);
-      const retryAfterSeconds = allowed ? 0 : Math.max(1, Math.ceil(ttlMs / 1000));
+  if (redisClient) {
+    const ready = await ensureRedisReady(redisClient, Math.min(timeoutMs, 1000));
+    if (ready) {
+      try {
+        const { count, ttlMs } = await runRedisEvalWithTimeout(redisClient, key, windowMs, timeoutMs);
+        const resetAtMs = nowMs + ttlMs;
+        const allowed = count <= limit;
+        const remaining = Math.max(0, limit - count);
+        const retryAfterSeconds = allowed ? 0 : Math.max(1, Math.ceil(ttlMs / 1000));
 
-      return {
-        allowed,
-        policy: options.policy,
-        limit,
-        remaining,
-        count,
-        resetAtMs,
-        resetAtIso: new Date(resetAtMs).toISOString(),
-        retryAfterSeconds,
-        backend: 'redis',
-        degraded: false,
-        key
-      };
-    } catch (err: unknown) {
-      const msg = sanitizeErrorLog(err instanceof Error ? err.message : String(err));
-      logFallbackWarningThrottled(
-        `[RateLimiter] Redis command failed for policy '${options.policy}' (${msg}); falling back to in-memory store.`
-      );
-      const mem = memoryStore.consume(key, windowMs, nowMs);
-      const allowed = mem.count <= limit;
-      const remaining = Math.max(0, limit - mem.count);
-      const retryAfterSeconds = allowed ? 0 : Math.max(1, Math.ceil(mem.ttlMs / 1000));
+        return {
+          allowed,
+          policy: options.policy,
+          limit,
+          remaining,
+          count,
+          resetAtMs,
+          resetAtIso: new Date(resetAtMs).toISOString(),
+          retryAfterSeconds,
+          backend: 'redis',
+          distributed: true,
+          degraded: false,
+          key
+        };
+      } catch (err: unknown) {
+        const msg = sanitizeErrorLog(err instanceof Error ? err.message : String(err));
+        const failureMode = resolveRateLimitFailureMode(
+          options.policy,
+          options.failureMode,
+          hasConfiguredRedis
+        );
+        if (failureMode === 'fail-closed') {
+          logFallbackWarningThrottled(
+            `[RateLimiter] Redis command failed for policy '${options.policy}' (${msg}); failing closed (503) to preserve distributed limits.`
+          );
+          return buildFailClosedDecision(options.policy, limit, nowMs, key, 'REDIS_COMMAND_FAILED');
+        }
 
-      return {
-        allowed,
-        policy: options.policy,
-        limit,
-        remaining,
-        count: mem.count,
-        resetAtMs: mem.resetAtMs,
-        resetAtIso: new Date(mem.resetAtMs).toISOString(),
-        retryAfterSeconds,
-        backend: 'memory',
-        degraded: true,
-        key
-      };
+        logFallbackWarningThrottled(
+          `[RateLimiter] Redis command failed for policy '${options.policy}' (${msg}); falling back to non-distributed in-memory store.`
+        );
+        const mem = memoryStore.consume(key, windowMs, nowMs);
+        const allowed = mem.count <= limit;
+        const remaining = Math.max(0, limit - mem.count);
+        const retryAfterSeconds = allowed ? 0 : Math.max(1, Math.ceil(mem.ttlMs / 1000));
+
+        return {
+          allowed,
+          policy: options.policy,
+          limit,
+          remaining,
+          count: mem.count,
+          resetAtMs: mem.resetAtMs,
+          resetAtIso: new Date(mem.resetAtMs).toISOString(),
+          retryAfterSeconds,
+          backend: 'memory',
+          distributed: false,
+          degraded: true,
+          key
+        };
+      }
     }
+
+    const failureMode = resolveRateLimitFailureMode(
+      options.policy,
+      options.failureMode,
+      hasConfiguredRedis
+    );
+    if (failureMode === 'fail-closed') {
+      logFallbackWarningThrottled(
+        `[RateLimiter] Redis not ready (status=${redisClient.status}) for policy '${options.policy}'; failing closed (503).`
+      );
+      return buildFailClosedDecision(options.policy, limit, nowMs, key, 'REDIS_NOT_READY');
+    }
+
+    logFallbackWarningThrottled(
+      `[RateLimiter] Redis not ready (status=${redisClient.status}) for policy '${options.policy}'; falling back to non-distributed in-memory store.`
+    );
+    const mem = memoryStore.consume(key, windowMs, nowMs);
+    const allowed = mem.count <= limit;
+    const remaining = Math.max(0, limit - mem.count);
+    const retryAfterSeconds = allowed ? 0 : Math.max(1, Math.ceil(mem.ttlMs / 1000));
+
+    return {
+      allowed,
+      policy: options.policy,
+      limit,
+      remaining,
+      count: mem.count,
+      resetAtMs: mem.resetAtMs,
+      resetAtIso: new Date(mem.resetAtMs).toISOString(),
+      retryAfterSeconds,
+      backend: 'memory',
+      distributed: false,
+      degraded: true,
+      key
+    };
+  }
+
+  const failureMode = resolveRateLimitFailureMode(
+    options.policy,
+    options.failureMode,
+    hasConfiguredRedis
+  );
+  if (failureMode === 'fail-closed') {
+    logFallbackWarningThrottled(
+      `[RateLimiter] Distributed Redis store required/configured but unavailable for policy '${options.policy}'; failing closed (503).`
+    );
+    return buildFailClosedDecision(options.policy, limit, nowMs, key, 'REDIS_UNAVAILABLE');
+  }
+
+  const inProd = isDistributedProductionRuntime();
+  if (inProd) {
+    logFallbackWarningThrottled(
+      `[RateLimiter] REDIS_URL not configured in production for policy '${options.policy}'; using per-instance in-memory store (limits are NOT shared across instances).`
+    );
   }
 
   const mem = memoryStore.consume(key, windowMs, nowMs);
@@ -465,7 +635,8 @@ export async function consumeRateLimit(
     resetAtIso: new Date(mem.resetAtMs).toISOString(),
     retryAfterSeconds,
     backend: 'memory',
-    degraded: Boolean(redisClient),
+    distributed: false,
+    degraded: inProd || isRedisConfigured(),
     key
   };
 }
@@ -521,6 +692,19 @@ export function buildRateLimitExceededPayload(
   };
 }
 
+export function buildRateLimiterUnavailablePayload(decision: RateLimitDecision) {
+  return {
+    error: 'Rate-limiting protection service is temporarily unavailable. Please retry shortly.',
+    code: 'RATE_LIMITER_UNAVAILABLE',
+    status: 'UNAVAILABLE',
+    policy: decision.policy,
+    retryAfterSeconds: decision.retryAfterSeconds,
+    resetAt: decision.resetAtIso,
+    retryable: true,
+    canFallback: false
+  };
+}
+
 export interface CreateRateLimiterOptions {
   policy: RateLimitPolicyName | string;
   max?: number;
@@ -531,6 +715,7 @@ export interface CreateRateLimiterOptions {
   redisClient?: RedisLikeClient | null;
   memoryStore?: InMemoryRateLimitStore;
   commandTimeoutMs?: number;
+  failureMode?: RateLimitFailureMode;
 }
 
 function isKnownPolicy(policy: string): policy is RateLimitPolicyName {
@@ -540,12 +725,14 @@ function isKnownPolicy(policy: string): policy is RateLimitPolicyName {
     policy === 'upload' ||
     policy === 'uploadRead' ||
     policy === 'config' ||
-    policy === 'voiceWs'
+    policy === 'voiceWs' ||
+    policy === 'voiceWsHandshake'
   );
 }
 
 /**
- * Express middleware factory enforcing distributed rate limits with automatic in-memory fallback.
+ * Express middleware factory enforcing distributed rate limits with explicit fail-closed
+ * or non-distributed fallback semantics.
  */
 export function createRateLimiterMiddleware(options: CreateRateLimiterOptions): express.RequestHandler {
   return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -579,7 +766,8 @@ export function createRateLimiterMiddleware(options: CreateRateLimiterOptions): 
           headerMode,
           redisClient: options.redisClient,
           memoryStore: options.memoryStore,
-          commandTimeoutMs: options.commandTimeoutMs
+          commandTimeoutMs: options.commandTimeoutMs,
+          failureMode: options.failureMode
         },
         identity
       );
@@ -587,16 +775,32 @@ export function createRateLimiterMiddleware(options: CreateRateLimiterOptions): 
       applyRateLimitHeaders(res, decision, headerMode);
 
       if (!decision.allowed) {
+        if (decision.backend === 'fail-closed') {
+          return res.status(503).json(buildRateLimiterUnavailablePayload(decision));
+        }
         return res.status(429).json(buildRateLimitExceededPayload(decision, message));
       }
 
       return next();
     } catch (err) {
-      // Fail open on unexpected middleware error so valid requests are never broken
       console.warn(
         '[RateLimiter] Unexpected middleware notice:',
         sanitizeErrorLog(err instanceof Error ? err.message : String(err))
       );
+      if (resolveRateLimitFailureMode(options.policy, options.failureMode) === 'fail-closed') {
+        const nowMs = Date.now();
+        res.setHeader('Retry-After', '5');
+        return res.status(503).json({
+          error: 'Rate-limiting protection service is temporarily unavailable. Please retry shortly.',
+          code: 'RATE_LIMITER_UNAVAILABLE',
+          status: 'UNAVAILABLE',
+          policy: options.policy,
+          retryAfterSeconds: 5,
+          resetAt: new Date(nowMs + 5000).toISOString(),
+          retryable: true,
+          canFallback: false
+        });
+      }
       return next();
     }
   };
@@ -613,6 +817,7 @@ export async function checkWebSocketUpgradeRateLimit(
     windowMs?: number;
     redisClient?: RedisLikeClient | null;
     memoryStore?: InMemoryRateLimitStore;
+    failureMode?: RateLimitFailureMode;
   }
 ): Promise<RateLimitDecision> {
   const policyDefaults = getRateLimitPolicyConfig('voiceWs');
@@ -628,6 +833,7 @@ export async function checkWebSocketUpgradeRateLimit(
       resetAtIso: new Date(nowMs + policyDefaults.windowMs).toISOString(),
       retryAfterSeconds: 0,
       backend: 'memory',
+      distributed: false,
       degraded: false,
       key: 'disabled'
     };
@@ -649,9 +855,61 @@ export async function checkWebSocketUpgradeRateLimit(
       max: options?.max ?? policyDefaults.max,
       windowMs: options?.windowMs ?? policyDefaults.windowMs,
       redisClient: options?.redisClient,
-      memoryStore: options?.memoryStore
+      memoryStore: options?.memoryStore,
+      failureMode: options?.failureMode
     },
     identity
+  );
+}
+
+/**
+ * Pre-authentication IP flood protection for WebSocket HTTP upgrades.
+ * Runs BEFORE expensive Firebase RSA JWT signature verification so unauthenticated floods
+ * cannot exhaust CPU or starve legitimate traffic.
+ */
+export async function checkWebSocketHandshakeFloodLimit(
+  req: IncomingMessage,
+  options?: {
+    max?: number;
+    windowMs?: number;
+    redisClient?: RedisLikeClient | null;
+    memoryStore?: InMemoryRateLimitStore;
+    failureMode?: RateLimitFailureMode;
+  }
+): Promise<RateLimitDecision> {
+  const policyDefaults = getRateLimitPolicyConfig('voiceWsHandshake');
+  if (!isRateLimitingEnabled()) {
+    const nowMs = Date.now();
+    return {
+      allowed: true,
+      policy: 'voiceWsHandshake',
+      limit: policyDefaults.max,
+      remaining: policyDefaults.max,
+      count: 0,
+      resetAtMs: nowMs + policyDefaults.windowMs,
+      resetAtIso: new Date(nowMs + policyDefaults.windowMs).toISOString(),
+      retryAfterSeconds: 0,
+      backend: 'memory',
+      distributed: false,
+      degraded: false,
+      key: 'disabled'
+    };
+  }
+
+  const clientIp = extractClientIp(req);
+  return consumeRateLimit(
+    {
+      policy: 'voiceWsHandshake',
+      max: options?.max ?? policyDefaults.max,
+      windowMs: options?.windowMs ?? policyDefaults.windowMs,
+      redisClient: options?.redisClient,
+      memoryStore: options?.memoryStore,
+      failureMode: options?.failureMode
+    },
+    {
+      type: 'ip',
+      hashedId: hashRateLimitIdentifier(`ip:${clientIp}`)
+    }
   );
 }
 

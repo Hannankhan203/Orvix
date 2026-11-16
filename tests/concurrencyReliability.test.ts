@@ -82,6 +82,9 @@ async function startTestHttpServer(app: express.Express): Promise<{
 }
 
 test('Voice WebSocket subsystem: enforces max connections per IP and cleans up slots on rejection', async () => {
+  const prevTrustProxy = process.env.TRUST_PROXY;
+  process.env.TRUST_PROXY = 'false';
+
   resetVoiceWebSocketStateForTesting();
   resetFirebaseAuthForTesting();
 
@@ -96,11 +99,12 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
   const srv = await startTestHttpServer(app);
 
   try {
-    const ip = '198.51.100.123';
-    const connectWs = () =>
+    const realPeerIp = '127.0.0.1';
+    const spoofedIp = '198.51.100.123';
+    const connectWs = (forwardedFor = spoofedIp) =>
       new Promise<WebSocket>((resolve, reject) => {
         const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(validToken)}`, {
-          headers: { 'x-forwarded-for': ip }
+          headers: { 'x-forwarded-for': forwardedFor }
         });
         ws.on('open', () => resolve(ws));
         ws.on('error', (err) => reject(err));
@@ -109,23 +113,18 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     // Connect 10 sockets concurrently (max allowed per IP)
     const sockets: WebSocket[] = [];
     for (let i = 0; i < 10; i++) {
-      const ws = await connectWs();
+      const ws = await connectWs(`198.51.100.${10 + i}`);
       sockets.push(ws);
     }
 
-    assert.equal(getVoiceIpConnectionCount(ip), 10);
+    assert.equal(getVoiceIpConnectionCount(realPeerIp), 10);
+    assert.equal(getVoiceIpConnectionCount(spoofedIp), 0);
     assert.equal(getActiveVoiceSessions().length, 10);
 
-    // 11th connection attempt from the same IP must be rejected with 429
+    // 11th connection attempt with a freshly rotated X-Forwarded-For header must STILL be rejected with 429
     await assert.rejects(
       async () => {
-        await new Promise((resolve, reject) => {
-          const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(validToken)}`, {
-            headers: { 'x-forwarded-for': ip }
-          });
-          ws.on('open', () => resolve(ws));
-          ws.on('error', (err) => reject(err));
-        });
+        await connectWs('203.0.113.250');
       },
       /Unexpected server response: 429/
     );
@@ -135,7 +134,7 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     sockets[1].close();
     await new Promise((r) => setTimeout(r, 50));
 
-    assert.equal(getVoiceIpConnectionCount(ip), 8);
+    assert.equal(getVoiceIpConnectionCount(realPeerIp), 8);
 
     // Clean up remaining sockets
     for (const ws of sockets.slice(2)) {
@@ -144,8 +143,13 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
       }
     }
     await new Promise((r) => setTimeout(r, 50));
-    assert.equal(getVoiceIpConnectionCount(ip), 0);
+    assert.equal(getVoiceIpConnectionCount(realPeerIp), 0);
   } finally {
+    if (prevTrustProxy === undefined) {
+      delete process.env.TRUST_PROXY;
+    } else {
+      process.env.TRUST_PROXY = prevTrustProxy;
+    }
     resetVoiceWebSocketStateForTesting();
     resetFirebaseAuthForTesting();
     await srv.close();

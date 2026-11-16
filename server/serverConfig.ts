@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import type { GeminiTimeoutStage } from './serverTypes.ts';
 import { logAIDiagnostic } from './diagnosticLogger.ts';
+import { applyTrustedProxySetting } from './trustedProxy.ts';
 // @ts-ignore - provider model sanitizer service
 import { getProviderDisplayName } from '../src/services/providerModelSanitizer.js';
 
@@ -972,6 +973,8 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
  * standalone Express server and individual Vercel serverless endpoint entry points.
  */
 export function applyCorsMiddleware(app: express.Express): void {
+  applyTrustedProxySetting(app);
+
   app.use((req, res, next) => {
     const origin = req.headers.origin as string | undefined;
 

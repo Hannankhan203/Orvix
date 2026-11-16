@@ -5,6 +5,10 @@ import { sanitizeErrorLog } from './diagnosticLogger.ts';
 export interface RedisLikeClient {
   status: string;
   eval(...args: unknown[]): Promise<unknown>;
+  once?(event: string, listener: (...args: unknown[]) => void): unknown;
+  removeListener?(event: string, listener: (...args: unknown[]) => void): unknown;
+  off?(event: string, listener: (...args: unknown[]) => void): unknown;
+  connect?(): Promise<unknown>;
   quit?(): Promise<unknown>;
   disconnect?(): void;
 }
@@ -124,7 +128,7 @@ function attachRedisLifecycleListeners(client: Redis): void {
   client.on('error', (err: Error) => {
     const safeMsg = sanitizeErrorLog(err?.message || String(err));
     logRedisWarningThrottled(
-      `[Redis] Connection error (${safeMsg}). Falling back to in-memory rate limiting.`
+      `[Redis] Connection error (${safeMsg}). Shared distributed rate-limit store unavailable.`
     );
   });
 
@@ -132,7 +136,7 @@ function attachRedisLifecycleListeners(client: Redis): void {
     if (!isShuttingDown && lastLoggedStatus === 'ready') {
       lastLoggedStatus = 'closed';
       logRedisWarningThrottled(
-        '[Redis] Connection closed. Temporarily using in-memory rate limiting until reconnected.'
+        '[Redis] Connection closed. Shared distributed rate-limit store temporarily unavailable until reconnected.'
       );
     }
   });
@@ -189,6 +193,71 @@ export function getRedisClient(): RedisLikeClient | null {
 export function isRedisReady(): boolean {
   const client = getRedisClient();
   return Boolean(client && client.status === 'ready');
+}
+
+const REDIS_CONNECTING_STATUSES = new Set(['wait', 'connecting', 'connect']);
+
+/**
+ * Awaits Redis readiness on cold starts while actively connecting (`wait` / `connecting` / `connect`),
+ * bounded by `timeoutMs`. Fails fast when disconnected/reconnecting/ended so requests do not stall.
+ */
+export async function ensureRedisReady(
+  client: RedisLikeClient | null = getRedisClient(),
+  timeoutMs = Math.min(getRedisConnectTimeoutMs(), 1000)
+): Promise<boolean> {
+  if (!client) return false;
+  if (client.status === 'ready') return true;
+  if (!REDIS_CONNECTING_STATUSES.has(client.status)) return false;
+  if (typeof client.once !== 'function') return false;
+
+  const waitMs = Math.max(1, Math.floor(timeoutMs));
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const detach = (event: string, fn: (...args: unknown[]) => void) => {
+      if (typeof client.off === 'function') {
+        client.off(event, fn);
+      } else if (typeof client.removeListener === 'function') {
+        client.removeListener(event, fn);
+      }
+    };
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      detach('ready', onReady);
+      detach('error', onFail);
+      detach('close', onFail);
+      detach('end', onFail);
+    };
+
+    const finish = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(ready);
+    };
+
+    const onReady = () => finish(true);
+    const onFail = () => finish(false);
+
+    client.once!('ready', onReady);
+    client.once!('error', onFail);
+    client.once!('close', onFail);
+    client.once!('end', onFail);
+
+    timer = setTimeout(() => finish(client.status === 'ready'), waitMs);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+
+    if (client.status === 'ready') {
+      finish(true);
+    }
+  });
 }
 
 /**
