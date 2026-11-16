@@ -806,9 +806,29 @@ SENTRY_DSN=your_backend_sentry_dsn_here
 VITE_SENTRY_DSN=your_frontend_sentry_dsn_here
 SENTRY_ENVIRONMENT=production
 VITE_SENTRY_ENVIRONMENT=production
+
+# Redis Distributed Rate Limiting (Optional - uses in-memory fallback when omitted)
+REDIS_URL=redis://localhost:6379
+REDIS_CONNECT_TIMEOUT_MS=3000
+REDIS_COMMAND_TIMEOUT_MS=1500
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_KEY_PREFIX=orvix:rl
+ORVIX_RATE_LIMIT_KEY_SALT=
+RATE_LIMIT_CHAT_MAX=30
+RATE_LIMIT_CHAT_WINDOW_MS=60000
+RATE_LIMIT_TRANSCRIBE_MAX=30
+RATE_LIMIT_TRANSCRIBE_WINDOW_MS=60000
+RATE_LIMIT_UPLOAD_MAX=30
+RATE_LIMIT_UPLOAD_WINDOW_MS=60000
+RATE_LIMIT_UPLOAD_READ_MAX=120
+RATE_LIMIT_UPLOAD_READ_WINDOW_MS=60000
+RATE_LIMIT_CONFIG_MAX=120
+RATE_LIMIT_CONFIG_WINDOW_MS=60000
+RATE_LIMIT_VOICE_WS_MAX=20
+RATE_LIMIT_VOICE_WS_WINDOW_MS=60000
 ```
 
-*Note*: API keys are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when keys are absent. Sentry monitoring is disabled gracefully when no DSN is provided.
+*Note*: API keys are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when keys are absent. Sentry monitoring is disabled gracefully when no DSN is provided. Redis (`REDIS_URL`) is optional: when configured, rate-limit counters are shared atomically across server instances via a Lua script (`server/rateLimiter.ts` + `server/redisClient.ts`) using hashed UID/IP keys; when omitted or unreachable, Orvix automatically falls back to per-process in-memory rate limiting without disrupting local development or requests.
 
 ---
 

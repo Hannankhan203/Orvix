@@ -6,11 +6,13 @@ import {
   getServerProviderConfigStatus
 } from '../server/serverConfig.ts';
 import { APP_CONFIG } from '../src/config/appConfig.js';
+import { createRateLimiterMiddleware } from '../server/rateLimiter.ts';
 
 const app = express();
 applyCorsMiddleware(app);
+const configRateLimiter = createRateLimiterMiddleware({ policy: 'config' });
 
-app.get(['/api/config', '/config'], (_req, res) => {
+app.get(['/api/config', '/config'], configRateLimiter, (_req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
   res.setHeader('CDN-Cache-Control', 'no-store');
   res.setHeader('Vercel-CDN-Cache-Control', 'no-store');

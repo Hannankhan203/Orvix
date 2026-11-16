@@ -105,6 +105,8 @@ import {
   getSupabaseAttachmentCleanupSchedulerStatus,
   isAttachmentEligibleForExpiryCleanup
 } from './server/supabaseAttachmentCleanupService.ts';
+import { closeRedisClient } from './server/redisClient.ts';
+import { createRateLimiterMiddleware } from './server/rateLimiter.ts';
 import type {
   DocumentData,
   PreparedDocumentContext,
@@ -141,8 +143,10 @@ app.get(['/api/health', '/health'], (_req, res) => {
   });
 });
 
+const configRateLimiter = createRateLimiterMiddleware({ policy: 'config' });
+
 // API Config Check (indicates configured providers without leaking keys or secrets)
-app.get(['/api/config', '/config'], (_req, res) => {
+app.get(['/api/config', '/config'], configRateLimiter, (_req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
   res.setHeader('CDN-Cache-Control', 'no-store');
   res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
@@ -312,6 +316,7 @@ async function startServer() {
   // Graceful shutdown handling
   const handleShutdown = () => {
     stopSupabaseAttachmentCleanupScheduler();
+    void closeRedisClient();
   };
   process.once('SIGTERM', handleShutdown);
   process.once('SIGINT', handleShutdown);

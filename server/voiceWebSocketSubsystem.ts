@@ -19,6 +19,7 @@ import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Spoken transcript cleaner
 import { polishSpokenTranscript } from '../src/utils/speechTextCleaner.js';
 import { mapBcp47ToIso639, DEFAULT_WHISPER_CONTEXT_PROMPT } from './transcriptionSubsystem.ts';
+import { checkWebSocketUpgradeRateLimit } from './rateLimiter.ts';
 
 /**
  * Returns whether at least one real transcription provider (Groq Whisper or Gemini) is configured.
@@ -484,6 +485,15 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
         socket.destroy();
         return;
       }
+    }
+
+    const wsRateDecision = await checkWebSocketUpgradeRateLimit(req, verifiedUserId);
+    if (!wsRateDecision.allowed) {
+      socket.write(
+        `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${wsRateDecision.retryAfterSeconds}\r\nX-RateLimit-Limit: ${wsRateDecision.limit}\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset-UTC: ${wsRateDecision.resetAtIso}\r\n\r\n`
+      );
+      socket.destroy();
+      return;
     }
 
     wss.handleUpgrade(req, socket, head, (ws) => {

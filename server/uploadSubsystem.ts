@@ -71,6 +71,7 @@ import {
   type QuotaReservation,
   type QuotaStatus
 } from './uploadQuotaService.ts';
+import { createRateLimiterMiddleware } from './rateLimiter.ts';
 
 export {
   verifyFirebaseIdToken,
@@ -692,7 +693,7 @@ export function getSignedDecodeUrlSecret(options?: { forceProduction?: boolean }
     return resolution.secret;
   }
 
-  if (isProd) {
+  if (isProd && (options?.forceProduction || isServerless)) {
     logUploadDiagnostic({
       stage: 'signed_url_config',
       code: 'SIGNED_URL_SECRET_INVALID',
@@ -716,6 +717,11 @@ export function getSignedDecodeUrlSecret(options?: { forceProduction?: boolean }
   }
 
   if (!devOnlyEphemeralSignedUrlSecret) {
+    if (isProd) {
+      console.warn(
+        '[Orvix Upload] ORVIX_SIGNED_URL_SECRET not set in single-instance production; using ephemeral per-process secret.'
+      );
+    }
     devOnlyEphemeralSignedUrlSecret = crypto.randomBytes(32).toString('hex');
   }
   return devOnlyEphemeralSignedUrlSecret;
@@ -1409,8 +1415,17 @@ export function registerUploadRoutes(app: express.Express) {
     validateSignedDecodeUrlConfiguration();
   }
 
+  const uploadRateLimiter = createRateLimiterMiddleware({
+    policy: 'upload',
+    headerMode: 'ietf-only'
+  });
+  const uploadReadRateLimiter = createRateLimiterMiddleware({
+    policy: 'uploadRead',
+    headerMode: 'ietf-only'
+  });
+
   // Multilingual OCR Language Pack Proxy & Local Cache Endpoint
-  app.get(['/api/ocr/packs/:file', '/ocr/packs/:file'], async (req, res) => {
+  app.get(['/api/ocr/packs/:file', '/ocr/packs/:file'], uploadReadRateLimiter, async (req, res) => {
     const rawFile = req.params.file || '';
     if (!/^[a-z]{3}\.traineddata(\.gz)?$/i.test(rawFile)) {
       return res.status(400).json({ error: 'Invalid OCR language pack filename.', code: 'INVALID_PACK_NAME' });
@@ -1477,7 +1492,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Upload Configuration Endpoint (returns limits, supported formats, and active storage strategy)
-  app.get(['/api/upload/config', '/upload/config'], (_req, res) => {
+  app.get(['/api/upload/config', '/upload/config'], uploadReadRateLimiter, (_req, res) => {
     res.json({
       maxFileSizeBytes: MAX_FILE_SIZE_BYTES,
       maxFileSizeFormatted: formatBytes(MAX_FILE_SIZE_BYTES),
@@ -1495,7 +1510,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Authenticated Read-Only Upload Quota Status Endpoint (does NOT consume or reserve an upload slot)
-  app.get(['/api/upload/quota', '/upload/quota'], async (req, res) => {
+  app.get(['/api/upload/quota', '/upload/quota'], uploadReadRateLimiter, async (req, res) => {
     const authenticatedUserId = await requireUploadAuthentication(
       req,
       res,
@@ -1542,7 +1557,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Upload Attachment Metadata Endpoint
-  app.get(['/api/upload/:id', '/upload/:id'], async (req, res) => {
+  app.get(['/api/upload/:id', '/upload/:id'], uploadReadRateLimiter, async (req, res) => {
     const fileId = req.params.id;
     if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
       return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
@@ -1643,7 +1658,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Dedicated Document Extraction Detail Endpoint
-  app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], async (req, res) => {
+  app.get(['/api/upload/:id/extraction', '/upload/:id/extraction'], uploadReadRateLimiter, async (req, res) => {
     const fileId = req.params.id;
     if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
       return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
@@ -1919,6 +1934,7 @@ export function registerUploadRoutes(app: express.Express) {
       '/api/upload/:id/preview',
       '/upload/:id/preview'
     ],
+    uploadReadRateLimiter,
     async (req, res) => {
       const fileId = req.params.id;
       if (!fileId || (!/^[0-9a-fA-F-]{36}$/.test(fileId) && !/^gen-[a-zA-Z0-9_-]{10,80}$/.test(fileId))) {
@@ -2227,7 +2243,7 @@ export function registerUploadRoutes(app: express.Express) {
   );
 
   // Dedicated Pre-Signed URL Generation Endpoint (Short-lived, max 120s)
-  app.get(['/api/upload/:id/signed-url', '/upload/:id/signed-url'], async (req, res) => {
+  app.get(['/api/upload/:id/signed-url', '/upload/:id/signed-url'], uploadReadRateLimiter, async (req, res) => {
     const fileId = req.params.id;
     if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
       return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
@@ -2459,7 +2475,7 @@ export function registerUploadRoutes(app: express.Express) {
   }
 
   // Conversation Attachments Bulk Deletion Endpoint
-  app.delete(['/api/upload/conversations/:chatId', '/upload/conversations/:chatId'], async (req, res) => {
+  app.delete(['/api/upload/conversations/:chatId', '/upload/conversations/:chatId'], uploadRateLimiter, async (req, res) => {
     const chatId = req.params.chatId;
     if (!chatId || !isValidPathSegment(chatId)) {
       return res.status(400).json({ error: 'Invalid chatId format.', code: 'INVALID_PATH_SEGMENT' });
@@ -2529,7 +2545,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Upload Deletion Endpoint (Individual Attachment)
-  app.delete(['/api/upload/:id', '/upload/:id'], async (req, res) => {
+  app.delete(['/api/upload/:id', '/upload/:id'], uploadRateLimiter, async (req, res) => {
     const fileId = req.params.id;
     if (!fileId || !/^[0-9a-fA-F-]{36}$/.test(fileId)) {
       return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
@@ -2674,7 +2690,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Direct Supabase Upload: Create Short-Lived Signed Upload URL
-  app.post(['/api/upload/direct/signed-url', '/upload/direct/signed-url'], async (req, res) => {
+  app.post(['/api/upload/direct/signed-url', '/upload/direct/signed-url'], uploadRateLimiter, async (req, res) => {
     void pruneExpiredDirectUploadTickets();
 
     const authenticatedUserId =
@@ -2906,7 +2922,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Direct Supabase Upload: Authenticated Completion & Object Verification
-  app.post(['/api/upload/direct/complete', '/upload/direct/complete'], async (req, res) => {
+  app.post(['/api/upload/direct/complete', '/upload/direct/complete'], uploadRateLimiter, async (req, res) => {
     const authenticatedUserId =
       (req as any).authenticatedUploadUserId ||
       (await requireUploadAuthentication(req, res, 'Authentication required to complete upload.'));
@@ -3166,7 +3182,7 @@ export function registerUploadRoutes(app: express.Express) {
   });
 
   // Direct Supabase Upload: Cancel & Rollback Upload Ticket
-  app.post(['/api/upload/direct/cancel', '/upload/direct/cancel'], async (req, res) => {
+  app.post(['/api/upload/direct/cancel', '/upload/direct/cancel'], uploadRateLimiter, async (req, res) => {
     const authenticatedUserId =
       (req as any).authenticatedUploadUserId ||
       (await requireUploadAuthentication(req, res, 'Authentication required to cancel upload.'));
@@ -3211,7 +3227,7 @@ export function registerUploadRoutes(app: express.Express) {
     });
   });
 
-  app.post(['/api/upload', '/upload'], async (req, res) => {
+  app.post(['/api/upload', '/upload'], uploadRateLimiter, async (req, res) => {
     // P3 Security Enforcement: Require valid Firebase authentication BEFORE parsing multipart upload payload.
     // Never trust client-provided userIds, guest tokens, cookies, or identity headers.
     const authenticatedUserId = await requireUploadAuthentication(

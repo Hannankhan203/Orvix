@@ -11,6 +11,7 @@ import {
 } from './serverConfig.ts';
 import { logAIDiagnostic } from './diagnosticLogger.ts';
 import { parseGeminiError } from './geminiStreamHandler.ts';
+import { createRateLimiterMiddleware } from './rateLimiter.ts';
 // @ts-ignore - Context-aware spoken transcript polisher
 import { polishSpokenTranscript } from '../src/utils/speechTextCleaner.js';
 // @ts-ignore - Shared provider configuration and model identifier validator
@@ -85,7 +86,9 @@ export const DEFAULT_WHISPER_CONTEXT_PROMPT =
   'Orvix, Orvix\'s, README.md, Firebase, which, API, JavaScript, TypeScript';
 
 export function registerTranscriptionRoutes(app: express.Express) {
-  app.post(['/api/transcribe', '/transcribe'], (req, res) => {
+  const transcribeRateLimiter = createRateLimiterMiddleware({ policy: 'transcribe' });
+
+  app.post(['/api/transcribe', '/transcribe'], transcribeRateLimiter, (req, res) => {
     transcribeUploadMiddleware.any()(req as any, res as any, async (err: any) => {
       if (err) {
         if (err instanceof multer.MulterError) {

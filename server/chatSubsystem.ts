@@ -54,6 +54,7 @@ import {
   resolveRegisteredAttachmentForChat
 } from './uploadSubsystem.ts';
 import { authenticateRequest } from './firebaseAuthHelper.ts';
+import { createRateLimiterMiddleware } from './rateLimiter.ts';
 
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
@@ -455,7 +456,9 @@ export function startSSEHeartbeat(res: express.Response, intervalMs = 10000): ()
  * Registers /api/chat, /chat, and root / POST endpoints on the Express application.
  */
 export function registerChatRoutes(app: express.Express) {
-  app.post(['/api/chat', '/chat', '/'], async (req, res) => {
+  const chatRateLimiter = createRateLimiterMiddleware({ policy: 'chat' });
+
+  app.post(['/api/chat', '/chat', '/'], chatRateLimiter, async (req, res) => {
     // Disable any artificial HTTP or socket timeouts for long-running AI streams
     req.setTimeout(0);
     res.setTimeout(0);
