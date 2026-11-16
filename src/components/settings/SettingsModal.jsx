@@ -58,19 +58,6 @@ export default function SettingsModal() {
 
   const isPreviewActive = currentMessageId === 'settings-preview' && speakingState !== 'idle';
 
-  // Synchronize settings if loaded from cloud or external source
-  useEffect(() => {
-    if (settings?.speechVoiceURI !== undefined && settings.speechVoiceURI !== selectedVoiceURI) {
-      setSelectedVoiceURI(settings.speechVoiceURI);
-    }
-  }, [settings?.speechVoiceURI, selectedVoiceURI, setSelectedVoiceURI]);
-
-  useEffect(() => {
-    if (settings?.speechRate !== undefined && Math.abs(settings.speechRate - speechRate) > 0.01) {
-      setSpeechRate(settings.speechRate);
-    }
-  }, [settings?.speechRate, speechRate, setSpeechRate]);
-
   const handleModalClose = useCallback(() => {
     if (currentMessageId === 'settings-preview') {
       stopSpeech();
@@ -111,12 +98,12 @@ export default function SettingsModal() {
   const handleVoiceChange = (e) => {
     const uri = e.target.value;
     setSelectedVoiceURI(uri);
-    updateSettings({ speechVoiceURI: uri });
+    void updateSettings({ speechVoiceURI: uri }).catch(() => {});
   };
 
   const handleSpeechRateChange = (rate) => {
     setSpeechRate(rate);
-    updateSettings({ speechRate: rate });
+    void updateSettings({ speechRate: rate }).catch(() => {});
   };
 
   const handleTogglePreviewVoice = () => {

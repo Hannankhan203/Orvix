@@ -1,7 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { cleanTextForSpeech, splitTextIntoSpeechChunks, getWordBoundaryOffset } from '../utils/speechTextCleaner.js';
+import { useOptionalSettings } from './SettingsContext.jsx';
 
 const SpeechContext = createContext(null);
+
+function clampSpeechRate(rate) {
+  const num = parseFloat(rate);
+  if (Number.isNaN(num)) return 1;
+  return Math.min(2.5, Math.max(0.5, num));
+}
 
 // Global module-level and window-level Set to retain references and prevent
 // V8 and JavaScriptCore garbage-collection of active SpeechSynthesisUtterance objects on mobile
@@ -23,6 +30,12 @@ export function useSpeech() {
 }
 
 export function SpeechProvider({ children }) {
+  const settingsCtx = useOptionalSettings();
+  const hasSettingsProvider = Boolean(settingsCtx);
+  const settingsSpeechRate = settingsCtx?.settings?.speechRate;
+  const settingsVoiceURI = settingsCtx?.settings?.speechVoiceURI;
+  const settingsUserId = settingsCtx ? (settingsCtx.userId ?? null) : undefined;
+
   const isSupported =
     typeof window !== 'undefined' &&
     'speechSynthesis' in window &&
@@ -40,6 +53,9 @@ export function SpeechProvider({ children }) {
 
   // Speech rate: 0.75, 1 (normal), 1.25, 1.5, 2
   const [speechRate, setSpeechRateState] = useState(() => {
+    if (hasSettingsProvider) {
+      return clampSpeechRate(settingsSpeechRate);
+    }
     if (typeof window !== 'undefined') {
       try {
         const stored = localStorage.getItem('orvix_speech_rate');
@@ -52,6 +68,9 @@ export function SpeechProvider({ children }) {
 
   // Selected Voice URI
   const [selectedVoiceURI, setSelectedVoiceURIState] = useState(() => {
+    if (hasSettingsProvider) {
+      return typeof settingsVoiceURI === 'string' ? settingsVoiceURI : '';
+    }
     if (typeof window !== 'undefined') {
       try {
         return localStorage.getItem('orvix_speech_voice_uri') || '';
@@ -61,6 +80,9 @@ export function SpeechProvider({ children }) {
   });
 
   // Synchronous refs to prevent stale closure bugs in callbacks and async events
+  const settingsCtxRef = useRef(settingsCtx);
+  settingsCtxRef.current = settingsCtx;
+  const prevSettingsUserIdRef = useRef(settingsUserId);
   const speakingStateRef = useRef(speakingState);
   const currentMessageIdRef = useRef(currentMessageId);
   const speechRateRef = useRef(speechRate);
@@ -131,11 +153,10 @@ export function SpeechProvider({ children }) {
   }, [readingPositions]);
 
   const setSpeechRate = useCallback((rate) => {
-    const num = parseFloat(rate) || 1;
-    const clamped = Math.min(2.5, Math.max(0.5, num));
+    const clamped = clampSpeechRate(rate);
     speechRateRef.current = clamped;
     setSpeechRateState(clamped);
-    if (typeof window !== 'undefined') {
+    if (!settingsCtxRef.current && typeof window !== 'undefined') {
       try {
         localStorage.setItem('orvix_speech_rate', String(clamped));
       } catch (_) {}
@@ -146,12 +167,31 @@ export function SpeechProvider({ children }) {
     const cleanUri = typeof uri === 'string' ? uri : '';
     selectedVoiceURIRef.current = cleanUri;
     setSelectedVoiceURIState(cleanUri);
-    if (typeof window !== 'undefined') {
+    if (!settingsCtxRef.current && typeof window !== 'undefined') {
       try {
         localStorage.setItem('orvix_speech_voice_uri', cleanUri);
       } catch (_) {}
     }
   }, []);
+
+  // Keep speech rate and voice synchronized with per-user SettingsContext (startup, login, updates, account switch)
+  useEffect(() => {
+    if (!hasSettingsProvider) return;
+    const resolvedRate = clampSpeechRate(settingsSpeechRate);
+    if (Math.abs(speechRateRef.current - resolvedRate) > 0.001) {
+      speechRateRef.current = resolvedRate;
+      setSpeechRateState(resolvedRate);
+    }
+  }, [hasSettingsProvider, settingsSpeechRate, settingsUserId]);
+
+  useEffect(() => {
+    if (!hasSettingsProvider) return;
+    const resolvedVoice = typeof settingsVoiceURI === 'string' ? settingsVoiceURI : '';
+    if (selectedVoiceURIRef.current !== resolvedVoice) {
+      selectedVoiceURIRef.current = resolvedVoice;
+      setSelectedVoiceURIState(resolvedVoice);
+    }
+  }, [hasSettingsProvider, settingsVoiceURI, settingsUserId]);
 
   // Load voices safely, handling asynchronous voice population in Chromium & WebKit
   useEffect(() => {
@@ -454,6 +494,47 @@ export function SpeechProvider({ children }) {
   }, [isSupported, captureCurrentPosition, setSpeakingStateSync]);
 
   /**
+   * Ensures any pending Firestore settings fetch for the active user has settled
+   * and applied to speech refs before speaking a chunk.
+   */
+  const speakAfterSettingsReady = useCallback(
+    (chunkIdx, sessionId, charOff = 0) => {
+      const sc = settingsCtxRef.current;
+      if (sc?.hasPendingSettingsLoad?.()) {
+        void Promise.resolve(sc.ensureSettingsLoaded())
+          .then((latestSettings) => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            if (speakingStateRef.current !== 'speaking') return;
+            if (latestSettings) {
+              const resolvedRate = clampSpeechRate(latestSettings.speechRate);
+              const resolvedVoice =
+                typeof latestSettings.speechVoiceURI === 'string'
+                  ? latestSettings.speechVoiceURI
+                  : '';
+              if (Math.abs(speechRateRef.current - resolvedRate) > 0.001) {
+                speechRateRef.current = resolvedRate;
+                setSpeechRateState(resolvedRate);
+              }
+              if (selectedVoiceURIRef.current !== resolvedVoice) {
+                selectedVoiceURIRef.current = resolvedVoice;
+                setSelectedVoiceURIState(resolvedVoice);
+              }
+            }
+            speakChunk(chunkIdx, sessionId, charOff);
+          })
+          .catch(() => {
+            if (sessionId !== currentSessionIdRef.current) return;
+            if (speakingStateRef.current !== 'speaking') return;
+            speakChunk(chunkIdx, sessionId, charOff);
+          });
+        return;
+      }
+      speakChunk(chunkIdx, sessionId, charOff);
+    },
+    [speakChunk]
+  );
+
+  /**
    * Resumes paused speech synthesis from the exact saved chunk and character offset.
    */
   const resumeSpeech = useCallback(() => {
@@ -486,9 +567,9 @@ export function SpeechProvider({ children }) {
     pendingSpeakTimerRef.current = setTimeout(() => {
       pendingSpeakTimerRef.current = null;
       if (sessionId !== currentSessionIdRef.current) return;
-      speakChunk(chunkIdx, sessionId, charOff);
+      speakAfterSettingsReady(chunkIdx, sessionId, charOff);
     }, 40);
-  }, [isSupported, setSpeakingStateSync, speakChunk]);
+  }, [isSupported, setSpeakingStateSync, speakAfterSettingsReady]);
 
   /**
    * Stops active speech synthesis.
@@ -557,6 +638,17 @@ export function SpeechProvider({ children }) {
 
     removeReadingPosition(messageId);
   }, [stopSpeech, removeReadingPosition]);
+
+  // Reset active playback and per-session reading positions when logging out or switching accounts
+  useEffect(() => {
+    if (!hasSettingsProvider) return;
+    if (prevSettingsUserIdRef.current !== settingsUserId) {
+      prevSettingsUserIdRef.current = settingsUserId;
+      stopSpeech(false);
+      readingPositionsRef.current = {};
+      setReadingPositions({});
+    }
+  }, [hasSettingsProvider, settingsUserId, stopSpeech]);
 
   /**
    * Begins reading aloud an assistant message or settings voice preview.
@@ -648,7 +740,7 @@ export function SpeechProvider({ children }) {
       pendingSpeakTimerRef.current = setTimeout(() => {
         pendingSpeakTimerRef.current = null;
         if (sessionId !== currentSessionIdRef.current) return;
-        speakChunk(startChunk, sessionId, startOffset);
+        speakAfterSettingsReady(startChunk, sessionId, startOffset);
       }, 50);
     },
     [
@@ -658,7 +750,7 @@ export function SpeechProvider({ children }) {
       removeReadingPosition,
       setCurrentMessageIdSync,
       setSpeakingStateSync,
-      speakChunk
+      speakAfterSettingsReady
     ]
   );
 

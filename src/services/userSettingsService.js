@@ -110,7 +110,7 @@ export function sanitizeSettings(raw) {
  * @param {string|null} userId
  * @returns {string}
  */
-function getStorageKey(userId) {
+export function getSettingsStorageKey(userId) {
   if (userId && !userId.startsWith('guest-')) {
     return `orvix_user_settings_${userId}`;
   }
@@ -145,7 +145,7 @@ export function resolveEffectiveTheme(theme) {
  */
 export async function loadSettings(userId = null) {
   const isRegisteredUser = Boolean(userId && !userId.startsWith('guest-'));
-  const storageKey = getStorageKey(userId);
+  const storageKey = getSettingsStorageKey(userId);
 
   // 1. Check local cache first for instant synchronous render
   let localSettings = null;
@@ -202,7 +202,7 @@ export async function saveSettings(userId = null, partialSettings, currentSettin
     ...partialSettings
   };
   const sanitized = sanitizeSettings(merged);
-  const storageKey = getStorageKey(userId);
+  const storageKey = getSettingsStorageKey(userId);
   const isRegisteredUser = Boolean(userId && !userId.startsWith('guest-'));
 
   // 1. Always update local storage first
