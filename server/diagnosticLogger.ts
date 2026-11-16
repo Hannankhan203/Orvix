@@ -89,7 +89,7 @@ export function logGeminiLifecycleEvent(
     event: entry.event,
     elapsedMs: Math.max(0, Math.round(Number(entry.elapsedMs) || 0)),
     httpStatus: entry.httpStatus ?? null,
-    model: entry.model || 'gemini-3.8-flash',
+    model: entry.model || 'gemini-4-hydrogen',
     chunkCount: typeof entry.chunkCount === 'number' ? entry.chunkCount : 0,
     streamState: entry.streamState || 'idle',
     ...(typeof entry.attempt === 'number' ? { attempt: entry.attempt } : {}),

@@ -1342,7 +1342,7 @@ export const PROVIDER_PROFILES = {
   gemini: {
     id: 'gemini',
     name: 'Google Gemini',
-    modelTag: 'gemini-3.8-flash',
+    modelTag: 'gemini-4-hydrogen',
     maxDocChars: 120_000, // Massive 1M token context window
     supportsSystemInstruction: true,
     supportsVision: true,

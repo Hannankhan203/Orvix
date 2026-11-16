@@ -3235,7 +3235,7 @@ export default function ChatPage({
       ? 'openrouter/free'
       : chosenProvider === 'cloudflare'
       ? '@cf/meta/llama-3.1-8b-instruct'
-      : 'gemini-3.8-flash';
+      : 'gemini-4-hydrogen';
     const chosenModel = sanitizeModelForProvider(chosenProvider, rawChosenModel);
 
     const targetAssistantId = assistantMessage.id;

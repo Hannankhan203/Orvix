@@ -422,7 +422,7 @@ ${isoLang ? `Language: ${isoLang}.` : ''}
 ${incomingHint ? `Prior context: ${incomingHint}` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add commentary.`;
 
-      const candidateModels = ['gemini-3.5-transcribe', 'gemini-3.8-flash'];
+      const candidateModels = ['gemini-3.5-transcribe', 'gemini-4-hydrogen'];
       for (const model of candidateModels) {
         try {
           const result = await ai.models.generateContent({

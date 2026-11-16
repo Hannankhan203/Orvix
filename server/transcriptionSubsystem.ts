@@ -381,7 +381,7 @@ ${isoLang ? `The spoken language is: ${isoLang}.` : ''}
 ${vocabHints ? `Vocabulary & context hints: ${vocabHints}` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add introductory commentary or timestamps.`;
 
-          const transcriptionCandidates = ['gemini-3.5-transcribe', 'gemini-3.8-flash'];
+          const transcriptionCandidates = ['gemini-3.5-transcribe', 'gemini-4-hydrogen'];
           let geminiRes: any = null;
           let modelUsed = 'gemini-3.5-transcribe';
           let lastGeminiErr: any = null;
@@ -448,7 +448,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
           logAIDiagnostic({
             category: 'provider API error',
             provider: 'gemini',
-            model: 'gemini-3.8-flash',
+            model: 'gemini-4-hydrogen',
             phase: 'dispatch',
             sanitizedMessage: geminiErr?.message || 'Gemini audio transcription failed'
           });

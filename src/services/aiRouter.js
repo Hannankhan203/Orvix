@@ -50,8 +50,8 @@ export const PROVIDER_OPTIONS = [
   {
     id: AI_PROVIDERS.GEMINI,
     name: 'Gemini',
-    modelTag: 'Gemini 3.8 Flash',
-    defaultModel: 'gemini-3.8-flash',
+    modelTag: 'Gemini 4 Hydrogen',
+    defaultModel: 'gemini-4-hydrogen',
     description: 'Google Gemini'
   },
   {

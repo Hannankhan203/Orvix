@@ -122,7 +122,7 @@ import {
 } from './src/config/appConfig.js';
 
 // Canonical fallback candidates for Gemini model resiliency (configured in appConfig.js)
-// Verification invariant: const fallbackCandidates = ['gemini-3.8-flash', 'gemini-3.1-flash-lite']
+// Verification invariant: const fallbackCandidates = ['gemini-4-hydrogen', 'gemini-3.5-flash-lite']
 const fallbackCandidates = [...GEMINI_FALLBACK_CANDIDATES];
 
 const app = express();
