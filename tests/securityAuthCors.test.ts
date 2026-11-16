@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import express from 'express';
 import http from 'node:http';
-import { WebSocket } from 'ws';
+import { WebSocket, type WebSocketServer } from 'ws';
 import type { AddressInfo } from 'node:net';
 
 import {
@@ -23,6 +23,7 @@ import {
   setTestPublicKey
 } from '../server/firebaseAuthHelper.ts';
 import { resetRateLimitersForTesting } from '../server/rateLimiter.ts';
+import { resetRedisClientForTesting } from '../server/redisClient.ts';
 import { setAuthInstanceForTesting } from '../src/services/authService.js';
 import { transcribeAudioBlob, createMinimalWavBlob } from '../src/services/transcriptionService.js';
 import { VoiceStreamClient } from '../src/services/voiceStreamClient.js';
@@ -46,7 +47,16 @@ function buildSignedJwt(
   return `${header}.${payload}.${signature}`;
 }
 
-async function startSecurityTestServer() {
+interface SecurityTestServer {
+  app: express.Express;
+  server: http.Server;
+  wss: WebSocketServer;
+  baseUrl: string;
+  wsUrl: string;
+  close: () => Promise<void>;
+}
+
+async function startSecurityTestServer(): Promise<SecurityTestServer> {
   const app = express();
   applyCorsMiddleware(app);
   applyJsonBodyMiddleware(app);
@@ -54,7 +64,7 @@ async function startSecurityTestServer() {
   registerChatRoutes(app);
 
   const server = http.createServer(app);
-  setupVoiceWebSocketServer(server);
+  const wss = setupVoiceWebSocketServer(server);
 
   await new Promise<void>((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve());
@@ -63,15 +73,104 @@ async function startSecurityTestServer() {
   const baseUrl = `http://127.0.0.1:${addr.port}`;
   const wsUrl = `ws://127.0.0.1:${addr.port}/api/voice-stream`;
 
+  let isClosed = false;
+  let closePromise: Promise<void> | null = null;
+
+  const close = async (): Promise<void> => {
+    if (isClosed) return;
+    if (closePromise) return closePromise;
+
+    closePromise = (async () => {
+      let firstError: unknown = null;
+
+      // 1. Terminate all active WebSocket clients and close WebSocketServer
+      try {
+        for (const client of wss.clients) {
+          try {
+            client.terminate();
+          } catch (_) {}
+        }
+        await new Promise<void>((resolve, reject) => {
+          wss.close((err) => {
+            if (err && !(err as any).message?.includes('not running')) {
+              reject(err);
+            } else {
+              resolve();
+            }
+          });
+        });
+      } catch (err) {
+        firstError = firstError || err;
+      }
+
+      // 2. Remove upgrade listener on HTTP server
+      try {
+        server.removeAllListeners('upgrade');
+      } catch (err) {
+        firstError = firstError || err;
+      }
+
+      // 3. Terminate active and idle HTTP keep-alive connections
+      try {
+        if (typeof (server as any).closeAllConnections === 'function') {
+          (server as any).closeAllConnections();
+        }
+      } catch (err) {
+        firstError = firstError || err;
+      }
+      try {
+        if (typeof (server as any).closeIdleConnections === 'function') {
+          (server as any).closeIdleConnections();
+        }
+      } catch (err) {
+        firstError = firstError || err;
+      }
+
+      // 4. Close the HTTP server
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err && (err as any).code !== 'ERR_SERVER_NOT_RUNNING') {
+              reject(err);
+            } else {
+              resolve();
+            }
+          });
+        });
+      } catch (err) {
+        firstError = firstError || err;
+      }
+
+      // 5. Clean up voice state and reset Redis client
+      try {
+        resetVoiceWebSocketStateForTesting();
+      } catch (err) {
+        firstError = firstError || err;
+      }
+
+      try {
+        await resetRedisClientForTesting();
+      } catch (err) {
+        firstError = firstError || err;
+      }
+
+      isClosed = true;
+
+      if (firstError) {
+        throw firstError;
+      }
+    })();
+
+    return closePromise;
+  };
+
   return {
     app,
     server,
+    wss,
     baseUrl,
     wsUrl,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      })
+    close
   };
 }
 
@@ -228,6 +327,7 @@ test('ORVIX-CRIT-03 /api/chat: rejects unauthenticated, malformed, expired, and 
     resetFirebaseAuthForTesting();
     resetRateLimitersForTesting();
     await srv.close();
+    await resetRedisClientForTesting();
   }
 });
 
@@ -312,6 +412,7 @@ test('ORVIX-CRIT-03 /api/transcribe: rejects unauthenticated/invalid requests be
     resetFirebaseAuthForTesting();
     resetRateLimitersForTesting();
     await srv.close();
+    await resetRedisClientForTesting();
   }
 });
 
@@ -365,10 +466,17 @@ test('ORVIX-CRIT-03 Vercel serverless handlers /api/chat and /api/transcribe enf
     });
     assert.equal(transRes.status, 401);
   } finally {
+    if (typeof (chatServer as any).closeAllConnections === 'function') {
+      try { (chatServer as any).closeAllConnections(); } catch (_) {}
+    }
+    if (typeof (transcribeServer as any).closeAllConnections === 'function') {
+      try { (transcribeServer as any).closeAllConnections(); } catch (_) {}
+    }
     await new Promise<void>((r) => chatServer.close(() => r()));
     await new Promise<void>((r) => transcribeServer.close(() => r()));
     resetFirebaseAuthForTesting();
     resetRateLimitersForTesting();
+    await resetRedisClientForTesting();
   }
 });
 
@@ -457,6 +565,7 @@ test('ORVIX-CRIT-03 /api/voice-stream WebSocket: rejects unauthenticated, expire
     resetFirebaseAuthForTesting();
     resetRateLimitersForTesting();
     await srv.close();
+    await resetRedisClientForTesting();
   }
 });
 
@@ -534,6 +643,7 @@ test('ORVIX-CRIT-03 CORS policy: blocks arbitrary wildcard cloud domains and hon
     else delete process.env.VITE_PUBLIC_APP_URL;
     if (prevAppUrl !== undefined) process.env.APP_URL = prevAppUrl;
     else delete process.env.APP_URL;
+    await resetRedisClientForTesting();
   }
 });
 
@@ -623,5 +733,6 @@ test('ORVIX-CRIT-03 client services: transcriptionService attaches Bearer token 
   } finally {
     globalThis.fetch = restoreFetch;
     setAuthInstanceForTesting(null);
+    await resetRedisClientForTesting();
   }
 });

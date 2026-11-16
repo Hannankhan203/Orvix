@@ -32,6 +32,7 @@ import {
   setTestFirebaseProjectId,
   setTestPublicKey
 } from '../server/firebaseAuthHelper.ts';
+import { resetRedisClientForTesting } from '../server/redisClient.ts';
 
 function createSignedTestJwt(uid: string, projectId: string, privateKey: crypto.KeyObject, kid: string): string {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -152,6 +153,7 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     }
     resetVoiceWebSocketStateForTesting();
     resetFirebaseAuthForTesting();
+    await resetRedisClientForTesting();
     await srv.close();
   }
 });
