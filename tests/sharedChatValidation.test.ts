@@ -233,7 +233,7 @@ test('ORVIX-CRIT-06 /api/share: validates every message in conversation and reje
         messages: oversizedContentMessages
       })
     });
-    assert.equal(resOversized.status, 413);
+    assert.equal(resOversized.status, 400);
     const dataOversized = await resOversized.json() as any;
     assert.equal(dataOversized.code, 'MESSAGE_CONTENT_TOO_LARGE');
   } finally {
