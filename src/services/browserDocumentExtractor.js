@@ -419,15 +419,85 @@ function extractXmlDocument(text) {
 }
 
 /**
- * Browser-side PDF extraction using lazy-loaded unpdf
+ * Executes unpdf extraction in the dedicated PDF extractor Web Worker when available,
+ * keeping the 1.67 MB PDF.js parser off the main UI thread, with safe fallback to
+ * lazy main-thread dynamic import when Web Workers are unavailable (e.g. Node tests).
+ * @param {ArrayBuffer} arrayBuffer
+ * @returns {Promise<{ totalPages: number, text: string[] | string }>}
+ */
+async function runPdfTextExtraction(arrayBuffer) {
+  if (typeof Worker !== 'undefined') {
+    try {
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker(
+          new URL('../workers/pdfExtractorWorker.js', import.meta.url),
+          { type: 'module', name: 'orvix-pdf-extractor-worker' }
+        );
+        const requestId = `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        let settled = false;
+
+        const cleanup = () => {
+          try {
+            worker.terminate();
+          } catch (_) {}
+        };
+
+        worker.onmessage = (event) => {
+          const data = event?.data || {};
+          if (data.id !== requestId || settled) return;
+          settled = true;
+          cleanup();
+          if (data.ok) {
+            resolve({ totalPages: data.totalPages, text: data.text });
+          } else {
+            const err = new Error(data.errorMessage || 'PDF extraction worker failed');
+            if (data.errorName) err.name = data.errorName;
+            reject(err);
+          }
+        };
+
+        worker.onerror = (event) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(event?.error || new Error(event?.message || 'PDF worker error'));
+        };
+
+        worker.onmessageerror = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(new Error('PDF worker message deserialization failed'));
+        };
+
+        // Transfer a slice copy so caller's arrayBuffer remains intact if reused
+        const bytesCopy = new Uint8Array(arrayBuffer).slice();
+        worker.postMessage({ id: requestId, buffer: bytesCopy }, [bytesCopy.buffer]);
+      });
+    } catch (workerErr) {
+      // Only fall back to direct unpdf import for worker launch/infra errors;
+      // preserve encrypted/corrupted PDF parse errors as-is.
+      const msg = String(workerErr?.message || workerErr || '').toLowerCase();
+      if (msg.includes('password') || msg.includes('encrypted') || msg.includes('invalid pdf')) {
+        throw workerErr;
+      }
+    }
+  }
+
+  const unpdfPkg = 'unpdf';
+  const { extractText } = await import(/* @vite-ignore */ unpdfPkg);
+  const uint8Array = new Uint8Array(arrayBuffer);
+  return await extractText(uint8Array, { mergePages: false });
+}
+
+/**
+ * Browser-side PDF extraction using dedicated worker / lazy-loaded unpdf
  * Retains page-by-page text and accurately detects scanned or image-only PDFs without text layers.
  * @param {ArrayBuffer} arrayBuffer
  */
 async function extractPdfDocument(arrayBuffer) {
   try {
-    const { extractText } = await import('unpdf');
-    const uint8Array = new Uint8Array(arrayBuffer);
-    const res = await extractText(uint8Array, { mergePages: false });
+    const res = await runPdfTextExtraction(arrayBuffer);
 
     const rawPages = Array.isArray(res.text) ? res.text : [String(res.text || '')];
     const totalPages = res.totalPages || rawPages.length;

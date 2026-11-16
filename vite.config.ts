@@ -53,7 +53,19 @@ export default defineConfig(({ command, mode }) => {
           clientsClaim: true,
           skipWaiting: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest,wasm,woff2,woff,ttf}'],
-          maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+          globIgnores: [
+            '**/assets/webllmWorker-*.js',
+            '**/assets/vendor-webllm-*.js',
+            '**/assets/pdfExtractorWorker-*.js',
+            '**/assets/vendor-pdfjs-*.js',
+            '**/assets/pdfjs-*.js',
+            '**/assets/vendor-pdf-lib-*.js',
+            '**/assets/vendor-xlsx-*.js',
+            '**/assets/vendor-mammoth-*.js',
+            '**/assets/*oxipng*',
+            '**/assets/worker-*.js'
+          ],
+          maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
           navigateFallback: '/index.html',
           navigateFallbackDenylist: [
             /^\/api\/.*/,
@@ -71,6 +83,23 @@ export default defineConfig(({ command, mode }) => {
             {
               urlPattern: /^https:\/\/(firestore\.googleapis\.com|identitytoolkit\.googleapis\.com|securetoken\.googleapis\.com)\/.*/i,
               handler: 'NetworkOnly'
+            },
+            {
+              // Same-origin on-demand workers & lazy feature chunks (WebLLM worker, PDF.js, Office parsers, WASMs)
+              // Excluded from eager install precache, then cached persistently on first use for offline PWA parity.
+              urlPattern: ({ sameOrigin, url }) =>
+                sameOrigin && /^\/assets\/.*\.(?:js|css|wasm)$/i.test(url.pathname),
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'orvix-ondemand-assets',
+                expiration: {
+                  maxEntries: 64,
+                  maxAgeSeconds: 30 * 24 * 60 * 60
+                },
+                cacheableResponse: {
+                  statuses: [0, 200]
+                }
+              }
             }
             // Note: Cross-origin model weight hosts (huggingface.co, *.hf.co, raw.githubusercontent.com)
             // intentionally have NO Workbox route registered so sw.js does not call event.respondWith()
@@ -90,6 +119,9 @@ export default defineConfig(({ command, mode }) => {
     },
     define: {
       'process.env.NODE_ENV': JSON.stringify(isProdEnv ? 'production' : 'development'),
+    },
+    worker: {
+      format: 'es',
     },
     build: {
       target: ['es2020', 'safari15'],
@@ -124,6 +156,18 @@ export default defineConfig(({ command, mode }) => {
               }
               if (id.includes('/node_modules/lucide-react/')) {
                 return 'vendor-icons';
+              }
+              if (id.includes('/node_modules/pdf-lib/')) {
+                return 'vendor-pdf-lib';
+              }
+              if (id.includes('/node_modules/@e965/xlsx/') || id.includes('/node_modules/cfb/')) {
+                return 'vendor-xlsx';
+              }
+              if (id.includes('/node_modules/mammoth/')) {
+                return 'vendor-mammoth';
+              }
+              if (id.includes('/node_modules/jszip/')) {
+                return 'vendor-jszip';
               }
             }
           }

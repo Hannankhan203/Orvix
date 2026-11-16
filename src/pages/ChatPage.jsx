@@ -97,10 +97,6 @@ import {
   logWebLLMStage
 } from '../services/webllmService.js';
 import {
-  extractBrowserDocument,
-  isBrowserExtractable
-} from '../services/browserDocumentExtractor.js';
-import {
   getAppShellState,
   subscribeAppShellState
 } from '../services/serviceWorkerManager.js';
@@ -1776,6 +1772,7 @@ export default function ChatPage({
             }
 
             // Perform browser-side extraction using the prepared (compressed or original) file
+            const { extractBrowserDocument } = await import('../services/browserDocumentExtractor.js');
             const extResult = await extractBrowserDocument(att.file, {
               id: att.id,
               name: att.name,
@@ -2059,6 +2056,7 @@ export default function ChatPage({
                         progressPercent: null
                       });
                     }
+                    const { extractBrowserDocument } = await import('../services/browserDocumentExtractor.js');
                     const extResult = await extractBrowserDocument(att.file, {
                       id: att.id,
                       name: att.name,
@@ -2204,6 +2202,7 @@ export default function ChatPage({
                     });
                   }
 
+                  const { extractBrowserDocument } = await import('../services/browserDocumentExtractor.js');
                   const extResult = await extractBrowserDocument(att.file, {
                     id: att.id,
                     name: att.name,

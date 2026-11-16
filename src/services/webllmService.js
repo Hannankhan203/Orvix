@@ -29,6 +29,12 @@ import {
   cleanModelOutput,
   createStreamingResponseSanitizer
 } from './browserAiProfiles.js';
+import {
+  findPrebuiltWebLLMRecord,
+  hasPrebuiltModelInCache,
+  deletePrebuiltModelFromCache,
+  CreateWebWorkerMLCEngine
+} from './webllmWorkerClient.js';
 
 function isClientOnline() {
   if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') {
@@ -688,89 +694,28 @@ export function getSupportedWebLLMModels(options = {}) {
 }
 
 /**
- * Lazily imports @mlc-ai/web-llm only when Browser AI is actually invoked.
- * Resets the cached import promise if chunk fetching fails (e.g. temporary offline state)
- * so subsequent attempts can recover cleanly.
+ * Returns the lightweight main-thread WebLLM RPC client & cache helpers.
+ * Heavy inference, WASM, and tokenizer runtimes remain isolated exclusively
+ * inside the dedicated Web Worker (src/workers/webllmWorker.js).
  */
 async function loadWebLLMModule(stageStartMs = null) {
-  const timeoutMs = customDownloadConfig?.moduleLoadTimeoutMs ?? DEFAULT_MODULE_LOAD_TIMEOUT_MS;
-  if (!webllmModulePromise) {
-    logWebLLMStage('module_import_start', { pkg: '@mlc-ai/web-llm', timeoutMs }, { startMs: stageStartMs });
-    webllmModulePromise = raceWithStageDeadline(
-      () => import('@mlc-ai/web-llm'),
-      timeoutMs,
-      (ms) => {
-        logWebLLMStage(
-          'init_timeout',
-          { subStage: 'module_import', timeoutMs: ms },
-          { startMs: stageStartMs, level: 'warn' }
-        );
-        return new WebLLMError(
-          `Timed out after ${formatDurationSeconds(ms)} loading the Browser AI runtime bundle. Please refresh the page and click Retry.`,
-          {
-            code: WEBLLM_ERROR_CODES.DOWNLOAD_STALLED,
-            httpCode: 504,
-            timeout: true,
-            retryable: true
-          }
-        );
-      }
-    ).catch((err) => {
-      webllmModulePromise = null;
-      if (err instanceof WebLLMError) {
-        throw err;
-      }
-      const offline = !isClientOnline();
-      throw new WebLLMError(
-        offline
-          ? 'Browser AI runtime files are not cached on this device yet. Connect to the internet once to load Browser AI.'
-          : 'Failed to load the Browser AI runtime module. Please refresh the page and check your connection.',
-        {
-          code: offline ? WEBLLM_ERROR_CODES.OFFLINE_UNCACHED : WEBLLM_ERROR_CODES.DOWNLOAD_FAILED,
-          httpCode: 503,
-          retryable: true,
-          cause: err
-        }
-      );
-    });
-  }
-  const mod = await webllmModulePromise;
   if (stageStartMs !== null) {
-    logWebLLMStage('module_import_done', { ok: true }, { startMs: stageStartMs });
+    logWebLLMStage('module_import_done', { ok: true, bridge: 'worker-rpc' }, { startMs: stageStartMs });
   }
-  return mod;
+  return {
+    CreateWebWorkerMLCEngine,
+    hasModelInCache: hasPrebuiltModelInCache,
+    deleteModelAllInfoInCache: deletePrebuiltModelFromCache
+  };
 }
 
 /**
- * Schedules a low-priority idle import of the `@mlc-ai/web-llm` JS runtime module
- * ONLY when Browser AI is selected, without creating a WebGPU device, spawning a worker,
- * or downloading model weights. Removes JS bundle parse latency from the first load path.
+ * Preserved export for backward compatibility.
+ * Because the main thread now uses the lightweight worker RPC client (~5 KB),
+ * there is no 6 MB runtime module to eagerly download before the user invokes Browser AI.
  */
 export function preloadWebLLMRuntimeModule() {
-  if (webllmModulePromise) {
-    return;
-  }
-  if (
-    typeof window === 'undefined' ||
-    window.isSecureContext === false ||
-    typeof navigator === 'undefined' ||
-    !navigator.gpu
-  ) {
-    return;
-  }
-
-  const triggerImport = () => {
-    if (webllmModulePromise) return;
-    loadWebLLMModule().catch(() => {
-      // Silently ignore idle prefetch failure; explicit load retries cleanly
-    });
-  };
-
-  if (typeof window.requestIdleCallback === 'function') {
-    window.requestIdleCallback(triggerImport, { timeout: 1500 });
-  } else {
-    setTimeout(triggerImport, 120);
-  }
+  // No-op: worker bundle (6.12 MB) loads on-demand only when Browser AI engine initialization begins.
 }
 
 /**
@@ -790,12 +735,10 @@ function normalizeModelBaseUrl(rawModelUrl) {
 }
 
 /**
- * Looks up a ModelRecord in WebLLM's prebuiltAppConfig.model_list.
+ * Looks up a ModelRecord in the cataloged @mlc-ai/web-llm@0.2.86 model records.
  */
-function findPrebuiltModelRecord(webllm, modelId) {
-  const list = webllm?.prebuiltAppConfig?.model_list;
-  if (!Array.isArray(list)) return null;
-  return list.find((item) => item?.model_id === modelId) || null;
+function findPrebuiltModelRecord(modelId) {
+  return findPrebuiltWebLLMRecord(modelId);
 }
 
 function createAbortError(message = 'Generation stopped by user') {
@@ -1330,14 +1273,13 @@ export async function isWebLLMModelCached(modelId = DEFAULT_WEBLLM_MODEL_ID) {
   try {
     return await raceWithStageDeadline(
       async () => {
-        const webllm = await loadWebLLMModule();
         const targetId = (modelId && String(modelId).trim()) || DEFAULT_WEBLLM_MODEL_ID;
-        const record = findPrebuiltModelRecord(webllm, targetId);
+        const record = findPrebuiltModelRecord(targetId);
         if (!record) {
           return false;
         }
 
-        const tensorsCached = await webllm.hasModelInCache(targetId, webllm.prebuiltAppConfig);
+        const tensorsCached = await hasPrebuiltModelInCache(targetId, normalizeModelBaseUrl);
         if (!tensorsCached) {
           return false;
         }
@@ -1498,8 +1440,7 @@ export async function clearWebLLMModelCache(modelId = loadedModelId || DEFAULT_W
   if (loadedModelId === modelId) {
     await destroyWebLLMEngine();
   }
-  const webllm = await loadWebLLMModule();
-  await webllm.deleteModelAllInfoInCache(modelId, webllm.prebuiltAppConfig);
+  await deletePrebuiltModelFromCache(modelId, normalizeModelBaseUrl);
   if (engineState.modelId === modelId) {
     updateEngineState({ isCached: false });
   }
@@ -3820,11 +3761,9 @@ export async function ensureWebLLMEngine(options = {}) {
 
       logWebLLMStage('init_pipeline_start', { modelId: resolvedModelId }, { startMs: initStartMs });
 
-      // 2. Lazily import @mlc-ai/web-llm runtime
-      const webllm = await loadWebLLMModule(initStartMs);
-
-      // Verify model ID exists in installed prebuiltAppConfig.model_list
-      const modelRecord = findPrebuiltModelRecord(webllm, resolvedModelId);
+      // 2. Verify model ID exists in cataloged @mlc-ai/web-llm@0.2.86 records
+      await loadWebLLMModule(initStartMs);
+      const modelRecord = findPrebuiltModelRecord(resolvedModelId);
       if (!modelRecord) {
         throw new WebLLMError(
           `Model "${resolvedModelId}" is not available in the installed WebLLM runtime.`,
@@ -4210,7 +4149,7 @@ export async function ensureWebLLMEngine(options = {}) {
             workerCrashPromise
           ])
         : await Promise.race([
-            webllm.CreateWebWorkerMLCEngine(
+            CreateWebWorkerMLCEngine(
               worker,
               resolvedModelId,
               {

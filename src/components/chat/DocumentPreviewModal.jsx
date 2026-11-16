@@ -22,7 +22,6 @@ import {
   fetchWithAuth,
   isAttachmentOwnedByCurrentUser
 } from '../../services/attachmentStorageService.js';
-import { extractBrowserDocument } from '../../services/browserDocumentExtractor.js';
 import {
   SUPPORTED_OCR_LANGUAGES,
   isLanguagePackCached,
@@ -373,6 +372,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               }
             } else {
               try {
+                const { extractBrowserDocument } = await import('../../services/browserDocumentExtractor.js');
                 const extracted = await extractBrowserDocument(attachment.file, {
                   id: attachment.id,
                   name: filename,
@@ -436,6 +436,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
               );
             } else {
               try {
+                const { extractBrowserDocument } = await import('../../services/browserDocumentExtractor.js');
                 const extracted = await extractBrowserDocument(localRecord.blob, {
                   id: attachment.id,
                   name: filename,
@@ -508,6 +509,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
             );
           } else {
             try {
+              const { extractBrowserDocument } = await import('../../services/browserDocumentExtractor.js');
               const extracted = await extractBrowserDocument(blob, {
                 id: attachment.id,
                 name: filename,
