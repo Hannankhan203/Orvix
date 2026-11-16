@@ -351,7 +351,12 @@ async function runRedisEvalWithTimeout(
 ): Promise<{ count: number; ttlMs: number }> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    const evalPromise = client.eval(ATOMIC_RATE_LIMIT_LUA, 1, key, String(windowMs));
+    const evalPromise = Promise.resolve(
+      client.eval(ATOMIC_RATE_LIMIT_LUA, 1, key, String(windowMs))
+    );
+    // Ensure late Redis socket/command rejections after timeoutPromise wins never trigger unhandledRejection
+    evalPromise.catch(() => {});
+
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         const err = new Error(`Redis rate-limit command timed out after ${timeoutMs}ms`);

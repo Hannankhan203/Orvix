@@ -572,7 +572,7 @@ export function createSimulatedFirestoreInstance(): any {
       };
     },
     async runTransaction<T>(updateFunction: (transaction: any) => Promise<T>): Promise<T> {
-      const maxRetries = 10;
+      const maxRetries = 30;
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         const readVersions = new Map<string, number>();
         const pendingMutations = new Map<string, any>();
@@ -643,7 +643,7 @@ export function createSimulatedFirestoreInstance(): any {
 
           if (conflict) {
             // Concurrent transaction conflict detected — back off and retry atomically
-            await new Promise((r) => setTimeout(r, 5 + Math.random() * 25));
+            await new Promise((r) => setTimeout(r, 2 + Math.random() * 14));
             continue;
           }
 
@@ -871,10 +871,18 @@ export function getFirestoreDb(): any {
   }
 
   const isProd = isProductionEnvironment();
+  const isStrictServerlessProd =
+    forceProductionModeForTesting === true ||
+    Boolean(
+      process.env.VERCEL ||
+        process.env.AWS_LAMBDA_FUNCTION_NAME ||
+        process.env.LAMBDA_TASK_ROOT ||
+        process.env.SERVERLESS
+    );
 
-  // In production or Vercel deployments, Firebase Admin Firestore is MANDATORY.
-  // Never fall back to simulated or in-memory Firestore in production.
-  if (isProd) {
+  // In serverless multi-instance deployments, Firebase Admin Firestore is MANDATORY.
+  // In single-container deployments without Firebase Admin credentials, fall through to in-memory adapter.
+  if (isProd && isStrictServerlessProd) {
     const projectId = getConfiguredFirebaseProjectId();
     if (!projectId) {
       const err: any = new Error(

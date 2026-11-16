@@ -556,7 +556,12 @@ export function normalizeAIError(rawError, context = {}) {
       upperStatus === 'WEBLLM_DEVICE_LOST' ||
       lowerMsg.includes('devicelost') ||
       lowerMsg.includes('device was lost') ||
-      lowerMsg.includes('device lost')
+      lowerMsg.includes('device lost') ||
+      lowerMsg.includes('dxgi_error_device_removed') ||
+      lowerMsg.includes('vk_error_device_lost') ||
+      lowerMsg.includes('vk_error_out_of_device_memory') ||
+      lowerMsg.includes('gpuoutofmemoryerror') ||
+      lowerMsg.includes('gpudevicelostinfo')
     ) {
       code = STANDARD_ERROR_CODES.DEVICE_LOST;
       httpStatus = 507;

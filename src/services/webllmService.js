@@ -292,6 +292,8 @@ let activeWarmupEngineRef = null;
 let activeWarmupAbortController = null;
 const warmupTimedOutModels = new Set();
 const workerTerminationListeners = new Set();
+const runtimeCrashRejectors = new Set();
+let engineGenerationEpoch = 0;
 let cachedGpuSupportEntry = null;
 let workerRejectedShaderF16GpuRef = null;
 let activeGpuSupportCheckPromise = null;
@@ -546,6 +548,8 @@ export function resetWebLLMRuntimeForTesting() {
   activeWarmupEngineRef = null;
   warmupTimedOutModels.clear();
   workerTerminationListeners.clear();
+  runtimeCrashRejectors.clear();
+  engineGenerationEpoch += 1;
   generationQueuePromise = Promise.resolve();
   isGeneratingNow = false;
   manualStopRequested = false;
@@ -958,31 +962,76 @@ export async function checkWebGPUSupport(options = {}) {
         };
       }
 
-      const hasShaderF16 =
-        workerRejectedShaderF16GpuRef !== currentGpuRef &&
-        Boolean(adapter.features && adapter.features.has('shader-f16'));
-      const isFallbackAdapter = Boolean(
-        adapter.isFallbackAdapter || adapter.info?.isFallbackAdapter
-      );
-      const maxStorageBufferBindingSize =
-        typeof adapter.limits?.maxStorageBufferBindingSize === 'number'
-          ? adapter.limits.maxStorageBufferBindingSize
-          : null;
-      const maxBufferSize =
-        typeof adapter.limits?.maxBufferSize === 'number' ? adapter.limits.maxBufferSize : null;
+      let hasShaderF16 = false;
+      try {
+        hasShaderF16 =
+          workerRejectedShaderF16GpuRef !== currentGpuRef &&
+          Boolean(adapter.features && typeof adapter.features.has === 'function' && adapter.features.has('shader-f16'));
+      } catch (_) {
+        hasShaderF16 = false;
+      }
+
+      let isFallbackAdapter = false;
+      try {
+        isFallbackAdapter = Boolean(
+          adapter.isFallbackAdapter || adapter.info?.isFallbackAdapter
+        );
+      } catch (_) {
+        isFallbackAdapter = false;
+      }
+
+      let maxStorageBufferBindingSize = null;
+      let maxBufferSize = null;
+      try {
+        const limits = adapter.limits;
+        maxStorageBufferBindingSize =
+          typeof limits?.maxStorageBufferBindingSize === 'number' && Number.isFinite(limits.maxStorageBufferBindingSize)
+            ? limits.maxStorageBufferBindingSize
+            : null;
+        maxBufferSize =
+          typeof limits?.maxBufferSize === 'number' && Number.isFinite(limits.maxBufferSize)
+            ? limits.maxBufferSize
+            : null;
+      } catch (_) {
+        maxStorageBufferBindingSize = null;
+        maxBufferSize = null;
+      }
+
+      if (
+        (typeof maxBufferSize === 'number' && maxBufferSize <= 0) ||
+        (typeof maxStorageBufferBindingSize === 'number' && maxStorageBufferBindingSize <= 0)
+      ) {
+        return {
+          supported: false,
+          reasonCode: WEBLLM_ERROR_CODES.WEBGPU_ADAPTER_UNAVAILABLE,
+          message:
+            'The detected WebGPU graphics adapter reported zero buffer capacity and cannot load Browser AI models.',
+          hasShaderF16: false,
+          isFallbackAdapter,
+          isSwiftShader: false,
+          maxStorageBufferBindingSize,
+          maxBufferSize,
+          adapterInfo: null
+        };
+      }
 
       let adapterInfo = null;
-      if (adapter.info) {
-        adapterInfo = {
-          vendor: adapter.info.vendor || '',
-          architecture: adapter.info.architecture || '',
-          device: adapter.info.device || '',
-          description: adapter.info.description || '',
-          isFallbackAdapter: Boolean(adapter.info.isFallbackAdapter || isFallbackAdapter)
-        };
-      } else if (typeof adapter.requestAdapterInfo === 'function') {
-        try {
-          const reqInfo = await adapter.requestAdapterInfo();
+      try {
+        if (adapter.info) {
+          adapterInfo = {
+            vendor: adapter.info.vendor || '',
+            architecture: adapter.info.architecture || '',
+            device: adapter.info.device || '',
+            description: adapter.info.description || '',
+            isFallbackAdapter: Boolean(adapter.info.isFallbackAdapter || isFallbackAdapter)
+          };
+        } else if (typeof adapter.requestAdapterInfo === 'function') {
+          const infoTimeoutMs = Math.min(2_500, gpuTimeoutMs);
+          const reqInfo = await raceWithStageDeadline(
+            () => adapter.requestAdapterInfo(),
+            infoTimeoutMs,
+            () => new Error('requestAdapterInfo timed out')
+          );
           if (reqInfo) {
             adapterInfo = {
               vendor: reqInfo.vendor || '',
@@ -992,7 +1041,9 @@ export async function checkWebGPUSupport(options = {}) {
               isFallbackAdapter: Boolean(reqInfo.isFallbackAdapter || isFallbackAdapter)
             };
           }
-        } catch (_) {}
+        }
+      } catch (_) {
+        adapterInfo = null;
       }
 
       const isSwiftShader = isSwiftShaderAdapter(adapterInfo, isFallbackAdapter);
@@ -2622,6 +2673,13 @@ function isFatalEngineError(rawErr) {
     text.includes('devicelosterror') ||
     text.includes('device was lost') ||
     text.includes('device lost') ||
+    text.includes('dxgi_error_device_removed') ||
+    text.includes('vk_error_device_lost') ||
+    text.includes('vk_error_out_of_device_memory') ||
+    text.includes('gpudevicelostinfo') ||
+    text.includes('gpuoutofmemoryerror') ||
+    text.includes('gpupipelineerror') ||
+    text.includes('createcomputepipeline') ||
     text.includes('modelnotloadederror') ||
     text.includes('model is not loaded') ||
     text.includes('out of memory') ||
@@ -2712,6 +2770,16 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
   if (
     lower.includes('devicelosterror') ||
     lower.includes('device was lost') ||
+    lower.includes('device lost') ||
+    lower.includes('dxgi_error_device_removed') ||
+    lower.includes('vk_error_device_lost') ||
+    lower.includes('vk_error_out_of_device_memory') ||
+    lower.includes('gpudevicelostinfo') ||
+    lower.includes('gpuoutofmemoryerror') ||
+    lower.includes('gpupipelineerror') ||
+    lower.includes('createcomputepipeline') ||
+    lower.includes('maxstoragebufferbindingsize') ||
+    lower.includes('maxbuffersize') ||
     lower.includes('modelnotloadederror') ||
     lower.includes('model is not loaded') ||
     lower.includes('out of memory') ||
@@ -2719,7 +2787,7 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
     lower.includes('oom')
   ) {
     return new WebLLMError(
-      `Your device ran out of GPU memory while running ${label}. Try closing other GPU-heavy browser tabs or applications and retry.`,
+      `Your device ran out of GPU memory or lost the WebGPU device while running ${label}. Try closing other GPU-heavy browser tabs or selecting a smaller model (such as SmolLM2 360M or 135M) and retry.`,
       {
         code: WEBLLM_ERROR_CODES.DEVICE_LOST,
         httpCode: 507,
@@ -2827,23 +2895,7 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
 // Worker Lifecycle, Lazy Initialization & Cleanup
 // ============================================================================
 
-function terminateWorkerImmediate() {
-  if (workerInstance) {
-    try {
-      workerInstance.onmessage = null;
-      workerInstance.onerror = null;
-      workerInstance.onmessageerror = null;
-      workerInstance.terminate();
-    } catch (_) {
-      // Ignore worker termination errors
-    }
-    workerInstance = null;
-  }
-  engineInstance = null;
-  loadedModelId = null;
-  warmedEngineRef = null;
-  warmedModelId = null;
-
+function notifyWorkerTerminationListeners() {
   if (workerTerminationListeners.size > 0) {
     const callbacks = [...workerTerminationListeners];
     workerTerminationListeners.clear();
@@ -2855,6 +2907,56 @@ function terminateWorkerImmediate() {
       }
     }
   }
+}
+
+function notifyRuntimeCrashListeners(crashErr) {
+  if (runtimeCrashRejectors.size > 0) {
+    const rejectors = [...runtimeCrashRejectors];
+    runtimeCrashRejectors.clear();
+    for (const rejectFn of rejectors) {
+      try {
+        rejectFn(crashErr);
+      } catch (_) {
+        // Ignore rejector errors
+      }
+    }
+  }
+}
+
+function terminateSpecificWorker(targetWorker, { clearGlobals = true } = {}) {
+  const matchesActiveWorker = Boolean(targetWorker && workerInstance === targetWorker);
+  if (targetWorker) {
+    try {
+      targetWorker.onmessage = null;
+      targetWorker.onerror = null;
+      targetWorker.onmessageerror = null;
+      targetWorker.terminate();
+    } catch (_) {
+      // Ignore worker termination errors
+    }
+  }
+
+  if (clearGlobals && (!targetWorker || matchesActiveWorker)) {
+    workerInstance = null;
+    engineInstance = null;
+    loadedModelId = null;
+    warmedEngineRef = null;
+    warmedModelId = null;
+    notifyWorkerTerminationListeners();
+  }
+}
+
+function terminateWorkerImmediate() {
+  const current = workerInstance;
+  workerInstance = null;
+  engineInstance = null;
+  loadedModelId = null;
+  warmedEngineRef = null;
+  warmedModelId = null;
+  if (current) {
+    terminateSpecificWorker(current, { clearGlobals: false });
+  }
+  notifyWorkerTerminationListeners();
 }
 
 /**
@@ -3160,8 +3262,14 @@ async function runSafeEnginePipelineWarmup(
  */
 export async function destroyWebLLMEngine(options = {}) {
   const currentEngine = engineInstance;
+  const targetWorker = workerInstance;
   const skipUnload = Boolean(options?.skipUnload || activeWarmupPromise);
+
+  engineGenerationEpoch += 1;
+  const destroyEpoch = engineGenerationEpoch;
+
   engineInstance = null;
+  workerInstance = null;
   loadedModelId = null;
   warmedEngineRef = null;
   warmedModelId = null;
@@ -3169,6 +3277,8 @@ export async function destroyWebLLMEngine(options = {}) {
   activeGpuSupportCheckPromise = null;
   isGeneratingNow = false;
   manualStopRequested = false;
+
+  notifyWorkerTerminationListeners();
 
   if (activeWarmupAbortController) {
     try {
@@ -3212,16 +3322,20 @@ export async function destroyWebLLMEngine(options = {}) {
     }
   }
 
-  terminateWorkerImmediate();
+  // Terminate ONLY the worker instance captured at the start of destroyWebLLMEngine so a newer
+  // ensureWebLLMEngine() worker started during the unload timeout window is never killed.
+  terminateSpecificWorker(targetWorker, { clearGlobals: false });
 
-  updateEngineState({
-    status: 'idle',
-    loadedModelId: null,
-    progress: 0,
-    progressPercent: null,
-    progressText: '',
-    error: null
-  });
+  if (!activeInitPromise && !engineInstance && !workerInstance && engineGenerationEpoch === destroyEpoch) {
+    updateEngineState({
+      status: 'idle',
+      loadedModelId: null,
+      progress: 0,
+      progressPercent: null,
+      progressText: '',
+      error: null
+    });
+  }
 }
 
 /**
@@ -3406,11 +3520,85 @@ export async function ensureWebLLMEngine(options = {}) {
     }
   }
 
+  // Deduplicate/await active initialization BEFORE touching status or running checkWebGPUSupport()
+  // so concurrent callers never clobber an active download/load progress state back to 'checking'.
+  const awaitInFlightInitWithProgress = async (targetPromise) => {
+    let unsub = null;
+    if (typeof onProgress === 'function') {
+      unsub = subscribeWebLLMState((st) => {
+        if (st.status === 'downloading' || st.status === 'loading' || st.status === 'ready') {
+          onProgress({
+            status: st.status,
+            modelId: st.modelId,
+            progress: st.progress,
+            progressPercent: st.progressPercent,
+            progressText: st.progressText,
+            timeElapsed: st.timeElapsed,
+            isCached: st.isCached
+          });
+        }
+      });
+    }
+    try {
+      if (!signal) {
+        return await targetPromise;
+      }
+      return await Promise.race([
+        targetPromise,
+        new Promise((_, reject) => {
+          if (signal.aborted) {
+            reject(createAbortError());
+            return;
+          }
+          signal.addEventListener('abort', () => reject(createAbortError()), { once: true });
+        })
+      ]);
+    } finally {
+      if (unsub) unsub();
+    }
+  };
+
+  if (activeInitPromise && activeInitModelId) {
+    const prelimModelId = resolveWebLLMModelId(requestedModelId, {
+      allowF32Fallback
+    });
+    const prelimEntry = WEBLLM_MODEL_CATALOG[prelimModelId];
+    const matchesActiveInit =
+      activeInitModelId === prelimModelId ||
+      (allowF32Fallback && prelimEntry?.f32FallbackModelId === activeInitModelId);
+
+    if (matchesActiveInit) {
+      logWebLLMStage('init_deduped', { modelId: activeInitModelId }, { startMs: entryStartMs });
+      return await awaitInFlightInitWithProgress(activeInitPromise);
+    }
+
+    // Switching models while another init is active: abort the older init and wait for cleanup
+    if (activeInitAbortController) {
+      try {
+        activeInitAbortController.abort();
+      } catch (_) {}
+      activeInitAbortController = null;
+    }
+    if (activeInitAbortReject) {
+      const rejectPrior = activeInitAbortReject;
+      activeInitAbortReject = null;
+      terminateWorkerImmediate();
+      rejectPrior(createAbortError('Model initialization cancelled (switched model).'));
+    }
+    try {
+      await activeInitPromise;
+    } catch (_) {
+      // Ignore prior init error
+    }
+  }
+
   // 1. Check WebGPU compatibility before loading the heavy @mlc-ai/web-llm chunk
-  updateEngineState({
-    status: 'checking',
-    error: null
-  });
+  if (!activeInitPromise) {
+    updateEngineState({
+      status: 'checking',
+      error: null
+    });
+  }
 
   logWebLLMStage('gpu_check_start', { requestedModelId }, { startMs: entryStartMs });
   const gpuSupport = await checkWebGPUSupport();
@@ -3774,6 +3962,7 @@ export async function ensureWebLLMEngine(options = {}) {
 
       // 5. Spawn dedicated ES module Web Worker
       terminateWorkerImmediate();
+      engineGenerationEpoch += 1;
       logWebLLMStage(
         'worker_spawn',
         { modelId: resolvedModelId, hasVerifiedLocalCache },
@@ -4103,15 +4292,46 @@ export async function ensureWebLLMEngine(options = {}) {
         throw createAbortError('Model initialization cancelled by user.');
       }
 
-      // Keep runtime worker error listener active after init so runtime crashes recover cleanly
-      worker.onerror = (event) => {
-        console.error('[Orvix WebLLM] Runtime worker error:', event?.message || event);
-        terminateWorkerImmediate();
+      // Keep runtime worker error & messageerror listeners active after init so runtime crashes
+      // unblock any active streaming generator, invalidate stale GPU state, and recover cleanly.
+      const handleRuntimeWorkerFailure = (event, defaultMsg) => {
+        const crashDetail = event?.message || defaultMsg;
+        console.error('[Orvix WebLLM] Runtime worker error:', crashDetail);
+        cachedGpuSupportEntry = null;
+        activeGpuSupportCheckPromise = null;
+        isGeneratingNow = false;
+        manualStopRequested = false;
+
+        const crashError = new WebLLMError(
+          'Browser AI worker stopped unexpectedly (possible GPU memory limit). Next message will reload the engine.',
+          {
+            code: WEBLLM_ERROR_CODES.WORKER_CRASHED,
+            httpCode: 500,
+            retryable: true,
+            cause: event?.error || event
+          }
+        );
+
+        notifyRuntimeCrashListeners(crashError);
+        terminateSpecificWorker(worker);
         updateEngineState({
           status: 'error',
           loadedModelId: null,
-          error: 'Browser AI worker stopped unexpectedly (possible GPU memory limit). Next message will reload the engine.'
+          error: crashError.message
         });
+      };
+
+      worker.onerror = (event) => {
+        handleRuntimeWorkerFailure(
+          event,
+          'Dedicated WebLLM worker encountered an unexpected runtime error.'
+        );
+      };
+      worker.onmessageerror = (event) => {
+        handleRuntimeWorkerFailure(
+          event,
+          'Communication with the Browser AI worker failed.'
+        );
       };
 
       engineInstance = createdEngine;
@@ -4810,6 +5030,18 @@ export async function streamWebLLMMessage({
       }
     });
 
+    let rejectOnRuntimeCrash = null;
+    const runtimeCrashPromise = new Promise((_, reject) => {
+      rejectOnRuntimeCrash = reject;
+      runtimeCrashRejectors.add(reject);
+    });
+    runtimeCrashPromise.catch(() => {});
+
+    const awaitWithRuntimeGuard = (promise) =>
+      Promise.race([Promise.resolve(promise), runtimeCrashPromise]);
+
+    let asyncIterator = null;
+
     try {
       const completionPayload = {
         messages: boundedMessages,
@@ -4830,26 +5062,46 @@ export async function streamWebLLMMessage({
         completionPayload.extra_body = genParams.extra_body;
       }
 
-      const asyncChunkGenerator = await engine.chat.completions.create(completionPayload);
+      const asyncChunkGenerator = await awaitWithRuntimeGuard(
+        engine.chat.completions.create(completionPayload)
+      );
+      asyncIterator = asyncChunkGenerator?.[Symbol.asyncIterator]?.() || null;
 
-      for await (const chunk of asyncChunkGenerator) {
-        if (signal?.aborted || manualStopRequested || streamSanitizer.isStopped()) {
-          try {
-            engine.interruptGenerate();
-          } catch (_) {
-            // Ignore
+      if (asyncIterator) {
+        while (true) {
+          if (signal?.aborted || manualStopRequested || streamSanitizer.isStopped()) {
+            try {
+              engine.interruptGenerate();
+            } catch (_) {
+              // Ignore
+            }
+            break;
           }
-          break;
-        }
 
-        const delta = chunk?.choices?.[0]?.delta?.content;
-        if (delta && !signal?.aborted && !manualStopRequested) {
-          accumulatedText += delta;
-          streamSanitizer.feed(delta, accumulatedText);
-        }
+          const step = await awaitWithRuntimeGuard(asyncIterator.next());
+          if (step.done) {
+            break;
+          }
 
-        if (chunk?.usage) {
-          finalUsage = chunk.usage;
+          const chunk = step.value;
+          if (signal?.aborted || manualStopRequested || streamSanitizer.isStopped()) {
+            try {
+              engine.interruptGenerate();
+            } catch (_) {
+              // Ignore
+            }
+            break;
+          }
+
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (delta && !signal?.aborted && !manualStopRequested) {
+            accumulatedText += delta;
+            streamSanitizer.feed(delta, accumulatedText);
+          }
+
+          if (chunk?.usage) {
+            finalUsage = chunk.usage;
+          }
         }
       }
 
@@ -4887,6 +5139,12 @@ export async function streamWebLLMMessage({
         usage: finalUsage
       };
     } catch (genErr) {
+      if (asyncIterator && typeof asyncIterator.return === 'function') {
+        try {
+          Promise.resolve(asyncIterator.return()).catch(() => {});
+        } catch (_) {}
+      }
+
       if (isAbortError(genErr) || signal?.aborted || manualStopRequested) {
         if (engineInstance) {
           updateEngineState({
@@ -4898,9 +5156,11 @@ export async function streamWebLLMMessage({
         throw createAbortError();
       }
 
-      // Recover cleanly from GPU device lost / OOM / worker crash so next turn reloads cleanly
+      // Recover cleanly from GPU device lost / OOM / worker crash so next turn re-probes GPU & reloads
       if (isFatalEngineError(genErr) || !workerInstance) {
-        await destroyWebLLMEngine();
+        cachedGpuSupportEntry = null;
+        activeGpuSupportCheckPromise = null;
+        await destroyWebLLMEngine({ skipUnload: true });
       } else {
         updateEngineState({
           status: 'ready',
@@ -4929,6 +5189,9 @@ export async function streamWebLLMMessage({
 
       throw normalized;
     } finally {
+      if (rejectOnRuntimeCrash) {
+        runtimeCrashRejectors.delete(rejectOnRuntimeCrash);
+      }
       isGeneratingNow = false;
       manualStopRequested = false;
       if (removeAbortHandler) {

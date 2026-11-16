@@ -2967,10 +2967,23 @@ export function registerUploadRoutes(app: express.Express) {
     const ticket = claimResult.ticket!;
 
     // Verify object in Supabase Storage by downloading
-    const downloadRes = await downloadAttachmentFromStorage(ticket.storagePath, {
-      requestingUserId: authenticatedUserId,
-      bucket: ticket.bucket
-    });
+    let downloadRes: any;
+    try {
+      downloadRes = await downloadAttachmentFromStorage(ticket.storagePath, {
+        requestingUserId: authenticatedUserId,
+        bucket: ticket.bucket
+      });
+    } catch (storageErr: any) {
+      const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'STORAGE_DOWNLOAD_ERROR');
+      if (cleanupRes.quotaStatus) {
+        attachQuotaHeaders(res, cleanupRes.quotaStatus, quotaIdentity);
+      }
+      return res.status(503).json({
+        error: storageErr?.message || 'Storage service error while verifying uploaded object.',
+        code: 'STORAGE_DOWNLOAD_ERROR',
+        retryable: true
+      });
+    }
 
     if (!downloadRes.success || !downloadRes.data) {
       const cleanupRes = await failAndCleanupDurableUploadTicket(ticket, 'OBJECT_NOT_FOUND');
@@ -3191,8 +3204,8 @@ export function registerUploadRoutes(app: express.Express) {
     }
     const attachmentId = typeof req.body?.attachmentId === 'string' ? req.body.attachmentId.trim() : '';
     const cancelRes = await cancelDurableUploadTicket(attachmentId, authenticatedUserId);
-    if (!cancelRes.success && cancelRes.status === 403) {
-      return res.status(403).json({
+    if (!cancelRes.success && (cancelRes.status === 403 || cancelRes.status === 409)) {
+      return res.status(cancelRes.status).json({
         error: cancelRes.error,
         code: cancelRes.code
       });
@@ -3336,6 +3349,7 @@ export function registerUploadRoutes(app: express.Express) {
 
       const reservation = quotaReservation.reservation;
       let isReservationSettled = false;
+      let clientDisconnected = false;
 
       const releaseQuotaReservationSafely = async (): Promise<QuotaStatus | null> => {
         if (!isReservationSettled) {
@@ -3349,6 +3363,7 @@ export function registerUploadRoutes(app: express.Express) {
 
       res.on('close', () => {
         if (!res.writableEnded) {
+          clientDisconnected = true;
           void releaseQuotaReservationSafely();
         }
       });
@@ -3357,6 +3372,21 @@ export function registerUploadRoutes(app: express.Express) {
       const validationErrors: string[] = [];
       let validationErrorCode = 'INVALID_FILE_CONTENT';
       const rawStoragePayloads = new Map<string, { rawBuffer: Buffer; storageMimeType: string }>();
+
+      const cleanupLocalBatch = async (convId?: string) => {
+        for (const toClean of uploadedResults) {
+          fileRegistry.delete(toClean.id);
+          if (convId && conversationDocuments.has(convId)) {
+            conversationDocuments.get(convId)!.delete(toClean.id);
+          }
+          try {
+            const fullDiskPath = path.join(UPLOAD_DIR, toClean.diskFilename);
+            if (fs.existsSync(fullDiskPath)) {
+              await fs.promises.unlink(fullDiskPath);
+            }
+          } catch (_) {}
+        }
+      };
 
       const declaredEncoding = firstFieldValue(req.body?.storageEncoding);
       const declaredOriginalSize = req.body?.originalSize ?? null;
@@ -3466,15 +3496,7 @@ export function registerUploadRoutes(app: express.Express) {
         if (releasedStatus) {
           attachQuotaHeaders(res, releasedStatus, quotaIdentity);
         }
-        for (const rec of uploadedResults) {
-          fileRegistry.delete(rec.id);
-          if (conversationId && conversationDocuments.has(conversationId)) {
-            conversationDocuments.get(conversationId)!.delete(rec.id);
-          }
-          try {
-            await fs.promises.unlink(path.join(UPLOAD_DIR, rec.diskFilename));
-          } catch (_) {}
-        }
+        await cleanupLocalBatch(conversationId);
         return res.status(400).json({
           error: validationErrors.join(' '),
           code: validationErrorCode
@@ -3482,6 +3504,11 @@ export function registerUploadRoutes(app: express.Express) {
       }
 
       for (const rec of uploadedResults) {
+        if (clientDisconnected || res.destroyed) {
+          await cleanupLocalBatch(conversationId);
+          await releaseQuotaReservationSafely();
+          return;
+        }
         try {
           const fullDiskPath = path.join(UPLOAD_DIR, rec.diskFilename);
           const ext = path.extname(rec.diskFilename).toLowerCase();
@@ -3526,12 +3553,16 @@ export function registerUploadRoutes(app: express.Express) {
         }
       }
 
+      const uploadedToSupabase: { path: string; bucket?: string }[] = [];
+
       // Upload authenticated users' files to private Supabase Storage if configured and online
       if (authenticatedUserId && isSupabaseConfigured() && !isOfflineUpload) {
         const cleanChatId = conversationId!;
-        const uploadedToSupabase: { path: string; bucket?: string }[] = [];
 
         for (const rec of uploadedResults) {
+          if (clientDisconnected || res.destroyed) {
+            break;
+          }
           const storagePayload = rawStoragePayloads.get(rec.id);
           const bufferForCloud = storagePayload?.rawBuffer || rec.buffer;
           const mimeForCloud = storagePayload?.storageMimeType || rec.mimeType;
@@ -3572,18 +3603,7 @@ export function registerUploadRoutes(app: express.Express) {
               );
 
               // 1. Rollback local temporary files written to disk and in-memory registry during this request
-              for (const toClean of uploadedResults) {
-                fileRegistry.delete(toClean.id);
-                if (cleanChatId && conversationDocuments.has(cleanChatId)) {
-                  conversationDocuments.get(cleanChatId)!.delete(toClean.id);
-                }
-                try {
-                  const fullDiskPath = path.join(UPLOAD_DIR, toClean.diskFilename);
-                  if (fs.existsSync(fullDiskPath)) {
-                    await fs.promises.unlink(fullDiskPath);
-                  }
-                } catch (_) {}
-              }
+              await cleanupLocalBatch(cleanChatId);
 
               // 2. Rollback any files from this batch that succeeded uploading to Supabase
               for (const uploadedSupa of uploadedToSupabase) {
@@ -3622,6 +3642,21 @@ export function registerUploadRoutes(app: express.Express) {
             }
           }
         }
+      }
+
+      // If client aborted/disconnected while processing or uploading, roll back artifacts & do NOT commit quota
+      if (clientDisconnected || res.destroyed || isReservationSettled) {
+        await cleanupLocalBatch(conversationId);
+        for (const uploadedSupa of uploadedToSupabase) {
+          try {
+            await deleteAttachmentFromStorage(uploadedSupa.path, {
+              requestingUserId: authenticatedUserId,
+              bucket: uploadedSupa.bucket
+            });
+          } catch (_) {}
+        }
+        await releaseQuotaReservationSafely();
+        return;
       }
 
       isReservationSettled = true;

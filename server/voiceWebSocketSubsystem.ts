@@ -19,7 +19,7 @@ import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Spoken transcript cleaner
 import { polishSpokenTranscript } from '../src/utils/speechTextCleaner.js';
 import { mapBcp47ToIso639, DEFAULT_WHISPER_CONTEXT_PROMPT } from './transcriptionSubsystem.ts';
-import { checkWebSocketUpgradeRateLimit } from './rateLimiter.ts';
+import { checkWebSocketUpgradeRateLimit, extractClientIp } from './rateLimiter.ts';
 
 /**
  * Returns whether at least one real transcription provider (Groq Whisper or Gemini) is configured.
@@ -100,6 +100,8 @@ export interface VoiceStreamSession {
   accumulatedTranscript: string;
   isTranscribing: boolean;
   hasPendingIncremental: boolean;
+  activeTranscriptionPromise?: Promise<void> | null;
+  cleanedUp?: boolean;
   isAlive: boolean;
   heartbeatTimer?: NodeJS.Timeout;
   durationTimer?: NodeJS.Timeout;
@@ -108,6 +110,18 @@ export interface VoiceStreamSession {
 // Active sessions by socket and IP tracking
 const activeSessions = new Map<WebSocket, VoiceStreamSession>();
 const ipConnectionCount = new Map<string, number>();
+
+function safeSendJson(ws: WebSocket, payload: Record<string, unknown>): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+  try {
+    ws.send(JSON.stringify(payload));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 /**
  * Builds a valid 44-byte RIFF/WAVE header around raw PCM byte buffer.
@@ -274,31 +288,48 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
 
 /**
  * Triggers an incremental progressive transcription pass for an active session.
+ * When `isFinalPass` is true, awaits any in-flight incremental pass and transcribes
+ * any remaining buffered PCM audio before resolving so `'stop'` never drops trailing audio.
  */
 async function processIncrementalTranscription(session: VoiceStreamSession, isFinalPass = false) {
   if (session.state === 'stopped' && !isFinalPass) return;
   if (session.state === 'cancelled') return;
 
   if (!isTranscriptionProviderConfigured()) {
-    if (session.ws.readyState === WebSocket.OPEN) {
-      session.ws.send(
-        JSON.stringify({
-          type: 'status',
-          status: 'provider_unavailable',
-          code: 'PROVIDER_UNAVAILABLE',
-          error: 'No voice transcription provider is configured on the server. Falling back to HTTP / Web Speech.',
-          recoverable: true,
-          canFallback: true
-        })
-      );
-    }
+    safeSendJson(session.ws, {
+      type: 'status',
+      status: 'provider_unavailable',
+      code: 'PROVIDER_UNAVAILABLE',
+      error: 'No voice transcription provider is configured on the server. Falling back to HTTP / Web Speech.',
+      recoverable: true,
+      canFallback: true
+    });
     return;
   }
 
   if (session.isTranscribing) {
-    session.hasPendingIncremental = true;
-    return;
+    if (!isFinalPass) {
+      session.hasPendingIncremental = true;
+      return;
+    }
+
+    // For a final pass ('stop' / max buffer / max duration), wait for active incremental work
+    // to settle so we don't drop trailing PCM frames that arrived after the previous pass started.
+    session.hasPendingIncremental = false;
+    while (session.isTranscribing && session.activeTranscriptionPromise) {
+      try {
+        await session.activeTranscriptionPromise;
+      } catch (_) {
+        break;
+      }
+      if ((session.state as string) === 'cancelled') {
+        return;
+      }
+    }
   }
+
+  if ((session.state as string) === 'cancelled') return;
+  if (session.state === 'stopped' && !isFinalPass) return;
 
   const chunks = session.pcmChunks;
   if (!chunks || chunks.length === 0) return;
@@ -309,100 +340,123 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
     return;
   }
 
-  session.isTranscribing = true;
-  session.lastIncrementalTime = Date.now();
-  session.lastTranscribedBytes = fullPcm.length;
+  // If a prior pass already transcribed all bytes and produced a transcript, skip redundant final work
+  if (
+    isFinalPass &&
+    session.lastTranscribedBytes >= fullPcm.length &&
+    session.accumulatedTranscript.trim().length > 0
+  ) {
+    return;
+  }
 
-  try {
-    // Progressive sliding/committed window:
-    // Transcribe active uncommitted PCM slice to avoid re-transcribing minutes of old audio
-    const activePcm = fullPcm.subarray(session.committedOffset);
-    const audioToTranscribe = activePcm.length >= 3200 ? activePcm : fullPcm;
+  let runPromise!: Promise<void>;
+  runPromise = (async () => {
+    session.isTranscribing = true;
+    session.lastIncrementalTime = Date.now();
+    session.lastTranscribedBytes = fullPcm.length;
 
-    const wav = pcmToWavBuffer(
-      audioToTranscribe,
-      session.format.sampleRate,
-      session.format.channels,
-      session.format.bitDepth
-    );
+    try {
+      // Progressive sliding/committed window:
+      // Transcribe active uncommitted PCM slice to avoid re-transcribing minutes of old audio
+      const activePcm = fullPcm.subarray(session.committedOffset);
+      const audioToTranscribe = activePcm.length >= 3200 ? activePcm : fullPcm;
 
-    const effectivePrompt = [
-      session.committedTranscript,
-      session.prompt,
-      DEFAULT_WHISPER_CONTEXT_PROMPT
-    ]
-      .filter(Boolean)
-      .join('. ')
-      .slice(0, 200);
+      const wav = pcmToWavBuffer(
+        audioToTranscribe,
+        session.format.sampleRate,
+        session.format.channels,
+        session.format.bitDepth
+      );
 
-    const result = await transcribeAudioBuffer(
-      wav,
-      session.language,
-      effectivePrompt,
-      session.committedTranscript || session.accumulatedTranscript
-    );
+      const effectivePrompt = [
+        session.committedTranscript,
+        session.prompt,
+        DEFAULT_WHISPER_CONTEXT_PROMPT
+      ]
+        .filter(Boolean)
+        .join('. ')
+        .slice(0, 200);
 
-    if (session.ws.readyState === WebSocket.OPEN) {
-      const activeText = (result.text || '').trim();
-      if (!activeText) {
-        // No speech recognized in this audio chunk - do not fabricate or emit empty interim
+      const result = await transcribeAudioBuffer(
+        wav,
+        session.language,
+        effectivePrompt,
+        session.committedTranscript || session.accumulatedTranscript
+      );
+
+      if ((session.state as string) === 'cancelled') {
+        return;
+      }
+      if (session.state === 'stopped' && !isFinalPass) {
         return;
       }
 
-      let combined = '';
-
-      if (audioToTranscribe === fullPcm) {
-        combined = activeText;
-      } else if (session.committedTranscript) {
-        combined = activeText ? `${session.committedTranscript} ${activeText}` : session.committedTranscript;
-      } else {
-        combined = activeText;
-      }
-
-      combined = polishSpokenTranscript(combined) || combined;
-
-      if (combined) {
-        session.accumulatedTranscript = combined;
-        session.segmentIndex += 1;
-
-        // If a sentence completed with punctuation and active segment has sufficient length, commit it
-        const endsWithPunctuation = /[.!?]$/.test(activeText);
-        if (endsWithPunctuation && activePcm.length >= 32000 && !isFinalPass) {
-          session.committedTranscript = combined;
-          session.committedOffset = fullPcm.length;
+      if (session.ws.readyState === WebSocket.OPEN) {
+        const activeText = (result.text || '').trim();
+        if (!activeText) {
+          // No speech recognized in this audio chunk - do not fabricate or emit empty interim
+          return;
         }
 
-        session.ws.send(
-          JSON.stringify({
+        let combined = '';
+
+        if (audioToTranscribe === fullPcm) {
+          combined = activeText;
+        } else if (session.committedTranscript) {
+          combined = activeText ? `${session.committedTranscript} ${activeText}` : session.committedTranscript;
+        } else {
+          combined = activeText;
+        }
+
+        combined = polishSpokenTranscript(combined) || combined;
+
+        if (combined) {
+          session.accumulatedTranscript = combined;
+          session.segmentIndex += 1;
+
+          // If a sentence completed with punctuation and active segment has sufficient length, commit it
+          const endsWithPunctuation = /[.!?]$/.test(activeText);
+          if (endsWithPunctuation && activePcm.length >= 32000 && !isFinalPass) {
+            session.committedTranscript = combined;
+            session.committedOffset = fullPcm.length;
+          }
+
+          safeSendJson(session.ws, {
             type: 'transcription',
             sessionId: session.sessionId,
             text: combined,
             isFinal: isFinalPass,
             segmentIndex: session.segmentIndex,
             provider: result.provider
-          })
-        );
+          });
+        }
+      }
+    } catch (err: any) {
+      console.warn('[VoiceStream] Incremental transcription notice:', err?.message || err);
+    } finally {
+      session.isTranscribing = false;
+      if (session.activeTranscriptionPromise === runPromise) {
+        session.activeTranscriptionPromise = null;
+      }
+
+      // If another incremental chunk arrived while this was processing, run it
+      if (session.hasPendingIncremental && session.state === 'listening' && !isFinalPass) {
+        session.hasPendingIncremental = false;
+        setTimeout(() => {
+          if (session.state === 'listening' && !session.cleanedUp) {
+            processIncrementalTranscription(session, false).catch(() => {});
+          }
+        }, 100);
       }
     }
-  } catch (err: any) {
-    console.warn('[VoiceStream] Incremental transcription notice:', err?.message || err);
-  } finally {
-    session.isTranscribing = false;
+  })();
 
-    // If another incremental chunk arrived while this was processing, run it
-    if (session.hasPendingIncremental && session.state === 'listening' && !isFinalPass) {
-      session.hasPendingIncremental = false;
-      setTimeout(() => {
-        if (session.state === 'listening') {
-          processIncrementalTranscription(session, false).catch(() => {});
-        }
-      }, 100);
-    }
-  }
+  session.activeTranscriptionPromise = runPromise;
+  await runPromise;
 }
 
 /**
- * Safely closes and cleans up a voice streaming session.
+ * Safely closes and cleans up a voice streaming session (idempotent across overlapping error/close/cancel events).
  */
 export function cleanupSession(session: VoiceStreamSession, code = 1000, reason = 'Normal Closure') {
   if (session.heartbeatTimer) {
@@ -416,11 +470,14 @@ export function cleanupSession(session: VoiceStreamSession, code = 1000, reason 
 
   activeSessions.delete(session.ws);
 
-  const currentCount = ipConnectionCount.get(session.ip) || 1;
-  if (currentCount <= 1) {
-    ipConnectionCount.delete(session.ip);
-  } else {
-    ipConnectionCount.set(session.ip, currentCount - 1);
+  if (!session.cleanedUp) {
+    session.cleanedUp = true;
+    const currentCount = ipConnectionCount.get(session.ip) || 0;
+    if (currentCount <= 1) {
+      ipConnectionCount.delete(session.ip);
+    } else {
+      ipConnectionCount.set(session.ip, currentCount - 1);
+    }
   }
 
   if (session.ws.readyState === WebSocket.OPEN || session.ws.readyState === WebSocket.CONNECTING) {
@@ -447,64 +504,103 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       return; // Allow other upgrade handlers (e.g. Vite HMR if any) to process
     }
 
-    // IP connection concurrency limit
-    const ip =
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() ||
-      req.socket.remoteAddress ||
-      '127.0.0.1';
-
+    // Atomically extract normalized IP and reserve concurrent slot BEFORE any async awaits
+    const ip = extractClientIp(req);
     const currentCount = ipConnectionCount.get(ip) || 0;
     if (currentCount >= MAX_CONNECTIONS_PER_IP) {
-      socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+      try {
+        socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+      } catch (_) {}
       socket.destroy();
       return;
     }
 
-    // Authenticate handshake via Bearer token in headers or query params
-    const authHeader = req.headers.authorization;
-    let token = '';
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.slice(7).trim();
-    } else if (parsed.query?.token && typeof parsed.query.token === 'string') {
-      token = parsed.query.token.trim();
-    }
-
-    let verifiedUserId: string | null = null;
-    let isGuest = true;
-    let isAuthenticated = false;
-
-    if (token) {
-      const authResult = await verifyFirebaseIdToken(token);
-      if (authResult.success) {
-        verifiedUserId = authResult.user.uid;
-        isGuest = false;
-        isAuthenticated = true;
+    ipConnectionCount.set(ip, currentCount + 1);
+    let slotSettled = false;
+    const releaseReservedIpSlot = () => {
+      if (slotSettled) return;
+      slotSettled = true;
+      const cur = ipConnectionCount.get(ip) || 0;
+      if (cur <= 1) {
+        ipConnectionCount.delete(ip);
       } else {
-        // Explicit invalid token: reject upgrade with 401 Unauthorized
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
+        ipConnectionCount.set(ip, cur - 1);
+      }
+    };
+
+    socket.once('close', releaseReservedIpSlot);
+
+    try {
+      // Authenticate handshake via Bearer token in headers or query params
+      const authHeader = req.headers.authorization;
+      let token = '';
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.slice(7).trim();
+      } else if (parsed.query?.token && typeof parsed.query.token === 'string') {
+        token = parsed.query.token.trim();
+      }
+
+      let verifiedUserId: string | null = null;
+      let isGuest = true;
+      let isAuthenticated = false;
+
+      if (token) {
+        const authResult = await verifyFirebaseIdToken(token);
+        if (authResult.success) {
+          verifiedUserId = authResult.user.uid;
+          isGuest = false;
+          isAuthenticated = true;
+        } else {
+          // Explicit invalid token: reject upgrade with 401 Unauthorized
+          releaseReservedIpSlot();
+          if (!socket.destroyed) {
+            try {
+              socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            } catch (_) {}
+            socket.destroy();
+          }
+          return;
+        }
+      }
+
+      const wsRateDecision = await checkWebSocketUpgradeRateLimit(req, verifiedUserId);
+      if (!wsRateDecision.allowed) {
+        releaseReservedIpSlot();
+        if (!socket.destroyed) {
+          try {
+            socket.write(
+              `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${wsRateDecision.retryAfterSeconds}\r\nX-RateLimit-Limit: ${wsRateDecision.limit}\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset-UTC: ${wsRateDecision.resetAtIso}\r\n\r\n`
+            );
+          } catch (_) {}
+          socket.destroy();
+        }
         return;
       }
-    }
 
-    const wsRateDecision = await checkWebSocketUpgradeRateLimit(req, verifiedUserId);
-    if (!wsRateDecision.allowed) {
-      socket.write(
-        `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${wsRateDecision.retryAfterSeconds}\r\nX-RateLimit-Limit: ${wsRateDecision.limit}\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset-UTC: ${wsRateDecision.resetAtIso}\r\n\r\n`
-      );
-      socket.destroy();
-      return;
-    }
+      if (socket.destroyed) {
+        releaseReservedIpSlot();
+        return;
+      }
 
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      ipConnectionCount.set(ip, currentCount + 1);
-      wss.emit('connection', ws, req, {
-        ip,
-        userId: verifiedUserId,
-        isGuest,
-        authenticated: isAuthenticated
+      // Transfer slot ownership to the WebSocket session before handleUpgrade
+      slotSettled = true;
+      socket.removeListener('close', releaseReservedIpSlot);
+
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req, {
+          ip,
+          userId: verifiedUserId,
+          isGuest,
+          authenticated: isAuthenticated
+        });
       });
-    });
+    } catch (upgradeErr: any) {
+      console.warn('[VoiceStream] WebSocket upgrade error:', upgradeErr?.message || upgradeErr);
+      releaseReservedIpSlot();
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+    }
   });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage, authContext: any) => {
@@ -531,6 +627,8 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       accumulatedTranscript: '',
       isTranscribing: false,
       hasPendingIncremental: false,
+      activeTranscriptionPromise: null,
+      cleanedUp: false,
       isAlive: true
     };
 
@@ -538,15 +636,13 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
     // Initial auth & readiness confirmation message
     const providerConfigured = isTranscriptionProviderConfigured();
-    ws.send(
-      JSON.stringify({
-        type: 'authenticated',
-        sessionId,
-        userId: session.userId,
-        isGuest: session.isGuest,
-        providerAvailable: providerConfigured
-      })
-    );
+    safeSendJson(ws, {
+      type: 'authenticated',
+      sessionId,
+      userId: session.userId,
+      isGuest: session.isGuest,
+      providerAvailable: providerConfigured
+    });
 
     // Heartbeat watchdog: ping client periodically
     session.heartbeatTimer = setInterval(() => {
@@ -563,17 +659,17 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
     // Hard ceiling for stream duration (e.g. 15 minutes)
     session.durationTimer = setTimeout(() => {
       if (session.state === 'listening' || session.state === 'paused') {
-        ws.send(
-          JSON.stringify({
-            type: 'error',
-            error: 'Maximum voice recording duration (15 minutes) reached.',
-            code: 'MAX_DURATION_EXCEEDED',
-            recoverable: false
-          })
-        );
-        processIncrementalTranscription(session, true).then(() => {
-          cleanupSession(session, 1000, 'Max duration reached');
+        safeSendJson(ws, {
+          type: 'error',
+          error: 'Maximum voice recording duration (15 minutes) reached.',
+          code: 'MAX_DURATION_EXCEEDED',
+          recoverable: false
         });
+        processIncrementalTranscription(session, true)
+          .catch(() => {})
+          .finally(() => {
+            cleanupSession(session, 1000, 'Max duration reached');
+          });
       }
     }, MAX_STREAM_SESSION_DURATION_MS);
 
@@ -594,15 +690,13 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
         // Memory limit safeguard
         if (session.totalBytes + chunk.length > MAX_STREAM_PCM_BYTES) {
-          ws.send(
-            JSON.stringify({
-              type: 'error',
-              error: 'Audio buffer limit (25 MB) exceeded.',
-              code: 'MAX_BUFFER_EXCEEDED',
-              recoverable: false
-            })
-          );
-          await processIncrementalTranscription(session, true);
+          safeSendJson(ws, {
+            type: 'error',
+            error: 'Audio buffer limit (25 MB) exceeded.',
+            code: 'MAX_BUFFER_EXCEEDED',
+            recoverable: false
+          });
+          await processIncrementalTranscription(session, true).catch(() => {});
           cleanupSession(session, 1009, 'Max buffer exceeded');
           return;
         }
@@ -643,51 +737,43 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
                 session.userId = res.user.uid;
                 session.isGuest = false;
                 session.authenticated = true;
-                ws.send(
-                  JSON.stringify({
-                    type: 'authenticated',
-                    sessionId: session.sessionId,
-                    userId: session.userId,
-                    isGuest: false
-                  })
-                );
+                safeSendJson(ws, {
+                  type: 'authenticated',
+                  sessionId: session.sessionId,
+                  userId: session.userId,
+                  isGuest: false
+                });
               } else {
-                ws.send(
-                  JSON.stringify({
-                    type: 'error',
-                    error: 'Authentication failed.',
-                    code: 'AUTH_FAILED',
-                    recoverable: false
-                  })
-                );
+                safeSendJson(ws, {
+                  type: 'error',
+                  error: 'Authentication failed.',
+                  code: 'AUTH_FAILED',
+                  recoverable: false
+                });
                 cleanupSession(session, 4401, 'Auth failed');
               }
             } else if (message.guest) {
               session.isGuest = true;
-              ws.send(
-                JSON.stringify({
-                  type: 'authenticated',
-                  sessionId: session.sessionId,
-                  userId: null,
-                  isGuest: true
-                })
-              );
+              safeSendJson(ws, {
+                type: 'authenticated',
+                sessionId: session.sessionId,
+                userId: null,
+                isGuest: true
+              });
             }
             break;
           }
 
           case 'start': {
             if (!isTranscriptionProviderConfigured()) {
-              ws.send(
-                JSON.stringify({
-                  type: 'status',
-                  status: 'provider_unavailable',
-                  code: 'PROVIDER_UNAVAILABLE',
-                  error: 'No voice transcription provider is configured on the server. Falling back to HTTP / Web Speech.',
-                  recoverable: true,
-                  canFallback: true
-                })
-              );
+              safeSendJson(ws, {
+                type: 'status',
+                status: 'provider_unavailable',
+                code: 'PROVIDER_UNAVAILABLE',
+                error: 'No voice transcription provider is configured on the server. Falling back to HTTP / Web Speech.',
+                recoverable: true,
+                canFallback: true
+              });
               return;
             }
 
@@ -701,6 +787,7 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
             session.committedTranscript = '';
             session.accumulatedTranscript = '';
             session.segmentIndex = 0;
+            session.hasPendingIncremental = false;
 
             if (message.format) {
               session.format = {
@@ -716,38 +803,32 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
               session.prompt = String(message.prompt);
             }
 
-            ws.send(
-              JSON.stringify({
-                type: 'ready',
-                sessionId: session.sessionId,
-                format: session.format
-              })
-            );
+            safeSendJson(ws, {
+              type: 'ready',
+              sessionId: session.sessionId,
+              format: session.format
+            });
             break;
           }
 
           case 'pause': {
             session.state = 'paused';
-            ws.send(
-              JSON.stringify({
-                type: 'state',
-                state: 'paused',
-                sessionId: session.sessionId
-              })
-            );
+            safeSendJson(ws, {
+              type: 'state',
+              state: 'paused',
+              sessionId: session.sessionId
+            });
             break;
           }
 
           case 'resume': {
             session.state = 'listening';
             session.lastIncrementalTime = Date.now();
-            ws.send(
-              JSON.stringify({
-                type: 'state',
-                state: 'listening',
-                sessionId: session.sessionId
-              })
-            );
+            safeSendJson(ws, {
+              type: 'state',
+              state: 'listening',
+              sessionId: session.sessionId
+            });
             break;
           }
 
@@ -760,15 +841,13 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
               ? session.accumulatedTranscript.split(/\s+/).filter(Boolean).length
               : 0;
 
-            ws.send(
-              JSON.stringify({
-                type: 'done',
-                sessionId: session.sessionId,
-                text: session.accumulatedTranscript,
-                duration: durationSec,
-                words
-              })
-            );
+            safeSendJson(ws, {
+              type: 'done',
+              sessionId: session.sessionId,
+              text: session.accumulatedTranscript,
+              duration: durationSec,
+              words
+            });
             break;
           }
 
@@ -780,18 +859,17 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
             session.committedOffset = 0;
             session.committedTranscript = '';
             session.accumulatedTranscript = '';
-            ws.send(
-              JSON.stringify({
-                type: 'cancelled',
-                sessionId: session.sessionId
-              })
-            );
+            session.hasPendingIncremental = false;
+            safeSendJson(ws, {
+              type: 'cancelled',
+              sessionId: session.sessionId
+            });
             cleanupSession(session, 1000, 'Client cancelled');
             break;
           }
 
           case 'ping': {
-            ws.send(JSON.stringify({ type: 'pong' }));
+            safeSendJson(ws, { type: 'pong' });
             break;
           }
 
@@ -799,14 +877,12 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
             break;
         }
       } catch (parseErr) {
-        ws.send(
-          JSON.stringify({
-            type: 'error',
-            error: 'Invalid JSON message payload',
-            code: 'INVALID_PAYLOAD',
-            recoverable: true
-          })
-        );
+        safeSendJson(ws, {
+          type: 'error',
+          error: 'Invalid JSON message payload',
+          code: 'INVALID_PAYLOAD',
+          recoverable: true
+        });
       }
     });
 
@@ -828,4 +904,22 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
  */
 export function getActiveVoiceSessions(): VoiceStreamSession[] {
   return Array.from(activeSessions.values());
+}
+
+/**
+ * Reads tracked concurrent WebSocket connection count for a normalized IP (for tests and diagnostics).
+ */
+export function getVoiceIpConnectionCount(ip: string): number {
+  return ipConnectionCount.get(ip) || 0;
+}
+
+/**
+ * Resets internal voice session and IP connection tracking state for isolated tests.
+ */
+export function resetVoiceWebSocketStateForTesting(): void {
+  for (const session of activeSessions.values()) {
+    cleanupSession(session, 1000, 'Test reset');
+  }
+  activeSessions.clear();
+  ipConnectionCount.clear();
 }

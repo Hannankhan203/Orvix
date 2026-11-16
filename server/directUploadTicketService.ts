@@ -411,31 +411,71 @@ export async function cancelDurableUploadTicket(
   const now = Date.now();
 
   try {
-    let ticket: PendingDirectUploadTicket | null = null;
+    type TxOutcome =
+      | { outcome: 'not_found' }
+      | { outcome: 'forbidden' }
+      | { outcome: 'already_completed' }
+      | { outcome: 'concurrent_completion' }
+      | { outcome: 'already_terminal' }
+      | { outcome: 'cancelled_now'; ticket: PendingDirectUploadTicket };
 
-    // Check Firestore doc first
-    try {
+    const txResult: TxOutcome = await db.runTransaction(async (transaction: any) => {
       const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-      if (typeof docRef.get === 'function') {
-        const snap = await docRef.get();
-        if (snap && snap.exists) {
-          ticket = (typeof snap.data === 'function' ? snap.data() : snap.data) as PendingDirectUploadTicket;
+      const snap = await transaction.get(docRef);
+
+      let ticket: PendingDirectUploadTicket | null = null;
+      if (snap && snap.exists) {
+        ticket = (typeof snap.data === 'function' ? snap.data() : snap.data) as PendingDirectUploadTicket;
+      } else {
+        ticket = pendingDirectUploads.get(attachmentId) || null;
+      }
+
+      if (!ticket) {
+        return { outcome: 'not_found' };
+      }
+
+      // Ownership check
+      if (ticket.userId !== requestingUserId) {
+        return { outcome: 'forbidden' };
+      }
+
+      // Never delete live storage objects or modify already-completed uploads on a late cancel
+      if (ticket.status === 'completed') {
+        return { outcome: 'already_completed' };
+      }
+
+      // Protect active completion verification window against concurrent cancellation
+      if (ticket.status === 'completing') {
+        const timeSinceClaim = now - (ticket.lastUpdated || ticket.createdAt || 0);
+        if (timeSinceClaim < 60_000) {
+          return { outcome: 'concurrent_completion' };
         }
       }
-    } catch (_) {}
 
-    // Fall back to memory cache
-    if (!ticket) {
-      ticket = pendingDirectUploads.get(attachmentId) || null;
-    }
+      // Already finalized into a terminal non-active state (idempotent no-op)
+      if (ticket.status === 'cancelled' || ticket.status === 'failed' || ticket.status === 'expired') {
+        return { outcome: 'already_terminal' };
+      }
 
-    // Idempotent: If ticket does not exist, return success
-    if (!ticket) {
+      const cancelledTicket: PendingDirectUploadTicket = {
+        ...ticket,
+        status: 'cancelled',
+        lastUpdated: now
+      };
+      transaction.set(docRef, JSON.parse(JSON.stringify(cancelledTicket)), { merge: true });
+
+      return {
+        outcome: 'cancelled_now',
+        ticket: cancelledTicket
+      };
+    });
+
+    if (txResult.outcome === 'not_found' || txResult.outcome === 'already_terminal') {
+      pendingDirectUploads.delete(attachmentId);
       return { success: true, cancelled: true };
     }
 
-    // Ownership check
-    if (ticket.userId !== requestingUserId) {
+    if (txResult.outcome === 'forbidden') {
       return {
         success: false,
         cancelled: false,
@@ -445,8 +485,7 @@ export async function cancelDurableUploadTicket(
       };
     }
 
-    // Never delete live storage objects or modify already-completed uploads on a late cancel
-    if (ticket.status === 'completed') {
+    if (txResult.outcome === 'already_completed') {
       pendingDirectUploads.delete(attachmentId);
       return {
         success: false,
@@ -457,42 +496,32 @@ export async function cancelDurableUploadTicket(
       };
     }
 
-    // Already finalized into a terminal non-active state (idempotent no-op)
-    if (ticket.status === 'cancelled' || ticket.status === 'failed' || ticket.status === 'expired') {
-      pendingDirectUploads.delete(attachmentId);
-      return { success: true, cancelled: true };
+    if (txResult.outcome === 'concurrent_completion') {
+      return {
+        success: false,
+        cancelled: false,
+        status: 409,
+        code: 'CONCURRENT_COMPLETION',
+        error: 'Upload is currently completing and cannot be cancelled right now.'
+      };
     }
+
+    const cancelledTicket = txResult.ticket;
+    pendingDirectUploads.delete(attachmentId);
 
     // Release reserved quota slot and capture current PKT day status
     let quotaStatus: QuotaStatus | null = null;
     try {
-      quotaStatus = await releaseUploadSlot(ticket.quotaReservation);
+      quotaStatus = await releaseUploadSlot(cancelledTicket.quotaReservation);
     } catch (_) {}
 
     // Delete partial Supabase storage object
     try {
-      await deleteAttachmentFromStorage(ticket.storagePath, {
+      await deleteAttachmentFromStorage(cancelledTicket.storagePath, {
         requestingUserId,
-        bucket: ticket.bucket
+        bucket: cancelledTicket.bucket
       });
     } catch (_) {}
-
-    // Update Firestore state
-    try {
-      const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-      if (typeof docRef.set === 'function') {
-        await docRef.set(
-          {
-            status: 'cancelled',
-            lastUpdated: now
-          },
-          { merge: true }
-        );
-      }
-    } catch (_) {}
-
-    // Remove from in-memory cache
-    pendingDirectUploads.delete(attachmentId);
 
     return { success: true, cancelled: true, quotaStatus };
   } catch (err: any) {
