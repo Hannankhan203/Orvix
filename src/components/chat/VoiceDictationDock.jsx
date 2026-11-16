@@ -86,61 +86,85 @@ export default function VoiceDictationDock({
         </div>
 
         {/* Recognition Language Selector Pill */}
-        <div
-          className={`dictation-lang-wrapper ${isPublicSharedViewer ? 'disabled' : ''}`}
-          ref={langMenuRef}
-          title={
-            isPublicSharedViewer
-              ? 'Voice dictation language selection is disabled in public read-only mode'
-              : undefined
-          }
-        >
-          <button
-            type="button"
-            disabled={isPublicSharedViewer}
-            className={`dictation-lang-btn ${isPublicSharedViewer ? 'disabled' : ''}`}
-            onClick={onToggleLangMenu}
-            title={
-              isPublicSharedViewer
-                ? 'Voice dictation language selection is disabled in public read-only mode'
-                : `Dictation language: ${activeLang?.label || 'English'}. Click to switch.`
-            }
-            aria-label={
-              isPublicSharedViewer
-                ? 'Voice dictation language selection is disabled in public read-only mode'
-                : `Select dictation language, currently ${activeLang?.label || 'English'}`
-            }
-            aria-disabled={isPublicSharedViewer}
-            aria-expanded={!isPublicSharedViewer && langMenuOpen}
-            aria-haspopup="menu"
-          >
-            <span className="lang-flag">{activeLang?.flag || '🇺🇸'}</span>
-            <span className="lang-code">{(activeLang?.code || 'en').split('-')[0].toUpperCase()}</span>
-            <ChevronDown size={11} className={`lang-chevron ${!isPublicSharedViewer && langMenuOpen ? 'open' : ''}`} />
-          </button>
+        {(() => {
+          const isTerminalState =
+            recordingState === 'stopping' ||
+            recordingState === 'transcribing' ||
+            recordingState === 'finalizing' ||
+            recordingState === 'success' ||
+            recordingState === 'cancelled';
+          const isLangDisabled = Boolean(isPublicSharedViewer || isTerminalState);
+          const resolvedLang =
+            (selectedLanguage && supportedLanguages.find((l) => l.code === selectedLanguage)) ||
+            activeLang ||
+            supportedLanguages[0];
+          const currentSelectedCode = selectedLanguage || resolvedLang?.code || 'en-US';
 
-          {!isPublicSharedViewer && langMenuOpen && (
-            <div className="dictation-lang-dropdown" role="menu" aria-label="Recognition Language">
-              <div className="lang-dropdown-header">Recognition Language</div>
-              {supportedLanguages.map((lang) => (
-                <button
-                  key={lang.code}
-                  type="button"
-                  role="menuitem"
-                  className={`dictation-lang-option ${lang.code === selectedLanguage ? 'active' : ''}`}
-                  onClick={() => onSelectLanguage(lang.code)}
-                >
-                  <span className="lang-opt-flag">{lang.flag}</span>
-                  <div className="lang-opt-info">
-                    <span className="lang-opt-label">{lang.label}</span>
-                    <span className="lang-opt-native">{lang.native}</span>
-                  </div>
-                  {lang.code === selectedLanguage && <Check size={14} className="lang-check" />}
-                </button>
-              ))}
+          return (
+            <div
+              className={`dictation-lang-wrapper ${isLangDisabled ? 'disabled' : ''}`}
+              ref={langMenuRef}
+              title={
+                isPublicSharedViewer
+                  ? 'Voice dictation language selection is disabled in public read-only mode'
+                  : undefined
+              }
+            >
+              <button
+                type="button"
+                disabled={isLangDisabled}
+                className={`dictation-lang-btn ${isLangDisabled ? 'disabled' : ''}`}
+                onClick={() => !isLangDisabled && onToggleLangMenu?.()}
+                title={
+                  isPublicSharedViewer
+                    ? 'Voice dictation language selection is disabled in public read-only mode'
+                    : isTerminalState
+                    ? 'Cannot change language while finalizing dictation'
+                    : `Dictation language: ${resolvedLang?.label || 'English'}. Click to switch.`
+                }
+                aria-label={
+                  isPublicSharedViewer
+                    ? 'Voice dictation language selection is disabled in public read-only mode'
+                    : `Select dictation language, currently ${resolvedLang?.label || 'English'}`
+                }
+                aria-disabled={isLangDisabled}
+                aria-expanded={!isLangDisabled && langMenuOpen}
+                aria-haspopup="menu"
+              >
+                <span className="lang-flag">{resolvedLang?.flag || '🇺🇸'}</span>
+                <span className="lang-code">
+                  {(resolvedLang?.code || currentSelectedCode || 'en').split('-')[0].toUpperCase()}
+                </span>
+                <ChevronDown
+                  size={11}
+                  className={`lang-chevron ${!isLangDisabled && langMenuOpen ? 'open' : ''}`}
+                />
+              </button>
+
+              {!isLangDisabled && langMenuOpen && (
+                <div className="dictation-lang-dropdown" role="menu" aria-label="Recognition Language">
+                  <div className="lang-dropdown-header">Recognition Language</div>
+                  {supportedLanguages.map((lang) => (
+                    <button
+                      key={lang.code}
+                      type="button"
+                      role="menuitem"
+                      className={`dictation-lang-option ${lang.code === currentSelectedCode ? 'active' : ''}`}
+                      onClick={() => onSelectLanguage?.(lang.code)}
+                    >
+                      <span className="lang-opt-flag">{lang.flag}</span>
+                      <div className="lang-opt-info">
+                        <span className="lang-opt-label">{lang.label}</span>
+                        <span className="lang-opt-native">{lang.native}</span>
+                      </div>
+                      {lang.code === currentSelectedCode && <Check size={14} className="lang-check" />}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          );
+        })()}
       </div>
 
       {/* Real Waveform Visualizer */}

@@ -56,6 +56,8 @@ export class VoiceStreamClient {
     this.userId = null;
     this.isGuest = false;
     this.authToken = '';
+    this.language = options.language || 'en-US';
+    this.pendingLanguage = null;
     this.accumulatedTranscript = '';
     this.stopResolve = null;
     this.stopReject = null;
@@ -68,6 +70,7 @@ export class VoiceStreamClient {
     this.onDone = options.onDone || (() => {});
     this.onError = options.onError || (() => {});
     this.onStateChange = options.onStateChange || (() => {});
+    this.onConfig = options.onConfig || (() => {});
   }
 
   setState(newState) {
@@ -147,6 +150,9 @@ export class VoiceStreamClient {
               this.sessionId = data.sessionId;
               this.userId = data.userId;
               this.isGuest = Boolean(data.isGuest);
+              if (typeof data.language === 'string' && data.language) {
+                this.language = data.language;
+              }
               if (!settled) {
                 settled = true;
                 clearTimeout(this.connectTimer);
@@ -154,6 +160,9 @@ export class VoiceStreamClient {
                 resolve(this);
               }
             } else if (data.type === 'ready') {
+              if (typeof data.language === 'string' && data.language) {
+                this.language = data.language;
+              }
               this.setState('listening');
               if (this.startResolve) {
                 const resolveFn = this.startResolve;
@@ -161,6 +170,14 @@ export class VoiceStreamClient {
                 this.startReject = null;
                 resolveFn();
               }
+            } else if (data.type === 'config') {
+              if (typeof data.language === 'string' && data.language) {
+                this.language = data.language;
+                if (!this.pendingLanguage || this.pendingLanguage === data.language) {
+                  this.pendingLanguage = null;
+                }
+              }
+              this.onConfig(data);
             } else if (data.type === 'status') {
               if (data.status === 'provider_unavailable' || data.code === 'PROVIDER_UNAVAILABLE') {
                 const err = new Error(data.error || 'Voice transcription provider is unavailable.');
@@ -180,9 +197,9 @@ export class VoiceStreamClient {
               if (text) {
                 this.accumulatedTranscript = text;
                 if (data.isFinal) {
-                  this.onFinal(text, data.segmentIndex);
+                  this.onFinal(text, data.segmentIndex, data.language);
                 } else {
-                  this.onInterim(text, data.segmentIndex);
+                  this.onInterim(text, data.segmentIndex, data.language);
                 }
               }
             } else if (data.type === 'done') {
@@ -205,8 +222,17 @@ export class VoiceStreamClient {
               err.code = data.code || 'WS_STREAM_ERROR';
               err.recoverable = Boolean(data.recoverable);
               err.canFallback = Boolean(data.canFallback ?? true);
+              if (typeof data.language === 'string' && data.language) {
+                err.language = data.language;
+              }
+              if (err.code === 'INVALID_LANGUAGE' || err.code === 'INVALID_CONFIG' || err.code === 'INVALID_SESSION_STATE') {
+                this.pendingLanguage = null;
+                if (typeof data.language === 'string' && data.language) {
+                  this.language = data.language;
+                }
+              }
               this.onError(err);
-              if (this.startReject && (err.code === 'PROVIDER_UNAVAILABLE' || err.canFallback)) {
+              if (this.startReject && (err.code === 'PROVIDER_UNAVAILABLE' || err.code === 'INVALID_LANGUAGE' || err.canFallback)) {
                 const rejectFn = this.startReject;
                 this.startResolve = null;
                 this.startReject = null;
@@ -244,6 +270,7 @@ export class VoiceStreamClient {
             clearTimeout(this.connectTimer);
             this.connectTimer = null;
           }
+          this.pendingLanguage = null;
           this.setState('closed');
           this.teardownAudio();
 
@@ -430,6 +457,7 @@ export class VoiceStreamClient {
       };
 
       try {
+        this.pendingLanguage = null;
         this.ws.send(
           JSON.stringify({
             type: 'start',
@@ -449,6 +477,64 @@ export class VoiceStreamClient {
         reject(err);
       }
     });
+  }
+
+  /**
+   * Returns whether the underlying WebSocket connection is currently open.
+   */
+  isConnected() {
+    return Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
+  }
+
+  /**
+   * Sends a live configuration update (such as dictation language) to the active backend session.
+   * Skips redundant sends when the requested language is already active or pending confirmation,
+   * and returns false cleanly if the WebSocket is disconnected or inactive.
+   *
+   * @param {Object} config
+   * @param {string} [config.language]
+   * @param {string} [config.prompt]
+   * @returns {boolean}
+   */
+  updateConfig({ language, prompt } = {}) {
+    if (!this.isConnected()) {
+      return false;
+    }
+    if (this.state === 'closed' || this.state === 'stopping' || this.state === 'idle') {
+      return false;
+    }
+
+    const payload = { type: 'config' };
+
+    if (language !== undefined) {
+      if (typeof language !== 'string' || !language.trim()) {
+        return false;
+      }
+      const cleanLang = language.trim();
+      const effectiveCurrent = this.pendingLanguage || this.language;
+      if (cleanLang === effectiveCurrent && prompt === undefined) {
+        return false;
+      }
+      payload.language = cleanLang;
+    }
+
+    if (prompt !== undefined) {
+      payload.prompt = String(prompt);
+    }
+
+    if (!('language' in payload) && !('prompt' in payload)) {
+      return false;
+    }
+
+    try {
+      this.ws.send(JSON.stringify(payload));
+      if ('language' in payload) {
+        this.pendingLanguage = payload.language;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /**
@@ -599,6 +685,7 @@ export class VoiceStreamClient {
       this.stopTimer = null;
     }
     this.teardownAudio();
+    this.pendingLanguage = null;
 
     if (this.ws) {
       try {

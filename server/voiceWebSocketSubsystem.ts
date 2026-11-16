@@ -45,6 +45,47 @@ export function isTranscriptionProviderConfigured(): boolean {
   return isConfiguredCredential(groqKey) || isConfiguredCredential(geminiKey);
 }
 
+const BCP47_LANGUAGE_TAG_REGEX = /^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8}){0,3}$/;
+
+/**
+ * Validates and normalizes an incoming BCP-47 voice dictation language tag.
+ * Ensures well-formed syntax and support in the backend transcription pipeline.
+ */
+export function normalizeAndValidateVoiceLanguage(
+  rawLanguage: unknown
+): { valid: true; language: string; iso639: string } | { valid: false; error: string } {
+  if (typeof rawLanguage !== 'string') {
+    return { valid: false, error: 'Dictation language must be a non-empty string.' };
+  }
+  const trimmed = rawLanguage.trim();
+  if (!trimmed || trimmed.length > 35 || !BCP47_LANGUAGE_TAG_REGEX.test(trimmed)) {
+    return {
+      valid: false,
+      error: 'Invalid language code format. Expected a valid BCP-47 tag (e.g., en-US, es-ES).'
+    };
+  }
+  const normalized = trimmed
+    .split('-')
+    .map((part, idx) => {
+      if (idx === 0) return part.toLowerCase();
+      if (part.length === 2 && /^[a-zA-Z]{2}$/.test(part)) return part.toUpperCase();
+      if (part.length === 4 && /^[a-zA-Z]{4}$/.test(part)) {
+        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+      }
+      return part.toLowerCase();
+    })
+    .join('-');
+
+  const iso639 = mapBcp47ToIso639(normalized);
+  if (!iso639) {
+    return {
+      valid: false,
+      error: `Unsupported dictation language: '${trimmed}'.`
+    };
+  }
+  return { valid: true, language: normalized, iso639 };
+}
+
 /**
  * Extracts transcription text from Gemini generateContent response.
  * Supports both standard text parts and dedicated audioTranscription parts from gemini-3.5-transcribe.
@@ -513,16 +554,22 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
   if (!chunks || chunks.length === 0) return;
 
   const fullPcm = Buffer.concat(chunks);
-  if (fullPcm.length < 3200 && !isFinalPass) {
+  const initialActivePcm = fullPcm.subarray(session.committedOffset);
+  const initialAudioToTranscribe = session.committedOffset > 0 ? initialActivePcm : fullPcm;
+
+  if (initialAudioToTranscribe.length === 0) {
+    return;
+  }
+  if (initialAudioToTranscribe.length < 3200 && !isFinalPass) {
     // Under ~100ms of audio, not enough to transcribe
     return;
   }
 
-  // If a prior pass already transcribed all bytes and produced a transcript, skip redundant final work
+  // If a prior pass already transcribed all bytes and produced a transcript (or committed at config change), skip redundant final work
   if (
     isFinalPass &&
     session.lastTranscribedBytes >= fullPcm.length &&
-    session.accumulatedTranscript.trim().length > 0
+    (session.accumulatedTranscript.trim().length > 0 || session.committedOffset >= fullPcm.length)
   ) {
     return;
   }
@@ -533,11 +580,19 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
     session.lastIncrementalTime = Date.now();
     session.lastTranscribedBytes = fullPcm.length;
 
+    const passLanguage = session.language;
+    const passCommittedOffset = session.committedOffset;
+    const passCommittedTranscript = session.committedTranscript;
+    const passTotalBytes = fullPcm.length;
+
     try {
       // Progressive sliding/committed window:
       // Transcribe active uncommitted PCM slice to avoid re-transcribing minutes of old audio
-      const activePcm = fullPcm.subarray(session.committedOffset);
-      const audioToTranscribe = activePcm.length >= 3200 ? activePcm : fullPcm;
+      const activePcm = fullPcm.subarray(passCommittedOffset);
+      const audioToTranscribe = passCommittedOffset > 0 ? activePcm : fullPcm;
+      if (audioToTranscribe.length === 0 || (audioToTranscribe.length < 3200 && !isFinalPass)) {
+        return;
+      }
 
       const wav = pcmToWavBuffer(
         audioToTranscribe,
@@ -547,7 +602,7 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
       );
 
       const effectivePrompt = [
-        session.committedTranscript,
+        passCommittedTranscript,
         session.prompt,
         DEFAULT_WHISPER_CONTEXT_PROMPT
       ]
@@ -557,9 +612,9 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
 
       const result = await transcribeAudioBuffer(
         wav,
-        session.language,
+        passLanguage,
         effectivePrompt,
-        session.committedTranscript || session.accumulatedTranscript
+        passCommittedTranscript || session.accumulatedTranscript
       );
 
       if ((session.state as string) === 'cancelled') {
@@ -572,16 +627,20 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
       if (session.ws.readyState === WebSocket.OPEN) {
         const activeText = (result.text || '').trim();
         if (!activeText) {
+          // If language switched while this pass was running, advance committedOffset past old-language bytes
+          if (session.language !== passLanguage && passTotalBytes > session.committedOffset) {
+            session.committedOffset = passTotalBytes;
+          }
           // No speech recognized in this audio chunk - do not fabricate or emit empty interim
           return;
         }
 
         let combined = '';
 
-        if (audioToTranscribe === fullPcm) {
+        if (passCommittedOffset === 0) {
           combined = activeText;
-        } else if (session.committedTranscript) {
-          combined = activeText ? `${session.committedTranscript} ${activeText}` : session.committedTranscript;
+        } else if (passCommittedTranscript) {
+          combined = activeText ? `${passCommittedTranscript} ${activeText}` : passCommittedTranscript;
         } else {
           combined = activeText;
         }
@@ -592,11 +651,14 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
           session.accumulatedTranscript = combined;
           session.segmentIndex += 1;
 
-          // If a sentence completed with punctuation and active segment has sufficient length, commit it
+          // Commit boundary if language switched mid-pass or a long punctuated sentence completed
           const endsWithPunctuation = /[.!?]$/.test(activeText);
-          if (endsWithPunctuation && activePcm.length >= 32000 && !isFinalPass) {
+          if (session.language !== passLanguage) {
             session.committedTranscript = combined;
-            session.committedOffset = fullPcm.length;
+            session.committedOffset = passTotalBytes;
+          } else if (endsWithPunctuation && activePcm.length >= 32000 && !isFinalPass) {
+            session.committedTranscript = combined;
+            session.committedOffset = passTotalBytes;
           }
 
           safeSendJson(session.ws, {
@@ -605,7 +667,8 @@ async function processIncrementalTranscription(session: VoiceStreamSession, isFi
             text: combined,
             isFinal: isFinalPass,
             segmentIndex: session.segmentIndex,
-            provider: result.provider
+            provider: result.provider,
+            language: passLanguage
           });
         }
       }
@@ -977,7 +1040,8 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       sessionId,
       userId: session.userId,
       isGuest: session.isGuest,
-      providerAvailable: providerConfigured
+      providerAvailable: providerConfigured,
+      language: session.language
     });
 
     // Heartbeat watchdog: ping client periodically
@@ -1134,6 +1198,23 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
               return;
             }
 
+            if (message.language !== undefined && message.language !== null && message.language !== '') {
+              const langValidation = normalizeAndValidateVoiceLanguage(message.language);
+              if (!langValidation.valid) {
+                safeSendJson(ws, {
+                  type: 'error',
+                  sessionId: session.sessionId,
+                  error: langValidation.error,
+                  code: 'INVALID_LANGUAGE',
+                  recoverable: true,
+                  canFallback: false,
+                  language: session.language
+                });
+                return;
+              }
+              session.language = langValidation.language;
+            }
+
             session.state = 'listening';
             session.startTime = Date.now();
             session.lastIncrementalTime = Date.now();
@@ -1153,9 +1234,6 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
                 bitDepth: Number(message.format.bitDepth) || 16
               };
             }
-            if (message.language) {
-              session.language = String(message.language);
-            }
             if (message.prompt) {
               session.prompt = String(message.prompt);
             }
@@ -1163,7 +1241,96 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
             safeSendJson(ws, {
               type: 'ready',
               sessionId: session.sessionId,
-              format: session.format
+              format: session.format,
+              language: session.language
+            });
+            break;
+          }
+
+          case 'config': {
+            if (!session.authenticated || !session.userId) {
+              safeSendJson(ws, {
+                type: 'error',
+                error: 'Authentication required for voice streaming.',
+                code: 'AUTH_REQUIRED',
+                recoverable: false
+              });
+              cleanupSession(session, 4401, 'Authentication required');
+              return;
+            }
+            if (session.state === 'stopped' || session.state === 'cancelled') {
+              safeSendJson(ws, {
+                type: 'error',
+                sessionId: session.sessionId,
+                error: `Cannot update dictation configuration when session is ${session.state}.`,
+                code: 'INVALID_SESSION_STATE',
+                recoverable: true,
+                canFallback: false,
+                language: session.language
+              });
+              break;
+            }
+
+            const hasLanguageUpdate = Object.prototype.hasOwnProperty.call(message, 'language');
+            const hasPromptUpdate = typeof message.prompt === 'string';
+
+            if (!hasLanguageUpdate && !hasPromptUpdate) {
+              safeSendJson(ws, {
+                type: 'error',
+                sessionId: session.sessionId,
+                error: 'Configuration update must specify a valid language or prompt.',
+                code: 'INVALID_CONFIG',
+                recoverable: true,
+                canFallback: false,
+                language: session.language
+              });
+              break;
+            }
+
+            const previousLanguage = session.language;
+            let nextLanguage = previousLanguage;
+
+            if (hasLanguageUpdate) {
+              const langValidation = normalizeAndValidateVoiceLanguage(message.language);
+              if (!langValidation.valid) {
+                safeSendJson(ws, {
+                  type: 'error',
+                  sessionId: session.sessionId,
+                  error: langValidation.error,
+                  code: 'INVALID_LANGUAGE',
+                  recoverable: true,
+                  canFallback: false,
+                  language: session.language
+                });
+                break;
+              }
+              nextLanguage = langValidation.language;
+            }
+
+            if (nextLanguage !== previousLanguage) {
+              session.language = nextLanguage;
+              if (
+                !session.isTranscribing &&
+                (session.accumulatedTranscript.trim().length > 0 || session.lastTranscribedBytes > 0)
+              ) {
+                if (session.accumulatedTranscript.trim().length > 0) {
+                  session.committedTranscript = session.accumulatedTranscript;
+                }
+                session.committedOffset = session.totalBytes;
+                session.lastTranscribedBytes = session.totalBytes;
+              }
+            }
+
+            if (hasPromptUpdate) {
+              session.prompt = message.prompt;
+            }
+
+            safeSendJson(ws, {
+              type: 'config',
+              sessionId: session.sessionId,
+              language: session.language,
+              previousLanguage,
+              updated: nextLanguage !== previousLanguage
             });
             break;
           }
@@ -1203,7 +1370,8 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
               sessionId: session.sessionId,
               text: session.accumulatedTranscript,
               duration: durationSec,
-              words
+              words,
+              language: session.language
             });
             break;
           }

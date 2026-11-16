@@ -707,6 +707,8 @@ export function useVoiceDictation({
   authTokenRef.current = authToken;
   const isWebSocketActiveRef = useRef(false);
   const voiceStreamClientRef = useRef(null);
+  const backendLanguageRef = useRef(null);
+  const pendingLanguageRef = useRef(null);
   const [isStreamingWebSocket, setIsStreamingWebSocket] = useState(false);
 
   // Safe capability detection across browsers (Chrome, Edge, Safari, Firefox, iOS, Android)
@@ -1865,7 +1867,8 @@ export function useVoiceDictation({
 
           const client = new VoiceStreamClient({
             url: webSocketUrlRef.current,
-            onInterim: (rawInterim) => {
+            language: selectedLanguageRef.current,
+            onInterim: (rawInterim, _segmentIndex, msgLanguage) => {
               if (isCancelledRef.current) return;
               const clean = (rawInterim || '').trim();
               if (!clean) return;
@@ -1876,7 +1879,7 @@ export function useVoiceDictation({
               const fullRaw = mergeTranscriptSegments(sessionAccumulatedTextRef.current, clean);
               const formattedSpeech = formatSpeechTranscript(
                 fullRaw,
-                selectedLanguageRef.current,
+                msgLanguage || selectedLanguageRef.current,
                 sessionBaseTextRef.current
               );
               const combined = combineComposerText(sessionBaseTextRef.current, formattedSpeech);
@@ -1885,7 +1888,7 @@ export function useVoiceDictation({
                 onInputChangeRef.current(combined);
               }
             },
-            onFinal: (rawFinal) => {
+            onFinal: (rawFinal, _segmentIndex, msgLanguage) => {
               if (isCancelledRef.current) return;
               const clean = (rawFinal || '').trim();
               if (!clean) return;
@@ -1899,7 +1902,7 @@ export function useVoiceDictation({
 
               const formattedSpeech = formatSpeechTranscript(
                 sessionAccumulatedTextRef.current,
-                selectedLanguageRef.current,
+                msgLanguage || selectedLanguageRef.current,
                 sessionBaseTextRef.current
               );
               const combined = combineComposerText(sessionBaseTextRef.current, formattedSpeech);
@@ -1908,34 +1911,92 @@ export function useVoiceDictation({
                 onInputChangeRef.current(combined);
               }
             },
+            onConfig: (configData) => {
+              const confirmedLang = typeof configData?.language === 'string' ? configData.language : '';
+              if (!confirmedLang) return;
+              backendLanguageRef.current = confirmedLang;
+
+              const pending = pendingLanguageRef.current;
+              if (!pending || pending === confirmedLang) {
+                pendingLanguageRef.current = null;
+                if (selectedLanguageRef.current !== confirmedLang) {
+                  selectedLanguageRef.current = confirmedLang;
+                  setSelectedLanguageState(confirmedLang);
+                }
+                if (
+                  typeof window !== 'undefined' &&
+                  SUPPORTED_LANGUAGES.some((l) => l.code === confirmedLang)
+                ) {
+                  try {
+                    localStorage.setItem('orvix_dictation_lang', confirmedLang);
+                  } catch (_) {}
+                }
+              }
+            },
+            onStateChange: (nextWsState) => {
+              if (nextWsState === 'closed' && isWebSocketActiveRef.current && !isStoppingRef.current && !isCancelledRef.current) {
+                backendLanguageRef.current = null;
+                pendingLanguageRef.current = null;
+              }
+            },
             onError: (wsErr) => {
               console.warn('[Dictation] WebSocket streaming error:', wsErr);
+              if (wsErr?.code === 'INVALID_LANGUAGE' || wsErr?.code === 'INVALID_CONFIG') {
+                pendingLanguageRef.current = null;
+                const authoritativeLang =
+                  (typeof wsErr.language === 'string' && wsErr.language) ||
+                  backendLanguageRef.current ||
+                  DEFAULT_LANGUAGE;
+                backendLanguageRef.current = authoritativeLang;
+                selectedLanguageRef.current = authoritativeLang;
+                setSelectedLanguageState(authoritativeLang);
+                if (
+                  typeof window !== 'undefined' &&
+                  SUPPORTED_LANGUAGES.some((l) => l.code === authoritativeLang)
+                ) {
+                  try {
+                    localStorage.setItem('orvix_dictation_lang', authoritativeLang);
+                  } catch (_) {}
+                }
+                setDictationError(wsErr.message || 'Unsupported dictation language selected.');
+                return;
+              }
               if (wsErr?.code === 'PROVIDER_UNAVAILABLE' || wsErr?.canFallback) {
                 if (voiceStreamClientRef.current) {
                   voiceStreamClientRef.current.disconnect();
                   voiceStreamClientRef.current = null;
                 }
                 isWebSocketActiveRef.current = false;
+                backendLanguageRef.current = null;
+                pendingLanguageRef.current = null;
                 setIsStreamingWebSocket(false);
                 startRecognitionSession(true).catch(() => {});
                 return;
               }
-              if (recordingStateRef.current === 'listening') {
+              if (recordingStateRef.current === 'listening' || recordingStateRef.current === 'paused') {
                 setDictationError(wsErr.message || 'Streaming connection lost.');
               }
             }
           });
 
           await client.connect(token);
+          const initialStreamLanguage = selectedLanguageRef.current;
           await client.start({
             stream,
-            language: selectedLanguageRef.current
+            language: initialStreamLanguage
           });
 
           voiceStreamClientRef.current = client;
           isWebSocketActiveRef.current = true;
+          backendLanguageRef.current = client.language || initialStreamLanguage;
           setIsStreamingWebSocket(true);
           updateRecordingState('listening');
+
+          // Reconcile if the user switched language while connect/start was still in-flight
+          if (selectedLanguageRef.current && selectedLanguageRef.current !== backendLanguageRef.current) {
+            pendingLanguageRef.current = selectedLanguageRef.current;
+            client.updateConfig({ language: selectedLanguageRef.current });
+          }
 
           // Start duration timer
           if (!durationIntervalRef.current) {
@@ -1956,6 +2017,8 @@ export function useVoiceDictation({
             voiceStreamClientRef.current = null;
           }
           isWebSocketActiveRef.current = false;
+          backendLanguageRef.current = null;
+          pendingLanguageRef.current = null;
           setIsStreamingWebSocket(false);
         }
       }
@@ -2236,6 +2299,8 @@ export function useVoiceDictation({
           voiceStreamClientRef.current.disconnect();
           voiceStreamClientRef.current = null;
           isWebSocketActiveRef.current = false;
+          backendLanguageRef.current = null;
+          pendingLanguageRef.current = null;
           setIsStreamingWebSocket(false);
 
           updateRecordingState('transcribing');
@@ -2271,6 +2336,8 @@ export function useVoiceDictation({
             voiceStreamClientRef.current = null;
           }
           isWebSocketActiveRef.current = false;
+          backendLanguageRef.current = null;
+          pendingLanguageRef.current = null;
           setIsStreamingWebSocket(false);
         }
       }
@@ -2654,6 +2721,8 @@ export function useVoiceDictation({
       voiceStreamClientRef.current.cancel();
       voiceStreamClientRef.current = null;
       isWebSocketActiveRef.current = false;
+      backendLanguageRef.current = null;
+      pendingLanguageRef.current = null;
       setIsStreamingWebSocket(false);
     }
 
@@ -2860,18 +2929,75 @@ export function useVoiceDictation({
     }
   }, [startListening, stopListening, resumeListening, cancelListening]);
 
-  // Configurable language setter with instant live session restart
+  // Configurable language setter with instant live session sync (WebSocket config + Web Speech fallback)
   const setSelectedLanguage = useCallback(
     (code) => {
       if (disabledRef.current) return;
-      setSelectedLanguageState(code);
-      selectedLanguageRef.current = code;
+      if (typeof code !== 'string') return;
+      const cleanCode = code.trim();
+      if (!cleanCode) return;
+
+      const isKnownSupported = SUPPORTED_LANGUAGES.some((l) => l.code === cleanCode);
+      const wsClient = voiceStreamClientRef.current;
+      const isWsSession = Boolean(isWebSocketActiveRef.current && wsClient);
+
+      if (isWsSession) {
+        // Avoid redundant WebSocket config messages when language has not changed
+        if (
+          cleanCode === selectedLanguageRef.current &&
+          (!wsClient.isConnected() || (backendLanguageRef.current === cleanCode && !pendingLanguageRef.current))
+        ) {
+          return;
+        }
+
+        if (wsClient.isConnected()) {
+          pendingLanguageRef.current = cleanCode;
+          selectedLanguageRef.current = cleanCode;
+          setSelectedLanguageState(cleanCode);
+          if (typeof window !== 'undefined' && isKnownSupported) {
+            try {
+              localStorage.setItem('orvix_dictation_lang', cleanCode);
+            } catch (_) {}
+          }
+          const sent = wsClient.updateConfig({ language: cleanCode });
+          if (!sent) {
+            pendingLanguageRef.current = null;
+          }
+          return;
+        }
+
+        // Disconnected WebSocket fallback: only accept valid supported languages without throwing
+        if (!isKnownSupported) {
+          return;
+        }
+        if (cleanCode === selectedLanguageRef.current) {
+          return;
+        }
+        selectedLanguageRef.current = cleanCode;
+        setSelectedLanguageState(cleanCode);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('orvix_dictation_lang', cleanCode);
+          } catch (_) {}
+        }
+        return;
+      }
+
+      if (!isKnownSupported) {
+        return;
+      }
+      if (cleanCode === selectedLanguageRef.current) {
+        return;
+      }
+
+      setSelectedLanguageState(cleanCode);
+      selectedLanguageRef.current = cleanCode;
       if (typeof window !== 'undefined') {
         try {
-          localStorage.setItem('orvix_dictation_lang', code);
+          localStorage.setItem('orvix_dictation_lang', cleanCode);
         } catch (_) {}
       }
-      // If actively listening, restart recognition session with new language immediately
+      // If actively listening with browser Web Speech API, restart recognition session with new language immediately
       if (recordingStateRef.current === 'listening' && recognitionRef.current) {
         startRecognitionSession(false);
       }
@@ -2931,6 +3057,8 @@ export function useVoiceDictation({
         voiceStreamClientRef.current.disconnect();
         voiceStreamClientRef.current = null;
         isWebSocketActiveRef.current = false;
+        backendLanguageRef.current = null;
+        pendingLanguageRef.current = null;
       }
       stopAudioResources();
       cleanupRecognitionInstance();
