@@ -3379,25 +3379,26 @@ export default function ChatPage({
 
   // Edit and resend an eligible user message with contextual branch truncation
   const handleEditResend = async (userMessageId, newPromptText) => {
-    if (isSharedView) return;
-    stopSpeech();
+    if (isSharedView) return false;
 
     const trimmed = (newPromptText || '')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim();
 
-    if (!trimmed || isLoading || isSubmittingRef.current) return;
+    if (!trimmed || isLoading || isSubmittingRef.current) return false;
 
     const requestStartTime = performance.now();
 
     const currentMessagesSnapshot = messagesRef.current;
     const userMsgIndex = currentMessagesSnapshot.findIndex((m) => m.id === userMessageId);
-    if (userMsgIndex === -1) return;
+    if (userMsgIndex === -1) return false;
 
     const editProvider = selectedProvider;
     if (!guardOfflineProviderAction(editProvider)) {
-      return;
+      return false;
     }
+
+    stopSpeech();
 
     // Lock submission synchronously before any state updates or async operations
     isSubmittingRef.current = true;
@@ -3425,7 +3426,7 @@ export default function ChatPage({
         if (isCloudEnabled && currentUser?.uid) {
           try {
             const createdId = await createChatDocument(currentUser.uid, titleSnippet, activeMode);
-            if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
+            if (!requestControllerRef.current.isRequestActive(editRequestId)) return false;
             currentChatId = createdId;
             skipNextChatLoadRef.current = currentChatId;
             const cachedList = getCachedUserChats(currentUser.uid);
@@ -3433,7 +3434,7 @@ export default function ChatPage({
               setUserChats(cachedList);
             }
           } catch (error) {
-            if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
+            if (!requestControllerRef.current.isRequestActive(editRequestId)) return false;
             console.warn('Could not create Firestore chat doc for edit, using local fallback:', error);
             currentChatId = `local-${Date.now()}`;
             skipNextChatLoadRef.current = currentChatId;
@@ -3474,7 +3475,7 @@ export default function ChatPage({
         sessionStorage.setItem('orvix_active_chat', currentChatId);
       }
 
-      if (!requestControllerRef.current.isRequestActive(editRequestId)) return;
+      if (!requestControllerRef.current.isRequestActive(editRequestId)) return false;
 
       // 1. Context: identify all previous non-error messages strictly before this message
       const earlierMessages = currentMessagesSnapshot.slice(0, userMsgIndex);
@@ -3629,8 +3630,12 @@ export default function ChatPage({
           console.warn('Could not auto-refine chat title on edit:', titleErr);
         }
       }
+
+      return true;
     } catch (error) {
       console.error('Edit-and-resend execution error:', error);
+      return false;
+    } finally {
       if (requestControllerRef.current.isRequestActive(editRequestId)) {
         requestControllerRef.current.markFinalized(editRequestId);
       }

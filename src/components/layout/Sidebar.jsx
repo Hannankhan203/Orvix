@@ -24,7 +24,7 @@ export default function Sidebar({
 }) {
   const { currentUser, username, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
-  const { isInstallable, install } = usePWAInstall();
+  const { isInstallable, isInstalling, install } = usePWAInstall();
   const [searchQuery, setSearchQuery] = useState('');
 
   const handleLogout = async () => {
@@ -224,12 +224,15 @@ export default function Sidebar({
           <button
             type="button"
             className="sidebar-pwa-install-btn"
-            onClick={install}
+            disabled={isInstalling}
+            onClick={() => {
+              void install();
+            }}
             title="Install Orvix on your device"
             aria-label="Install Orvix application"
           >
             <Download size={14} />
-            <span>Install Orvix App</span>
+            <span>{isInstalling ? 'Installing...' : 'Install Orvix App'}</span>
           </button>
         )}
 

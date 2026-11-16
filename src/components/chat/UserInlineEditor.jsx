@@ -15,13 +15,23 @@ export default function UserInlineEditor({
   onEditResend
 }) {
   const [draftContent, setDraftContent] = React.useState(initialContent);
+  const [isSubmittingEdit, setIsSubmittingEdit] = React.useState(false);
   const editInputRef = useRef(null);
   const isSubmittingEditRef = useRef(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     isSubmittingEditRef.current = false;
+    setIsSubmittingEdit(false);
     setDraftContent(initialContent);
-  }, [initialContent]);
+  }, [initialContent, messageId]);
 
   useEffect(() => {
     if (editInputRef.current) {
@@ -43,18 +53,30 @@ export default function UserInlineEditor({
 
   const handleCancelEdit = () => {
     isSubmittingEditRef.current = false;
+    setIsSubmittingEdit(false);
     setDraftContent(initialContent);
     if (onCancelEdit) {
       onCancelEdit();
     }
   };
 
-  const handleSaveAndResend = () => {
+  const handleSaveAndResend = async () => {
     const trimmed = draftContent.trim();
     if (!trimmed || isLoading || isSubmittingEditRef.current) return;
+    if (!onEditResend) return;
+
     isSubmittingEditRef.current = true;
-    if (onEditResend) {
-      onEditResend(messageId, trimmed);
+    setIsSubmittingEdit(true);
+
+    try {
+      await Promise.resolve(onEditResend(messageId, trimmed));
+    } catch (_) {
+      // Allow immediate retry if submission fails, aborts, or rejects
+    } finally {
+      isSubmittingEditRef.current = false;
+      if (isMountedRef.current) {
+        setIsSubmittingEdit(false);
+      }
     }
   };
 
@@ -68,14 +90,14 @@ export default function UserInlineEditor({
     // Ctrl+Enter or Cmd+Enter submits
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      handleSaveAndResend();
+      void handleSaveAndResend();
       return;
     }
 
     // Enter without Shift submits; Shift+Enter creates a newline
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent?.isComposing) {
       e.preventDefault();
-      handleSaveAndResend();
+      void handleSaveAndResend();
     }
   };
 
@@ -88,7 +110,7 @@ export default function UserInlineEditor({
         onChange={handleDraftChange}
         onKeyDown={handleEditKeyDown}
         placeholder="Edit your message..."
-        disabled={isLoading}
+        disabled={isLoading || isSubmittingEdit}
         rows={Math.min(8, Math.max(2, (draftContent || '').split('\n').length))}
         aria-label="Edit message text"
       />
@@ -111,8 +133,10 @@ export default function UserInlineEditor({
             type="button"
             variant="primary"
             size="sm"
-            onClick={handleSaveAndResend}
-            disabled={isLoading || !draftContent.trim()}
+            onClick={() => {
+              void handleSaveAndResend();
+            }}
+            disabled={isLoading || isSubmittingEdit || !draftContent.trim()}
             className="user-edit-resend-btn"
             icon={<RotateCcw size={13} />}
           >

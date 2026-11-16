@@ -58,7 +58,7 @@ export default function Header({
 
   const { currentUser, username, updateUsername, logout, actionLoading } = useAuth();
   const { openSettingsModal } = useSettings();
-  const { isInstallable, install } = usePWAInstall();
+  const { isInstallable, isInstalling, install } = usePWAInstall();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef(null);
 
@@ -223,13 +223,16 @@ export default function Header({
             <Button
               variant="ghost"
               size="sm"
-              onClick={install}
+              onClick={() => {
+                void install();
+              }}
+              disabled={isInstalling}
               icon={<Download size={14} />}
               title="Install Orvix as desktop application"
               ariaLabel="Install Orvix application"
               className="header-pwa-install-btn text-blue-400 hover:text-white"
             >
-              Install
+              {isInstalling ? 'Installing...' : 'Install'}
             </Button>
           )}
 
@@ -551,13 +554,14 @@ export default function Header({
               <button
                 type="button"
                 className="account-popover-item-btn"
+                disabled={isInstalling}
                 onClick={() => {
                   setAccountMenuOpen(false);
-                  install();
+                  void install();
                 }}
               >
                 <Download size={15} />
-                <span>Install Orvix App</span>
+                <span>{isInstalling ? 'Installing...' : 'Install Orvix App'}</span>
               </button>
             )}
 
