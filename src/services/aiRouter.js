@@ -684,6 +684,7 @@ export async function streamAIMessage(params = {}) {
       preferences: preferences || null,
       mode: normalizedMode,
       model: sanitizedModel,
+      conversationId: conversationId || null,
       attachments: Array.isArray(attachments)
         ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
         : [],

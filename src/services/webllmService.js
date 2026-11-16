@@ -4722,6 +4722,7 @@ export async function warmupWebLLMEngine(options = {}) {
  * @param {Object|null} [params.preferences=null]
  * @param {string} [params.mode='general']
  * @param {string|null} [params.model=null] - Optional WebLLM model ID override
+ * @param {string|null} [params.conversationId=null] - Optional conversation identifier for semantic retrieval scoping
  * @param {Array<Object>} [params.attachments=[]] - Optional extracted document/OCR attachments
  * @param {({ modelUsed: string, provider: string }) => void} [params.onStart]
  * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
@@ -4737,6 +4738,7 @@ export async function streamWebLLMMessage({
   mode = 'general',
   model = null,
   modelId: modelIdParam = null,
+  conversationId = null,
   attachments = [],
   onStart,
   onChunk,
