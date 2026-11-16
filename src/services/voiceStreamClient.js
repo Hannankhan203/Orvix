@@ -110,6 +110,7 @@ export class VoiceStreamClient {
 
       // Connection timeout (4s): if server doesn't respond or is on Vercel without WS support, fail fast
       this.connectTimer = setTimeout(() => {
+        this.connectTimer = null;
         if (!settled) {
           settled = true;
           this.setState('closed');
@@ -219,10 +220,13 @@ export class VoiceStreamClient {
           } catch (_) {}
         };
 
-        ws.onerror = (event) => {
+        ws.onerror = () => {
           if (!settled) {
             settled = true;
-            clearTimeout(this.connectTimer);
+            if (this.connectTimer) {
+              clearTimeout(this.connectTimer);
+              this.connectTimer = null;
+            }
             this.setState('closed');
             const err = new Error('WebSocket connection failed.');
             err.code = 'WS_CONNECTION_FAILED';
@@ -236,9 +240,41 @@ export class VoiceStreamClient {
         };
 
         ws.onclose = (event) => {
+          if (this.connectTimer) {
+            clearTimeout(this.connectTimer);
+            this.connectTimer = null;
+          }
           this.setState('closed');
+          this.teardownAudio();
+
+          if (!settled) {
+            settled = true;
+            const err = new Error(
+              event?.reason
+                ? `WebSocket closed before authentication (${event.reason}).`
+                : 'WebSocket connection closed before authentication.'
+            );
+            err.code = 'WS_CONNECTION_CLOSED';
+            err.canFallback = true;
+            reject(err);
+            return;
+          }
+
+          if (this.startReject) {
+            const rejectFn = this.startReject;
+            this.startResolve = null;
+            this.startReject = null;
+            const err = new Error('WebSocket closed before recording started.');
+            err.code = 'WS_CONNECTION_CLOSED';
+            err.canFallback = true;
+            rejectFn(err);
+          }
+
           if (this.stopResolve) {
-            if (this.stopTimer) clearTimeout(this.stopTimer);
+            if (this.stopTimer) {
+              clearTimeout(this.stopTimer);
+              this.stopTimer = null;
+            }
             const resolveFn = this.stopResolve;
             this.stopResolve = null;
             this.stopReject = null;
@@ -248,7 +284,10 @@ export class VoiceStreamClient {
       } catch (err) {
         if (!settled) {
           settled = true;
-          clearTimeout(this.connectTimer);
+          if (this.connectTimer) {
+            clearTimeout(this.connectTimer);
+            this.connectTimer = null;
+          }
           this.setState('closed');
           reject(err);
         }
@@ -297,8 +336,11 @@ export class VoiceStreamClient {
           // If fetching /audioWorkletProcessor.js fails (e.g. offline, sandbox), use inline Blob URL
           const blob = new Blob([INLINE_PROCESSOR_CODE], { type: 'application/javascript' });
           const blobUrl = URL.createObjectURL(blob);
-          await audioCtx.audioWorklet.addModule(blobUrl);
-          URL.revokeObjectURL(blobUrl);
+          try {
+            await audioCtx.audioWorklet.addModule(blobUrl);
+          } finally {
+            URL.revokeObjectURL(blobUrl);
+          }
         }
 
         const workletNode = new AudioWorkletNode(audioCtx, 'pcm-audio-processor');
@@ -421,7 +463,9 @@ export class VoiceStreamClient {
     }
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'pause' }));
+      try {
+        this.ws.send(JSON.stringify({ type: 'pause' }));
+      } catch (_) {}
     }
   }
 
@@ -437,7 +481,9 @@ export class VoiceStreamClient {
     }
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'resume' }));
+      try {
+        this.ws.send(JSON.stringify({ type: 'resume' }));
+      } catch (_) {}
     }
   }
 
@@ -531,7 +577,10 @@ export class VoiceStreamClient {
     }
     if (this.audioContext && this.audioContext.state !== 'closed') {
       try {
-        this.audioContext.close();
+        const closePromise = this.audioContext.close();
+        if (closePromise && typeof closePromise.catch === 'function') {
+          closePromise.catch(() => {});
+        }
       } catch (_) {}
       this.audioContext = null;
     }

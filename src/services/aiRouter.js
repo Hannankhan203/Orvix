@@ -129,9 +129,10 @@ export function resetCachedProviderConfig() {
  * @param {Object} [options={}]
  * @param {AbortSignal} [options.signal]
  * @param {boolean} [options.forceRefresh=false]
- * @returns {Promise<{ status: 'ready'|'error', data: Object|null, fetchedAt: number|null }>}
+ * @param {number} [options.timeoutMs=8000]
+ * @returns {Promise<{ status: 'ready'|'error'|'unavailable', data: Object|null, fetchedAt: number|null }>}
  */
-export async function fetchProviderConfig({ signal, forceRefresh = false } = {}) {
+export async function fetchProviderConfig({ signal, forceRefresh = false, timeoutMs = 8000 } = {}) {
   if (!forceRefresh && cachedProviderConfigState.status === 'ready' && cachedProviderConfigState.data) {
     return cachedProviderConfigState;
   }
@@ -141,13 +142,40 @@ export async function fetchProviderConfig({ signal, forceRefresh = false } = {})
   }
 
   const runFetch = async () => {
+    const controller = new AbortController();
+    let timer = null;
+    const onCallerAbort = () => {
+      try {
+        controller.abort(signal?.reason);
+      } catch (_) {}
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        return cachedProviderConfigState;
+      }
+      signal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+
+    if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) {
+      timer = setTimeout(() => {
+        try {
+          controller.abort();
+        } catch (_) {}
+      }, Number(timeoutMs));
+    }
+
     try {
       const res = await fetch('/api/config', {
         method: 'GET',
         headers: { Accept: 'application/json' },
         cache: 'no-store',
-        signal
+        signal: controller.signal
       });
+
+      if (signal?.aborted) {
+        return cachedProviderConfigState;
+      }
 
       if (!res.ok) {
         cachedProviderConfigState = {
@@ -159,6 +187,10 @@ export async function fetchProviderConfig({ signal, forceRefresh = false } = {})
       }
 
       const raw = await res.json().catch(() => null);
+      if (signal?.aborted) {
+        return cachedProviderConfigState;
+      }
+
       const normalized = normalizeProviderConfigPayload(raw);
       if (!normalized) {
         cachedProviderConfigState = {
@@ -176,6 +208,9 @@ export async function fetchProviderConfig({ signal, forceRefresh = false } = {})
       };
       return cachedProviderConfigState;
     } catch (_) {
+      if (signal?.aborted) {
+        return cachedProviderConfigState;
+      }
       cachedProviderConfigState = {
         status: 'unavailable',
         data: cachedProviderConfigState.data,
@@ -183,15 +218,21 @@ export async function fetchProviderConfig({ signal, forceRefresh = false } = {})
       };
       return cachedProviderConfigState;
     } finally {
-      if (!signal) {
-        inflightConfigPromise = null;
+      if (timer) clearTimeout(timer);
+      if (signal) {
+        signal.removeEventListener('abort', onCallerAbort);
       }
     }
   };
 
   if (!signal) {
-    inflightConfigPromise = runFetch();
-    return inflightConfigPromise;
+    const promise = runFetch().finally(() => {
+      if (inflightConfigPromise === promise) {
+        inflightConfigPromise = null;
+      }
+    });
+    inflightConfigPromise = promise;
+    return promise;
   }
   return runFetch();
 }
@@ -548,7 +589,7 @@ async function prepareAttachmentsForContinuation(attachments, targetProvider, ta
  * @param {string|null} [params.username=null]
  * @param {Object|null} [params.preferences=null]
  * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
- * @param {({ modelUsed: string, provider: string, isDemo?: boolean }) => void} [params.onStart]
+ * @param {(info: { modelUsed: string, provider: string, isDemo?: boolean }) => void} [params.onStart]
  * @param {AbortSignal} [params.signal]
  * @param {() => boolean} [params.isRequestActive]
  * @param {string|null} [params.conversationId=null]
@@ -558,7 +599,12 @@ async function prepareAttachmentsForContinuation(attachments, targetProvider, ta
  * @param {string|null} [params.originalPrompt=null]
  * @param {string|null} [params.previousContentSummary=null]
  * @param {string} [params.chatEndpoint='/api/chat']
+ * @param {boolean} [params.stream=true]
+ * @param {boolean} [params.autoFallback=false]
  * @param {number} [params.retryBaseDelayMs=600]
+ * @param {number} [params.headersTimeoutMs=0]
+ * @param {number} [params.firstByteTimeoutMs=0]
+ * @param {number} [params.streamInactivityTimeoutMs=90000]
  * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean }>}
  */
 export async function streamAIMessage(params = {}) {
@@ -726,6 +772,9 @@ export async function streamAIMessage(params = {}) {
             const clone = res.clone();
             const errBody = await clone.json().catch(() => null);
             if (errBody?.code === 'TOKEN_EXPIRED') {
+              try {
+                void res.body?.cancel?.().catch(() => {});
+              } catch (_) {}
               chatHeaders = await getAuthHeaders(baseChatHeaders, true);
               res = await fetch(chatEndpoint, {
                 method: 'POST',
@@ -1091,38 +1140,56 @@ export async function streamAIMessage(params = {}) {
             const basePrefix = accumulatedText;
             const continuationPrompt =
               'Please continue directly from where you stopped. Complete any unfinished sentences, items, or sections without repeating previous text.';
-            const contResult = await streamAIMessage({
-              provider: contProvider,
-              model: contModel,
-              mode: normalizedMode,
-              prompt: continuationPrompt,
-              history: [
-                ...history,
-                { sender: 'user', content: prompt },
-                { sender: 'assistant', content: basePrefix }
-              ],
-              username,
-              preferences,
-              onChunk: (chunkText) => {
-                if (!isActive()) return;
-                accumulatedText += chunkText;
-                onChunk?.(chunkText, accumulatedText);
-              },
-              onStart: (info) => {
-                if (!isActive()) return;
-                if (info?.modelUsed) modelUsed = info.modelUsed;
-              },
-              signal,
-              isRequestActive,
-              conversationId,
-              attachments: continuationAttachments,
-              isContinuation: true,
-              partNumber: (partNumber || 1) + 1,
-              originalPrompt: originalPrompt || prompt,
-              previousContentSummary: basePrefix.slice(-300),
-              chatEndpoint,
-              retryBaseDelayMs
-            });
+            let contResult;
+            try {
+              contResult = await streamAIMessage({
+                provider: contProvider,
+                model: contModel,
+                mode: normalizedMode,
+                prompt: continuationPrompt,
+                history: [
+                  ...history,
+                  { sender: 'user', content: prompt },
+                  { sender: 'assistant', content: basePrefix }
+                ],
+                username,
+                preferences,
+                stream: shouldStream,
+                onChunk: (chunkText) => {
+                  if (!isActive()) return;
+                  accumulatedText += chunkText;
+                  onChunk?.(chunkText, accumulatedText);
+                },
+                onStart: (info) => {
+                  if (!isActive()) return;
+                  if (info?.modelUsed) modelUsed = info.modelUsed;
+                },
+                signal,
+                isRequestActive,
+                conversationId,
+                attachments: continuationAttachments,
+                isContinuation: true,
+                partNumber: (partNumber || 1) + 1,
+                originalPrompt: originalPrompt || prompt,
+                previousContentSummary: basePrefix.slice(-300),
+                chatEndpoint,
+                retryBaseDelayMs,
+                headersTimeoutMs,
+                firstByteTimeoutMs,
+                streamInactivityTimeoutMs
+              });
+            } catch (contErr) {
+              if (!isActive() || contErr?.name === 'AbortError') {
+                throw createRouterAbortError(contErr);
+              }
+              if (contErr && typeof contErr === 'object') {
+                contErr.partial = true;
+                contErr.partialText = accumulatedText;
+                contErr.retryable = false;
+                contErr.canFallback = false;
+              }
+              throw contErr;
+            }
 
             if (!isActive()) {
               throw createRouterAbortError();
@@ -1166,7 +1233,40 @@ export async function streamAIMessage(params = {}) {
         }
       } else {
         // Non-streaming JSON response
-        const data = await res.json();
+        let jsonTimer = null;
+        const jsonReadPromise = res.json();
+        const data =
+          Number(streamInactivityTimeoutMs) > 0
+            ? await Promise.race([
+                jsonReadPromise,
+                new Promise((_, reject) => {
+                  jsonTimer = setTimeout(() => {
+                    try {
+                      void res.body?.cancel?.().catch(() => {});
+                    } catch (_) {}
+                    if (!isActive()) {
+                      reject(createRouterAbortError());
+                      return;
+                    }
+                    const tErr = parseRouterError(
+                      {
+                        code: 504,
+                        status: 'DEADLINE_EXCEEDED',
+                        error: `The request to ${normalizedProvider} timed out while reading the response.`,
+                        canFallback: true,
+                        retryable: false
+                      },
+                      504,
+                      normalizedProvider
+                    );
+                    tErr.timeoutStage = 'json_read_timeout';
+                    reject(tErr);
+                  }, Number(streamInactivityTimeoutMs));
+                })
+              ]).finally(() => {
+                if (jsonTimer) clearTimeout(jsonTimer);
+              })
+            : await jsonReadPromise;
         if (!isActive()) {
           throw createRouterAbortError();
         }

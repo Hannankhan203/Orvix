@@ -49,8 +49,12 @@ const STORE_NAME = 'attachments';
 
 let dbPromise = null;
 
+const IDB_BLOCKED_TIMEOUT_MS = 2500;
+
 /**
- * Initializes and returns the IndexedDB database instance
+ * Initializes and returns the IndexedDB database instance.
+ * Resets cached dbPromise on failure, close, versionchange, or blocked open so transient
+ * errors never permanently wedge IndexedDB for the session.
  * @returns {Promise<IDBDatabase|null>}
  */
 function getDB() {
@@ -67,7 +71,31 @@ function getDB() {
 
   if (dbPromise) return dbPromise;
 
-  dbPromise = new Promise((resolve) => {
+  let currentPromise = null;
+  currentPromise = new Promise((resolve) => {
+    let settled = false;
+    let blockedTimer = null;
+
+    const clearBlockedTimer = () => {
+      if (blockedTimer) {
+        clearTimeout(blockedTimer);
+        blockedTimer = null;
+      }
+    };
+
+    const failOpen = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearBlockedTimer();
+      if (dbPromise === currentPromise) {
+        dbPromise = null;
+      }
+      if (reason) {
+        console.warn('[Attachment Storage] IndexedDB open failed/blocked:', reason);
+      }
+      resolve(null);
+    };
+
     try {
       const request = idb.open(DB_NAME, DB_VERSION);
 
@@ -80,20 +108,50 @@ function getDB() {
         }
       };
 
+      request.onblocked = () => {
+        if (settled || blockedTimer) return;
+        blockedTimer = setTimeout(() => {
+          failOpen('IndexedDB upgrade blocked by another open tab');
+        }, IDB_BLOCKED_TIMEOUT_MS);
+      };
+
       request.onsuccess = (event) => {
-        resolve(event.target.result);
+        const db = event.target.result;
+        clearBlockedTimer();
+        if (settled) {
+          try {
+            db?.close?.();
+          } catch (_) {}
+          return;
+        }
+        settled = true;
+        if (db && typeof db === 'object') {
+          db.onversionchange = () => {
+            try {
+              db.close?.();
+            } catch (_) {}
+            if (dbPromise === currentPromise) {
+              dbPromise = null;
+            }
+          };
+          db.onclose = () => {
+            if (dbPromise === currentPromise) {
+              dbPromise = null;
+            }
+          };
+        }
+        resolve(db);
       };
 
       request.onerror = (err) => {
-        console.warn('[Attachment Storage] IndexedDB open error:', err);
-        resolve(null);
+        failOpen(err);
       };
     } catch (e) {
-      console.warn('[Attachment Storage] IndexedDB unsupported or blocked:', e);
-      resolve(null);
+      failOpen(e);
     }
   });
 
+  dbPromise = currentPromise;
   return dbPromise;
 }
 
@@ -207,9 +265,14 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
 
     return new Promise((resolve) => {
       let resolved = false;
+      let fallbackTimer = null;
       const finish = (success, err = null) => {
         if (resolved) return;
         resolved = true;
+        if (fallbackTimer) {
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
         if (success) {
           lastStorageError = null;
           resetStorageQuotaState();
@@ -230,6 +293,9 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
 
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const hasNativeLifecycle =
+          'oncomplete' in transaction ||
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
         const store = transaction.objectStore(STORE_NAME);
         const currentAuthUserId = getAuthUserId();
         const recordUserId =
@@ -261,14 +327,17 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
         let requestSucceeded = false;
         putRequest.onsuccess = () => {
           requestSucceeded = true;
-          // In standard IndexedDB, transaction.oncomplete finalizes the write.
-          // For lightweight testing shims that do not emit transaction.oncomplete, fallback after microtask:
-          setTimeout(() => {
-            if (requestSucceeded) finish(true);
-          }, 0);
+          // Wait for transaction.oncomplete on real IndexedDB so async commit aborts
+          // (e.g. QuotaExceededError on commit) are never reported as success.
+          if (!hasNativeLifecycle) {
+            fallbackTimer = setTimeout(() => {
+              if (requestSucceeded) finish(true);
+            }, 0);
+          }
         };
 
         putRequest.onerror = (event) => {
+          requestSucceeded = false;
           event?.preventDefault?.();
           const domErr = putRequest.error || event?.target?.error || event;
           finish(false, domErr);
@@ -279,16 +348,21 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
         };
 
         transaction.onerror = (event) => {
+          requestSucceeded = false;
           event?.preventDefault?.();
           const domErr = transaction.error || putRequest.error || event?.target?.error || event;
           finish(false, domErr);
         };
 
         transaction.onabort = (event) => {
+          requestSucceeded = false;
           const domErr = transaction.error || putRequest.error || event?.target?.error;
           finish(false, domErr);
         };
       } catch (syncErr) {
+        if (syncErr?.name === 'InvalidStateError') {
+          dbPromise = null;
+        }
         finish(false, syncErr);
       }
     });
@@ -319,24 +393,37 @@ export async function deleteAttachmentRecord(id) {
     if (!db) return false;
     return new Promise((resolve) => {
       let resolved = false;
+      let fallbackTimer = null;
       const finish = (val) => {
         if (!resolved) {
           resolved = true;
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
           resolve(val);
         }
       };
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const hasNativeLifecycle =
+          'oncomplete' in transaction ||
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
         const store = transaction.objectStore(STORE_NAME);
         const req = store.delete(id);
         req.onsuccess = () => {
-          setTimeout(() => finish(true), 0);
+          if (!hasNativeLifecycle) {
+            fallbackTimer = setTimeout(() => finish(true), 0);
+          }
         };
         req.onerror = () => finish(false);
         transaction.oncomplete = () => finish(true);
         transaction.onerror = () => finish(false);
         transaction.onabort = () => finish(false);
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          dbPromise = null;
+        }
         finish(false);
       }
     });
@@ -362,22 +449,30 @@ export async function deleteAttachmentRecords(ids = []) {
 
     return new Promise((resolve) => {
       let resolved = false;
+      let fallbackTimer = null;
       const finish = (count) => {
         if (!resolved) {
           resolved = true;
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
           resolve(count);
         }
       };
 
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const hasNativeLifecycle =
+          'oncomplete' in transaction ||
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
         const store = transaction.objectStore(STORE_NAME);
         let deletedCount = 0;
         let completedOps = 0;
 
         const checkDone = () => {
           completedOps++;
-          if (completedOps >= validIds.length) {
+          if (completedOps >= validIds.length && !hasNativeLifecycle) {
             finish(deletedCount);
           }
         };
@@ -402,11 +497,16 @@ export async function deleteAttachmentRecords(ids = []) {
         }
 
         transaction.oncomplete = () => finish(deletedCount);
-        transaction.onerror = () => finish(deletedCount);
-        transaction.onabort = () => finish(deletedCount);
+        transaction.onerror = () => finish(0);
+        transaction.onabort = () => finish(0);
 
-        setTimeout(() => finish(deletedCount), 25);
-      } catch (_) {
+        if (!hasNativeLifecycle) {
+          fallbackTimer = setTimeout(() => finish(deletedCount), 25);
+        }
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          dbPromise = null;
+        }
         finish(0);
       }
     });
@@ -431,15 +531,23 @@ export async function deleteAttachmentsForConversation(conversationId) {
 
     return new Promise((resolve) => {
       let resolved = false;
+      let fallbackTimer = null;
       const finish = (count) => {
         if (!resolved) {
           resolved = true;
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
           resolve(count);
         }
       };
 
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const hasNativeLifecycle =
+          'oncomplete' in transaction ||
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
         const store = transaction.objectStore(STORE_NAME);
         let deletedCount = 0;
 
@@ -462,7 +570,13 @@ export async function deleteAttachmentsForConversation(conversationId) {
                         deletedCount++;
                       } catch (_) {}
                     }
-                    cursor.continue();
+                    try {
+                      cursor.continue();
+                    } catch (_) {
+                      if (!hasNativeLifecycle) finish(deletedCount);
+                    }
+                  } else if (!hasNativeLifecycle) {
+                    finish(deletedCount);
                   }
                 };
                 cursorReq.onerror = () => finish(deletedCount);
@@ -484,7 +598,13 @@ export async function deleteAttachmentsForConversation(conversationId) {
                       deletedCount++;
                     } catch (_) {}
                   }
-                  cursor.continue();
+                  try {
+                    cursor.continue();
+                  } catch (_) {
+                    if (!hasNativeLifecycle) finish(deletedCount);
+                  }
+                } else if (!hasNativeLifecycle) {
+                  finish(deletedCount);
                 }
               };
               cursorReq.onerror = () => finish(deletedCount);
@@ -502,6 +622,9 @@ export async function deleteAttachmentsForConversation(conversationId) {
                     } catch (_) {}
                   }
                 }
+                if (!hasNativeLifecycle) {
+                  finish(deletedCount);
+                }
               };
               getReq.onerror = () => finish(deletedCount);
             }
@@ -509,11 +632,16 @@ export async function deleteAttachmentsForConversation(conversationId) {
         }
 
         transaction.oncomplete = () => finish(deletedCount);
-        transaction.onerror = () => finish(deletedCount);
-        transaction.onabort = () => finish(deletedCount);
+        transaction.onerror = () => finish(0);
+        transaction.onabort = () => finish(0);
 
-        setTimeout(() => finish(deletedCount), 15);
-      } catch (_) {
+        if (!hasNativeLifecycle) {
+          fallbackTimer = setTimeout(() => finish(deletedCount), 15);
+        }
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          dbPromise = null;
+        }
         finish(0);
       }
     });
@@ -537,15 +665,23 @@ export async function updateAttachmentConversationId(attachmentId, conversationI
 
     return new Promise((resolve) => {
       let resolved = false;
+      let fallbackTimer = null;
       const finish = (val) => {
         if (!resolved) {
           resolved = true;
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
           resolve(val);
         }
       };
 
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const hasNativeLifecycle =
+          'oncomplete' in transaction ||
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
         const store = transaction.objectStore(STORE_NAME);
         const getReq = store.get(attachmentId);
 
@@ -558,7 +694,9 @@ export async function updateAttachmentConversationId(attachmentId, conversationI
           record.conversationId = conversationId;
           const putReq = store.put(record);
           putReq.onsuccess = () => {
-            setTimeout(() => finish(true), 0);
+            if (!hasNativeLifecycle) {
+              fallbackTimer = setTimeout(() => finish(true), 0);
+            }
           };
           putReq.onerror = () => finish(false);
         };
@@ -567,7 +705,10 @@ export async function updateAttachmentConversationId(attachmentId, conversationI
         transaction.oncomplete = () => finish(true);
         transaction.onerror = () => finish(false);
         transaction.onabort = () => finish(false);
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          dbPromise = null;
+        }
         finish(false);
       }
     });
@@ -589,17 +730,35 @@ export async function getAttachmentRecord(id) {
     if (!db) return null;
 
     return new Promise((resolve) => {
-      const transaction = db.transaction([STORE_NAME], 'readonly');
-      const store = transaction.objectStore(STORE_NAME);
-      const getRequest = store.get(id);
-
-      getRequest.onsuccess = () => {
-        resolve(getRequest.result || null);
+      let settled = false;
+      const finish = (val) => {
+        if (!settled) {
+          settled = true;
+          resolve(val);
+        }
       };
 
-      getRequest.onerror = () => {
-        resolve(null);
-      };
+      try {
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const getRequest = store.get(id);
+
+        getRequest.onsuccess = () => {
+          finish(getRequest.result || null);
+        };
+
+        getRequest.onerror = () => {
+          finish(null);
+        };
+
+        transaction.onerror = () => finish(null);
+        transaction.onabort = () => finish(null);
+      } catch (txErr) {
+        if (txErr?.name === 'InvalidStateError') {
+          dbPromise = null;
+        }
+        finish(null);
+      }
     });
   } catch (err) {
     console.warn('[Attachment Storage] getAttachmentRecord error:', err);
@@ -1709,29 +1868,84 @@ export function buildVisionImageParts({
   return imageParts;
 }
 
+const DEFAULT_AUTH_FETCH_TIMEOUT_MS = 25_000;
+
 /**
- * Executes a fetch request with Firebase ID token Authorization headers when authenticated.
- * On 401 TOKEN_EXPIRED, attempts a token refresh and retries once.
+ * Executes a fetch request with Firebase ID token Authorization headers when authenticated,
+ * bounded timeout protection, and response body cleanup on 401 TOKEN_EXPIRED retry.
  * @param {string} url
- * @param {RequestInit} [options={}]
+ * @param {RequestInit & { timeoutMs?: number }} [options={}]
  * @returns {Promise<Response>}
  */
 export async function fetchWithAuth(url, options = {}) {
-  let headers = await getAuthHeaders(options.headers || {});
-  let res = await fetch(url, { ...options, headers });
+  const { timeoutMs = DEFAULT_AUTH_FETCH_TIMEOUT_MS, signal: callerSignal, ...fetchOptions } = options || {};
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timedOut = false;
+  let timeoutId = null;
 
-  if (res.status === 401) {
+  const onCallerAbort = () => {
     try {
-      const clone = res.clone();
-      const data = await clone.json().catch(() => null);
-      if (data?.code === 'TOKEN_EXPIRED') {
-        headers = await getAuthHeaders(options.headers || {}, true);
-        res = await fetch(url, { ...options, headers });
-      }
-    } catch (_) {}
+      controller?.abort(callerSignal?.reason);
+    } catch (_) {
+      controller?.abort();
+    }
+  };
+
+  if (callerSignal && controller) {
+    if (callerSignal.aborted) {
+      controller.abort(callerSignal.reason);
+    } else {
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
   }
 
-  return res;
+  if (Number(timeoutMs) > 0 && controller) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      try {
+        controller.abort(new DOMException(`Request to ${url} timed out after ${timeoutMs}ms`, 'TimeoutError'));
+      } catch (_) {
+        controller.abort();
+      }
+    }, Number(timeoutMs));
+  }
+
+  const effectiveSignal = controller ? controller.signal : callerSignal;
+
+  try {
+    let headers = await getAuthHeaders(fetchOptions.headers || {});
+    let res = await fetch(url, { ...fetchOptions, headers, ...(effectiveSignal ? { signal: effectiveSignal } : {}) });
+
+    if (res.status === 401) {
+      let shouldRetryToken = false;
+      try {
+        const clone = res.clone();
+        const data = await clone.json().catch(() => null);
+        shouldRetryToken = data?.code === 'TOKEN_EXPIRED';
+      } catch (_) {}
+
+      if (shouldRetryToken) {
+        try {
+          void res.body?.cancel?.().catch(() => {});
+        } catch (_) {}
+        headers = await getAuthHeaders(fetchOptions.headers || {}, true);
+        res = await fetch(url, { ...fetchOptions, headers, ...(effectiveSignal ? { signal: effectiveSignal } : {}) });
+      }
+    }
+
+    return res;
+  } catch (err) {
+    if (timedOut && err?.name === 'AbortError') {
+      const timeoutErr = new DOMException(`Request to ${url} timed out after ${timeoutMs}ms`, 'TimeoutError');
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (callerSignal && controller) {
+      callerSignal.removeEventListener('abort', onCallerAbort);
+    }
+  }
 }
 
 /**
@@ -2210,6 +2424,7 @@ export function isDirectUploadCandidate(file, options = {}) {
  * @param {boolean} [options.isPermanent=false] - Whether file is permanent
  * @param {AbortSignal} [options.signal] - Abort signal for cancellation
  * @param {(percent: number, loaded: number, total: number) => void} [options.onProgress] - Progress callback
+ * @param {number} [options.uploadTimeoutMs=300000] - Upload and completion timeout in milliseconds
  * @returns {Promise<{ success: boolean, attachment: Object }>}
  */
 export async function uploadFileDirectToSupabase(file, options = {}) {
@@ -2279,25 +2494,44 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     throw new Error('Server did not return a valid signed upload URL.');
   }
 
+  const uploadTimeoutMs = Number(options.uploadTimeoutMs) > 0 ? Number(options.uploadTimeoutMs) : 300_000;
+
+  const cancelDirectTicketBestEffort = async () => {
+    try {
+      const cancelRes = await fetchWithAuth('/api/upload/direct/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attachmentId, chatId }),
+        timeoutMs: 10_000
+      });
+      updateUploadQuotaFromResponse(cancelRes);
+    } catch (_) {}
+  };
+
   // 2. Direct upload to Supabase Storage via XMLHttpRequest for precise progress & cancellation
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+    let listenersCleaned = false;
+
+    const cleanupSignalListener = () => {
+      if (!listenersCleaned && signal) {
+        listenersCleaned = true;
+        signal.removeEventListener('abort', onAbort);
+      }
+    };
 
     const onAbort = () => {
+      cleanupSignalListener();
       try {
         xhr.abort();
       } catch (_) {}
-      fetchWithAuth('/api/upload/direct/cancel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attachmentId, chatId })
-      })
-        .then((cancelRes) => {
-          updateUploadQuotaFromResponse(cancelRes);
-        })
-        .catch(() => {});
-      const abortErr = new DOMException('Direct upload cancelled by user.', 'AbortError');
-      reject(abortErr);
+      void cancelDirectTicketBestEffort();
+      if (!settled) {
+        settled = true;
+        const abortErr = new DOMException('Direct upload cancelled by user.', 'AbortError');
+        reject(abortErr);
+      }
     };
 
     if (signal) {
@@ -2308,6 +2542,8 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
       signal.addEventListener('abort', onAbort, { once: true });
     }
 
+    xhr.timeout = uploadTimeoutMs;
+
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && typeof onProgress === 'function') {
         const percent = Math.min(99, Math.round((event.loaded / event.total) * 100));
@@ -2316,15 +2552,16 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     };
 
     xhr.onload = () => {
-      if (signal) {
-        signal.removeEventListener('abort', onAbort);
-      }
+      cleanupSignalListener();
+      if (settled) return;
+      settled = true;
       if (xhr.status >= 200 && xhr.status < 300) {
         if (typeof onProgress === 'function') {
           onProgress(100, wireSize, wireSize);
         }
         resolve();
       } else {
+        void cancelDirectTicketBestEffort();
         let errorDetail = `Storage upload failed with status ${xhr.status}`;
         try {
           const parsed = JSON.parse(xhr.responseText);
@@ -2339,17 +2576,28 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     };
 
     xhr.onerror = () => {
-      if (signal) {
-        signal.removeEventListener('abort', onAbort);
-      }
+      cleanupSignalListener();
+      if (settled) return;
+      settled = true;
+      void cancelDirectTicketBestEffort();
       reject(new Error('Network error during direct upload to storage.'));
     };
 
     xhr.ontimeout = () => {
-      if (signal) {
-        signal.removeEventListener('abort', onAbort);
-      }
-      reject(new Error('Direct upload to storage timed out.'));
+      cleanupSignalListener();
+      if (settled) return;
+      settled = true;
+      void cancelDirectTicketBestEffort();
+      const timeoutErr = new Error('Direct upload to storage timed out.');
+      timeoutErr.name = 'TimeoutError';
+      reject(timeoutErr);
+    };
+
+    xhr.onabort = () => {
+      cleanupSignalListener();
+      if (settled) return;
+      settled = true;
+      reject(new DOMException('Direct upload aborted.', 'AbortError'));
     };
 
     xhr.open('PUT', signedUrl);
@@ -2359,24 +2607,32 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
   });
 
   // 3. Authenticated completion call: verifies object in storage, runs extraction, records metadata
-  const completeRes = await fetchWithAuth('/api/upload/direct/complete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      attachmentId,
-      chatId,
-      storagePath,
-      ...(hasStorageCompression
-        ? {
-            storageEncoding: storageCompression.encoding,
-            originalSize,
-            originalMimeType: mimeType,
-            storageChecksum: storageCompression.sha256
-          }
-        : {})
-    }),
-    signal
-  });
+  let completeRes;
+  try {
+    completeRes = await fetchWithAuth('/api/upload/direct/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        attachmentId,
+        chatId,
+        storagePath,
+        ...(hasStorageCompression
+          ? {
+              storageEncoding: storageCompression.encoding,
+              originalSize,
+              originalMimeType: mimeType,
+              storageChecksum: storageCompression.sha256
+            }
+          : {})
+      }),
+      signal,
+      timeoutMs: uploadTimeoutMs
+    });
+  } catch (completeNetErr) {
+    // Clean up orphaned object + quota reservation when completion cannot reach or finish on server
+    await cancelDirectTicketBestEffort();
+    throw completeNetErr;
+  }
 
   if (!completeRes.ok) {
     updateUploadQuotaFromResponse(completeRes);
@@ -2384,6 +2640,9 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     try {
       errData = await completeRes.json();
     } catch (_) {}
+    if (completeRes.status !== 409 && errData?.code !== 'CONCURRENT_COMPLETION') {
+      await cancelDirectTicketBestEffort();
+    }
     const err = new Error(errData?.error || `Failed to complete direct upload (HTTP ${completeRes.status}).`);
     err.code = errData?.code || 'COMPLETE_FAILED';
     err.status = completeRes.status;

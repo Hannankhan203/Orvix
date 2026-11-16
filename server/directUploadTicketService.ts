@@ -174,7 +174,7 @@ export async function claimDirectUploadTicketForCompletion(
   const now = Date.now();
 
   try {
-    return await db.runTransaction(async (transaction: any) => {
+    const txResult = await db.runTransaction(async (transaction: any) => {
       const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
       const snap = await transaction.get(docRef);
 
@@ -255,7 +255,6 @@ export async function claimDirectUploadTicketForCompletion(
           lastUpdated: now
         };
         transaction.set(docRef, JSON.parse(JSON.stringify(expiredTicket)), { merge: true });
-        pendingDirectUploads.set(attachmentId, expiredTicket);
         return {
           success: false,
           status: 404,
@@ -297,7 +296,6 @@ export async function claimDirectUploadTicketForCompletion(
       };
 
       transaction.set(docRef, JSON.parse(JSON.stringify(claimedTicket)), { merge: true });
-      pendingDirectUploads.set(attachmentId, claimedTicket);
 
       return {
         success: true,
@@ -306,6 +304,13 @@ export async function claimDirectUploadTicketForCompletion(
         ticket: claimedTicket
       };
     });
+
+    // Update secondary memory cache only after Firestore transaction commits cleanly
+    if (txResult?.ticket && (txResult.success || txResult.isExpired)) {
+      pendingDirectUploads.set(attachmentId, txResult.ticket);
+    }
+
+    return txResult;
   } catch (err: any) {
     console.error('[DirectUploadTicket] Error claiming ticket in transaction:', err?.message || err);
     return {
@@ -440,6 +445,24 @@ export async function cancelDurableUploadTicket(
       };
     }
 
+    // Never delete live storage objects or modify already-completed uploads on a late cancel
+    if (ticket.status === 'completed') {
+      pendingDirectUploads.delete(attachmentId);
+      return {
+        success: false,
+        cancelled: false,
+        status: 409,
+        code: 'ALREADY_COMPLETED',
+        error: 'Cannot cancel an upload that has already completed.'
+      };
+    }
+
+    // Already finalized into a terminal non-active state (idempotent no-op)
+    if (ticket.status === 'cancelled' || ticket.status === 'failed' || ticket.status === 'expired') {
+      pendingDirectUploads.delete(attachmentId);
+      return { success: true, cancelled: true };
+    }
+
     // Release reserved quota slot and capture current PKT day status
     let quotaStatus: QuotaStatus | null = null;
     try {
@@ -494,19 +517,19 @@ export async function pruneExpiredDirectUploadTickets(): Promise<number> {
   let pruned = 0;
   const processedIds = new Set<string>();
 
-  // 1. Sweep durable Firestore collection for expired pending/completing tickets
+  // 1. Sweep durable Firestore collection for expired pending/completing/expired tickets
   try {
     const db = getFirestoreDb();
     const colRef = db.collection(UPLOAD_TICKETS_COLLECTION);
     if (typeof colRef.where === 'function' && typeof colRef.get === 'function') {
-      const snap = await colRef.where('status', 'in', ['pending', 'completing']).get();
+      const snap = await colRef.where('status', 'in', ['pending', 'completing', 'expired']).get();
       if (snap && Array.isArray(snap.docs)) {
         for (const doc of snap.docs) {
           const ticket = (typeof doc.data === 'function' ? doc.data() : doc.data) as PendingDirectUploadTicket;
           if (!ticket || !ticket.attachmentId) continue;
 
-          // Check if ticket is past its expiration TTL or stuck in 'completing' for > 5 minutes
-          const isExpired = ticket.expiresAt <= now;
+          // Check if ticket is past its expiration TTL, previously failed cleanup ('expired'), or stuck in 'completing' for > 5 minutes
+          const isExpired = ticket.status === 'expired' || ticket.expiresAt <= now;
           const isStuckCompleting =
             ticket.status === 'completing' &&
             ticket.lastUpdated &&
@@ -514,28 +537,53 @@ export async function pruneExpiredDirectUploadTickets(): Promise<number> {
 
           if (isExpired || isStuckCompleting) {
             processedIds.add(ticket.attachmentId);
-            pruned++;
 
             try {
               await releaseUploadSlot(ticket.quotaReservation);
             } catch (_) {}
 
+            let storageRemovedOrMissing = false;
             try {
-              await deleteAttachmentFromStorage(ticket.storagePath, {
+              const delRes: any = await deleteAttachmentFromStorage(ticket.storagePath, {
                 requestingUserId: ticket.userId,
                 bucket: ticket.bucket
               });
-            } catch (_) {}
-
-            try {
-              if (typeof doc.ref?.delete === 'function') {
-                await doc.ref.delete();
-              } else if (typeof colRef.doc === 'function') {
-                await colRef.doc(ticket.attachmentId).delete();
+              if (
+                delRes?.success ||
+                delRes?.notFound ||
+                delRes?.status === 404 ||
+                delRes?.code === 'STORAGE_UNCONFIGURED'
+              ) {
+                storageRemovedOrMissing = true;
               }
             } catch (_) {}
 
-            pendingDirectUploads.delete(ticket.attachmentId);
+            if (storageRemovedOrMissing) {
+              pruned++;
+              try {
+                if (typeof doc.ref?.delete === 'function') {
+                  await doc.ref.delete();
+                } else if (typeof colRef.doc === 'function') {
+                  await colRef.doc(ticket.attachmentId).delete();
+                }
+              } catch (_) {}
+              pendingDirectUploads.delete(ticket.attachmentId);
+            } else {
+              // Preserve ticket in 'expired' state so a future sweep retries orphaned storage deletion
+              const deferredTicket: PendingDirectUploadTicket = {
+                ...ticket,
+                status: 'expired',
+                lastUpdated: now
+              };
+              try {
+                if (typeof doc.ref?.set === 'function') {
+                  await doc.ref.set({ status: 'expired', lastUpdated: now }, { merge: true });
+                } else if (typeof colRef.doc === 'function') {
+                  await colRef.doc(ticket.attachmentId).set({ status: 'expired', lastUpdated: now }, { merge: true });
+                }
+              } catch (_) {}
+              pendingDirectUploads.set(ticket.attachmentId, deferredTicket);
+            }
           }
         }
       }
@@ -547,29 +595,58 @@ export async function pruneExpiredDirectUploadTickets(): Promise<number> {
   // 2. Also sweep in-memory cache to handle test overrides where ticket.expiresAt is mutated in-memory
   for (const [attachmentId, ticket] of pendingDirectUploads.entries()) {
     if (processedIds.has(attachmentId)) continue;
-    if (ticket.expiresAt <= now || (ticket.status === 'completing' && ticket.lastUpdated && now - ticket.lastUpdated > 5 * 60 * 1000)) {
+    if (
+      ticket.status === 'expired' ||
+      ticket.expiresAt <= now ||
+      (ticket.status === 'completing' && ticket.lastUpdated && now - ticket.lastUpdated > 5 * 60 * 1000)
+    ) {
       processedIds.add(attachmentId);
-      pruned++;
-      pendingDirectUploads.delete(attachmentId);
 
       try {
         await releaseUploadSlot(ticket.quotaReservation);
       } catch (_) {}
 
+      let storageRemovedOrMissing = false;
       try {
-        await deleteAttachmentFromStorage(ticket.storagePath, {
+        const delRes: any = await deleteAttachmentFromStorage(ticket.storagePath, {
           requestingUserId: ticket.userId,
           bucket: ticket.bucket
         });
-      } catch (_) {}
-
-      try {
-        const db = getFirestoreDb();
-        const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
-        if (typeof docRef.delete === 'function') {
-          await docRef.delete();
+        if (
+          delRes?.success ||
+          delRes?.notFound ||
+          delRes?.status === 404 ||
+          delRes?.code === 'STORAGE_UNCONFIGURED'
+        ) {
+          storageRemovedOrMissing = true;
         }
       } catch (_) {}
+
+      if (storageRemovedOrMissing) {
+        pruned++;
+        pendingDirectUploads.delete(attachmentId);
+        try {
+          const db = getFirestoreDb();
+          const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
+          if (typeof docRef.delete === 'function') {
+            await docRef.delete();
+          }
+        } catch (_) {}
+      } else {
+        const deferredTicket: PendingDirectUploadTicket = {
+          ...ticket,
+          status: 'expired',
+          lastUpdated: now
+        };
+        pendingDirectUploads.set(attachmentId, deferredTicket);
+        try {
+          const db = getFirestoreDb();
+          const docRef = db.collection(UPLOAD_TICKETS_COLLECTION).doc(attachmentId);
+          if (typeof docRef.set === 'function') {
+            await docRef.set({ status: 'expired', lastUpdated: now }, { merge: true });
+          }
+        } catch (_) {}
+      }
     }
   }
 

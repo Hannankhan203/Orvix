@@ -53,7 +53,9 @@ export function createMinimalWavBlob() {
  * @param {string} [params.transcript=''] - Live spoken transcript captured during the session
  * @param {string} [params.language='en-US'] - Language tag (e.g., 'en-US', 'ur-PK')
  * @param {string} [params.prompt=''] - Optional vocabulary conditioning prompt
+ * @param {string} [params.model=''] - Optional transcription model override
  * @param {AbortSignal} [params.signal] - AbortSignal for user cancellation
+ * @param {number} [params.timeoutMs=60000] - Request timeout in milliseconds
  * @returns {Promise<{
  *   success: boolean,
  *   text: string,
@@ -70,7 +72,8 @@ export async function transcribeAudioBlob({
   language = 'en-US',
   prompt = '',
   model = '',
-  signal
+  signal,
+  timeoutMs = 60_000
 }) {
   const hasAudioBlob = Boolean(audioBlob && audioBlob instanceof Blob && audioBlob.size > 0);
   const cleanTranscript = (transcript || '').trim();
@@ -109,12 +112,66 @@ export async function transcribeAudioBlob({
     formData.append('prompt', prompt);
   }
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timedOut = false;
+  let timeoutId = null;
+
+  const onCallerAbort = () => {
+    try {
+      controller?.abort(signal?.reason);
+    } catch (_) {
+      controller?.abort();
+    }
+  };
+
+  if (signal && controller) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+    } else {
+      signal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+  }
+
+  if (Number(timeoutMs) > 0 && controller) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      try {
+        controller.abort(new DOMException('Transcription request timed out.', 'TimeoutError'));
+      } catch (_) {
+        controller.abort();
+      }
+    }, Number(timeoutMs));
+  }
+
   const startTime = Date.now();
-  const response = await fetch('/api/transcribe', {
-    method: 'POST',
-    body: formData,
-    signal
-  });
+  let response;
+  try {
+    response = await fetch('/api/transcribe', {
+      method: 'POST',
+      body: formData,
+      signal: controller ? controller.signal : signal
+    });
+  } catch (fetchErr) {
+    if (timedOut || fetchErr?.name === 'TimeoutError') {
+      const err = new Error('Transcription request timed out. Retained live speech transcript.');
+      err.code = 'TRANSCRIPTION_TIMEOUT';
+      err.status = 'TRANSCRIPTION_TIMEOUT';
+      err.statusCode = 504;
+      err.provider = 'groq';
+      err.retryable = true;
+      err.fallbackAvailable = true;
+      err.isTimeout = true;
+      err.latencyMs = Date.now() - startTime;
+      throw err;
+    }
+    throw fetchErr;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (signal && controller) {
+      signal.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
   const latencyMs = Date.now() - startTime;
 
   if (!response.ok) {

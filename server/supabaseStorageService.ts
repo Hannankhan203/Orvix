@@ -1261,23 +1261,38 @@ export async function deleteDurableAttachmentExpiry(options: {
     const cleanUser = String(options.userId || '').trim();
     const cleanAtt = String(options.attachmentId || '').trim();
 
-    const { data: listData, error: listErr } = await bucketInstance
-      .list(EXPIRY_RECORDS_PREFIX, { limit: 1000 });
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 50;
+    const toRemove: string[] = [];
+    let offset = 0;
+    let pageCount = 0;
 
-    if (listErr || !listData) {
-      return { success: false, error: listErr?.message };
-    }
+    while (pageCount < MAX_PAGES) {
+      pageCount++;
+      const { data: listData, error: listErr } = await bucketInstance
+        .list(EXPIRY_RECORDS_PREFIX, { limit: PAGE_SIZE, offset });
 
-    const toRemove = listData
-      .filter((item: any) => {
-        if (!item?.name) return false;
+      if (listErr) {
+        return { success: false, error: listErr.message };
+      }
+      if (!Array.isArray(listData) || listData.length === 0) {
+        break;
+      }
+
+      for (const item of listData) {
+        if (!item?.name) continue;
         const parsed = parseDurableExpiryRecordPath(item.name);
-        if (!parsed.valid) return false;
-        if (parsed.userId !== cleanUser || parsed.attachmentId !== cleanAtt) return false;
-        if (options.chatId && parsed.chatId !== options.chatId) return false;
-        return true;
-      })
-      .map((item: any) => `${EXPIRY_RECORDS_PREFIX}/${item.name}`);
+        if (!parsed.valid) continue;
+        if (parsed.userId !== cleanUser || parsed.attachmentId !== cleanAtt) continue;
+        if (options.chatId && parsed.chatId !== options.chatId) continue;
+        toRemove.push(`${EXPIRY_RECORDS_PREFIX}/${item.name}`);
+      }
+
+      if (listData.length < PAGE_SIZE) {
+        break;
+      }
+      offset += listData.length;
+    }
 
     if (toRemove.length > 0) {
       await client.storage.from(bucket).remove(toRemove);
@@ -1311,20 +1326,34 @@ export async function deleteDurableExpiryForChatInStorage(
     const cleanUser = String(userId || '').trim();
     const cleanChat = String(chatId || '').trim();
 
-    const { data: listData, error: listErr } = await bucketInstance
-      .list(EXPIRY_RECORDS_PREFIX, { limit: 1000 });
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 50;
+    const toRemove: string[] = [];
+    let offset = 0;
+    let pageCount = 0;
 
-    if (listErr || !listData || listData.length === 0) {
-      return 0;
-    }
+    while (pageCount < MAX_PAGES) {
+      pageCount++;
+      const { data: listData, error: listErr } = await bucketInstance
+        .list(EXPIRY_RECORDS_PREFIX, { limit: PAGE_SIZE, offset });
 
-    const toRemove = listData
-      .filter((item: any) => {
-        if (!item?.name) return false;
+      if (listErr || !Array.isArray(listData) || listData.length === 0) {
+        break;
+      }
+
+      for (const item of listData) {
+        if (!item?.name) continue;
         const parsed = parseDurableExpiryRecordPath(item.name);
-        return parsed.valid && parsed.userId === cleanUser && parsed.chatId === cleanChat;
-      })
-      .map((item: any) => `${EXPIRY_RECORDS_PREFIX}/${item.name}`);
+        if (parsed.valid && parsed.userId === cleanUser && parsed.chatId === cleanChat) {
+          toRemove.push(`${EXPIRY_RECORDS_PREFIX}/${item.name}`);
+        }
+      }
+
+      if (listData.length < PAGE_SIZE) {
+        break;
+      }
+      offset += listData.length;
+    }
 
     if (toRemove.length > 0) {
       const { data: removed } = await client.storage.from(activeBucket).remove(toRemove);
@@ -1440,35 +1469,49 @@ export async function checkDurableAttachmentExpiry(options: {
     const cleanChat = options.chatId ? String(options.chatId).trim() : '';
     const nowMs = typeof options.nowMs === 'number' ? options.nowMs : Date.now();
 
-    const { data: fileList, error: listErr } = await bucketInstance.list(EXPIRY_RECORDS_PREFIX, {
-      limit: 1000
-    });
+    const PAGE_SIZE = 1000;
+    const MAX_PAGES = 50;
+    let offset = 0;
+    let pageCount = 0;
 
-    if (listErr || !Array.isArray(fileList) || fileList.length === 0) {
-      return { expired: false };
-    }
+    while (pageCount < MAX_PAGES) {
+      pageCount++;
+      const { data: fileList, error: listErr } = await bucketInstance.list(EXPIRY_RECORDS_PREFIX, {
+        limit: PAGE_SIZE,
+        offset
+      });
 
-    for (const item of fileList) {
-      if (!item?.name) continue;
-      const parsed = parseDurableExpiryRecordPath(item.name);
-      if (!parsed.valid || typeof parsed.expiresAt !== 'number') continue;
-      if (parsed.userId !== cleanUser || parsed.attachmentId !== cleanAtt) continue;
-      if (cleanChat && parsed.chatId && parsed.chatId !== cleanChat) continue;
-
-      if (parsed.expiresAt <= nowMs) {
-        try {
-          const pathsToRemove = [
-            parsed.storagePath,
-            parsed.expiryRecordPath
-          ].filter((p): p is string => Boolean(p));
-          if (pathsToRemove.length > 0) {
-            await bucketInstance.remove(pathsToRemove);
-          }
-        } catch (_) {}
-        return { expired: true, expiresAt: parsed.expiresAt };
+      if (listErr || !Array.isArray(fileList) || fileList.length === 0) {
+        break;
       }
 
-      return { expired: false, expiresAt: parsed.expiresAt };
+      for (const item of fileList) {
+        if (!item?.name) continue;
+        const parsed = parseDurableExpiryRecordPath(item.name);
+        if (!parsed.valid || typeof parsed.expiresAt !== 'number') continue;
+        if (parsed.userId !== cleanUser || parsed.attachmentId !== cleanAtt) continue;
+        if (cleanChat && parsed.chatId && parsed.chatId !== cleanChat) continue;
+
+        if (parsed.expiresAt <= nowMs) {
+          try {
+            const pathsToRemove = [
+              parsed.storagePath,
+              parsed.expiryRecordPath
+            ].filter((p): p is string => Boolean(p));
+            if (pathsToRemove.length > 0) {
+              await bucketInstance.remove(pathsToRemove);
+            }
+          } catch (_) {}
+          return { expired: true, expiresAt: parsed.expiresAt };
+        }
+
+        return { expired: false, expiresAt: parsed.expiresAt };
+      }
+
+      if (fileList.length < PAGE_SIZE) {
+        break;
+      }
+      offset += fileList.length;
     }
 
     return { expired: false };

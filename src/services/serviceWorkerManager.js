@@ -18,6 +18,7 @@ let isAppShellCached = (() => {
 })();
 
 let updateSWFunction = null;
+let swInitialized = false;
 const appShellListeners = new Set();
 
 function markAppShellCached() {
@@ -76,9 +77,10 @@ export function subscribeAppShellState(callback) {
  * Safe to call once during app initialization.
  */
 export function initServiceWorker() {
-  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+  if (swInitialized || typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return;
   }
+  swInitialized = true;
 
   // Check if controller is already controlling the page
   if (navigator.serviceWorker.controller) {

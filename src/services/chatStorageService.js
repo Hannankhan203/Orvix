@@ -85,6 +85,179 @@ function getUserDeletedChatsKey(userId) {
   return `orvix_user_deleted_chats_${userId}`;
 }
 
+function getUserPendingMsgDeletionsKey(userId) {
+  return `orvix_pending_msg_deletions_${userId}`;
+}
+
+function isQuotaExceededError(err) {
+  if (!err) return false;
+  const name = String(err.name || '');
+  const msg = String(err.message || '').toLowerCase();
+  return (
+    name === 'QuotaExceededError' ||
+    name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    err.code === 22 ||
+    err.code === 1014 ||
+    msg.includes('quota')
+  );
+}
+
+/**
+ * Safely writes a key/value pair to localStorage, recovering from QuotaExceededError
+ * by evicting oldest non-pending cached conversation message histories while strictly
+ * preserving chat metadata, pending deletion queues, and any chat with pendingSync messages.
+ *
+ * @param {string} targetKey
+ * @param {string} serializedValue
+ * @returns {boolean}
+ */
+function setLocalStorageItemWithQuotaRecovery(targetKey, serializedValue) {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return false;
+  try {
+    localStorage.setItem(targetKey, serializedValue);
+    return true;
+  } catch (err) {
+    if (!isQuotaExceededError(err)) {
+      throw err;
+    }
+
+    // Collect updatedAt timestamps from all cached user chat lists
+    const updatedAtByMessageKey = new Map();
+    const candidateKeys = [];
+
+    try {
+      const storageLen = typeof localStorage.length === 'number' ? localStorage.length : 0;
+      for (let i = 0; i < storageLen; i++) {
+        const k = typeof localStorage.key === 'function' ? localStorage.key(i) : null;
+        if (!k) continue;
+        if (k.startsWith('orvix_user_chats_')) {
+          const uid = k.slice('orvix_user_chats_'.length);
+          try {
+            const chats = JSON.parse(localStorage.getItem(k) || '[]');
+            if (Array.isArray(chats)) {
+              for (const c of chats) {
+                if (c?.id) {
+                  updatedAtByMessageKey.set(
+                    getUserMessagesCacheKey(uid, c.id),
+                    Number(c.rawUpdatedAt) || 0
+                  );
+                }
+              }
+            }
+          } catch (_) {}
+        } else if (k.startsWith('orvix_user_messages_') && k !== targetKey) {
+          candidateKeys.push(k);
+        }
+      }
+    } catch (_) {}
+
+    // Never evict message caches that still have unsynced offline messages
+    const evictable = [];
+    for (const k of candidateKeys) {
+      try {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.some((m) => m && m.pendingSync === true)) {
+            continue;
+          }
+        }
+      } catch (_) {}
+      evictable.push({
+        key: k,
+        updatedAt: updatedAtByMessageKey.get(k) || 0
+      });
+    }
+
+    evictable.sort((a, b) => a.updatedAt - b.updatedAt);
+
+    for (const victim of evictable) {
+      try {
+        localStorage.removeItem(victim.key);
+        localStorage.setItem(targetKey, serializedValue);
+        return true;
+      } catch (retryErr) {
+        if (!isQuotaExceededError(retryErr)) {
+          throw retryErr;
+        }
+      }
+    }
+
+    console.warn(`Could not persist ${targetKey} to localStorage due to storage quota.`);
+    return false;
+  }
+}
+
+export function getPendingMessageDeletionIds(userId, chatId) {
+  if (!userId || userId === 'guest' || !chatId || typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(getUserPendingMsgDeletionsKey(userId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return [];
+    const ids = parsed[chatId];
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id.trim().length > 0) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function getAllPendingMessageDeletions(userId) {
+  if (!userId || userId === 'guest' || typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(getUserPendingMsgDeletionsKey(userId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveAllPendingMessageDeletions(userId, mapObj) {
+  if (!userId || userId === 'guest' || typeof window === 'undefined') return;
+  try {
+    const cleaned = {};
+    for (const [cid, ids] of Object.entries(mapObj || {})) {
+      if (cid && Array.isArray(ids) && ids.length > 0) {
+        cleaned[cid] = Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim().length > 0)));
+      }
+    }
+    const key = getUserPendingMsgDeletionsKey(userId);
+    if (Object.keys(cleaned).length === 0) {
+      localStorage.removeItem(key);
+    } else {
+      setLocalStorageItemWithQuotaRecovery(key, JSON.stringify(cleaned));
+    }
+  } catch (_) {}
+}
+
+function enqueuePendingMessageDeletions(userId, chatId, msgIds) {
+  if (!userId || userId === 'guest' || !chatId || !Array.isArray(msgIds) || msgIds.length === 0) return;
+  const all = getAllPendingMessageDeletions(userId);
+  const existing = Array.isArray(all[chatId]) ? all[chatId] : [];
+  all[chatId] = Array.from(new Set([...existing, ...msgIds]));
+  saveAllPendingMessageDeletions(userId, all);
+}
+
+function removePendingMessageDeletions(userId, chatId, msgIds = null) {
+  if (!userId || userId === 'guest' || !chatId) return;
+  const all = getAllPendingMessageDeletions(userId);
+  if (!all[chatId]) return;
+  if (msgIds === null) {
+    delete all[chatId];
+  } else {
+    const dropSet = new Set(msgIds);
+    const remaining = all[chatId].filter((id) => !dropSet.has(id));
+    if (remaining.length > 0) {
+      all[chatId] = remaining;
+    } else {
+      delete all[chatId];
+    }
+  }
+  saveAllPendingMessageDeletions(userId, all);
+}
+
 function formatChatDateLabel(ms) {
   if (!ms || !Number.isFinite(ms)) return 'Recently';
   try {
@@ -157,7 +330,7 @@ export function saveCachedUserChats(userId, chats) {
   if (!userId || typeof window === 'undefined' || !Array.isArray(chats)) return;
   try {
     const sorted = [...chats].sort((a, b) => (b.rawUpdatedAt || 0) - (a.rawUpdatedAt || 0));
-    localStorage.setItem(getUserChatsCacheKey(userId), JSON.stringify(sorted));
+    setLocalStorageItemWithQuotaRecovery(getUserChatsCacheKey(userId), JSON.stringify(sorted));
   } catch (err) {
     console.warn('Could not save cached user chats:', err);
   }
@@ -213,7 +386,10 @@ export function saveCachedChatMessages(userId, chatId, messages) {
   if (!userId || !chatId || typeof window === 'undefined' || !Array.isArray(messages)) return;
   try {
     const sanitizedMessages = messages.map((msg) => sanitizeMessageForStorage(msg));
-    localStorage.setItem(getUserMessagesCacheKey(userId, chatId), JSON.stringify(sanitizedMessages));
+    setLocalStorageItemWithQuotaRecovery(
+      getUserMessagesCacheKey(userId, chatId),
+      JSON.stringify(sanitizedMessages)
+    );
   } catch (err) {
     console.warn('Could not save cached chat messages:', err);
   }
@@ -288,7 +464,10 @@ export function savePendingDeletedQueue(userId, queue) {
         seen.set(entry.chatId, entry);
       }
     }
-    localStorage.setItem(getUserDeletedChatsKey(userId), JSON.stringify(Array.from(seen.values())));
+    setLocalStorageItemWithQuotaRecovery(
+      getUserDeletedChatsKey(userId),
+      JSON.stringify(Array.from(seen.values()))
+    );
   } catch (_) {}
 }
 
@@ -439,7 +618,7 @@ export function savePendingOrphanedAttachmentDeletions(userId, queue) {
     if (userEntries.length === 0) {
       localStorage.removeItem(userKey);
     } else {
-      localStorage.setItem(userKey, JSON.stringify(userEntries));
+      setLocalStorageItemWithQuotaRecovery(userKey, JSON.stringify(userEntries));
     }
 
     const globalKey = 'pendingOrphanedAttachmentDeletions';
@@ -458,7 +637,7 @@ export function savePendingOrphanedAttachmentDeletions(userId, queue) {
     if (combined.length === 0) {
       localStorage.removeItem(globalKey);
     } else {
-      localStorage.setItem(globalKey, JSON.stringify(combined));
+      setLocalStorageItemWithQuotaRecovery(globalKey, JSON.stringify(combined));
     }
   } catch (_) {}
 }
@@ -1214,18 +1393,36 @@ export async function createChatDocument(
  * @param {string} chatId
  * @param {string} mode
  */
+function buildUpdatedPendingMetaFields(existingChat, fieldUpdates) {
+  const baseFields =
+    existingChat?.pendingMetaFields && typeof existingChat.pendingMetaFields === 'object'
+      ? { ...existingChat.pendingMetaFields }
+      : existingChat?.pendingMetaSync
+      ? { title: true, mode: true, isPinned: true }
+      : {};
+  const nextFields = { ...baseFields, ...fieldUpdates };
+  const hasDirty = Object.values(nextFields).some(Boolean);
+  return {
+    pendingMetaSync: hasDirty,
+    pendingMetaFields: hasDirty ? nextFields : null
+  };
+}
+
 export async function updateChatMode(userId, chatId, mode) {
   if (!userId || !chatId) return;
   const cleanMode = mode || 'general';
+  const onlineNow = isBrowserOnline();
+  const existingChat = getCachedUserChats(userId).find((c) => c.id === chatId);
+  const initialPending = buildUpdatedPendingMetaFields(existingChat, { mode: true });
 
   upsertCachedUserChat(userId, {
     id: chatId,
     mode: cleanMode,
     rawUpdatedAt: Date.now(),
-    pendingMetaSync: !isBrowserOnline()
+    ...initialPending
   });
 
-  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
+  if (!db || !isFirebaseConfigured() || !onlineNow) {
     return;
   }
   const chatDocRef = doc(db, 'users', userId, 'chats', chatId);
@@ -1238,9 +1435,17 @@ export async function updateChatMode(userId, chatId, mode) {
       FIRESTORE_OP_TIMEOUT_MS,
       'updateChatMode'
     );
-    upsertCachedUserChat(userId, { id: chatId, pendingMetaSync: false });
+    const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
+    upsertCachedUserChat(userId, {
+      id: chatId,
+      ...buildUpdatedPendingMetaFields(latestChat, { mode: false })
+    });
   } catch (err) {
-    upsertCachedUserChat(userId, { id: chatId, pendingMetaSync: true });
+    const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
+    upsertCachedUserChat(userId, {
+      id: chatId,
+      ...buildUpdatedPendingMetaFields(latestChat, { mode: true })
+    });
     console.warn('Could not update conversation mode in Firestore (saved locally):', err?.message || err);
   }
 }
@@ -1307,6 +1512,7 @@ export async function saveChatMessage(userId, chatId, message) {
   };
 
   // 1. Always persist locally first so messages survive refreshes while offline
+  removePendingMessageDeletions(userId, chatId, [targetMessage.id]);
   upsertCachedChatMessage(userId, chatId, localRecord);
   const cachedChat = getCachedUserChats(userId).find((c) => c.id === chatId);
   upsertCachedUserChat(userId, {
@@ -1402,19 +1608,20 @@ export async function renameConversation(userId, chatId, newTitle, isManual = fa
     throw new Error('Conversation title cannot be empty.');
   }
 
-  const metaUpdate = {
-    id: chatId,
-    title: sanitized,
-    rawUpdatedAt: Date.now(),
-    pendingMetaSync: !isBrowserOnline(),
-    ...(isManual ? { hasCustomTitle: true } : {})
-  };
-
+  const onlineNow = isBrowserOnline();
   if (userId && chatId) {
+    const existingChat = getCachedUserChats(userId).find((c) => c.id === chatId);
+    const metaUpdate = {
+      id: chatId,
+      title: sanitized,
+      rawUpdatedAt: Date.now(),
+      ...buildUpdatedPendingMetaFields(existingChat, { title: true }),
+      ...(isManual ? { hasCustomTitle: true } : {})
+    };
     upsertCachedUserChat(userId, metaUpdate);
   }
 
-  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
+  if (!db || !isFirebaseConfigured() || !onlineNow) {
     return;
   }
 
@@ -1429,10 +1636,18 @@ export async function renameConversation(userId, chatId, newTitle, isManual = fa
       FIRESTORE_OP_TIMEOUT_MS,
       'renameConversation'
     );
-    upsertCachedUserChat(userId, { id: chatId, pendingMetaSync: false });
+    const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
+    upsertCachedUserChat(userId, {
+      id: chatId,
+      ...buildUpdatedPendingMetaFields(latestChat, { title: false })
+    });
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
-      upsertCachedUserChat(userId, { id: chatId, pendingMetaSync: true });
+      const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
+      upsertCachedUserChat(userId, {
+        id: chatId,
+        ...buildUpdatedPendingMetaFields(latestChat, { title: true })
+      });
       return;
     }
     throw err;
@@ -1445,7 +1660,7 @@ export async function renameConversation(userId, chatId, newTitle, isManual = fa
  *
  * @param {string} userId - Authenticated user UID
  * @param {string} chatId - Chat document ID
- * @param {boolean} isPinned - Target pinned status
+ * @param {boolean} [isPinned] - Target pinned status
  * @returns {Promise<boolean>} Resulting pinned state
  */
 export async function toggleChatPinned(userId, chatId, isPinned) {
@@ -1472,7 +1687,7 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
       isPinned: Boolean(targetPinnedState),
       pinnedAt: targetPinnedState ? nowMs : null,
       rawUpdatedAt: nowMs,
-      pendingMetaSync: true
+      ...buildUpdatedPendingMetaFields(targetChat, { isPinned: true })
     });
     return Boolean(targetPinnedState);
   }
@@ -1499,12 +1714,13 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
         FIRESTORE_OP_TIMEOUT_MS,
         'pinChat'
       );
+      const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
       upsertCachedUserChat(userId, {
         id: chatId,
         isPinned: true,
         pinnedAt: nowMs,
         rawUpdatedAt: nowMs,
-        pendingMetaSync: false
+        ...buildUpdatedPendingMetaFields(latestChat, { isPinned: false })
       });
       return true;
     } else {
@@ -1517,25 +1733,27 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
         FIRESTORE_OP_TIMEOUT_MS,
         'unpinChat'
       );
+      const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
       upsertCachedUserChat(userId, {
         id: chatId,
         isPinned: false,
         pinnedAt: null,
         rawUpdatedAt: nowMs,
-        pendingMetaSync: false
+        ...buildUpdatedPendingMetaFields(latestChat, { isPinned: false })
       });
       return false;
     }
   } catch (err) {
     if (isOfflineOrNetworkError(err)) {
+      const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
       upsertCachedUserChat(userId, {
         id: chatId,
-        isPinned: Boolean(isPinned),
-        pinnedAt: isPinned ? nowMs : null,
+        isPinned: Boolean(targetPinnedState),
+        pinnedAt: targetPinnedState ? nowMs : null,
         rawUpdatedAt: nowMs,
-        pendingMetaSync: true
+        ...buildUpdatedPendingMetaFields(latestChat, { isPinned: true })
       });
-      return Boolean(isPinned);
+      return Boolean(targetPinnedState);
     }
     throw err;
   }
@@ -1696,7 +1914,10 @@ export async function replayPendingDeletions(userId, options = {}) {
 
       try {
         await deleteConversation(userId, chatId);
-        replayedCount++;
+        const stillQueued = getPendingDeletedQueue(userId).some((e) => e.chatId === chatId);
+        if (!stillQueued) {
+          replayedCount++;
+        }
       } catch (err) {
         console.warn(`[Chat Storage] Failed to replay deletion for chat ${chatId}:`, err?.message || err);
       }
@@ -1798,6 +2019,7 @@ export async function deleteConversation(userId, chatId) {
       try {
         localStorage.removeItem(getUserMessagesCacheKey(userId, chatId));
       } catch (_) {}
+      removePendingMessageDeletions(userId, chatId, null);
     }
 
     // 3. FIRESTORE DELETION THIRD (Requirement 1, 7)
@@ -1805,6 +2027,7 @@ export async function deleteConversation(userId, chatId) {
     if (!storageDeleted && storageError?.retryable) {
       if (!targetLocal?.createdOffline || existingEntry) {
         enqueuePendingDeletion(userId, chatId, {
+          ...(storageError.code === 'AUTH_REQUIRED' ? { attempts: existingEntry?.attempts || 0 } : {}),
           storageDeleted: false,
           firestoreDeleted: false,
           error: storageError.error
@@ -2121,7 +2344,11 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
     );
   }
 
-  // 7. Delete truncated message documents from Cloud Firestore
+  // 7. Delete truncated message documents from Cloud Firestore (durably queued until confirmed)
+  if (userId && userId !== 'guest') {
+    enqueuePendingMessageDeletions(userId, chatId, validIds);
+  }
+
   const effectiveDb = testDbOverride !== null ? testDbOverride : db;
   if (!effectiveDb || (!isFirebaseConfigured() && !testDbOverride) || !isBrowserOnline() || userId === 'guest') {
     return { deletedCount: validIds.length, orphanedAttachments: orphanedAttachmentIds };
@@ -2142,8 +2369,9 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
         await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'deleteChatMessages');
       }
     }
+    removePendingMessageDeletions(userId, chatId, validIds);
   } catch (err) {
-    console.warn('Could not delete truncated messages in Firestore (updated locally):', err?.message || err);
+    console.warn('Could not delete truncated messages in Firestore (queued for retry):', err?.message || err);
   }
 
   return { deletedCount: validIds.length, orphanedAttachments: orphanedAttachmentIds };
@@ -2163,17 +2391,24 @@ function mergeCloudAndLocalChats(userId, cloudChats) {
     const localMatch = localChats.find((l) => l.id === c.id);
     if (localMatch && (localMatch.pendingSync || localMatch.pendingMetaSync)) {
       const newerRawUpdated = Math.max(c.rawUpdatedAt || 0, localMatch.rawUpdatedAt || 0);
+      const pendingFields =
+        localMatch.pendingMetaFields && typeof localMatch.pendingMetaFields === 'object'
+          ? localMatch.pendingMetaFields
+          : localMatch.pendingMetaSync
+          ? { title: true, mode: true, isPinned: true }
+          : null;
       mergedMap.set(c.id, {
         ...c,
-        title: localMatch.pendingMetaSync ? localMatch.title : (c.title || localMatch.title),
-        mode: localMatch.pendingMetaSync ? localMatch.mode : (c.mode || localMatch.mode),
-        isPinned: localMatch.pendingMetaSync ? Boolean(localMatch.isPinned) : Boolean(c.isPinned),
-        pinnedAt: localMatch.pendingMetaSync ? localMatch.pinnedAt : c.pinnedAt,
+        title: pendingFields?.title ? localMatch.title : (c.title || localMatch.title),
+        mode: pendingFields?.mode ? localMatch.mode : (c.mode || localMatch.mode),
+        isPinned: pendingFields?.isPinned ? Boolean(localMatch.isPinned) : Boolean(c.isPinned),
+        pinnedAt: pendingFields?.isPinned ? localMatch.pinnedAt : c.pinnedAt,
         hasCustomTitle: Boolean(localMatch.hasCustomTitle || c.hasCustomTitle),
         rawUpdatedAt: newerRawUpdated,
         timestamp: formatChatDateLabel(newerRawUpdated),
         pendingSync: Boolean(localMatch.pendingSync),
         pendingMetaSync: Boolean(localMatch.pendingMetaSync),
+        ...(pendingFields ? { pendingMetaFields: pendingFields } : {}),
         createdOffline: false
       });
     } else {
@@ -2226,6 +2461,28 @@ export async function syncOfflineUserChatsToFirestore(userId) {
 
       // 1. Replay any pending offline deletions (Supabase storage + Firestore)
       await replayPendingDeletions(userId);
+
+      // 1b. Replay any pending truncated message deletions in Firestore
+      const pendingMsgDeletions = getAllPendingMessageDeletions(userId);
+      for (const [pendingChatId, pendingMsgIds] of Object.entries(pendingMsgDeletions)) {
+        if (!isBrowserOnline()) break;
+        if (!Array.isArray(pendingMsgIds) || pendingMsgIds.length === 0) continue;
+        try {
+          const CHUNK_SIZE = 400;
+          for (let i = 0; i < pendingMsgIds.length; i += CHUNK_SIZE) {
+            const chunk = pendingMsgIds.slice(i, i + CHUNK_SIZE);
+            const batch = writeBatch(db);
+            chunk.forEach((msgId) => {
+              const msgRef = doc(db, 'users', userId, 'chats', pendingChatId, 'messages', msgId);
+              batch.delete(msgRef);
+            });
+            await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'syncDeleteMessagesBatch');
+          }
+          removePendingMessageDeletions(userId, pendingChatId, pendingMsgIds);
+        } catch (delErr) {
+          console.warn('Deferred syncing truncated message deletions until next online cycle:', pendingChatId, delErr?.message || delErr);
+        }
+      }
 
       // 2. Sync pending chat metadata and pending messages
       const localChats = getCachedUserChats(userId);
@@ -2341,6 +2598,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
             id: localChat.id,
             pendingSync: !allMessagesSynced,
             pendingMetaSync: false,
+            pendingMetaFields: null,
             createdOffline: false
           });
         } catch (chatErr) {
@@ -2485,12 +2743,14 @@ export async function loadConversationMessages(userId, chatId) {
     });
 
     // Merge cloud messages with any unsynced local messages by deterministic message ID (zero duplicates)
+    const pendingDeletedSet = new Set(getPendingMessageDeletionIds(userId, chatId));
     const byId = new Map();
     for (const cm of cloudMessages) {
+      if (pendingDeletedSet.has(cm.id)) continue;
       byId.set(cm.id, cm);
     }
     for (const lm of localMessages) {
-      if (!lm?.id) continue;
+      if (!lm?.id || pendingDeletedSet.has(lm.id)) continue;
       if (!byId.has(lm.id)) {
         if (lm.pendingSync || cloudMessages.length === 0) {
           byId.set(lm.id, lm);
@@ -2588,12 +2848,14 @@ export function subscribeToChatMessages(userId, chatId, onUpdate, onError) {
       });
 
       const currentLocal = getCachedChatMessages(userId, chatId);
+      const pendingDeletedSet = new Set(getPendingMessageDeletionIds(userId, chatId));
       const byId = new Map();
       for (const cm of cloudMessages) {
+        if (pendingDeletedSet.has(cm.id)) continue;
         byId.set(cm.id, cm);
       }
       for (const lm of currentLocal) {
-        if (!lm?.id) continue;
+        if (!lm?.id || pendingDeletedSet.has(lm.id)) continue;
         if (!byId.has(lm.id)) {
           if (lm.pendingSync || cloudMessages.length === 0) {
             byId.set(lm.id, lm);

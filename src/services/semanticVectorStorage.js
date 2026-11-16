@@ -16,8 +16,11 @@ let vectorDbPromise = null;
 // Headless in-memory fallback store for Node.js tests / environments without IndexedDB
 const memoryVectorStore = new Map();
 
+const VECTOR_DB_BLOCKED_TIMEOUT_MS = 2500;
+
 /**
  * Initializes and returns the IndexedDB instance for vector storage.
+ * Resets cached promise on open error, blocked upgrade, close, or versionchange.
  * @returns {Promise<IDBDatabase|null>}
  */
 export function getVectorDB() {
@@ -34,7 +37,31 @@ export function getVectorDB() {
 
   if (vectorDbPromise) return vectorDbPromise;
 
-  vectorDbPromise = new Promise((resolve) => {
+  let currentPromise = null;
+  currentPromise = new Promise((resolve) => {
+    let settled = false;
+    let blockedTimer = null;
+
+    const clearBlockedTimer = () => {
+      if (blockedTimer) {
+        clearTimeout(blockedTimer);
+        blockedTimer = null;
+      }
+    };
+
+    const failOpen = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearBlockedTimer();
+      if (vectorDbPromise === currentPromise) {
+        vectorDbPromise = null;
+      }
+      if (reason) {
+        console.warn('[Vector Storage] IndexedDB open failed/blocked, using memory fallback:', reason);
+      }
+      resolve(null);
+    };
+
     try {
       const request = idb.open(VECTOR_DB_NAME, VECTOR_DB_VERSION);
 
@@ -48,20 +75,50 @@ export function getVectorDB() {
         }
       };
 
+      request.onblocked = () => {
+        if (settled || blockedTimer) return;
+        blockedTimer = setTimeout(() => {
+          failOpen('IndexedDB upgrade blocked by another open tab');
+        }, VECTOR_DB_BLOCKED_TIMEOUT_MS);
+      };
+
       request.onsuccess = (event) => {
-        resolve(event.target.result);
+        const db = event.target.result;
+        clearBlockedTimer();
+        if (settled) {
+          try {
+            db?.close?.();
+          } catch (_) {}
+          return;
+        }
+        settled = true;
+        if (db && typeof db === 'object') {
+          db.onversionchange = () => {
+            try {
+              db.close?.();
+            } catch (_) {}
+            if (vectorDbPromise === currentPromise) {
+              vectorDbPromise = null;
+            }
+          };
+          db.onclose = () => {
+            if (vectorDbPromise === currentPromise) {
+              vectorDbPromise = null;
+            }
+          };
+        }
+        resolve(db);
       };
 
       request.onerror = (err) => {
-        console.warn('[Vector Storage] IndexedDB open error, using memory fallback:', err);
-        resolve(null);
+        failOpen(err);
       };
     } catch (e) {
-      console.warn('[Vector Storage] IndexedDB initialization exception, using memory fallback:', e);
-      resolve(null);
+      failOpen(e);
     }
   });
 
+  vectorDbPromise = currentPromise;
   return vectorDbPromise;
 }
 
@@ -209,7 +266,11 @@ export async function getChunksForDocuments(docIds = []) {
 
         tx.oncomplete = () => finish(collected);
         tx.onerror = () => finish(collected);
-      } catch (_) {
+        tx.onabort = () => finish(collected);
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          vectorDbPromise = null;
+        }
         // Fall back to memory
         const results = [];
         for (const chunk of memoryVectorStore.values()) {
@@ -260,25 +321,51 @@ export async function getChunksForConversation(conversationId) {
         const store = tx.objectStore(VECTOR_STORE_NAME);
         const index = store.index('conversationId');
 
+        const fallbackFromMemory = () => {
+          const results = [];
+          for (const chunk of memoryVectorStore.values()) {
+            if (chunk.conversationId === conversationId) results.push(chunk);
+          }
+          return results;
+        };
+
+        tx.onerror = () => finish(fallbackFromMemory());
+        tx.onabort = () => finish(fallbackFromMemory());
+
         if (typeof index.getAll === 'function') {
           const req = index.getAll(conversationId);
+          if (!req) {
+            finish(fallbackFromMemory());
+            return;
+          }
           req.onsuccess = (e) => finish(e.target.result || []);
-          req.onerror = () => finish([]);
+          req.onerror = () => finish(fallbackFromMemory());
         } else {
           const collected = [];
           const cursorReq = index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(conversationId) : undefined);
+          if (!cursorReq) {
+            finish(fallbackFromMemory());
+            return;
+          }
           cursorReq.onsuccess = (e) => {
             const cursor = e.target.result;
             if (cursor) {
               if (cursor.value?.conversationId === conversationId) collected.push(cursor.value);
-              cursor.continue();
+              try {
+                cursor.continue();
+              } catch (_) {
+                finish(collected);
+              }
             } else {
               finish(collected);
             }
           };
           cursorReq.onerror = () => finish(collected);
         }
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          vectorDbPromise = null;
+        }
         const results = [];
         for (const chunk of memoryVectorStore.values()) {
           if (chunk.conversationId === conversationId) results.push(chunk);
@@ -318,10 +405,19 @@ export async function getAllIndexedChunks() {
       try {
         const tx = db.transaction([VECTOR_STORE_NAME], 'readonly');
         const store = tx.objectStore(VECTOR_STORE_NAME);
+        tx.onerror = () => finish(Array.from(memoryVectorStore.values()));
+        tx.onabort = () => finish(Array.from(memoryVectorStore.values()));
         const req = store.getAll();
+        if (!req) {
+          finish(Array.from(memoryVectorStore.values()));
+          return;
+        }
         req.onsuccess = (e) => finish(e.target.result || []);
         req.onerror = () => finish(Array.from(memoryVectorStore.values()));
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          vectorDbPromise = null;
+        }
         finish(Array.from(memoryVectorStore.values()));
       }
     });
@@ -367,20 +463,34 @@ export async function deleteChunksForDocument(docId) {
         const index = store.index('docId');
         let deleted = 0;
 
+        tx.oncomplete = () => finish(deleted || memCount);
+        tx.onerror = () => finish(memCount);
+        tx.onabort = () => finish(memCount);
+
         const cursorReq = index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(docId) : undefined);
+        if (!cursorReq) {
+          finish(memCount);
+          return;
+        }
         cursorReq.onsuccess = (e) => {
           const cursor = e.target.result;
           if (cursor) {
             cursor.delete();
             deleted++;
-            cursor.continue();
+            try {
+              cursor.continue();
+            } catch (_) {
+              finish(deleted || memCount);
+            }
           } else {
             finish(deleted || memCount);
           }
         };
         cursorReq.onerror = () => finish(memCount);
-        tx.oncomplete = () => finish(deleted || memCount);
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          vectorDbPromise = null;
+        }
         finish(memCount);
       }
     });
@@ -440,20 +550,34 @@ export async function deleteChunksForConversation(conversationId) {
         const index = store.index('conversationId');
         let deleted = 0;
 
+        tx.oncomplete = () => finish(deleted || memCount);
+        tx.onerror = () => finish(memCount);
+        tx.onabort = () => finish(memCount);
+
         const cursorReq = index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(conversationId) : undefined);
+        if (!cursorReq) {
+          finish(memCount);
+          return;
+        }
         cursorReq.onsuccess = (e) => {
           const cursor = e.target.result;
           if (cursor) {
             cursor.delete();
             deleted++;
-            cursor.continue();
+            try {
+              cursor.continue();
+            } catch (_) {
+              finish(deleted || memCount);
+            }
           } else {
             finish(deleted || memCount);
           }
         };
         cursorReq.onerror = () => finish(memCount);
-        tx.oncomplete = () => finish(deleted || memCount);
-      } catch (_) {
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          vectorDbPromise = null;
+        }
         finish(memCount);
       }
     });
@@ -488,7 +612,11 @@ export async function clearAllChunks() {
         store.clear();
         tx.oncomplete = () => finish(true);
         tx.onerror = () => finish(false);
-      } catch (_) {
+        tx.onabort = () => finish(false);
+      } catch (err) {
+        if (err?.name === 'InvalidStateError') {
+          vectorDbPromise = null;
+        }
         finish(false);
       }
     });
