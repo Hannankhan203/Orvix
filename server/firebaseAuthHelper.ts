@@ -353,7 +353,7 @@ export async function verifyFirebaseIdToken(
   const clockSkew = options.clockSkewSeconds ?? CLOCK_SKEW_TOLERANCE_SECONDS;
 
   // Validate expiration time
-  if (typeof payload.exp !== 'number' || payload.exp + clockSkew < nowSec) {
+  if (!Number.isFinite(payload.exp) || payload.exp + clockSkew < nowSec) {
     return {
       success: false,
       error: 'Firebase ID token has expired.',
@@ -362,7 +362,7 @@ export async function verifyFirebaseIdToken(
   }
 
   // Validate issued-at time
-  if (typeof payload.iat !== 'number' || payload.iat - clockSkew > nowSec) {
+  if (!Number.isFinite(payload.iat) || payload.iat - clockSkew > nowSec) {
     return {
       success: false,
       error: 'Firebase ID token issued in the future.',

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { transcribeAudioBlob } from '../services/transcriptionService.js';
 import { VoiceStreamClient } from '../services/voiceStreamClient.js';
+import { getIdToken } from '../services/authService.js';
 import { auth } from '../config/firebaseConfig.js';
 import {
   createDiagnosticSession,
@@ -1841,17 +1842,26 @@ export function useVoiceDictation({
             durationIntervalRef.current = null;
           }
 
-          // Acquire shared microphone stream
-          const stream = await acquireMicrophoneStream();
-          attachAudioAnalyser(stream);
-
-          // Resolve auth token (if available)
-          let token = authTokenRef.current || '';
-          if (!token && auth && auth.currentUser) {
+          // Resolve verified Firebase ID token before using authenticated server voice streaming
+          let token = '';
+          if (auth && auth.currentUser && typeof auth.currentUser.getIdToken === 'function') {
             try {
               token = await auth.currentUser.getIdToken();
             } catch (_) {}
           }
+          if (!token) {
+            token = (await getIdToken()) || authTokenRef.current || '';
+          }
+          if (!token) {
+            const authErr = new Error('Authentication required for cloud WebSocket voice streaming.');
+            authErr.code = 'AUTH_REQUIRED';
+            authErr.canFallback = true;
+            throw authErr;
+          }
+
+          // Acquire shared microphone stream
+          const stream = await acquireMicrophoneStream();
+          attachAudioAnalyser(stream);
 
           const client = new VoiceStreamClient({
             url: webSocketUrlRef.current,
@@ -2413,9 +2423,10 @@ export function useVoiceDictation({
       }
 
       // Primary Recorded-Audio Transcription Policy:
-      // If a valid audio Blob is available, invoke the server-side audio transcription pipeline.
+      // If a valid audio Blob is available and user is authenticated, invoke the server-side audio transcription pipeline.
       // Its successful transcript is the preferred primary result, while native speech is the fallback.
-      if (hasValidAudio) {
+      const hasTranscribeAuth = Boolean((await getIdToken()) || auth?.currentUser || authTokenRef.current);
+      if (hasValidAudio && hasTranscribeAuth) {
         if (diag) {
           diag.serverTranscriptionInvoked = true;
           diag.fallbackReason = 'recorded_audio_primary';
@@ -2516,12 +2527,12 @@ export function useVoiceDictation({
           }
         }
       } else {
-        // No valid audio buffer captured; use native speech directly as fallback
+        // No valid audio buffer or user is unauthenticated/guest; use native speech directly as fallback
         if (diag) {
           diag.serverTranscriptionInvoked = false;
-          diag.fallbackReason = 'bypassed_no_valid_audio_buffer';
+          diag.fallbackReason = hasValidAudio ? 'unauthenticated_guest_local_speech' : 'bypassed_no_valid_audio_buffer';
           diag.providerSuccess = false;
-          diag.providerFailureReason = 'no_valid_audio_blob';
+          diag.providerFailureReason = hasValidAudio ? 'auth_required' : 'no_valid_audio_blob';
         }
 
         const decision = selectFinalTranscript({
@@ -2721,6 +2732,14 @@ export function useVoiceDictation({
     const audioBlob = recordedAudioBlobRef.current;
     if (!audioBlob || audioBlob.size < 300) return;
     if (recordingStateRef.current === 'transcribing' || recordingStateRef.current === 'listening') return;
+    const hasTranscribeAuth = Boolean((await getIdToken()) || auth?.currentUser || authTokenRef.current);
+    if (!hasTranscribeAuth) {
+      setTranscriptionNotice({
+        type: 'fallback',
+        message: 'Sign in to use Whisper high-accuracy transcription. Preserved live speech transcript.'
+      });
+      return;
+    }
 
     transcriptionSessionCounterRef.current += 1;
     const currentSessionId = transcriptionSessionCounterRef.current;

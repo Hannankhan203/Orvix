@@ -6,6 +6,8 @@
  * Provider API keys are strictly kept on the server.
  */
 
+import { getAuthHeaders } from './authService.js';
+
 /**
  * Generates a minimal, spec-compliant 16kHz mono PCM WAV container.
  * Used as an audio container payload when transcribing spoken speech sessions
@@ -82,35 +84,39 @@ export async function transcribeAudioBlob({
     throw new Error('Valid audio recording or transcript is required for transcription.');
   }
 
-  const formData = new FormData();
+  const buildFormData = () => {
+    const formData = new FormData();
 
-  if (hasAudioBlob) {
-    const mimeType = (audioBlob.type || 'audio/webm').toLowerCase();
-    let ext = 'webm';
-    if (mimeType.includes('mp4') || mimeType.includes('m4a')) ext = 'm4a';
-    else if (mimeType.includes('ogg')) ext = 'ogg';
-    else if (mimeType.includes('wav')) ext = 'wav';
-    else if (mimeType.includes('mpeg') || mimeType.includes('mp3')) ext = 'mp3';
-    else if (mimeType.includes('aac')) ext = 'aac';
-    else if (mimeType.includes('flac')) ext = 'flac';
+    if (hasAudioBlob) {
+      const mimeType = (audioBlob.type || 'audio/webm').toLowerCase();
+      let ext = 'webm';
+      if (mimeType.includes('mp4') || mimeType.includes('m4a')) ext = 'm4a';
+      else if (mimeType.includes('ogg')) ext = 'ogg';
+      else if (mimeType.includes('wav')) ext = 'wav';
+      else if (mimeType.includes('mpeg') || mimeType.includes('mp3')) ext = 'mp3';
+      else if (mimeType.includes('aac')) ext = 'aac';
+      else if (mimeType.includes('flac')) ext = 'flac';
 
-    formData.append('file', audioBlob, `dictation-${Date.now()}.${ext}`);
-  } else {
-    formData.append('transcriptOnly', 'true');
-  }
+      formData.append('file', audioBlob, `dictation-${Date.now()}.${ext}`);
+    } else {
+      formData.append('transcriptOnly', 'true');
+    }
 
-  if (cleanTranscript) {
-    formData.append('transcript', cleanTranscript);
-  }
+    if (cleanTranscript) {
+      formData.append('transcript', cleanTranscript);
+    }
 
-  if (model && typeof model === 'string' && model.trim()) {
-    formData.append('model', model.trim());
-  }
+    if (model && typeof model === 'string' && model.trim()) {
+      formData.append('model', model.trim());
+    }
 
-  formData.append('language', language);
-  if (prompt) {
-    formData.append('prompt', prompt);
-  }
+    formData.append('language', language);
+    if (prompt) {
+      formData.append('prompt', prompt);
+    }
+
+    return formData;
+  };
 
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   let timedOut = false;
@@ -146,11 +152,31 @@ export async function transcribeAudioBlob({
   const startTime = Date.now();
   let response;
   try {
-    response = await fetch('/api/transcribe', {
-      method: 'POST',
-      body: formData,
-      signal: controller ? controller.signal : signal
-    });
+    let authHeaders = await getAuthHeaders();
+    const requestInit = (hdrs) => {
+      const init = {
+        method: 'POST',
+        body: buildFormData(),
+        signal: controller ? controller.signal : signal
+      };
+      if (hdrs && Object.keys(hdrs).length > 0) {
+        init.headers = hdrs;
+      }
+      return init;
+    };
+
+    response = await fetch('/api/transcribe', requestInit(authHeaders));
+
+    if (response.status === 401) {
+      try {
+        const clone = response.clone();
+        const errBody = await clone.json().catch(() => null);
+        if (errBody?.code === 'TOKEN_EXPIRED') {
+          authHeaders = await getAuthHeaders({}, true);
+          response = await fetch('/api/transcribe', requestInit(authHeaders));
+        }
+      } catch (_) {}
+    }
   } catch (fetchErr) {
     if (timedOut || fetchErr?.name === 'TimeoutError') {
       const err = new Error('Transcription request timed out. Retained live speech transcript.');

@@ -422,7 +422,19 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
     code = code === 401 ? 401 : 403;
     status = code === 401 ? 'UNAUTHENTICATED' : 'PERMISSION_DENIED';
     retryable = false;
-    if (!cleanMsg || !lowerMsg.includes('cloudflare')) {
+    const rawCodeStr = isObjectInput && typeof rawError.code === 'string' ? rawError.code.toUpperCase() : '';
+    const isFirebaseUserAuthError =
+      rawCodeStr === 'AUTH_REQUIRED' ||
+      rawCodeStr === 'TOKEN_EXPIRED' ||
+      rawCodeStr === 'MALFORMED_AUTH_HEADER' ||
+      rawCodeStr === 'INVALID_SIGNATURE' ||
+      rawCodeStr === 'AUDIENCE_MISMATCH' ||
+      rawCodeStr === 'ISSUER_MISMATCH' ||
+      lowerMsg.includes('sign in') ||
+      lowerMsg.includes('authentication required') ||
+      lowerMsg.includes('firebase id token') ||
+      lowerMsg.includes('bearer token');
+    if (!cleanMsg || (!lowerMsg.includes('cloudflare') && !isFirebaseUserAuthError)) {
       cleanMsg = 'Invalid or unauthorized API key. Please check your configuration.';
     }
   } else if (code === 404 || upperStatus === 'NOT_FOUND') {

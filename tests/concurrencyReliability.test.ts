@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import express from 'express';
 import http from 'node:http';
 import { WebSocket } from 'ws';
@@ -26,6 +27,32 @@ import {
 } from '../server/directUploadTicketService.ts';
 
 import { registerUploadRoutes } from '../server/uploadSubsystem.ts';
+import {
+  resetFirebaseAuthForTesting,
+  setTestFirebaseProjectId,
+  setTestPublicKey
+} from '../server/firebaseAuthHelper.ts';
+
+function createSignedTestJwt(uid: string, projectId: string, privateKey: crypto.KeyObject, kid: string): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid })).toString('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub: uid,
+      user_id: uid,
+      aud: projectId,
+      iss: `https://securetoken.google.com/${projectId}`,
+      iat: nowSec - 10,
+      exp: nowSec + 3600
+    })
+  ).toString('base64url');
+  const signature = crypto
+    .createSign('RSA-SHA256')
+    .update(`${header}.${payload}`)
+    .sign(privateKey)
+    .toString('base64url');
+  return `${header}.${payload}.${signature}`;
+}
 
 async function startTestHttpServer(app: express.Express): Promise<{
   server: http.Server;
@@ -56,6 +83,15 @@ async function startTestHttpServer(app: express.Express): Promise<{
 
 test('Voice WebSocket subsystem: enforces max connections per IP and cleans up slots on rejection', async () => {
   resetVoiceWebSocketStateForTesting();
+  resetFirebaseAuthForTesting();
+
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const kid = 'ws-concurrency-kid';
+  const projectId = 'orvix-ws-test-project';
+  setTestFirebaseProjectId(projectId);
+  setTestPublicKey(kid, publicKey.export({ type: 'spki', format: 'pem' }).toString());
+  const validToken = createSignedTestJwt('ws-concurrency-user-1', projectId, privateKey, kid);
+
   const app = express();
   const srv = await startTestHttpServer(app);
 
@@ -63,7 +99,7 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     const ip = '198.51.100.123';
     const connectWs = () =>
       new Promise<WebSocket>((resolve, reject) => {
-        const ws = new WebSocket(srv.wsUrl, {
+        const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(validToken)}`, {
           headers: { 'x-forwarded-for': ip }
         });
         ws.on('open', () => resolve(ws));
@@ -84,7 +120,7 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     await assert.rejects(
       async () => {
         await new Promise((resolve, reject) => {
-          const ws = new WebSocket(srv.wsUrl, {
+          const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(validToken)}`, {
             headers: { 'x-forwarded-for': ip }
           });
           ws.on('open', () => resolve(ws));
@@ -111,6 +147,7 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     assert.equal(getVoiceIpConnectionCount(ip), 0);
   } finally {
     resetVoiceWebSocketStateForTesting();
+    resetFirebaseAuthForTesting();
     await srv.close();
   }
 });

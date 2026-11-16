@@ -13,7 +13,8 @@ import {
   getGroqApiBaseUrl,
   getGroqApiKey,
   getGeminiApiKey,
-  isConfiguredCredential
+  isConfiguredCredential,
+  isAllowedOrigin
 } from './serverConfig.ts';
 import { GoogleGenAI } from '@google/genai';
 // @ts-ignore - Spoken transcript cleaner
@@ -58,7 +59,7 @@ export function extractGeminiTranscript(result: any): string {
  * - Real-time PCM audio streaming from client AudioWorklet.
  * - Incremental transcription delivery (interim + finalized results).
  * - Start, Pause, Resume, Stop, Cancel lifecycle controls.
- * - Robust authentication (Firebase Auth token verification with guest fallback).
+ * - Strict authentication (verified Firebase Auth token required; unauthenticated/guest access rejected).
  * - Strict resource limits: buffer size, session lifetime, rate limits, heartbeat watchdog.
  * - Graceful cleanup and teardown.
  */
@@ -504,6 +505,16 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       return; // Allow other upgrade handlers (e.g. Vite HMR if any) to process
     }
 
+    // Origin check to prevent unauthorized cross-site WebSocket connections
+    const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    if (originHeader && !isAllowedOrigin(originHeader, req as any)) {
+      try {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      } catch (_) {}
+      socket.destroy();
+      return;
+    }
+
     // Atomically extract normalized IP and reserve concurrent slot BEFORE any async awaits
     const ip = extractClientIp(req);
     const currentCount = ipConnectionCount.get(ip) || 0;
@@ -531,27 +542,12 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
     socket.once('close', releaseReservedIpSlot);
 
     try {
-      // Authenticate handshake via Bearer token in headers or query params
-      const authHeader = req.headers.authorization;
+      // Authenticate handshake strictly via Bearer token in Authorization header or ?token= query param
+      const rawAuthHeader = req.headers.authorization;
       let token = '';
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        token = authHeader.slice(7).trim();
-      } else if (parsed.query?.token && typeof parsed.query.token === 'string') {
-        token = parsed.query.token.trim();
-      }
-
-      let verifiedUserId: string | null = null;
-      let isGuest = true;
-      let isAuthenticated = false;
-
-      if (token) {
-        const authResult = await verifyFirebaseIdToken(token);
-        if (authResult.success) {
-          verifiedUserId = authResult.user.uid;
-          isGuest = false;
-          isAuthenticated = true;
-        } else {
-          // Explicit invalid token: reject upgrade with 401 Unauthorized
+      if (typeof rawAuthHeader === 'string' && rawAuthHeader.trim()) {
+        const match = rawAuthHeader.match(/^Bearer\s+([A-Za-z0-9._~+/-]+=*)$/i);
+        if (!match || !match[1]) {
           releaseReservedIpSlot();
           if (!socket.destroyed) {
             try {
@@ -561,7 +557,35 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
           }
           return;
         }
+        token = match[1].trim();
+      } else if (parsed.query?.token && typeof parsed.query.token === 'string') {
+        token = parsed.query.token.trim();
       }
+
+      if (!token) {
+        releaseReservedIpSlot();
+        if (!socket.destroyed) {
+          try {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+
+      const authResult = await verifyFirebaseIdToken(token);
+      if (!authResult.success) {
+        releaseReservedIpSlot();
+        if (!socket.destroyed) {
+          try {
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          } catch (_) {}
+          socket.destroy();
+        }
+        return;
+      }
+
+      const verifiedUserId: string = authResult.user.uid;
 
       const wsRateDecision = await checkWebSocketUpgradeRateLimit(req, verifiedUserId);
       if (!wsRateDecision.allowed) {
@@ -590,8 +614,8 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
         wss.emit('connection', ws, req, {
           ip,
           userId: verifiedUserId,
-          isGuest,
-          authenticated: isAuthenticated
+          isGuest: false,
+          authenticated: true
         });
       });
     } catch (upgradeErr: any) {
@@ -604,14 +628,21 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
   });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage, authContext: any) => {
+    if (!authContext?.authenticated || !authContext?.userId) {
+      try {
+        ws.close(4401, 'Authentication required');
+      } catch (_) {}
+      return;
+    }
+
     const sessionId = `vstream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const session: VoiceStreamSession = {
       sessionId,
       ws,
       ip: authContext?.ip || '127.0.0.1',
-      userId: authContext?.userId || null,
-      isGuest: Boolean(authContext?.isGuest),
-      authenticated: Boolean(authContext?.authenticated),
+      userId: authContext.userId,
+      isGuest: false,
+      authenticated: true,
       state: 'created',
       format: { sampleRate: 16000, channels: 1, bitDepth: 16 },
       language: 'en-US',
@@ -682,6 +713,16 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
 
       // 1. Binary PCM audio frame
       if (isBinary) {
+        if (!session.authenticated || !session.userId) {
+          safeSendJson(ws, {
+            type: 'error',
+            error: 'Authentication required for voice streaming.',
+            code: 'AUTH_REQUIRED',
+            recoverable: false
+          });
+          cleanupSession(session, 4401, 'Authentication required');
+          return;
+        }
         if (session.state !== 'listening') {
           return;
         }
@@ -733,7 +774,7 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
           case 'auth': {
             if (message.token && typeof message.token === 'string') {
               const res = await verifyFirebaseIdToken(message.token);
-              if (res.success) {
+              if (res.success && (!session.userId || res.user.uid === session.userId)) {
                 session.userId = res.user.uid;
                 session.isGuest = false;
                 session.authenticated = true;
@@ -746,25 +787,35 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
               } else {
                 safeSendJson(ws, {
                   type: 'error',
-                  error: 'Authentication failed.',
-                  code: 'AUTH_FAILED',
+                  error: res.success ? 'Token identity mismatch.' : res.error || 'Authentication failed.',
+                  code: res.success ? 'AUTH_IDENTITY_MISMATCH' : res.code || 'AUTH_FAILED',
                   recoverable: false
                 });
                 cleanupSession(session, 4401, 'Auth failed');
               }
-            } else if (message.guest) {
-              session.isGuest = true;
+            } else {
               safeSendJson(ws, {
-                type: 'authenticated',
-                sessionId: session.sessionId,
-                userId: null,
-                isGuest: true
+                type: 'error',
+                error: 'Authentication required: valid Firebase ID token is required.',
+                code: 'AUTH_REQUIRED',
+                recoverable: false
               });
+              cleanupSession(session, 4401, 'Authentication required');
             }
             break;
           }
 
           case 'start': {
+            if (!session.authenticated || !session.userId) {
+              safeSendJson(ws, {
+                type: 'error',
+                error: 'Authentication required for voice streaming.',
+                code: 'AUTH_REQUIRED',
+                recoverable: false
+              });
+              cleanupSession(session, 4401, 'Authentication required');
+              return;
+            }
             if (!isTranscriptionProviderConfigured()) {
               safeSendJson(ws, {
                 type: 'status',

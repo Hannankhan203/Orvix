@@ -54,7 +54,8 @@ export class VoiceStreamClient {
     this.state = 'idle'; // 'idle' | 'connecting' | 'ready' | 'listening' | 'paused' | 'stopping' | 'closed'
     this.sessionId = null;
     this.userId = null;
-    this.isGuest = true;
+    this.isGuest = false;
+    this.authToken = '';
     this.accumulatedTranscript = '';
     this.stopResolve = null;
     this.stopReject = null;
@@ -78,15 +79,15 @@ export class VoiceStreamClient {
    * Resolves the WebSocket endpoint URL based on window location and options.
    */
   resolveWebSocketUrl(token = '') {
-    if (this.options.url) {
-      return this.options.url;
+    let url = this.options.url;
+    if (!url) {
+      const loc = window.location;
+      const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      url = `${protocol}//${loc.host}/api/voice-stream`;
     }
-    const loc = window.location;
-    const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = loc.host;
-    let url = `${protocol}//${host}/api/voice-stream`;
-    if (token) {
-      url += `?token=${encodeURIComponent(token)}`;
+    if (token && !/[?&]token=/.test(url)) {
+      const separator = url.includes('?') ? '&' : '?';
+      url += `${separator}token=${encodeURIComponent(token)}`;
     }
     return url;
   }
@@ -94,10 +95,12 @@ export class VoiceStreamClient {
   /**
    * Connects to the authenticated WebSocket server.
    *
-   * @param {string} [token=''] - Optional Firebase Auth ID token
+   * @param {string} [token=''] - Firebase Auth ID token
    * @returns {Promise<VoiceStreamClient>}
    */
   async connect(token = '') {
+    const resolvedToken = token || this.authToken || '';
+    this.authToken = resolvedToken;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return this;
     }
@@ -106,7 +109,7 @@ export class VoiceStreamClient {
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const url = this.resolveWebSocketUrl(token);
+      const url = this.resolveWebSocketUrl(resolvedToken);
 
       // Connection timeout (4s): if server doesn't respond or is on Vercel without WS support, fail fast
       this.connectTimer = setTimeout(() => {
@@ -131,11 +134,8 @@ export class VoiceStreamClient {
 
         ws.onopen = () => {
           if (settled) return;
-          // Send explicit auth packet if token was not in query string
-          if (token) {
-            ws.send(JSON.stringify({ type: 'auth', token }));
-          } else {
-            ws.send(JSON.stringify({ type: 'auth', guest: true }));
+          if (resolvedToken) {
+            ws.send(JSON.stringify({ type: 'auth', token: resolvedToken }));
           }
         };
 
@@ -394,9 +394,9 @@ export class VoiceStreamClient {
   /**
    * Starts a voice recording and streaming session.
    */
-  async start({ stream, language = 'en-US', prompt = '' }) {
+  async start({ stream, language = 'en-US', prompt = '', token = '' }) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      await this.connect();
+      await this.connect(token);
     }
 
     await this.setupAudioCapture(stream);

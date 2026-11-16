@@ -12,6 +12,7 @@ import {
 import { logAIDiagnostic } from './diagnosticLogger.ts';
 import { parseGeminiError } from './geminiStreamHandler.ts';
 import { createRateLimiterMiddleware } from './rateLimiter.ts';
+import { authenticateRequest } from './firebaseAuthHelper.ts';
 // @ts-ignore - Context-aware spoken transcript polisher
 import { polishSpokenTranscript } from '../src/utils/speechTextCleaner.js';
 // @ts-ignore - Shared provider configuration and model identifier validator
@@ -88,8 +89,29 @@ export const DEFAULT_WHISPER_CONTEXT_PROMPT =
 export function registerTranscriptionRoutes(app: express.Express) {
   const transcribeRateLimiter = createRateLimiterMiddleware({ policy: 'transcribe' });
 
-  app.post(['/api/transcribe', '/transcribe'], transcribeRateLimiter, (req, res) => {
-    transcribeUploadMiddleware.any()(req as any, res as any, async (err: any) => {
+  app.post(
+    ['/api/transcribe', '/transcribe'],
+    transcribeRateLimiter,
+    async (req, res, next) => {
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status !== 'authenticated') {
+        const isMissing = authStatus.status === 'guest';
+        return res.status(401).json({
+          success: false,
+          error: isMissing
+            ? 'Authentication required: please sign in to use audio transcription.'
+            : authStatus.error || 'Authentication token is invalid or expired.',
+          code: isMissing ? 'AUTH_REQUIRED' : authStatus.code || 'UNAUTHENTICATED',
+          status: 'UNAUTHENTICATED',
+          retryable: false,
+          fallbackAvailable: false
+        });
+      }
+      (req as any).user = authStatus.user;
+      return next();
+    },
+    (req, res) => {
+      transcribeUploadMiddleware.any()(req as any, res as any, async (err: any) => {
       if (err) {
         if (err instanceof multer.MulterError) {
           if (err.code === 'LIMIT_FILE_SIZE') {
@@ -465,6 +487,7 @@ Output ONLY the transcription text. Do not summarize, do not translate, do not a
         statusCode: 503,
         fallbackAvailable: true
       });
-    });
-  });
+      });
+    }
+  );
 }

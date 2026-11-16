@@ -473,6 +473,23 @@ export function registerChatRoutes(app: express.Express) {
       res.socket.setKeepAlive(true, 10000);
     }
     try {
+      // 1. Enforce verified Firebase authentication before processing any AI chat request
+      const rawProviderHint = String(req.body?.provider || 'gemini').trim().toLowerCase();
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status !== 'authenticated') {
+        const isMissing = authStatus.status === 'guest';
+        return res.status(401).json({
+          error: isMissing
+            ? 'Authentication required: please sign in to use server AI chat.'
+            : authStatus.error || 'Authentication token is invalid or expired.',
+          code: isMissing ? 'AUTH_REQUIRED' : authStatus.code || 'UNAUTHENTICATED',
+          status: 'UNAUTHENTICATED',
+          provider: rawProviderHint,
+          retryable: false,
+          canFallback: false
+        });
+      }
+
       const {
         provider = 'gemini',
       model: clientModel,
@@ -587,20 +604,6 @@ export function registerChatRoutes(app: express.Express) {
       });
     }
     const validatedClientModel: string | null = modelValidation.model;
-
-    // 1. Authenticate request to resolve identity for attachment authorization
-    const authStatus = await authenticateRequest(req);
-    if (authStatus.status === 'invalid') {
-      upstreamGuard.cleanup();
-      return res.status(401).json({
-        error: authStatus.error || 'Authentication token is invalid or expired.',
-        code: authStatus.code || 'UNAUTHENTICATED',
-        status: 'UNAUTHENTICATED',
-        provider: normalizedProvider,
-        retryable: false,
-        canFallback: false
-      });
-    }
 
     // 2. Validate attachments: reject raw Base64/Data URLs, verify server registration, check user ownership
     if (req.body.attachments !== undefined) {

@@ -893,8 +893,19 @@ export function createRequestUpstreamGuard(req: express.Request, res: express.Re
   };
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const clean = hostname.trim().toLowerCase().replace(/:\d+$/, '');
+  return (
+    clean === 'localhost' ||
+    clean === '127.0.0.1' ||
+    clean === '::1' ||
+    clean === '[::1]' ||
+    clean === '0.0.0.0'
+  );
+}
+
 /**
- * Validates whether an incoming HTTP request origin is authorized.
+ * Validates whether an incoming HTTP or WebSocket request origin is authorized.
  * Protects server-side AI execution, file uploads, and speech transcription from unauthorized cross-origin abuse.
  */
 export function isAllowedOrigin(origin: string | undefined, req: express.Request): boolean {
@@ -910,7 +921,11 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
     return false;
   }
 
-  const hostHeader = (req.headers['x-forwarded-host'] as string) || req.headers.host || '';
+  if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') {
+    return false;
+  }
+
+  const hostHeader = (req.headers?.['x-forwarded-host'] as string) || req.headers?.host || '';
 
   // 1. Direct same-origin match (Origin matches Host header)
   if (hostHeader) {
@@ -920,18 +935,7 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
     }
   }
 
-  // 2. Localhost and loopback origins for development and local testing
-  const hostname = originUrl.hostname.toLowerCase();
-  if (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '::1' ||
-    hostname === '0.0.0.0'
-  ) {
-    return true;
-  }
-
-  // 3. Explicit allowlist from environment variables (comma-delimited)
+  // 2. Explicit allowlist from environment variables (comma-delimited)
   const configuredOrigins = [
     process.env.ALLOWED_ORIGINS,
     process.env.CORS_ALLOWED_ORIGINS,
@@ -940,7 +944,7 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
   ]
     .filter(Boolean)
     .flatMap((val) => (val as string).split(',').map((s) => s.trim().replace(/\/+$/, '')))
-    .filter(Boolean);
+    .filter((entry) => Boolean(entry) && entry !== '*');
 
   const normalizedOrigin = `${originUrl.protocol}//${originUrl.host}`.toLowerCase();
   for (const allowed of configuredOrigins) {
@@ -949,12 +953,14 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
     }
   }
 
-  // 4. Trusted cloud platform domains: Vercel (*.vercel.app) and Google Cloud Run / AI Studio (*.run.app)
-  if (
-    hostname.endsWith('.vercel.app') ||
-    hostname.endsWith('.run.app') ||
-    hostname.endsWith('.aistudio.google.com')
-  ) {
+  // 3. Localhost and loopback origins ONLY for local development and local testing
+  const hostname = originUrl.hostname.toLowerCase();
+  const isRemoteProductionHost =
+    (process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL)) &&
+    Boolean(hostHeader) &&
+    !isLoopbackHostname(hostHeader.split(',')[0]);
+
+  if (!isRemoteProductionHost && isLoopbackHostname(hostname)) {
     return true;
   }
 
@@ -998,7 +1004,8 @@ export function applyCorsMiddleware(app: express.Express): void {
           req.path.startsWith('/chat') ||
           req.path.startsWith('/transcribe') ||
           req.path.startsWith('/config') ||
-          req.path.startsWith('/health')
+          req.path.startsWith('/health') ||
+          (req.path === '/' && req.method !== 'GET' && req.method !== 'HEAD')
         ) {
           return res.status(403).json({
             error: 'Cross-origin request blocked by CORS policy.',
