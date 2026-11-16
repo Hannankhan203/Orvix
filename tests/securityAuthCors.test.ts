@@ -264,9 +264,9 @@ test('ORVIX-CRIT-03 /api/chat: rejects unauthenticated, malformed, expired, and 
   const keys = setupTestKeys();
   const srv = await startSecurityTestServer();
 
-  const prevDemo = process.env.ORVIX_DEMO_MODE;
+  const prevDemo = process.env.ORVIX_ENABLE_DEMO_MODE;
   const prevGemini = process.env.GEMINI_API_KEY;
-  process.env.ORVIX_DEMO_MODE = 'true'; // Even with demo mode enabled, unauthenticated users must be blocked
+  process.env.ORVIX_ENABLE_DEMO_MODE = 'true'; // Even with demo mode enabled, unauthenticated users must be blocked
   delete process.env.GEMINI_API_KEY;
 
   try {
@@ -336,8 +336,8 @@ test('ORVIX-CRIT-03 /api/chat: rejects unauthenticated, malformed, expired, and 
     assert.equal(validJson.provider, 'gemini');
     assert.ok(typeof validJson.text === 'string' && validJson.text.length > 0);
   } finally {
-    if (prevDemo !== undefined) process.env.ORVIX_DEMO_MODE = prevDemo;
-    else delete process.env.ORVIX_DEMO_MODE;
+    if (prevDemo !== undefined) process.env.ORVIX_ENABLE_DEMO_MODE = prevDemo;
+    else delete process.env.ORVIX_ENABLE_DEMO_MODE;
     if (prevGemini !== undefined) process.env.GEMINI_API_KEY = prevGemini;
     else delete process.env.GEMINI_API_KEY;
     resetFirebaseAuthForTesting();
