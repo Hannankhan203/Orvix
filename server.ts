@@ -90,6 +90,7 @@ import {
   buildSystemInstruction,
   generateSimulatedResponse
 } from './server/chatSubsystem.ts';
+import { registerShareRoutes } from './server/shareSubsystem.ts';
 import {
   MAX_CHAT_REQUEST_BYTES,
   MAX_VISION_IMAGE_BYTES
@@ -176,6 +177,7 @@ app.get(['/api/config', '/config'], configRateLimiter, (_req, res) => {
 registerUploadRoutes(app);
 registerTranscriptionRoutes(app);
 registerChatRoutes(app);
+registerShareRoutes(app);
 
 // Attach Sentry Express error handler (no-op if Sentry is uninitialized)
 setupBackendExpressErrorHandler(app);

@@ -173,32 +173,8 @@ service cloud.firestore {
       // Never allow listing or querying the sharedChats collection to prevent enumeration
       allow list: if false;
 
-      // Only properly authenticated, non-anonymous Firebase users can create a validated shared snapshot
-      allow create: if isNonAnonymousUser()
-                    && shareId is string
-                    && shareId.size() >= 12
-                    && shareId.size() <= 128
-                    && shareId.matches('^[a-zA-Z0-9_-]+$')
-                    && request.resource.data.keys().hasAll(['id', 'title', 'mode', 'createdAt', 'messageCount', 'messages'])
-                    && request.resource.data.keys().hasOnly(['id', 'title', 'mode', 'createdAt', 'messageCount', 'messages'])
-                    && request.resource.data.id == shareId
-                    && request.resource.data.title is string
-                    && request.resource.data.title.size() > 0
-                    && request.resource.data.title.size() <= 120
-                    && isValidChatMode(request.resource.data.mode)
-                    && request.resource.data.createdAt is timestamp
-                    && request.resource.data.messageCount is int
-                    && request.resource.data.messageCount >= 1
-                    && request.resource.data.messageCount <= 500
-                    && request.resource.data.messages is list
-                    && request.resource.data.messages.size() >= 1
-                    && request.resource.data.messages.size() <= 500
-                    && request.resource.data.messageCount == request.resource.data.messages.size()
-                    && isValidSharedMessageItem(request.resource.data.messages[0])
-                    && isValidSharedMessageItem(request.resource.data.messages[request.resource.data.messages.size() - 1]);
-
-      // Shared snapshots are strictly immutable and cannot be modified or deleted via public sharing rules
-      allow update, delete: if false;
+      // Direct client writes are strictly disallowed. All shared chat creation is handled via the trusted server-side API endpoint (/api/share) which rigorously validates every message in the conversation.
+      allow create, update, delete: if false;
     }
 
     // Internal server-side upload quotas: public client read and write strictly denied

@@ -865,12 +865,44 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       messages,
     });
 
-    const targetDb = options.firestoreDb !== undefined ? options.firestoreDb : db;
-    const docFn = options.docImpl || doc;
-    const setDocFn = options.setDocImpl || setDoc;
+    if (options.firestoreDb !== undefined || options.setDocImpl !== undefined || options.docImpl !== undefined || options.useDirectFirestore === true) {
+      const targetDb = options.firestoreDb !== undefined ? options.firestoreDb : db;
+      const docFn = options.docImpl || doc;
+      const setDocFn = options.setDocImpl || setDoc;
 
-    const shareDocRef = docFn(targetDb, 'sharedChats', shareId);
-    await withPublishTimeout(setDocFn(shareDocRef, documentData));
+      const shareDocRef = docFn(targetDb, 'sharedChats', shareId);
+      await withPublishTimeout(setDocFn(shareDocRef, documentData));
+    } else {
+      const token = effectiveUser && typeof effectiveUser.getIdToken === 'function'
+        ? await effectiveUser.getIdToken()
+        : null;
+
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await withPublishTimeout(
+        fetch('/api/share', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ shareId, chat, messages }),
+        })
+      );
+
+      if (!res.ok) {
+        let errData = {};
+        try {
+          errData = await res.json();
+        } catch (_) {}
+        throw new ShareChatError(
+          errData.error || `Server responded with HTTP ${res.status}`,
+          errData.code || 'PUBLISH_FAILED'
+        );
+      }
+    }
 
     const shareUrl = buildShareChatUrl(shareId, options.baseUrl);
 
