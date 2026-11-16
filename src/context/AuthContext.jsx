@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import {
   signupWithEmail,
   loginWithEmail,
@@ -13,6 +13,53 @@ import { getCachedUserProfile } from '../services/userProfileService.js';
 import { isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
 
 const AuthContext = createContext(null);
+
+function readStoredGuestSession() {
+  try {
+    const raw =
+      (typeof sessionStorage !== 'undefined' &&
+        (sessionStorage.getItem('orvix_guest_session') ||
+          sessionStorage.getItem('chatora_guest_session'))) ||
+      (typeof localStorage !== 'undefined' && localStorage.getItem('orvix_guest_session')) ||
+      null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.uid) {
+      return null;
+    }
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeStoredGuestSession(guestUser) {
+  const serialized = JSON.stringify(guestUser);
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('orvix_guest_session', serialized);
+    }
+  } catch (_) {}
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('orvix_guest_session', serialized);
+    }
+  } catch (_) {}
+}
+
+function clearStoredGuestSession() {
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('orvix_guest_session');
+      sessionStorage.removeItem('chatora_guest_session');
+    }
+  } catch (_) {}
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('orvix_guest_session');
+    }
+  } catch (_) {}
+}
 
 /**
  * Custom hook to consume the AuthContext
@@ -30,14 +77,32 @@ export function useAuth() {
  * Manages authenticated user state, Firestore user profile persistence,
  * username validation/editing, and guest demo sessions.
  */
-export function AuthProvider({ children }) {
+export function AuthProvider({ children, authDeps = null }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const isConfigured = isFirebaseConfigured();
+  const depsRef = useRef(null);
+  depsRef.current = {
+    signupWithEmail,
+    loginWithEmail,
+    logout: authLogout,
+    onAuthChange,
+    getUserProfile,
+    saveUserProfile,
+    isFirebaseConfigured,
+    isBrowserOnline,
+    ...authDeps
+  };
+
+  const isMountedRef = useRef(true);
+  const isGuestSessionActiveRef = useRef(false);
+  const activeUserUidRef = useRef(null);
+  const profileMutationSeqRef = useRef(0);
+
+  const isConfigured = depsRef.current.isFirebaseConfigured();
 
   // Load Firestore profile for an authenticated Firebase user (hydrating local cache first)
   const loadProfileForUser = async (user) => {
@@ -45,26 +110,43 @@ export function AuthProvider({ children }) {
       return null;
     }
 
-    const cachedProfile = getCachedUserProfile(user.uid);
+    const targetUid = user.uid;
+    const startMutationSeq = profileMutationSeqRef.current;
+
+    const canApplyProfileUpdate = () =>
+      isMountedRef.current &&
+      !isGuestSessionActiveRef.current &&
+      activeUserUidRef.current === targetUid &&
+      profileMutationSeqRef.current === startMutationSeq;
+
+    const cachedProfile = getCachedUserProfile(targetUid);
     if (cachedProfile && cachedProfile.username) {
-      setUserProfile(cachedProfile);
+      if (canApplyProfileUpdate()) {
+        setUserProfile(cachedProfile);
+      }
     } else if (user.displayName) {
-      setUserProfile({
-        uid: user.uid,
-        username: user.displayName,
-        email: user.email || ''
-      });
+      if (canApplyProfileUpdate()) {
+        setUserProfile({
+          uid: targetUid,
+          username: user.displayName,
+          email: user.email || ''
+        });
+      }
     }
 
     try {
-      const profile = await getUserProfile(user.uid);
+      const profile = await depsRef.current.getUserProfile(targetUid);
+      if (!canApplyProfileUpdate()) {
+        return null;
+      }
+
       if (profile && profile.username) {
         setUserProfile(profile);
         return profile;
       } else if (user.displayName) {
         // Fallback to Firebase Auth displayName if Firestore doc not yet created
         const fallbackProfile = {
-          uid: user.uid,
+          uid: targetUid,
           username: user.displayName,
           email: user.email || ''
         };
@@ -73,7 +155,7 @@ export function AuthProvider({ children }) {
       } else {
         // User has no username set yet
         const emptyProfile = {
-          uid: user.uid,
+          uid: targetUid,
           username: '',
           email: user.email || ''
         };
@@ -88,51 +170,68 @@ export function AuthProvider({ children }) {
 
   // Subscribe to Firebase Auth state listener and clean up on unmount
   useEffect(() => {
-    // Check if guest mode session was active (sessionStorage or localStorage for offline reload continuity)
-    try {
-      const savedGuest =
-        sessionStorage.getItem('orvix_guest_session') ||
-        sessionStorage.getItem('chatora_guest_session') ||
-        localStorage.getItem('orvix_guest_session');
-      if (savedGuest) {
-        const parsedGuest = JSON.parse(savedGuest);
-        setCurrentUser(parsedGuest);
-        setUserProfile({
-          uid: parsedGuest.uid,
-          username: parsedGuest.username || parsedGuest.displayName || 'Guest Explorer',
-          email: parsedGuest.email || 'guest@orvix.ai'
-        });
-        setInitialLoading(false);
-        return;
-      }
-    } catch (_) {}
-
+    isMountedRef.current = true;
+    let isEffectActive = true;
     let resolved = false;
+
     const finishInitialLoading = () => {
+      if (!isEffectActive) return;
       if (!resolved) {
         resolved = true;
         setInitialLoading(false);
       }
     };
 
-    // Safety guard: never hang on splash screen if Firebase Auth token refresh stalls while offline
-    const fallbackTimer = setTimeout(
-      finishInitialLoading,
-      isBrowserOnline() ? 4500 : 1200
-    );
+    // Check if guest mode session was active (sessionStorage or localStorage for offline reload continuity).
+    // Even when restoring a guest session, do NOT return early before subscribing to onAuthChange(),
+    // otherwise logging out of Guest Mode and authenticating with Firebase leaves currentUser un-updated.
+    const savedGuest = readStoredGuestSession();
+    if (savedGuest) {
+      isGuestSessionActiveRef.current = true;
+      activeUserUidRef.current = savedGuest.uid;
+      profileMutationSeqRef.current += 1;
+      setCurrentUser(savedGuest);
+      setUserProfile({
+        uid: savedGuest.uid,
+        username: savedGuest.username || savedGuest.displayName || 'Guest Explorer',
+        email: savedGuest.email || 'guest@orvix.ai'
+      });
+      finishInitialLoading();
+    }
 
-    const unsubscribe = onAuthChange((user) => {
-      clearTimeout(fallbackTimer);
+    // Safety guard: never hang on splash screen if Firebase Auth token refresh stalls while offline
+    const fallbackTimer = resolved
+      ? null
+      : setTimeout(
+          finishInitialLoading,
+          depsRef.current.isBrowserOnline() ? 4500 : 1200
+        );
+
+    const unsubscribe = depsRef.current.onAuthChange((user) => {
+      if (!isEffectActive) return;
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+      }
+
       if (user) {
-        try {
-          sessionStorage.removeItem('orvix_guest_session');
-          sessionStorage.removeItem('chatora_guest_session');
-          localStorage.removeItem('orvix_guest_session');
-        } catch (_) {}
+        const isUserChanged = activeUserUidRef.current !== user.uid;
+        isGuestSessionActiveRef.current = false;
+        clearStoredGuestSession();
+        activeUserUidRef.current = user.uid;
+        if (isUserChanged) {
+          profileMutationSeqRef.current += 1;
+        }
         setCurrentUser(user);
         finishInitialLoading();
         void loadProfileForUser(user);
       } else {
+        // Preserve active Guest Mode session when Firebase reports no signed-in user
+        if (isGuestSessionActiveRef.current) {
+          finishInitialLoading();
+          return;
+        }
+        activeUserUidRef.current = null;
+        profileMutationSeqRef.current += 1;
         setCurrentUser(null);
         setUserProfile(null);
         finishInitialLoading();
@@ -140,8 +239,14 @@ export function AuthProvider({ children }) {
     });
 
     return () => {
-      clearTimeout(fallbackTimer);
-      unsubscribe();
+      isEffectActive = false;
+      isMountedRef.current = false;
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+      }
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
     };
   }, []);
 
@@ -165,6 +270,9 @@ export function AuthProvider({ children }) {
       isAnonymous: true
     };
 
+    isGuestSessionActiveRef.current = true;
+    activeUserUidRef.current = guestUser.uid;
+    profileMutationSeqRef.current += 1;
     setCurrentUser(guestUser);
     setUserProfile({
       uid: guestUser.uid,
@@ -172,11 +280,7 @@ export function AuthProvider({ children }) {
       email: guestUser.email
     });
 
-    try {
-      const serialized = JSON.stringify(guestUser);
-      sessionStorage.setItem('orvix_guest_session', serialized);
-      localStorage.setItem('orvix_guest_session', serialized);
-    } catch (_) {}
+    writeStoredGuestSession(guestUser);
   };
 
   /**
@@ -197,28 +301,42 @@ export function AuthProvider({ children }) {
     }
 
     try {
-      const userCredential = await signupWithEmail(email, password);
+      const userCredential = await depsRef.current.signupWithEmail(email, password);
       const user = userCredential.user;
 
+      isGuestSessionActiveRef.current = false;
+      clearStoredGuestSession();
+      activeUserUidRef.current = user.uid;
+      if (isMountedRef.current) {
+        setCurrentUser(user);
+      }
+
       // Persist username to Firestore user profile & sync with Firebase Auth
-      await saveUserProfile(user.uid, {
+      await depsRef.current.saveUserProfile(user.uid, {
         username: validation.sanitized,
         email: email.trim()
       });
 
-      setUserProfile({
-        uid: user.uid,
-        username: validation.sanitized,
-        email: email.trim()
-      });
+      profileMutationSeqRef.current += 1;
+      if (isMountedRef.current && activeUserUidRef.current === user.uid) {
+        setUserProfile({
+          uid: user.uid,
+          username: validation.sanitized,
+          email: email.trim()
+        });
+      }
 
       return user;
     } catch (err) {
       const formatted = formatAuthError(err);
-      setError(formatted);
+      if (isMountedRef.current) {
+        setError(formatted);
+      }
       throw new Error(formatted);
     } finally {
-      setActionLoading(false);
+      if (isMountedRef.current) {
+        setActionLoading(false);
+      }
     }
   };
 
@@ -231,16 +349,30 @@ export function AuthProvider({ children }) {
     setError(null);
     setActionLoading(true);
     try {
-      const userCredential = await loginWithEmail(email, password);
+      const userCredential = await depsRef.current.loginWithEmail(email, password);
       const user = userCredential.user;
+      const isUserChanged = activeUserUidRef.current !== user.uid;
+      isGuestSessionActiveRef.current = false;
+      clearStoredGuestSession();
+      activeUserUidRef.current = user.uid;
+      if (isUserChanged) {
+        profileMutationSeqRef.current += 1;
+      }
+      if (isMountedRef.current) {
+        setCurrentUser(user);
+      }
       await loadProfileForUser(user);
       return user;
     } catch (err) {
       const formatted = formatAuthError(err);
-      setError(formatted);
+      if (isMountedRef.current) {
+        setError(formatted);
+      }
       throw new Error(formatted);
     } finally {
-      setActionLoading(false);
+      if (isMountedRef.current) {
+        setActionLoading(false);
+      }
     }
   };
 
@@ -264,17 +396,14 @@ export function AuthProvider({ children }) {
         displayName: sanitized,
         username: sanitized
       };
+      profileMutationSeqRef.current += 1;
       setCurrentUser(updatedGuest);
       setUserProfile({
         uid: currentUser.uid,
         username: sanitized,
         email: currentUser.email || 'guest@orvix.ai'
       });
-      try {
-        const serialized = JSON.stringify(updatedGuest);
-        sessionStorage.setItem('orvix_guest_session', serialized);
-        localStorage.setItem('orvix_guest_session', serialized);
-      } catch (_) {}
+      writeStoredGuestSession(updatedGuest);
       return;
     }
 
@@ -284,24 +413,29 @@ export function AuthProvider({ children }) {
 
     setActionLoading(true);
     try {
-      await saveUserProfile(currentUser.uid, {
+      await depsRef.current.saveUserProfile(currentUser.uid, {
         username: sanitized,
         email: currentUser.email || ''
       });
 
-      setUserProfile({
-        uid: currentUser.uid,
-        username: sanitized,
-        email: currentUser.email || ''
-      });
+      profileMutationSeqRef.current += 1;
+      if (isMountedRef.current && activeUserUidRef.current === currentUser.uid) {
+        setUserProfile({
+          uid: currentUser.uid,
+          username: sanitized,
+          email: currentUser.email || ''
+        });
 
-      // Update local displayName representation
-      setCurrentUser((prev) => (prev ? { ...prev, displayName: sanitized } : prev));
+        // Update local displayName representation
+        setCurrentUser((prev) => (prev ? { ...prev, displayName: sanitized } : prev));
+      }
     } catch (err) {
       console.error('Failed to update username:', err);
       throw err;
     } finally {
-      setActionLoading(false);
+      if (isMountedRef.current) {
+        setActionLoading(false);
+      }
     }
   };
 
@@ -312,25 +446,30 @@ export function AuthProvider({ children }) {
     setError(null);
     setActionLoading(true);
     try {
+      isGuestSessionActiveRef.current = false;
+      activeUserUidRef.current = null;
+      profileMutationSeqRef.current += 1;
+      clearStoredGuestSession();
       try {
-        sessionStorage.removeItem('orvix_guest_session');
-        sessionStorage.removeItem('chatora_guest_session');
-        localStorage.removeItem('orvix_guest_session');
-      } catch (_) {}
-      try {
-        await authLogout();
+        await depsRef.current.logout();
       } catch (logoutErr) {
         // Allow sign-out to clear local state even if offline
         console.warn('Auth logout notice:', logoutErr);
       }
-      setCurrentUser(null);
-      setUserProfile(null);
+      if (isMountedRef.current && !isGuestSessionActiveRef.current && !activeUserUidRef.current) {
+        setCurrentUser(null);
+        setUserProfile(null);
+      }
     } catch (err) {
       const formatted = formatAuthError(err);
-      setError(formatted);
+      if (isMountedRef.current) {
+        setError(formatted);
+      }
       throw new Error(formatted);
     } finally {
-      setActionLoading(false);
+      if (isMountedRef.current) {
+        setActionLoading(false);
+      }
     }
   };
 
