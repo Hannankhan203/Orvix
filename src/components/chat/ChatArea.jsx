@@ -1360,6 +1360,7 @@ Transcript:
                 shareChatDisabledReason={shareChatDisabledReason}
                 isSharingChat={isSharingChat}
                 isReadOnly={isReadOnly}
+                onSignInClick={onSignInClick}
               />
             </>
           )}

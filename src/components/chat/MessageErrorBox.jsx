@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertCircle, RotateCcw, Cpu, Edit3, Paperclip } from 'lucide-react';
+import { AlertCircle, RotateCcw, Cpu, Edit3, Paperclip, Sparkles } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import AttachmentCard from './AttachmentCard.jsx';
 
@@ -81,8 +81,21 @@ export default function MessageErrorBox({
   fallbackProviders = [],
   onRetry,
   onSwitchProvider,
-  onRestorePrompt
+  onRestorePrompt,
+  onSignInClick
 }) {
+  const text = String(message?.content || '').toLowerCase();
+  const normalizedCode = String(message?.errorCode || message?.code || '').toUpperCase();
+  const isAuthError =
+    normalizedCode === 'AUTH_REQUIRED' ||
+    normalizedCode === 'UNAUTHENTICATED' ||
+    normalizedCode === 'MISSING_CREDENTIALS' ||
+    text.includes('401') ||
+    text.includes('unauthorized') ||
+    text.includes('auth required') ||
+    text.includes('api key') ||
+    text.includes('permission denied');
+
   return (
     <div className="error-message-box" role="alert" aria-live="assertive">
       <div className="error-message-header">
@@ -120,18 +133,29 @@ export default function MessageErrorBox({
       </div>
 
       <div className="error-actions" role="group" aria-label="Error recovery options">
-        {onRetry && message.errorCode !== 'PROVIDER_NOT_CONFIGURED' && (
+        {isAuthError && onSignInClick ? (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onSignInClick}
+            icon={<Sparkles size={13} />}
+            className="error-action-btn error-signin-btn"
+            title="Sign in with your Orvix account to use cloud AI models"
+          >
+            Sign In to Use Cloud AI
+          </Button>
+        ) : onRetry && message.errorCode !== 'PROVIDER_NOT_CONFIGURED' && !isAuthError ? (
           <Button
             variant="outline"
             size="sm"
             onClick={() => onRetry(message)}
             icon={<RotateCcw size={13} />}
-            title={`Retry this request with ${currentProviderObj.name}`}
+            title={`Retry this request with ${currentProviderObj?.name || 'provider'}`}
             className="error-action-btn error-retry-btn"
           >
-            Retry with {currentProviderObj.name}
+            Retry with {currentProviderObj?.name || 'provider'}
           </Button>
-        )}
+        ) : null}
         {onSwitchProvider &&
           message.canSwitchProvider !== false &&
           currentProviderId !== 'webllm' &&

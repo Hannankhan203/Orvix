@@ -62,7 +62,8 @@ function ChatMessage({
   canShareChat = false,
   shareChatDisabledReason = '',
   isSharingChat = false,
-  isReadOnly = false
+  isReadOnly = false,
+  onSignInClick
 }) {
   const effectiveMode = message?.mode || activeMode || 'general';
   const isUser = message?.sender === 'user';
@@ -310,6 +311,7 @@ function ChatMessage({
               onRetry={onRetry}
               onSwitchProvider={onSwitchProvider}
               onRestorePrompt={onRestorePrompt}
+              onSignInClick={onSignInClick}
             />
           ) : isUser ? (
             isEditing ? (

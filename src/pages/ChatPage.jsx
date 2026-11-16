@@ -203,6 +203,14 @@ export default function ChatPage({
 
   const [selectedProvider, setSelectedProvider] = useState(() => {
     if (typeof window !== 'undefined') {
+      const isGuestStored = Boolean(
+        sessionStorage.getItem('orvix_guest_session') ||
+        sessionStorage.getItem('chatora_guest_session') ||
+        localStorage.getItem('orvix_guest_session')
+      );
+      if (isGuestStored) {
+        return 'webllm';
+      }
       const saved =
         localStorage.getItem('orvix_selected_provider') ||
         localStorage.getItem('chatora_selected_provider') ||
@@ -215,6 +223,13 @@ export default function ChatPage({
     }
     return DEFAULT_PROVIDER;
   });
+
+  // Ensure guest mode always defaults/switches to local Browser AI (WebLLM)
+  useEffect(() => {
+    if (isGuestUser && selectedProvider !== 'webllm') {
+      setSelectedProvider('webllm');
+    }
+  }, [isGuestUser, selectedProvider]);
 
   const [webllmModelId, setWebllmModelId] = useState(() => {
     if (typeof window !== 'undefined') {

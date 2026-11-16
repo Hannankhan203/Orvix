@@ -6,6 +6,7 @@ import type { Root } from 'react-dom/client';
 import { AuthProvider, useAuth } from '../src/context/AuthContext.jsx';
 import { SettingsProvider } from '../src/context/SettingsContext.jsx';
 import { SpeechProvider } from '../src/context/SpeechContext.jsx';
+import MessageErrorBox from '../src/components/chat/MessageErrorBox.jsx';
 // Pre-load lazy AuthScreen module so Suspense inside ChatPage resolves cleanly in Node tests
 import '../src/components/auth/AuthScreen.jsx';
 
@@ -1175,3 +1176,57 @@ test('HIGH-02: Authenticated Firebase user viewing a shared conversation sees Pr
     dom.restore();
   }
 });
+
+test('HIGH-03: MessageErrorBox suppresses futile retry on auth error and renders Sign In to Use Cloud AI button', async () => {
+  const sessionStorage = createMemoryStorage();
+  const localStorage = createMemoryStorage();
+  const dom = installRichTestDomEnvironment({ sessionStorage, localStorage, pathname: '/' });
+  const { createRoot } = await import('react-dom/client');
+
+  const errorMsg = {
+    id: 'err-auth-99',
+    isError: true,
+    errorCode: 'AUTH_REQUIRED',
+    content: 'Cloud request failed: 401 Unauthorized. Authentication required.'
+  };
+
+  let signInClicked = false;
+  let retryCalled = false;
+
+  const errorBoxEl = React.createElement(MessageErrorBox, {
+    message: errorMsg,
+    currentProviderId: 'gemini',
+    currentProviderObj: { id: 'gemini', name: 'Gemini' },
+    fallbackProviders: [{ id: 'webllm', name: 'Browser AI (WebLLM)' }] as any,
+    onRetry: () => {
+      retryCalled = true;
+    },
+    onSwitchProvider: () => {},
+    onRestorePrompt: () => {},
+    onSignInClick: () => {
+      signInClicked = true;
+    }
+  });
+
+  const root = createRoot(dom.container as unknown as Element);
+  await act(async () => {
+    root.render(errorBoxEl);
+  });
+
+  const textContent = dom.container.textContent;
+  assert.ok(textContent.includes('Sign In to Use Cloud AI'), 'Sign In to Use Cloud AI button should render');
+  assert.equal(retryCalled, false, 'Futile retry should be suppressed for auth errors');
+
+  const signinBtn = dom.query('.error-signin-btn');
+  assert.ok(signinBtn);
+  await act(async () => {
+    signinBtn.click();
+  });
+  assert.equal(signInClicked, true, 'Clicking Sign In button should invoke callback');
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.restore();
+});
+

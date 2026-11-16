@@ -38,7 +38,8 @@ function MessageList({
   canShareChat = false,
   shareChatDisabledReason = '',
   isSharingChat = false,
-  isReadOnly = false
+  isReadOnly = false,
+  onSignInClick
 }) {
   const bottomAnchorRef = useRef(null);
   const orderMemoRef = useRef(null);
@@ -86,6 +87,7 @@ function MessageList({
           shareChatDisabledReason={shareChatDisabledReason}
           isSharingChat={isSharingChat}
           isReadOnly={isReadOnly}
+          onSignInClick={onSignInClick}
         />
       ))}
 
