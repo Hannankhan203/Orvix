@@ -27,9 +27,10 @@ test('ORVIX-CRIT-05: sanitizeModelForProvider and validateServerModelForProvider
   assert.equal(sanitizeModelForProvider('gemini', 'gemini-3.5-transcribe'), 'gemini-3.5-transcribe');
   assert.equal(sanitizeModelForProvider('gemini', 'models/gemini-4-hydrogen'), 'models/gemini-4-hydrogen');
 
-  // Deprecated/unsupported or malformed models are cleared/sanitized to null (defaulting to primary)
-  assert.equal(sanitizeModelForProvider('gemini', 'gemini-2.5-flash'), null);
+  // Cross-provider models, malformed identifiers, and display labels are cleared/sanitized to null (defaulting to primary)
+  assert.equal(sanitizeModelForProvider('gemini', '@cf/meta/llama-3-8b-instruct'), null);
   assert.equal(sanitizeModelForProvider('gemini', 'unknown-model-xyz'), null);
+  assert.equal(sanitizeModelForProvider('cloudflare', 'gemini-2.5-flash'), null);
 
   // Server validation tests
   const v1 = validateServerModelForProvider('gemini', 'gemini-4-hydrogen');
