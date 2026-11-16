@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Bot, Mail, Lock, Eye, EyeOff, AlertCircle, Sparkles, User, WifiOff, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import Button from '../ui/Button.jsx';
@@ -13,7 +13,10 @@ import { isBrowserOnline, subscribeToNetworkStatus } from '../../config/firebase
  * existing user login, and guest demo mode.
  */
 export default function AuthScreen({ onClose }) {
-  const { login, signup, actionLoading, error, clearError, isConfigured, continueAsGuest } = useAuth();
+  const { currentUser, login, signup, actionLoading, error, clearError, isConfigured, continueAsGuest } = useAuth();
+  const isAlreadyGuest = Boolean(
+    currentUser && (currentUser.isAnonymous || String(currentUser.uid || '').startsWith('guest-'))
+  );
 
   const [mode, setMode] = useState('login'); // 'login' | 'signup'
   const [username, setUsername] = useState('');
@@ -22,6 +25,24 @@ export default function AuthScreen({ onClose }) {
   const [showPassword, setShowPassword] = useState(false);
   const [localValidation, setLocalValidation] = useState('');
   const [isOffline, setIsOffline] = useState(() => !isBrowserOnline());
+
+  const clearErrorRef = useRef(clearError);
+  clearErrorRef.current = clearError;
+
+  const handleClose = () => {
+    clearError();
+    setLocalValidation('');
+    onClose?.();
+  };
+
+  const isModalMode = Boolean(onClose);
+
+  useEffect(() => {
+    if (!isModalMode) return undefined;
+    return () => {
+      clearErrorRef.current?.();
+    };
+  }, [isModalMode]);
 
   useEffect(() => {
     return subscribeToNetworkStatus((online) => {
@@ -34,12 +55,14 @@ export default function AuthScreen({ onClose }) {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        clearError();
+        setLocalValidation('');
         onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [onClose, clearError]);
 
   const switchMode = (newMode) => {
     setMode(newMode);
@@ -109,6 +132,7 @@ export default function AuthScreen({ onClose }) {
       } else {
         await login(trimmedEmail, password);
       }
+      onClose?.();
     } catch (_) {
       // Error handled by AuthContext and displayed in the alert box
     }
@@ -123,7 +147,7 @@ export default function AuthScreen({ onClose }) {
           <button
             type="button"
             className="auth-modal-close-btn"
-            onClick={onClose}
+            onClick={handleClose}
             title="Return to shared conversation (Esc)"
             aria-label="Close authentication dialog"
           >
@@ -312,26 +336,34 @@ export default function AuthScreen({ onClose }) {
           </Button>
         </form>
 
-        {/* Subtle Divider */}
-        <div className="auth-divider" role="separator" aria-label="Alternative sign-in method">
-          <span className="auth-divider-line" />
-          <span className="auth-divider-text">or</span>
-          <span className="auth-divider-line" />
-        </div>
+        {/* Guest Mode Alternative (hidden when an active guest opens sign-in modal) */}
+        {!(onClose && isAlreadyGuest) && (
+          <>
+            <div className="auth-divider" role="separator" aria-label="Alternative sign-in method">
+              <span className="auth-divider-line" />
+              <span className="auth-divider-text">or</span>
+              <span className="auth-divider-line" />
+            </div>
 
-        {/* Guest Mode Alternative */}
-        <div className="auth-guest-section">
-          <Button
-            type="button"
-            variant="secondary"
-            size="md"
-            onClick={() => continueAsGuest()}
-            className="auth-guest-btn w-full"
-            icon={<Sparkles size={16} />}
-          >
-            Continue as Guest (Demo Mode)
-          </Button>
-        </div>
+            <div className="auth-guest-section">
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                onClick={() => {
+                  if (!isAlreadyGuest) {
+                    continueAsGuest();
+                  }
+                  handleClose();
+                }}
+                className="auth-guest-btn w-full"
+                icon={<Sparkles size={16} />}
+              >
+                Continue as Guest (Demo Mode)
+              </Button>
+            </div>
+          </>
+        )}
 
         {/* Footer Switcher */}
         <footer className="auth-footer">

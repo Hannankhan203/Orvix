@@ -406,6 +406,13 @@ export default function ChatPage({
     }
   }, [isSharedView, isRealUser]);
 
+  // Automatically dismiss sign-in modal once a real Firebase user session is active
+  useEffect(() => {
+    if (isRealUser && showAuthModal) {
+      setShowAuthModal(false);
+    }
+  }, [isRealUser, showAuthModal]);
+
   // Subscribe to real Browser AI engine state updates
   useEffect(() => {
     return subscribeWebLLMState((snapshot) => {
@@ -3964,7 +3971,7 @@ export default function ChatPage({
         shareData={shareModalData}
       />
 
-      {showAuthModal && !currentUser && (
+      {showAuthModal && !isRealUser && (
         <div
           className="shared-auth-modal-overlay"
           role="dialog"
