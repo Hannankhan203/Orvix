@@ -64,6 +64,7 @@ const activeAttachmentDeletionPromises = new Map();
 const activeAttachmentReplayPromises = new Map();
 
 let testDbOverride = null;
+let testFirestoreOpsOverride = null;
 
 /**
  * Sets a test Firestore database instance for test verification suites.
@@ -71,6 +72,33 @@ let testDbOverride = null;
  */
 export function setFirestoreInstanceForTesting(mockDb) {
   testDbOverride = mockDb;
+}
+
+/**
+ * Sets optional Firestore operation overrides for unit/integration testing.
+ * @param {Object|null} ops
+ */
+export function setFirestoreOpsForTesting(ops) {
+  testFirestoreOpsOverride = ops || null;
+}
+
+function getFirestoreRuntime() {
+  const effectiveDb =
+    testFirestoreOpsOverride?.db ?? (testDbOverride !== null ? testDbOverride : db);
+  const configured = Boolean(
+    testFirestoreOpsOverride?.db || testDbOverride || isFirebaseConfigured()
+  );
+  return {
+    db: effectiveDb,
+    configured,
+    doc: testFirestoreOpsOverride?.doc || doc,
+    collection: testFirestoreOpsOverride?.collection || collection,
+    getDoc: testFirestoreOpsOverride?.getDoc || getDoc,
+    setDoc: testFirestoreOpsOverride?.setDoc || setDoc,
+    updateDoc: testFirestoreOpsOverride?.updateDoc || updateDoc,
+    writeBatch: testFirestoreOpsOverride?.writeBatch || writeBatch,
+    serverTimestamp: testFirestoreOpsOverride?.serverTimestamp || serverTimestamp
+  };
 }
 
 function getUserChatsCacheKey(userId) {
@@ -1351,26 +1379,28 @@ export async function createChatDocument(
     createdOffline: !isBrowserOnline()
   });
 
-  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
+  const fsRuntime = getFirestoreRuntime();
+  if (!fsRuntime.db || !fsRuntime.configured || !isBrowserOnline()) {
     return resolvedChatId;
   }
 
-  const newChatDoc = doc(db, 'users', userId, 'chats', resolvedChatId);
+  const newChatDoc = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', resolvedChatId);
   const chatData = {
     id: resolvedChatId,
     title: initialTitle,
     mode: cleanMode,
     userId,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+    createdAt: fsRuntime.serverTimestamp(),
+    updatedAt: fsRuntime.serverTimestamp(),
     isPinned: false,
     pinnedAt: null,
+    ...(metaObj.hasCustomTitle ? { hasCustomTitle: true } : {}),
     ...(metaObj.isImported ? { isImported: true } : {}),
     ...(metaObj.importedFromShareId ? { importedFromShareId: metaObj.importedFromShareId } : {})
   };
 
   try {
-    await withBoundedTimeout(setDoc(newChatDoc, chatData), FIRESTORE_OP_TIMEOUT_MS, 'createChatDocument');
+    await withBoundedTimeout(fsRuntime.setDoc(newChatDoc, chatData), FIRESTORE_OP_TIMEOUT_MS, 'createChatDocument');
     upsertCachedUserChat(userId, {
       id: resolvedChatId,
       pendingSync: false,
@@ -1526,12 +1556,13 @@ export async function saveChatMessage(userId, chatId, message) {
     pendingSync: true
   });
 
-  if (!db || !isFirebaseConfigured() || !isBrowserOnline()) {
+  const fsRuntime = getFirestoreRuntime();
+  if (!fsRuntime.db || !fsRuntime.configured || !isBrowserOnline()) {
     return;
   }
 
-  const messageDocRef = doc(db, 'users', userId, 'chats', chatId, 'messages', targetMessage.id);
-  const chatDocRef = doc(db, 'users', userId, 'chats', chatId);
+  const messageDocRef = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', chatId, 'messages', targetMessage.id);
+  const chatDocRef = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', chatId);
   const payload = buildFirestoreMessagePayload({
     ...targetMessage,
     timestamp: clientTimestamp
@@ -1541,17 +1572,20 @@ export async function saveChatMessage(userId, chatId, message) {
     // Ensure parent chat exists in Firestore if it was originally created offline
     if (cachedChat?.createdOffline) {
       await withBoundedTimeout(
-        setDoc(
+        fsRuntime.setDoc(
           chatDocRef,
           {
             id: chatId,
             title: cachedChat.title || 'New Conversation',
             mode: cachedChat.mode || 'general',
             userId,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+            createdAt: fsRuntime.serverTimestamp(),
+            updatedAt: fsRuntime.serverTimestamp(),
             isPinned: Boolean(cachedChat.isPinned),
-            pinnedAt: cachedChat.pinnedAt || null
+            pinnedAt: cachedChat.pinnedAt || null,
+            ...(cachedChat.hasCustomTitle ? { hasCustomTitle: true } : {}),
+            ...(cachedChat.isImported ? { isImported: true } : {}),
+            ...(cachedChat.importedFromShareId ? { importedFromShareId: cachedChat.importedFromShareId } : {})
           },
           { merge: true }
         ),
@@ -1561,13 +1595,13 @@ export async function saveChatMessage(userId, chatId, message) {
     }
 
     // Write message document idempotently by stable ID
-    await withBoundedTimeout(setDoc(messageDocRef, payload), FIRESTORE_OP_TIMEOUT_MS, 'saveChatMessage');
+    await withBoundedTimeout(fsRuntime.setDoc(messageDocRef, payload), FIRESTORE_OP_TIMEOUT_MS, 'saveChatMessage');
 
     // Touch parent chat's updatedAt timestamp
     try {
       await withBoundedTimeout(
-        updateDoc(chatDocRef, {
-          updatedAt: serverTimestamp()
+        fsRuntime.updateDoc(chatDocRef, {
+          updatedAt: fsRuntime.serverTimestamp()
         }),
         FIRESTORE_OP_TIMEOUT_MS,
         'touchParentChatUpdatedAt'
@@ -1621,16 +1655,17 @@ export async function renameConversation(userId, chatId, newTitle, isManual = fa
     upsertCachedUserChat(userId, metaUpdate);
   }
 
-  if (!db || !isFirebaseConfigured() || !onlineNow) {
+  const fsRuntime = getFirestoreRuntime();
+  if (!fsRuntime.db || !fsRuntime.configured || !onlineNow) {
     return;
   }
 
   try {
-    const chatDocRef = doc(db, 'users', userId, 'chats', chatId);
+    const chatDocRef = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', chatId);
     await withBoundedTimeout(
-      updateDoc(chatDocRef, {
+      fsRuntime.updateDoc(chatDocRef, {
         title: sanitized,
-        updatedAt: serverTimestamp(),
+        updatedAt: fsRuntime.serverTimestamp(),
         ...(isManual ? { hasCustomTitle: true } : {})
       }),
       FIRESTORE_OP_TIMEOUT_MS,
@@ -2444,7 +2479,8 @@ function mergeCloudAndLocalChats(userId, cloudChats) {
  * @returns {Promise<{ syncedChats: number, syncedMessages: number }>}
  */
 export async function syncOfflineUserChatsToFirestore(userId) {
-  if (!userId || !db || !isFirebaseConfigured() || !isBrowserOnline()) {
+  const fsRuntime = getFirestoreRuntime();
+  if (!userId || !fsRuntime.db || !fsRuntime.configured || !isBrowserOnline()) {
     return { syncedChats: 0, syncedMessages: 0 };
   }
 
@@ -2460,7 +2496,11 @@ export async function syncOfflineUserChatsToFirestore(userId) {
       await syncFirestoreNetworkState(true);
 
       // 1. Replay any pending offline deletions (Supabase storage + Firestore)
-      await replayPendingDeletions(userId);
+      try {
+        await replayPendingDeletions(userId);
+      } catch (replayErr) {
+        console.warn('Deferred pending deletion replay until next online cycle:', replayErr?.message || replayErr);
+      }
 
       // 1b. Replay any pending truncated message deletions in Firestore
       const pendingMsgDeletions = getAllPendingMessageDeletions(userId);
@@ -2471,9 +2511,9 @@ export async function syncOfflineUserChatsToFirestore(userId) {
           const CHUNK_SIZE = 400;
           for (let i = 0; i < pendingMsgIds.length; i += CHUNK_SIZE) {
             const chunk = pendingMsgIds.slice(i, i + CHUNK_SIZE);
-            const batch = writeBatch(db);
+            const batch = fsRuntime.writeBatch(fsRuntime.db);
             chunk.forEach((msgId) => {
-              const msgRef = doc(db, 'users', userId, 'chats', pendingChatId, 'messages', msgId);
+              const msgRef = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', pendingChatId, 'messages', msgId);
               batch.delete(msgRef);
             });
             await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'syncDeleteMessagesBatch');
@@ -2511,28 +2551,33 @@ export async function syncOfflineUserChatsToFirestore(userId) {
 
         if (!needsChatSync) continue;
 
-        const chatDocRef = doc(db, 'users', userId, 'chats', localChat.id);
+        const chatDocRef = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', localChat.id);
+        let chatDocReady = false;
+        let docExistenceUnknownOrExists = !localChat.createdOffline;
+        let metaSyncSucceeded = !localChat.pendingMetaSync && !localChat.createdOffline && !localChat.pendingSync;
+        let createdOfflineCleared = false;
 
         try {
           const existingSnap = await withBoundedTimeout(
-            getDoc(chatDocRef),
+            fsRuntime.getDoc(chatDocRef),
             FIRESTORE_OP_TIMEOUT_MS,
             'syncCheckChatDoc'
           );
 
           if (!existingSnap.exists()) {
+            docExistenceUnknownOrExists = false;
             await withBoundedTimeout(
-              setDoc(
+              fsRuntime.setDoc(
                 chatDocRef,
                 {
                   id: localChat.id,
                   title: localChat.title || 'New Conversation',
                   mode: localChat.mode || 'general',
                   userId,
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
+                  createdAt: fsRuntime.serverTimestamp(),
+                  updatedAt: fsRuntime.serverTimestamp(),
                   isPinned: Boolean(localChat.isPinned),
-                  pinnedAt: localChat.isPinned ? serverTimestamp() : null,
+                  pinnedAt: localChat.isPinned ? fsRuntime.serverTimestamp() : null,
                   ...(localChat.hasCustomTitle ? { hasCustomTitle: true } : {}),
                   ...(localChat.isImported ? { isImported: true } : {}),
                   ...(localChat.importedFromShareId ? { importedFromShareId: localChat.importedFromShareId } : {})
@@ -2543,67 +2588,98 @@ export async function syncOfflineUserChatsToFirestore(userId) {
               'syncCreateChatDoc'
             );
             syncedChats++;
-          } else if (localChat.pendingMetaSync) {
-            await withBoundedTimeout(
-              updateDoc(chatDocRef, {
-                title: localChat.title || existingSnap.data()?.title || 'Untitled Chat',
-                mode: localChat.mode || existingSnap.data()?.mode || 'general',
-                isPinned: Boolean(localChat.isPinned),
-                pinnedAt: localChat.isPinned
-                  ? (existingSnap.data()?.pinnedAt || serverTimestamp())
-                  : null,
-                ...(localChat.hasCustomTitle ? { hasCustomTitle: true } : {}),
-                updatedAt: serverTimestamp()
-              }),
-              FIRESTORE_OP_TIMEOUT_MS,
-              'syncUpdateChatMeta'
-            );
-            syncedChats++;
-          }
+            chatDocReady = true;
+            metaSyncSucceeded = true;
+            createdOfflineCleared = true;
+          } else {
+            // Parent chat exists in Firestore; isolate optional metadata updates so
+            // failed chat metadata writes do not block independent pending messages.
+            chatDocReady = true;
+            createdOfflineCleared = true;
 
-          let allMessagesSynced = true;
-          for (const msg of pendingMessages) {
-            try {
-              const targetMsg =
-                msg.sender === 'assistant' ? normalizeAssistantMessage(msg) : msg;
-              const msgRef = doc(db, 'users', userId, 'chats', localChat.id, 'messages', targetMsg.id);
-              const payload = buildFirestoreMessagePayload(targetMsg);
-              await withBoundedTimeout(
-                setDoc(msgRef, payload, { merge: true }),
-                FIRESTORE_OP_TIMEOUT_MS,
-                'syncMessageDoc'
-              );
-              upsertCachedChatMessage(userId, localChat.id, {
-                ...msg,
-                pendingSync: false
-              });
-              syncedMessages++;
-            } catch (msgErr) {
-              allMessagesSynced = false;
-              console.warn('Deferred syncing message until next online cycle:', msg?.id, msgErr?.message || msgErr);
+            if (localChat.pendingMetaSync) {
+              try {
+                await withBoundedTimeout(
+                  fsRuntime.updateDoc(chatDocRef, {
+                    title: localChat.title || existingSnap.data()?.title || 'Untitled Chat',
+                    mode: localChat.mode || existingSnap.data()?.mode || 'general',
+                    isPinned: Boolean(localChat.isPinned),
+                    pinnedAt: localChat.isPinned
+                      ? (existingSnap.data()?.pinnedAt || fsRuntime.serverTimestamp())
+                      : null,
+                    ...(localChat.hasCustomTitle ? { hasCustomTitle: true } : {}),
+                    updatedAt: fsRuntime.serverTimestamp()
+                  }),
+                  FIRESTORE_OP_TIMEOUT_MS,
+                  'syncUpdateChatMeta'
+                );
+                syncedChats++;
+                metaSyncSucceeded = true;
+              } catch (metaErr) {
+                metaSyncSucceeded = false;
+                console.warn('Deferred syncing conversation metadata until next online cycle:', localChat.id, metaErr?.message || metaErr);
+              }
+            } else {
+              metaSyncSucceeded = true;
             }
           }
-
-          if (pendingMessages.length > 0 && allMessagesSynced) {
-            try {
-              await withBoundedTimeout(
-                updateDoc(chatDocRef, { updatedAt: serverTimestamp() }),
-                FIRESTORE_OP_TIMEOUT_MS,
-                'syncTouchUpdatedAt'
-              );
-            } catch (_) {}
-          }
-
-          upsertCachedUserChat(userId, {
-            id: localChat.id,
-            pendingSync: !allMessagesSynced,
-            pendingMetaSync: false,
-            pendingMetaFields: null,
-            createdOffline: false
-          });
         } catch (chatErr) {
+          metaSyncSucceeded = false;
+          // If the conversation already existed remotely (and we did not observe !exists()),
+          // allow its pending messages to attempt synchronization even if metadata inspection failed.
+          if (docExistenceUnknownOrExists) {
+            chatDocReady = true;
+          }
           console.warn('Deferred syncing conversation until next online cycle:', localChat.id, chatErr?.message || chatErr);
         }
+
+        if (!chatDocReady) {
+          continue;
+        }
+
+        let allMessagesSynced = true;
+        for (const msg of pendingMessages) {
+          try {
+            const targetMsg =
+              msg.sender === 'assistant' ? normalizeAssistantMessage(msg) : msg;
+            const msgRef = fsRuntime.doc(fsRuntime.db, 'users', userId, 'chats', localChat.id, 'messages', targetMsg.id);
+            const payload = buildFirestoreMessagePayload(targetMsg);
+            await withBoundedTimeout(
+              fsRuntime.setDoc(msgRef, payload, { merge: true }),
+              FIRESTORE_OP_TIMEOUT_MS,
+              'syncMessageDoc'
+            );
+            upsertCachedChatMessage(userId, localChat.id, {
+              ...msg,
+              pendingSync: false
+            });
+            syncedMessages++;
+          } catch (msgErr) {
+            allMessagesSynced = false;
+            console.warn('Deferred syncing message until next online cycle:', msg?.id, msgErr?.message || msgErr);
+          }
+        }
+
+        if (pendingMessages.length > 0 && allMessagesSynced) {
+          try {
+            await withBoundedTimeout(
+              fsRuntime.updateDoc(chatDocRef, { updatedAt: fsRuntime.serverTimestamp() }),
+              FIRESTORE_OP_TIMEOUT_MS,
+              'syncTouchUpdatedAt'
+            );
+          } catch (_) {}
+        }
+
+        upsertCachedUserChat(userId, {
+          id: localChat.id,
+          pendingSync: !allMessagesSynced || (!metaSyncSucceeded && Boolean(localChat.pendingSync)),
+          ...(metaSyncSucceeded
+            ? { pendingMetaSync: false, pendingMetaFields: null }
+            : localChat.pendingMetaSync
+            ? { pendingMetaSync: true }
+            : {}),
+          ...(createdOfflineCleared ? { createdOffline: false } : {})
+        });
       }
     } finally {
       activeSyncPromises.delete(userId);

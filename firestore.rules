@@ -116,7 +116,7 @@ service cloud.firestore {
 
         allow create: if isOwner(userId)
                       && request.resource.data.keys().hasAll(['id', 'title', 'userId', 'createdAt', 'updatedAt'])
-                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt', 'isImported', 'importedFromShareId'])
+                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt', 'hasCustomTitle', 'isImported', 'importedFromShareId'])
                       && request.resource.data.userId == userId
                       && request.resource.data.id == chatId
                       && request.resource.data.title is string
@@ -124,11 +124,12 @@ service cloud.firestore {
                       && request.resource.data.title.size() <= 120
                       && (!('mode' in request.resource.data) || isValidChatMode(request.resource.data.mode))
                       && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool)
+                      && (!('hasCustomTitle' in request.resource.data) || request.resource.data.hasCustomTitle is bool)
                       && (!('isImported' in request.resource.data) || request.resource.data.isImported is bool)
                       && (!('importedFromShareId' in request.resource.data) || isValidOptionalShareIdRef(request.resource.data.importedFromShareId));
 
         allow update: if isOwner(userId)
-                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt', 'isImported', 'importedFromShareId'])
+                      && request.resource.data.keys().hasOnly(['id', 'title', 'userId', 'mode', 'createdAt', 'updatedAt', 'isPinned', 'pinnedAt', 'hasCustomTitle', 'isImported', 'importedFromShareId'])
                       && request.resource.data.userId == resource.data.userId
                       && request.resource.data.id == resource.data.id
                       && request.resource.data.title is string
@@ -136,6 +137,7 @@ service cloud.firestore {
                       && request.resource.data.title.size() <= 120
                       && (!('mode' in request.resource.data) || isValidChatMode(request.resource.data.mode))
                       && (!('isPinned' in request.resource.data) || request.resource.data.isPinned is bool)
+                      && (!('hasCustomTitle' in request.resource.data) || request.resource.data.hasCustomTitle is bool)
                       && (!('isImported' in request.resource.data) || request.resource.data.isImported is bool)
                       && (!('importedFromShareId' in request.resource.data) || isValidOptionalShareIdRef(request.resource.data.importedFromShareId));
 

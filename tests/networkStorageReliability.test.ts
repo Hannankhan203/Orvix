@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   saveAttachmentBlob,
@@ -35,13 +37,16 @@ import {
   getPendingDeletedQueue,
   savePendingDeletedQueue,
   getPendingMessageDeletionIds,
+  createChatDocument,
   deleteChatMessages,
   saveChatMessage,
   updateChatMode,
   renameConversation,
   toggleChatPinned,
   replayPendingDeletions,
-  setFirestoreInstanceForTesting
+  syncOfflineUserChatsToFirestore,
+  setFirestoreInstanceForTesting,
+  setFirestoreOpsForTesting
 } from '../src/services/chatStorageService.js';
 
 import { VoiceStreamClient } from '../src/services/voiceStreamClient.js';
@@ -1225,4 +1230,433 @@ test('supabaseStorageService: expiry lookup, single delete, and chat delete pagi
   const chatDelCount = await deleteDurableExpiryForChatInStorage('u-page', 'chat-page', undefined, mockClient);
   assert.equal(chatDelCount, 1);
   assert.deepEqual(removedPaths, [targetPath]);
+});
+
+// ---------------------------------------------------------------------------
+// 8. ORVIX-CRIT-02: Firestore Rules, Manual Rename, & Offline Sync Reliability
+// ---------------------------------------------------------------------------
+
+function extractRuleKeysList(blockText: string, methodName: 'hasAll' | 'hasOnly'): string[] {
+  const re = new RegExp(`keys\\(\\)\\.${methodName}\\(\\s*\\[([\\s\\S]*?)\\]\\s*\\)`);
+  const match = blockText.match(re);
+  if (!match) return [];
+  return Array.from(match[1].matchAll(/'([^']+)'/g)).map((m) => m[1]);
+}
+
+function createRuleAwareFirestoreMock({
+  authUid,
+  initialDocs = new Map<string, Record<string, any>>(),
+  onValidateChatWrite
+}: {
+  authUid: string;
+  initialDocs?: Map<string, Record<string, any>>;
+  onValidateChatWrite?: (op: 'create' | 'update', path: string, nextData: Record<string, any>, prevData?: Record<string, any>) => void;
+}) {
+  const docs = new Map<string, Record<string, any>>(initialDocs);
+  const rulesText = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+  const chatsBlockMatch = rulesText.match(/match\s+\/chats\/\{chatId\}\s*\{([\s\S]*?)\n\s*\/\/\s*Messages subcollection/);
+  assert.ok(chatsBlockMatch, 'Expected match /chats/{chatId} block in firestore.rules');
+  const chatsBlock = chatsBlockMatch[1];
+
+  const createBlock = chatsBlock.split('allow update:')[0];
+  const updateBlock = 'allow update:' + chatsBlock.split('allow update:')[1];
+
+  const createRequiredKeys = extractRuleKeysList(createBlock, 'hasAll');
+  const createAllowedKeys = new Set(extractRuleKeysList(createBlock, 'hasOnly'));
+  const updateAllowedKeys = new Set(extractRuleKeysList(updateBlock, 'hasOnly'));
+
+  const validModes = new Set(['general', 'coding', 'writing', 'learning']);
+
+  const validateChatDocWrite = (
+    op: 'create' | 'update',
+    docPath: string,
+    nextData: Record<string, any>,
+    prevData?: Record<string, any>
+  ) => {
+    const parts = docPath.split('/');
+    const userId = parts[1];
+    const chatId = parts[3];
+    if (authUid !== userId) {
+      throw Object.assign(new Error('PERMISSION_DENIED: Not owner'), { code: 'permission-denied' });
+    }
+
+    const keys = Object.keys(nextData);
+    const allowedSet = op === 'create' ? createAllowedKeys : updateAllowedKeys;
+    for (const k of keys) {
+      if (!allowedSet.has(k)) {
+        throw Object.assign(new Error(`PERMISSION_DENIED: Unexpected field '${k}'`), { code: 'permission-denied' });
+      }
+    }
+
+    if (op === 'create') {
+      for (const reqKey of createRequiredKeys) {
+        if (!keys.includes(reqKey)) {
+          throw Object.assign(new Error(`PERMISSION_DENIED: Missing required field '${reqKey}'`), { code: 'permission-denied' });
+        }
+      }
+      if (nextData.userId !== userId || nextData.id !== chatId) {
+        throw Object.assign(new Error('PERMISSION_DENIED: Owner/id mismatch'), { code: 'permission-denied' });
+      }
+    } else if (prevData) {
+      if (nextData.userId !== prevData.userId || nextData.id !== prevData.id) {
+        throw Object.assign(new Error('PERMISSION_DENIED: Immutable owner/id altered'), { code: 'permission-denied' });
+      }
+    }
+
+    if (typeof nextData.title !== 'string' || nextData.title.length === 0 || nextData.title.length > 120) {
+      throw Object.assign(new Error('PERMISSION_DENIED: Invalid title'), { code: 'permission-denied' });
+    }
+    if ('mode' in nextData && !validModes.has(nextData.mode)) {
+      throw Object.assign(new Error('PERMISSION_DENIED: Invalid mode'), { code: 'permission-denied' });
+    }
+    if ('isPinned' in nextData && typeof nextData.isPinned !== 'boolean') {
+      throw Object.assign(new Error('PERMISSION_DENIED: Invalid isPinned'), { code: 'permission-denied' });
+    }
+    if ('hasCustomTitle' in nextData && typeof nextData.hasCustomTitle !== 'boolean') {
+      throw Object.assign(new Error('PERMISSION_DENIED: Invalid hasCustomTitle'), { code: 'permission-denied' });
+    }
+    if ('isImported' in nextData && typeof nextData.isImported !== 'boolean') {
+      throw Object.assign(new Error('PERMISSION_DENIED: Invalid isImported'), { code: 'permission-denied' });
+    }
+
+    onValidateChatWrite?.(op, docPath, nextData, prevData);
+  };
+
+  const dbObj = { __mockFirestore: true };
+  const docRef = (_db: any, ...segments: string[]) => ({
+    path: segments.join('/'),
+    id: segments[segments.length - 1]
+  });
+
+  const ops = {
+    db: dbObj,
+    doc: docRef,
+    collection: (_db: any, ...segments: string[]) => ({ path: segments.join('/') }),
+    serverTimestamp: () => ({ __serverTimestamp: true, toMillis: () => Date.now() }),
+    getDoc: async (ref: { path: string }) => {
+      const data = docs.get(ref.path);
+      return {
+        exists: () => data !== undefined,
+        data: () => (data ? { ...data } : undefined)
+      };
+    },
+    setDoc: async (ref: { path: string }, data: Record<string, any>, options?: { merge?: boolean }) => {
+      const existing = docs.get(ref.path);
+      const isChatDoc = /^users\/[^/]+\/chats\/[^/]+$/.test(ref.path);
+      if (existing && options?.merge) {
+        const merged = { ...existing, ...data };
+        if (isChatDoc) validateChatDocWrite('update', ref.path, merged, existing);
+        docs.set(ref.path, merged);
+      } else {
+        const next = { ...data };
+        if (isChatDoc) validateChatDocWrite(existing ? 'update' : 'create', ref.path, next, existing);
+        docs.set(ref.path, next);
+      }
+    },
+    updateDoc: async (ref: { path: string }, patch: Record<string, any>) => {
+      const existing = docs.get(ref.path);
+      if (!existing) {
+        throw Object.assign(new Error(`No document to update: ${ref.path}`), { code: 'not-found' });
+      }
+      const next = { ...existing, ...patch };
+      const isChatDoc = /^users\/[^/]+\/chats\/[^/]+$/.test(ref.path);
+      if (isChatDoc) validateChatDocWrite('update', ref.path, next, existing);
+      docs.set(ref.path, next);
+    },
+    writeBatch: () => {
+      const deletions: string[] = [];
+      return {
+        delete: (ref: { path: string }) => deletions.push(ref.path),
+        commit: async () => {
+          for (const p of deletions) docs.delete(p);
+        }
+      };
+    }
+  };
+
+  return { docs, ops, validateChatDocWrite, createAllowedKeys, updateAllowedKeys, createBlock, updateBlock };
+}
+
+test('firestore.rules: chat create and update rules allow optional boolean hasCustomTitle and reject non-booleans', () => {
+  const { validateChatDocWrite, createAllowedKeys, updateAllowedKeys, createBlock, updateBlock } =
+    createRuleAwareFirestoreMock({ authUid: 'u-rules' });
+
+  assert.equal(createAllowedKeys.has('hasCustomTitle'), true, 'create allowlist must include hasCustomTitle');
+  assert.equal(updateAllowedKeys.has('hasCustomTitle'), true, 'update allowlist must include hasCustomTitle');
+  assert.match(createBlock, /request\.resource\.data\.hasCustomTitle\s+is\s+bool/);
+  assert.match(updateBlock, /request\.resource\.data\.hasCustomTitle\s+is\s+bool/);
+
+  const baseChat = {
+    id: 'c-1',
+    title: 'Sample Chat',
+    userId: 'u-rules',
+    mode: 'general',
+    createdAt: 1,
+    updatedAt: 2,
+    isPinned: false,
+    pinnedAt: null
+  };
+
+  // Backward compatible: create & update without hasCustomTitle pass
+  validateChatDocWrite('create', 'users/u-rules/chats/c-1', baseChat);
+  validateChatDocWrite('update', 'users/u-rules/chats/c-1', { ...baseChat, title: 'Updated' }, baseChat);
+
+  // Boolean hasCustomTitle passes on both create & update
+  validateChatDocWrite('create', 'users/u-rules/chats/c-1', { ...baseChat, hasCustomTitle: true });
+  validateChatDocWrite('update', 'users/u-rules/chats/c-1', { ...baseChat, hasCustomTitle: false }, baseChat);
+
+  // Non-boolean hasCustomTitle is rejected on both create & update
+  assert.throws(
+    () => validateChatDocWrite('create', 'users/u-rules/chats/c-1', { ...baseChat, hasCustomTitle: 'true' }),
+    (err: any) => err?.code === 'permission-denied'
+  );
+  assert.throws(
+    () => validateChatDocWrite('update', 'users/u-rules/chats/c-1', { ...baseChat, hasCustomTitle: 1 }, baseChat),
+    (err: any) => err?.code === 'permission-denied'
+  );
+
+  // Unknown fields remain rejected
+  assert.throws(
+    () => validateChatDocWrite('update', 'users/u-rules/chats/c-1', { ...baseChat, arbitraryField: true }, baseChat),
+    (err: any) => err?.code === 'permission-denied'
+  );
+});
+
+test('chatStorageService: manual and auto renameConversation persist cleanly under Firestore rules', async () => {
+  const { storageShim } = installMemoryLocalStorage();
+  const restoreWin = setGlobalProp('window', globalThis);
+  const restoreLS = setGlobalProp('localStorage', storageShim);
+  const restoreOnline = setOnlineStatus(true);
+
+  const uid = 'u-rename';
+  const cid = 'c-rename';
+  const chatPath = `users/${uid}/chats/${cid}`;
+  const { docs, ops } = createRuleAwareFirestoreMock({
+    authUid: uid,
+    initialDocs: new Map([
+      [
+        chatPath,
+        {
+          id: cid,
+          title: 'Initial Title',
+          userId: uid,
+          mode: 'general',
+          createdAt: 100,
+          updatedAt: 100,
+          isPinned: false,
+          pinnedAt: null
+        }
+      ]
+    ])
+  });
+
+  saveCachedUserChats(uid, [
+    { id: cid, title: 'Initial Title', mode: 'general', isPinned: false, rawUpdatedAt: 100 }
+  ]);
+  setFirestoreOpsForTesting(ops);
+
+  try {
+    // 1. Auto rename (isManual=false) omits hasCustomTitle (backward compatible)
+    await renameConversation(uid, cid, 'Auto Refined Title', false);
+    assert.equal(docs.get(chatPath)?.title, 'Auto Refined Title');
+    assert.equal('hasCustomTitle' in (docs.get(chatPath) || {}), false);
+
+    // 2. Manual rename (isManual=true) persists hasCustomTitle: true under Firestore rules
+    await renameConversation(uid, cid, 'User Custom Title', true);
+    assert.equal(docs.get(chatPath)?.title, 'User Custom Title');
+    assert.equal(docs.get(chatPath)?.hasCustomTitle, true);
+
+    const cached = getCachedUserChats(uid).find((c: any) => c.id === cid);
+    assert.equal(cached.title, 'User Custom Title');
+    assert.equal(cached.hasCustomTitle, true);
+    assert.equal(cached.pendingMetaSync, false);
+  } finally {
+    setFirestoreOpsForTesting(null);
+    restoreOnline();
+    restoreLS();
+    restoreWin();
+  }
+});
+
+test('chatStorageService: offline-created and manually renamed chats synchronize with backward compatibility', async () => {
+  const { storageShim } = installMemoryLocalStorage();
+  const restoreWin = setGlobalProp('window', globalThis);
+  const restoreLS = setGlobalProp('localStorage', storageShim);
+  let restoreOnline = setOnlineStatus(false);
+
+  const uid = 'u-sync-custom';
+  const { docs, ops } = createRuleAwareFirestoreMock({ authUid: uid });
+  setFirestoreOpsForTesting(ops);
+
+  try {
+    // Offline: create two conversations, save messages, manually rename one of them
+    const customChatId = await createChatDocument(uid, 'New Conversation', 'coding', {}, 'chat-offline-custom');
+    await saveChatMessage(uid, customChatId, { id: 'msg-custom-1', sender: 'user', content: 'Hello offline custom' });
+    await renameConversation(uid, customChatId, 'Offline Custom Name', true);
+
+    const legacyChatId = await createChatDocument(uid, 'Legacy Style Chat', 'general', {}, 'chat-offline-legacy');
+    await saveChatMessage(uid, legacyChatId, { id: 'msg-legacy-1', sender: 'user', content: 'Hello without custom flag' });
+
+    // Transition back online and synchronize
+    restoreOnline();
+    restoreOnline = setOnlineStatus(true);
+    const result = await syncOfflineUserChatsToFirestore(uid);
+
+    assert.equal(result.syncedChats, 2);
+    assert.equal(result.syncedMessages, 2);
+
+    const customCloud = docs.get(`users/${uid}/chats/${customChatId}`);
+    assert.equal(customCloud?.title, 'Offline Custom Name');
+    assert.equal(customCloud?.hasCustomTitle, true);
+    assert.equal(docs.get(`users/${uid}/chats/${customChatId}/messages/msg-custom-1`)?.content, 'Hello offline custom');
+
+    const legacyCloud = docs.get(`users/${uid}/chats/${legacyChatId}`);
+    assert.equal(legacyCloud?.title, 'Legacy Style Chat');
+    assert.equal('hasCustomTitle' in (legacyCloud || {}), false);
+    assert.equal(docs.get(`users/${uid}/chats/${legacyChatId}/messages/msg-legacy-1`)?.content, 'Hello without custom flag');
+
+    const cachedAfter = getCachedUserChats(uid);
+    for (const c of cachedAfter) {
+      assert.equal(c.pendingSync, false);
+      assert.equal(c.pendingMetaSync, false);
+      assert.equal(c.createdOffline, false);
+    }
+    assert.equal(getCachedChatMessages(uid, customChatId)[0].pendingSync, false);
+    assert.equal(getCachedChatMessages(uid, legacyChatId)[0].pendingSync, false);
+  } finally {
+    setFirestoreOpsForTesting(null);
+    restoreOnline();
+    restoreLS();
+    restoreWin();
+  }
+});
+
+test('chatStorageService: failed chat metadata or chat creation sync does not block unrelated pending messages', async () => {
+  const { storageShim } = installMemoryLocalStorage();
+  const restoreWin = setGlobalProp('window', globalThis);
+  const restoreLS = setGlobalProp('localStorage', storageShim);
+  const restoreOnline = setOnlineStatus(true);
+
+  const uid = 'u-isolated-sync';
+  const existingChatId = 'chat-existing-meta-fail';
+  const badOfflineChatId = 'chat-offline-fail';
+  const healthyChatId = 'chat-healthy';
+
+  const initialDocs = new Map<string, Record<string, any>>([
+    [
+      `users/${uid}/chats/${existingChatId}`,
+      {
+        id: existingChatId,
+        title: 'Existing Cloud Chat',
+        userId: uid,
+        mode: 'general',
+        createdAt: 100,
+        updatedAt: 100,
+        isPinned: false,
+        pinnedAt: null
+      }
+    ]
+  ]);
+
+  const { docs, ops } = createRuleAwareFirestoreMock({
+    authUid: uid,
+    initialDocs
+  });
+
+  // 1. Existing chat has invalid oversized title causing metadata updateDoc to fail rules, plus a valid pending message.
+  // 2. Offline-created chat has invalid oversized title causing setDoc to fail rules, plus a pending message that should wait for parent doc.
+  // 3. Healthy offline chat must still synchronize completely without being blocked by #1 or #2.
+  const oversizedTitle = 'x'.repeat(125);
+  saveCachedUserChats(uid, [
+    {
+      id: existingChatId,
+      title: oversizedTitle,
+      mode: 'general',
+      isPinned: false,
+      hasCustomTitle: true,
+      pendingMetaSync: true,
+      pendingMetaFields: { title: true },
+      pendingSync: true,
+      createdOffline: false,
+      rawUpdatedAt: 300
+    },
+    {
+      id: badOfflineChatId,
+      title: oversizedTitle,
+      mode: 'general',
+      isPinned: false,
+      hasCustomTitle: true,
+      pendingMetaSync: true,
+      pendingSync: true,
+      createdOffline: true,
+      rawUpdatedAt: 200
+    },
+    {
+      id: healthyChatId,
+      title: 'Healthy Offline Chat',
+      mode: 'writing',
+      isPinned: false,
+      hasCustomTitle: true,
+      pendingMetaSync: true,
+      pendingSync: true,
+      createdOffline: true,
+      rawUpdatedAt: 100
+    }
+  ]);
+
+  saveCachedChatMessages(uid, existingChatId, [
+    { id: 'msg-ex-1', sender: 'user', content: 'Message on existing chat', pendingSync: true }
+  ]);
+  saveCachedChatMessages(uid, badOfflineChatId, [
+    { id: 'msg-bad-1', sender: 'user', content: 'Wait for missing parent chat', pendingSync: true }
+  ]);
+  saveCachedChatMessages(uid, healthyChatId, [
+    { id: 'msg-ok-1', sender: 'user', content: 'Unrelated healthy message', pendingSync: true }
+  ]);
+
+  setFirestoreOpsForTesting(ops);
+
+  try {
+    const res = await syncOfflineUserChatsToFirestore(uid);
+
+    // Healthy chat synced (1 chat) + existing chat message synced + healthy chat message synced (2 messages)
+    assert.equal(res.syncedChats, 1);
+    assert.equal(res.syncedMessages, 2);
+
+    assert.equal(
+      docs.get(`users/${uid}/chats/${existingChatId}/messages/msg-ex-1`)?.content,
+      'Message on existing chat',
+      'Pending messages on an existing chat must still sync when chat metadata update fails'
+    );
+    assert.equal(
+      docs.get(`users/${uid}/chats/${healthyChatId}/messages/msg-ok-1`)?.content,
+      'Unrelated healthy message',
+      'Unrelated chat messages must still sync after earlier chat sync failures'
+    );
+    assert.equal(docs.get(`users/${uid}/chats/${healthyChatId}`)?.hasCustomTitle, true);
+    assert.equal(
+      docs.has(`users/${uid}/chats/${badOfflineChatId}/messages/msg-bad-1`),
+      false,
+      'Child messages should wait when parent offline chat creation itself failed'
+    );
+
+    // Failed metadata chat preserves pendingMetaSync for retry while clearing synced message flag
+    const cached = getCachedUserChats(uid);
+    const existingCached = cached.find((c: any) => c.id === existingChatId);
+    const badCached = cached.find((c: any) => c.id === badOfflineChatId);
+    const healthyCached = cached.find((c: any) => c.id === healthyChatId);
+
+    assert.equal(existingCached.pendingMetaSync, true);
+    assert.equal(getCachedChatMessages(uid, existingChatId)[0].pendingSync, false);
+    assert.equal(badCached.createdOffline, true);
+    assert.equal(badCached.pendingSync, true);
+    assert.equal(healthyCached.pendingSync, false);
+    assert.equal(healthyCached.pendingMetaSync, false);
+    assert.equal(healthyCached.createdOffline, false);
+  } finally {
+    setFirestoreOpsForTesting(null);
+    restoreOnline();
+    restoreLS();
+    restoreWin();
+  }
 });
