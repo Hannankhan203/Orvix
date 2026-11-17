@@ -1558,8 +1558,21 @@ export function registerUploadRoutes(app: express.Express) {
     const record = fileRegistry.get(fileId);
 
     if (!record) {
+      const authStatus = await authenticateRequest(req);
+      if (authStatus.status === 'invalid') {
+        return res.status(401).json({
+          error: `Authentication failed: ${authStatus.error}`,
+          code: authStatus.code || 'INVALID_TOKEN'
+        });
+      }
+      if (authStatus.status === 'guest') {
+        return res.status(401).json({
+          error: 'Authentication required to access attachment status.',
+          code: 'AUTH_REQUIRED'
+        });
+      }
+
       if (rawChatId && isValidPathSegment(rawChatId) && isSupabaseConfigured()) {
-        const authStatus = await authenticateRequest(req);
         if (authStatus.status === 'authenticated') {
           const lookup = await findAttachmentPathInStorage(authStatus.userId, rawChatId, fileId);
           if (lookup.found && lookup.path) {

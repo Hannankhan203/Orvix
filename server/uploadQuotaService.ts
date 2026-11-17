@@ -16,7 +16,7 @@ import { resolveUploadDirectory } from './uploadSubsystem.ts';
 
 export const DAILY_UPLOAD_LIMIT = 5;
 export const RESERVATION_TTL_MS =
-  parseInt(process.env.ORVIX_UPLOAD_RESERVATION_TTL_MS || '', 10) || 120_000; // 120 seconds (2 minutes)
+  parseInt(process.env.ORVIX_UPLOAD_RESERVATION_TTL_MS || '', 10) || 7_200_000; // 7200 seconds (2 hours) matching direct upload ticket window
 export const LOCK_TIMEOUT_MS = 15_000;
 
 export interface QuotaIdentity {
