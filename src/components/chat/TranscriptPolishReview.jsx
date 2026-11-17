@@ -11,11 +11,15 @@ export default function TranscriptPolishReview({
   lastSessionTranscript,
   suggestedRefinement,
   isCleaningTranscript = false,
+  isComposerBlocked = false,
+  disabled = false,
   onImproveTranscript,
   onApplyRefinement,
   onDismissReview,
   onDismissTranscript
 }) {
+  const isBlocked = Boolean(isComposerBlocked || disabled);
+
   return (
     <>
       {/* Optional AI Transcript Refinement Notification */}
@@ -33,8 +37,12 @@ export default function TranscriptPolishReview({
               type="button"
               className="cleanup-action-trigger"
               onClick={onImproveTranscript}
-              disabled={isCleaningTranscript}
-              title="Polish punctuation and capitalization without changing words"
+              disabled={isCleaningTranscript || isBlocked}
+              title={
+                isBlocked
+                  ? 'Transcript polishing is unavailable while generating or in read-only mode'
+                  : 'Polish punctuation and capitalization without changing words'
+              }
             >
               {isCleaningTranscript ? (
                 <Loader2 size={12} className="spin-icon" />
@@ -97,6 +105,12 @@ export default function TranscriptPolishReview({
               variant="primary"
               size="sm"
               onClick={onApplyRefinement}
+              disabled={isBlocked}
+              title={
+                isBlocked
+                  ? 'Applying transcript polish is unavailable while generating or in read-only mode'
+                  : undefined
+              }
               icon={<Check size={13} />}
             >
               Apply Polish

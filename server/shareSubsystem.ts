@@ -21,6 +21,25 @@ function isEligibleServerShareUser(user: any): boolean {
 }
 
 /**
+ * Detects Firestore ALREADY_EXISTS errors across Firebase Admin SDK, gRPC status codes,
+ * and simulated test adapters.
+ */
+function isFirestoreAlreadyExistsError(err: any): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = err.code;
+  if (code === 6 || code === '6') return true;
+  if (typeof code === 'string') {
+    const normalized = code.trim().toLowerCase();
+    if (normalized === 'already_exists' || normalized === 'already-exists') {
+      return true;
+    }
+  }
+  const message = typeof err.message === 'string' ? err.message : '';
+  const details = typeof err.details === 'string' ? err.details : '';
+  return /\bALREADY_EXISTS\b/i.test(message) || /\bALREADY_EXISTS\b/i.test(details);
+}
+
+/**
  * Express handler for POST /api/share
  * Rigorously validates every message in the conversation on the server side
  * and persists the immutable shared snapshot to Firestore using Firebase Admin SDK.
@@ -58,11 +77,13 @@ export async function handleShareChatRequest(req: express.Request, res: express.
       });
     }
 
+    const canonicalInputShareId = shareId.trim();
+
     // Run rigorous validation and sanitization on EVERY message using buildValidatedSharedSnapshot
     let validationResult;
     try {
       validationResult = buildValidatedSharedSnapshot({
-        shareId: shareId.trim(),
+        shareId: canonicalInputShareId,
         chat,
         messages
       });
@@ -81,10 +102,16 @@ export async function handleShareChatRequest(req: express.Request, res: express.
     }
 
     const { documentData, byteSize } = validationResult;
+    const docData = documentData as any;
+    const canonicalShareId =
+      typeof docData?.id === 'string' && docData.id.trim()
+        ? docData.id.trim()
+        : canonicalInputShareId;
 
     // Attach server-side timestamp sentinel for Firestore Admin SDK
     const snapshotPayload = {
       ...documentData,
+      id: canonicalShareId,
       createdAt: FieldValue.serverTimestamp()
     };
 
@@ -99,13 +126,42 @@ export async function handleShareChatRequest(req: express.Request, res: express.
       });
     }
 
-    const shareDocRef = db.collection('sharedChats').doc(shareId);
-    await shareDocRef.set(snapshotPayload);
+    const shareDocRef = db.collection('sharedChats').doc(canonicalShareId);
+    try {
+      if (typeof shareDocRef.create === 'function') {
+        await shareDocRef.create(snapshotPayload);
+      } else if (typeof db.runTransaction === 'function') {
+        await db.runTransaction(async (transaction: any) => {
+          const existingSnap = await transaction.get(shareDocRef);
+          if (existingSnap?.exists) {
+            const existsErr: any = new Error(`Document already exists: sharedChats/${canonicalShareId}`);
+            existsErr.code = 6;
+            throw existsErr;
+          }
+          transaction.set(shareDocRef, snapshotPayload);
+        });
+      } else {
+        const existingSnap = await shareDocRef.get();
+        if (existingSnap?.exists) {
+          const existsErr: any = new Error(`Document already exists: sharedChats/${canonicalShareId}`);
+          existsErr.code = 6;
+          throw existsErr;
+        }
+        await shareDocRef.set(snapshotPayload);
+      }
+    } catch (writeErr: any) {
+      if (isFirestoreAlreadyExistsError(writeErr)) {
+        return res.status(409).json({
+          error: 'A shared conversation with this share ID already exists.',
+          code: 'SHARE_ID_ALREADY_EXISTS'
+        });
+      }
+      throw writeErr;
+    }
 
-    const docData = documentData as any;
     return res.status(200).json({
       success: true,
-      shareId: docData.id,
+      shareId: canonicalShareId,
       title: docData.title,
       mode: docData.mode,
       messageCount: docData.messageCount,

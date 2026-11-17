@@ -30,6 +30,7 @@ export default function VoiceDictationDock({
   langMenuOpen = false,
   langMenuRef,
   isPublicSharedViewer = false,
+  isComposerBlocked = false,
   onToggleLangMenu,
   onSelectLanguage,
   onPauseListening,
@@ -93,7 +94,7 @@ export default function VoiceDictationDock({
             recordingState === 'finalizing' ||
             recordingState === 'success' ||
             recordingState === 'cancelled';
-          const isLangDisabled = Boolean(isPublicSharedViewer || isTerminalState);
+          const isLangDisabled = Boolean(isPublicSharedViewer || isComposerBlocked || isTerminalState);
           const resolvedLang =
             (selectedLanguage && supportedLanguages.find((l) => l.code === selectedLanguage)) ||
             activeLang ||
@@ -107,6 +108,8 @@ export default function VoiceDictationDock({
               title={
                 isPublicSharedViewer
                   ? 'Voice dictation language selection is disabled in public read-only mode'
+                  : isComposerBlocked
+                  ? 'Voice dictation language selection is disabled while generating or read-only'
                   : undefined
               }
             >
@@ -118,6 +121,8 @@ export default function VoiceDictationDock({
                 title={
                   isPublicSharedViewer
                     ? 'Voice dictation language selection is disabled in public read-only mode'
+                    : isComposerBlocked
+                    ? 'Voice dictation language selection is disabled while generating or read-only'
                     : isTerminalState
                     ? 'Cannot change language while finalizing dictation'
                     : `Dictation language: ${resolvedLang?.label || 'English'}. Click to switch.`

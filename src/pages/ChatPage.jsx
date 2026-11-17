@@ -3011,7 +3011,7 @@ export default function ChatPage({
 
   // Restore a failed prompt to the input field while preserving any previously successful alternatives.
   const handleRestorePrompt = (promptText) => {
-    if (isPublicSharedViewer) return;
+    if (isPublicSharedViewer || isLoading || isSubmittingRef.current) return;
     setInputValue(promptText);
 
     const currentChatId = activeChatIdRef.current;

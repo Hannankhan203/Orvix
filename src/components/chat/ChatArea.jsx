@@ -166,7 +166,7 @@ export default function ChatArea({
   }, []);
 
   const handleAttachClick = () => {
-    if (isReadOnly || isSharedView) return;
+    if (isComposerBlockedRef.current || isComposerDisabled || isReadOnly || isSharedView) return;
     if (attachments.length > 0) {
       setAttachmentNotice('Only one attachment can be added per message. Remove the current attachment first to select a different one.');
       return;
@@ -181,7 +181,7 @@ export default function ChatArea({
    * Enforces 1-attachment limit, 25MB size restriction, format whitelist, and image preview generation.
    */
   const processAttachment = (rawFile, { isPaste = false, isDrop = false } = {}) => {
-    if (isSharedView) return;
+    if (isComposerBlockedRef.current || isComposerDisabled || isReadOnly || isSharedView) return;
     if (!rawFile) return;
 
     if (attachments.length > 0) {
@@ -282,6 +282,12 @@ export default function ChatArea({
   };
 
   const handleFileChange = (e) => {
+    if (isComposerBlockedRef.current || isComposerDisabled || isReadOnly || isSharedView) {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -340,7 +346,7 @@ export default function ChatArea({
       return;
     }
 
-    if (isSharedView) {
+    if (isReadOnly || isSharedView) {
       e.preventDefault();
       setAttachmentNotice('Attachments are disabled in shared conversation preview.');
       return;
@@ -365,8 +371,15 @@ export default function ChatArea({
     processAttachment(candidateFiles[0], { isPaste: true, isDrop: false });
   };
 
+  useEffect(() => {
+    if (isComposerBlocked || isReadOnly || isSharedView) {
+      dragDepthRef.current = 0;
+      setIsDraggingOver(false);
+    }
+  }, [isComposerBlocked, isReadOnly, isSharedView]);
+
   const handleDragEnter = (e) => {
-    if (isReadOnly || isSharedView || !isFileDragEvent(e)) return;
+    if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView || !isFileDragEvent(e)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepthRef.current += 1;
@@ -374,7 +387,7 @@ export default function ChatArea({
   };
 
   const handleDragOver = (e) => {
-    if (isReadOnly || isSharedView || !isFileDragEvent(e)) return;
+    if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView || !isFileDragEvent(e)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) {
@@ -386,7 +399,12 @@ export default function ChatArea({
   };
 
   const handleDragLeave = (e) => {
-    if (isReadOnly || isSharedView || !isFileDragEvent(e)) return;
+    if (!isFileDragEvent(e)) return;
+    if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView) {
+      dragDepthRef.current = 0;
+      setIsDraggingOver(false);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     dragDepthRef.current -= 1;
@@ -397,7 +415,14 @@ export default function ChatArea({
   };
 
   const handleDrop = (e) => {
-    if (isReadOnly || isSharedView || !isFileDragEvent(e)) return;
+    if (!isFileDragEvent(e)) return;
+    if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView) {
+      e.preventDefault();
+      e.stopPropagation();
+      dragDepthRef.current = 0;
+      setIsDraggingOver(false);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     dragDepthRef.current = 0;
@@ -780,7 +805,7 @@ export default function ChatArea({
   } = useVoiceDictation({
     inputValue,
     onInputChange,
-    disabled: isPublicSharedViewer
+    disabled: isPublicSharedViewer || isReadOnly || isSharedView
   });
 
   const activeLang =
@@ -833,21 +858,21 @@ export default function ChatArea({
   }, [activeChatId, isPublicSharedViewer, cancelListening]);
 
   useEffect(() => {
-    if (isPublicSharedViewer && langMenuOpen) {
+    if ((isComposerBlocked || isReadOnly || isSharedView) && langMenuOpen) {
       setLangMenuOpen(false);
     }
-  }, [isPublicSharedViewer, langMenuOpen]);
+  }, [isComposerBlocked, isReadOnly, isSharedView, langMenuOpen]);
 
   const handleToggleLangMenu = () => {
-    if (isPublicSharedViewer || isReadOnly) return;
+    if (isComposerBlockedRef.current || isPublicSharedViewer || isReadOnly || isSharedView) return;
     setLangMenuOpen((prev) => !prev);
   };
 
   const handleSelectLanguage = (langCode) => {
-    if (isPublicSharedViewer || isReadOnly) return;
+    if (isComposerBlockedRef.current || isPublicSharedViewer || isReadOnly || isSharedView) return;
     setSelectedLanguage(langCode);
     setLangMenuOpen(false);
-    if (textareaRef.current) {
+    if (textareaRef.current && !isComposerElementUnavailable(textareaRef.current)) {
       textareaRef.current.focus();
     }
   };
@@ -878,7 +903,7 @@ export default function ChatArea({
   };
 
   const handleToggleListening = () => {
-    if (isPublicSharedViewer || isReadOnly || isSharedView) return;
+    if (isComposerBlockedRef.current || isPublicSharedViewer || isReadOnly || isSharedView) return;
     if (recordingState === 'listening') {
       void handleStopListening();
     } else if (recordingState === 'paused') {
@@ -1146,7 +1171,14 @@ export default function ChatArea({
   };
 
   const handleImproveTranscript = async () => {
-    if (!lastSessionTranscript || isCleaningTranscript) return;
+    if (
+      !lastSessionTranscript ||
+      isCleaningTranscript ||
+      isComposerBlockedRef.current ||
+      isComposerElementUnavailable(textareaRef.current)
+    ) {
+      return;
+    }
     setIsCleaningTranscript(true);
 
     try {
@@ -1280,17 +1312,35 @@ Transcript:
     ? 'Ask to explain a concept, break down a topic, or quiz you...'
     : 'Message Orvix...';
 
-  const composerPlaceholder = isPublicSharedViewer
+  const isVoiceDictationBlocked = Boolean(
+    isComposerBlocked || isReadOnly || isSharedView
+  );
+  const isPreLangDisabled = Boolean(
+    isVoiceDictationBlocked ||
+    isTranscribing ||
+    isFinalizing ||
+    recordingState === 'stopping' ||
+    recordingState === 'success'
+  );
+  const preLangDisabledReason = isComposerDisabled
+    ? 'Voice dictation language selection is disabled in read-only shared mode'
+    : isSharedView || isReadOnly
+    ? 'Voice dictation language selection is disabled in shared preview mode'
+    : isLoading || isSubmittingFirstSharedMessage
+    ? 'Voice dictation language selection is disabled while generating a response'
+    : isTranscribing || isFinalizing || recordingState === 'stopping' || recordingState === 'success'
+    ? 'Voice dictation language selection is disabled while finalizing dictation'
+    : null;
+
+  const composerPlaceholder = isComposerDisabled
     ? 'This is a read-only shared conversation.'
     : isAuthenticatedSharedPreview
-    ? isLoading
+    ? (isLoading || isSubmittingFirstSharedMessage)
       ? isCompactViewport
         ? 'Generating response...'
         : 'Generating response — press Esc to stop...'
       : 'Send a message to continue this conversation...'
-    : isReadOnly
-    ? 'This is a read-only shared conversation.'
-    : isLoading
+    : (isLoading || isSubmittingFirstSharedMessage)
     ? isCompactViewport
       ? 'Generating response...'
       : 'Generating response — press Esc to stop...'
@@ -1310,7 +1360,7 @@ Transcript:
 
   return (
     <main
-      className={`chat-area-container ${isDraggingOver ? 'is-drag-over' : ''} ${isReadOnly ? 'is-read-only-view' : ''}`}
+      className={`chat-area-container ${isDraggingOver ? 'is-drag-over' : ''} ${isComposerDisabled ? 'is-read-only-view' : ''}`}
       role="main"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -1422,13 +1472,14 @@ Transcript:
             </div>
           )}
 
-          {!isReadOnly && canContinueLastMessage && (
+          {!isComposerDisabled && canContinueLastMessage && (
             <div className="continuation-prompt-chip-container">
               <button
                 type="button"
                 className="continuation-prompt-chip"
+                disabled={isComposerBlocked}
                 onClick={() => {
-                  if (onSubmit && !isLoading) {
+                  if (onSubmit && !isComposerBlockedRef.current && !isLoading && !isSubmittingFirstSharedMessage) {
                     onSubmit([], 'Continue');
                   }
                 }}
@@ -1555,6 +1606,7 @@ Transcript:
               langMenuOpen={langMenuOpen}
               langMenuRef={langMenuRef}
               isPublicSharedViewer={isPublicSharedViewer}
+              isComposerBlocked={isComposerBlocked}
               onToggleLangMenu={handleToggleLangMenu}
               onSelectLanguage={handleSelectLanguage}
               onPauseListening={pauseListening}
@@ -1568,6 +1620,7 @@ Transcript:
             lastSessionTranscript={lastSessionTranscript}
             suggestedRefinement={suggestedRefinement}
             isCleaningTranscript={isCleaningTranscript}
+            isComposerBlocked={isComposerBlocked}
             onImproveTranscript={handleImproveTranscript}
             onApplyRefinement={handleApplyRefinement}
             onDismissReview={() => setSuggestedRefinement(null)}
@@ -1609,7 +1662,7 @@ Transcript:
             isOffline={isOffline}
           />
 
-          {isDraggingOver && (
+          {isDraggingOver && !isComposerBlocked && !isReadOnly && !isSharedView && (
             <div className="composer-drop-banner" role="status" aria-live="polite">
               <div className="composer-drop-content">
                 <Paperclip size={15} className="composer-drop-icon" aria-hidden="true" />
@@ -1693,22 +1746,26 @@ Transcript:
                 type="button"
                 variant="ghost"
                 size="icon-round"
-                disabled={isLoading || isReadOnly || isSharedView || isComposerDisabled}
+                disabled={isComposerBlocked || isReadOnly || isSharedView}
                 onClick={handleAttachClick}
                 title={
-                  isSharedView
-                    ? 'Attachments are disabled in shared preview mode'
-                    : isReadOnly
+                  isComposerDisabled
                     ? 'Attachments are disabled in read-only shared mode'
+                    : isSharedView || isReadOnly
+                    ? 'Attachments are disabled in shared preview mode'
+                    : isLoading || isSubmittingFirstSharedMessage
+                    ? 'Attachments are disabled while generating a response'
                     : attachments.length > 0
                     ? `Attached: ${attachments[0].name} (1 file max per message)${uploadQuotaText ? ` • ${uploadQuotaText}` : ''}`
                     : `Attach file or image (PDF, DOCX, TXT, CSV, PNG, JPG — max 25MB)${uploadQuotaText ? ` • ${uploadQuotaText}` : ''}`
                 }
                 ariaLabel={
-                  isSharedView
-                    ? 'Attachments are disabled in shared preview mode'
-                    : isReadOnly
+                  isComposerDisabled
                     ? 'Attachments are disabled in read-only shared mode'
+                    : isSharedView || isReadOnly
+                    ? 'Attachments are disabled in shared preview mode'
+                    : isLoading || isSubmittingFirstSharedMessage
+                    ? 'Attachments are disabled while generating a response'
                     : attachments.length > 0
                     ? `Attachment selected: ${attachments[0].name}. Maximum one attachment per message.${uploadQuotaText ? ` ${uploadQuotaText}.` : ''}`
                     : `Attach document or image.${uploadQuotaText ? ` ${uploadQuotaText}.` : ''}`
@@ -1753,39 +1810,33 @@ Transcript:
               <div className="composer-actions">
                 {isSupported && !isRecordingActive && (
                   <div
-                    className={`dictation-lang-wrapper composer-pre-lang ${isPublicSharedViewer ? 'disabled' : ''}`}
+                    className={`dictation-lang-wrapper composer-pre-lang ${isPreLangDisabled ? 'disabled' : ''}`}
                     ref={!isRecordingActive ? langMenuRef : undefined}
-                    title={
-                      isPublicSharedViewer
-                        ? 'Voice dictation language selection is disabled in public read-only mode'
-                        : undefined
-                    }
+                    title={preLangDisabledReason || undefined}
                   >
                     <button
                       type="button"
-                      disabled={isPublicSharedViewer}
-                      className={`dictation-lang-btn composer-lang-btn ${isPublicSharedViewer ? 'disabled' : ''}`}
+                      disabled={isPreLangDisabled}
+                      className={`dictation-lang-btn composer-lang-btn ${isPreLangDisabled ? 'disabled' : ''}`}
                       onClick={handleToggleLangMenu}
                       title={
-                        isPublicSharedViewer
-                          ? 'Voice dictation language selection is disabled in public read-only mode'
-                          : `Dictation language: ${activeLang.label}. Click to change.`
+                        preLangDisabledReason ||
+                        `Dictation language: ${activeLang.label}. Click to change.`
                       }
                       aria-label={
-                        isPublicSharedViewer
-                          ? 'Voice dictation language selection is disabled in public read-only mode'
-                          : `Dictation language: ${activeLang.label}`
+                        preLangDisabledReason ||
+                        `Dictation language: ${activeLang.label}`
                       }
-                      aria-disabled={isPublicSharedViewer}
-                      aria-expanded={!isPublicSharedViewer && langMenuOpen}
+                      aria-disabled={isPreLangDisabled}
+                      aria-expanded={!isPreLangDisabled && langMenuOpen}
                       aria-haspopup="menu"
                     >
                       <span className="lang-flag">{activeLang.flag}</span>
                       <span className="lang-code">{activeLang.code.split('-')[0].toUpperCase()}</span>
-                      <ChevronDown size={11} className={`lang-chevron ${!isPublicSharedViewer && langMenuOpen ? 'open' : ''}`} />
+                      <ChevronDown size={11} className={`lang-chevron ${!isPreLangDisabled && langMenuOpen ? 'open' : ''}`} />
                     </button>
 
-                    {!isPublicSharedViewer && langMenuOpen && (
+                    {!isPreLangDisabled && langMenuOpen && (
                       <div className="dictation-lang-dropdown" role="menu" aria-label="Dictation recognition language">
                         <div className="lang-dropdown-header">Dictation Language</div>
                         {supportedLanguages.map((lang) => (
@@ -1814,15 +1865,15 @@ Transcript:
                     type="button"
                     variant={isListening ? 'primary' : (isRequesting || isTranscribing || recordingState === 'stopping') ? 'outline' : 'ghost'}
                     size="icon-round"
-                    disabled={isPublicSharedViewer || isLoading || isTranscribing || isFinalizing || recordingState === 'stopping' || recordingState === 'success' || isReadOnly || isSharedView || isComposerDisabled}
+                    disabled={isPreLangDisabled}
                     onClick={handleToggleListening}
                     title={
-                      isPublicSharedViewer
-                        ? 'Voice dictation is disabled in public read-only mode'
-                        : isSharedView
-                        ? 'Voice dictation is disabled in shared preview mode'
-                        : isReadOnly
+                      isComposerDisabled
                         ? 'Voice dictation is disabled in read-only shared mode'
+                        : isSharedView || isReadOnly
+                        ? 'Voice dictation is disabled in shared preview mode'
+                        : isLoading || isSubmittingFirstSharedMessage
+                        ? 'Voice dictation is disabled while generating a response'
                         : !isSupported
                         ? 'Voice dictation is not supported in this browser.'
                         : isTranscribing || recordingState === 'stopping'
@@ -1836,12 +1887,12 @@ Transcript:
                         : `Voice dictation (${activeLang.label})`
                     }
                     ariaLabel={
-                      isPublicSharedViewer
-                        ? 'Voice dictation is disabled in public read-only mode'
-                        : isSharedView
-                        ? 'Voice dictation is disabled in shared preview mode'
-                        : isReadOnly
+                      isComposerDisabled
                         ? 'Voice dictation is disabled in read-only shared mode'
+                        : isSharedView || isReadOnly
+                        ? 'Voice dictation is disabled in shared preview mode'
+                        : isLoading || isSubmittingFirstSharedMessage
+                        ? 'Voice dictation is disabled while generating a response'
                         : !isSupported
                         ? 'Voice dictation not supported'
                         : isTranscribing || recordingState === 'stopping'
@@ -1854,7 +1905,7 @@ Transcript:
                         ? 'Resume dictation'
                         : 'Start voice dictation'
                     }
-                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing || recordingState === 'stopping' ? 'transcribing' : ''} ${isPublicSharedViewer ? 'disabled' : ''}`}
+                    className={`composer-mic-btn ${isListening ? 'listening' : isPaused ? 'paused' : isRequesting ? 'requesting' : isTranscribing || recordingState === 'stopping' ? 'transcribing' : ''} ${isVoiceDictationBlocked ? 'disabled' : ''}`}
                     icon={
                       isListening ? (
                         <Square size={13} fill="currentColor" />
@@ -1885,20 +1936,22 @@ Transcript:
                 ) : (
                   <Button
                     type="submit"
-                    variant={hasContent && !isComposerDisabled ? 'primary' : 'ghost'}
+                    variant={hasContent && !isComposerDisabled && !isComposerBlocked ? 'primary' : 'ghost'}
                     size="icon-round"
-                    disabled={!hasContent || isComposerDisabled}
+                    disabled={!hasContent || isComposerBlocked}
                     title={
                       isComposerDisabled
                         ? 'Messaging is disabled in read-only shared mode'
+                        : isComposerBlocked
+                        ? 'Generating response...'
                         : !hasContent
                         ? 'Type a message to send'
                         : enterToSend
                         ? 'Send message (Enter)'
                         : 'Send message (Ctrl+Enter / ⌘+Enter)'
                     }
-                    ariaLabel={isReadOnly ? 'Messaging disabled in read-only mode' : 'Send message'}
-                    className={`composer-send-btn ${hasContent && !isReadOnly ? 'is-ready' : 'is-empty'}`}
+                    ariaLabel={isComposerDisabled ? 'Messaging disabled in read-only mode' : 'Send message'}
+                    className={`composer-send-btn ${hasContent && !isComposerDisabled && !isComposerBlocked ? 'is-ready' : 'is-empty'}`}
                     icon={<ArrowUp size={18} strokeWidth={2.25} />}
                   />
                 )}

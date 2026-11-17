@@ -12,6 +12,10 @@ import {
   setTestFirebaseProjectId,
   setTestPublicKey
 } from '../server/firebaseAuthHelper.ts';
+import {
+  setFirestoreForTesting,
+  resetFirestoreForTesting
+} from '../server/uploadQuotaService.ts';
 
 function buildSignedJwt(
   claims: Record<string, any>,
@@ -238,5 +242,194 @@ test('ORVIX-CRIT-06 /api/share: validates every message in conversation and reje
     assert.equal(dataOversized.code, 'MESSAGE_CONTENT_TOO_LARGE');
   } finally {
     await srv.close();
+  }
+});
+
+function createImmutableShareTestFirestore() {
+  const store = new Map<string, any>();
+  let createCalls = 0;
+  let setCalls = 0;
+  const docPaths: string[] = [];
+
+  const db = {
+    collection(colName: string) {
+      return {
+        doc(docId: string) {
+          const path = `${colName}/${docId}`;
+          docPaths.push(path);
+          return {
+            id: docId,
+            path,
+            async get() {
+              const existing = store.get(path);
+              return existing
+                ? { exists: true, id: docId, path, data: () => JSON.parse(JSON.stringify(existing)) }
+                : { exists: false, id: docId, path, data: () => undefined };
+            },
+            async create(data: any) {
+              createCalls += 1;
+              if (store.has(path)) {
+                const err: any = new Error(`6 ALREADY_EXISTS: Document already exists: ${path}`);
+                err.code = 6;
+                throw err;
+              }
+              store.set(path, JSON.parse(JSON.stringify(data)));
+              return { writeTime: Date.now() };
+            },
+            async set(data: any) {
+              setCalls += 1;
+              store.set(path, JSON.parse(JSON.stringify(data)));
+              return { writeTime: Date.now() };
+            }
+          };
+        }
+      };
+    }
+  };
+
+  return {
+    db,
+    store,
+    getStats: () => ({ createCalls, setCalls, docPaths: [...docPaths] })
+  };
+}
+
+test('ORVIX-LOW-09 /api/share: uses canonical trimmed shareId, calls .create(), preserves existing immutable snapshots, and maps ALREADY_EXISTS to HTTP 409', async () => {
+  resetFirebaseAuthForTesting();
+  resetFirestoreForTesting();
+  const keys = setupTestKeys();
+  const fakeFs = createImmutableShareTestFirestore();
+  setFirestoreForTesting(fakeFs.db);
+  const srv = await startShareTestServer();
+
+  try {
+    const rawPaddedId = '  Low09CanonicalShare_001  ';
+    const canonicalId = 'Low09CanonicalShare_001';
+
+    // 1. Initial publish with untrimmed whitespace in shareId
+    const resCreate = await fetch(`${srv.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys.validToken}`
+      },
+      body: JSON.stringify({
+        shareId: rawPaddedId,
+        chat: { id: 'chat-low09-1', title: 'Original Immutable Title', mode: 'coding' },
+        messages: [
+          { id: 'm1', sender: 'user', content: 'Original user question', createdAtMs: 1700000001000 },
+          { id: 'm2', sender: 'assistant', content: 'Original assistant answer', createdAtMs: 1700000002000 }
+        ]
+      })
+    });
+
+    assert.equal(resCreate.status, 200);
+    const createdJson = await resCreate.json() as any;
+    assert.equal(createdJson.success, true);
+    assert.equal(createdJson.shareId, canonicalId);
+    assert.equal(createdJson.title, 'Original Immutable Title');
+
+    const statsAfterFirst = fakeFs.getStats();
+    assert.equal(statsAfterFirst.createCalls, 1, 'Should persist via Firestore .create()');
+    assert.equal(statsAfterFirst.setCalls, 0, 'Must never call overwriting .set()');
+    assert.deepEqual(statsAfterFirst.docPaths, [`sharedChats/${canonicalId}`]);
+
+    // 2. Duplicate publish with exact same canonical ID must return HTTP 409 and NOT overwrite
+    const resDupExact = await fetch(`${srv.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys.validToken}`
+      },
+      body: JSON.stringify({
+        shareId: canonicalId,
+        chat: { id: 'chat-low09-overwrite', title: 'Tampered Overwrite Title', mode: 'general' },
+        messages: [
+          { id: 'm99', sender: 'user', content: 'Tampered message content', createdAtMs: 1700000009000 }
+        ]
+      })
+    });
+
+    assert.equal(resDupExact.status, 409);
+    const dupExactJson = await resDupExact.json() as any;
+    assert.equal(dupExactJson.code, 'SHARE_ID_ALREADY_EXISTS');
+
+    // 3. Duplicate publish with whitespace variant must resolve to same canonical ID and also return HTTP 409
+    const resDupPadded = await fetch(`${srv.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys.validToken}`
+      },
+      body: JSON.stringify({
+        shareId: ` ${canonicalId}\t`,
+        chat: { id: 'chat-low09-overwrite-2', title: 'Second Overwrite Attempt', mode: 'writing' },
+        messages: [
+          { id: 'm100', sender: 'user', content: 'Tampered 2', createdAtMs: 1700000010000 }
+        ]
+      })
+    });
+
+    assert.equal(resDupPadded.status, 409);
+
+    // 4. Retrieval check: original snapshot remains untouched at sharedChats/{canonicalId}
+    const storedSnap = await fakeFs.db.collection('sharedChats').doc(canonicalId).get();
+    assert.equal(storedSnap.exists, true);
+    const storedData = storedSnap.data();
+    assert.equal(storedData.id, canonicalId);
+    assert.equal(storedData.title, 'Original Immutable Title');
+    assert.equal(storedData.mode, 'coding');
+    assert.equal(storedData.messages[0].content, 'Original user question');
+    assert.equal(fakeFs.store.size, 1, 'No untrimmed duplicate doc paths should exist');
+  } finally {
+    await srv.close();
+    resetFirestoreForTesting();
+  }
+});
+
+test('ORVIX-LOW-09 /api/share: maps string ALREADY_EXISTS codes to HTTP 409 Conflict', async () => {
+  resetFirebaseAuthForTesting();
+  resetFirestoreForTesting();
+  const keys = setupTestKeys();
+
+  setFirestoreForTesting({
+    collection() {
+      return {
+        doc() {
+          return {
+            async create() {
+              const err: any = new Error('Document already exists');
+              err.code = 'ALREADY_EXISTS';
+              throw err;
+            }
+          };
+        }
+      };
+    }
+  });
+
+  const srv = await startShareTestServer();
+  try {
+    const res = await fetch(`${srv.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys.validToken}`
+      },
+      body: JSON.stringify({
+        shareId: 'Low09StringCode_002',
+        chat: { id: 'chat-low09-2', title: 'Conflict Test', mode: 'general' },
+        messages: [
+          { id: 'm1', sender: 'user', content: 'Hello', createdAtMs: 1700000001000 }
+        ]
+      })
+    });
+
+    assert.equal(res.status, 409);
+    const json = await res.json() as any;
+    assert.equal(json.code, 'SHARE_ID_ALREADY_EXISTS');
+  } finally {
+    await srv.close();
+    resetFirestoreForTesting();
   }
 });
