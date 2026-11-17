@@ -45,13 +45,6 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
   const [downloading, setDownloading] = useState(false);
   const [notice, setNotice] = useState(null);
 
-  if (!attachment) return null;
-
-  const filename = attachment.originalName || attachment.name || attachment.filename || 'Image';
-  const ext = (attachment.extension || '').replace('.', '').toUpperCase() || 'IMG';
-  const sizeText = formatSize(attachment.size, attachment.formattedSize);
-  const isHeic = ext === 'HEIC' || ext === 'HEIF' || (attachment.type || '').includes('heic') || (attachment.type || '').includes('heif');
-
   // Dismiss transient notice
   useEffect(() => {
     if (!notice) return;
@@ -61,6 +54,12 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
 
   // Resolve image source URL (IndexedDB blob -> file object -> backend file URL)
   useEffect(() => {
+    if (!attachment) {
+      setImageSrc(null);
+      setLoading(false);
+      setHasError(false);
+      return;
+    }
     let active = true;
     let createdBlobUrl = null;
 
@@ -148,7 +147,20 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
         URL.revokeObjectURL(createdBlobUrl);
       }
     };
-  }, [attachment.id, attachment.file, attachment.url, attachment.previewUrl, attachment.dataUrl, attachment.base64]);
+  }, [attachment, attachment?.id, attachment?.file, attachment?.url, attachment?.previewUrl, attachment?.dataUrl, attachment?.base64]);
+
+  if (!attachment) return null;
+
+  const filename = attachment.name || attachment.originalName || 'Image';
+  const filenameExt = filename.includes('.') ? filename.split('.').pop()?.toUpperCase() : '';
+  const rawExt =
+    (filenameExt && filenameExt !== 'FILE' ? filenameExt : null) ||
+    (attachment.extension ? String(attachment.extension).replace('.', '').toUpperCase() : null) ||
+    (attachment.format ? String(attachment.format).replace('.', '').toUpperCase() : null) ||
+    'PNG';
+  const ext = rawExt.toUpperCase();
+  const isHeic = ext === 'HEIC' || ext === 'HEIF';
+  const sizeText = formatSize(attachment.size, attachment.formattedSize);
 
   const handleCardClick = (e) => {
     if (e.target.closest('.image-card-action-btn')) {

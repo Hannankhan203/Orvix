@@ -130,6 +130,31 @@ export default function AttachmentCard({
   const [noticeMessage, setNoticeMessage] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
 
+  // Auto-dismiss transient notice
+  useEffect(() => {
+    if (!noticeMessage) return;
+    const timer = setTimeout(() => setNoticeMessage(null), 4000);
+    return () => clearTimeout(timer);
+  }, [noticeMessage]);
+
+  // Gracefully verify attachment availability on mount (handles page refresh & reopened conversations)
+  useEffect(() => {
+    let isMounted = true;
+    if (!attachment || !attachment.id) return;
+
+    checkAttachmentStatus(attachment).then((status) => {
+      if (isMounted && !status.available) {
+        setIsUnavailable(true);
+      }
+    }).catch(() => {
+      // Keep current state on network hiccups
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [attachment, attachment?.id]);
+
   if (!attachment) return null;
 
   const filename = attachment.name || attachment.originalName || 'Document';
@@ -144,31 +169,6 @@ export default function AttachmentCard({
   const canPreview = isFormatPreviewable(ext, attachment.type || attachment.mimeType);
   const IconComponent = getFormatIcon(ext);
   const formatBadgeClass = getFormatBadgeClass(ext);
-
-  // Auto-dismiss transient notice
-  useEffect(() => {
-    if (!noticeMessage) return;
-    const timer = setTimeout(() => setNoticeMessage(null), 4000);
-    return () => clearTimeout(timer);
-  }, [noticeMessage]);
-
-  // Gracefully verify attachment availability on mount (handles page refresh & reopened conversations)
-  useEffect(() => {
-    let isMounted = true;
-    if (!attachment?.id) return;
-
-    checkAttachmentStatus(attachment).then((status) => {
-      if (isMounted && !status.available) {
-        setIsUnavailable(true);
-      }
-    }).catch(() => {
-      // Keep current state on network hiccups
-    });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [attachment?.id]);
 
   const handleCardClick = async (e) => {
     // If a sub-button was clicked, let its handler handle it

@@ -935,9 +935,71 @@ export function restoreAttachmentFromStorage(att) {
   return restored;
 }
 
+export const MAX_FIRESTORE_MESSAGE_BYTES = 100000; // 100 KB limit matching firestore.rules
+
+/**
+ * Computes exact UTF-8 byte length for message content strings.
+ */
+export function getUtf8ByteLength(str) {
+  if (typeof str !== 'string') return 0;
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.byteLength(str, 'utf8');
+  }
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(str).byteLength;
+  }
+  return str.length * 2;
+}
+
+/**
+ * Enforces the Firestore 100 KB message size limit using UTF-8 byte measurement.
+ * If content exceeds the limit, truncates safely and appends an explicit user-visible notice.
+ */
+export function enforceFirestoreMessageSizeLimit(content) {
+  if (typeof content !== 'string') return { content: '', truncated: false };
+  const byteLen = getUtf8ByteLength(content);
+  if (byteLen <= MAX_FIRESTORE_MESSAGE_BYTES) {
+    return { content, truncated: false };
+  }
+
+  const notice = '\n\n[Notice: Message exceeded 100 KB Firestore storage limit and was truncated.]';
+  const noticeBytes = getUtf8ByteLength(notice);
+  const targetBytes = Math.max(0, MAX_FIRESTORE_MESSAGE_BYTES - noticeBytes);
+
+  let low = 0;
+  let high = content.length;
+  let best = '';
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = content.slice(0, mid);
+    if (getUtf8ByteLength(candidate) <= targetBytes) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return {
+    content: best + notice,
+    truncated: true,
+    originalByteLength: byteLen
+  };
+}
+
 export function sanitizeMessageForStorage(msg) {
   if (!msg || typeof msg !== 'object') return msg;
   const next = { ...msg };
+
+  if (typeof next.content === 'string') {
+    const enforced = enforceFirestoreMessageSizeLimit(next.content);
+    next.content = enforced.content;
+    if (enforced.truncated) {
+      next.wasTruncated = true;
+      next.originalByteLength = enforced.originalByteLength;
+    }
+  }
+
   if (Array.isArray(next.attachments)) {
     next.attachments = next.attachments.map(serializeAttachmentForStorage);
   }
@@ -948,6 +1010,14 @@ export function sanitizeMessageForStorage(msg) {
     next.alternatives = next.alternatives.map((alt) => {
       if (!alt || typeof alt !== 'object') return alt;
       const sanitizedAlt = { ...alt };
+      if (typeof sanitizedAlt.content === 'string') {
+        const enforcedAlt = enforceFirestoreMessageSizeLimit(sanitizedAlt.content);
+        sanitizedAlt.content = enforcedAlt.content;
+        if (enforcedAlt.truncated) {
+          sanitizedAlt.wasTruncated = true;
+          sanitizedAlt.originalByteLength = enforcedAlt.originalByteLength;
+        }
+      }
       if (Array.isArray(sanitizedAlt.attachments)) {
         sanitizedAlt.attachments = sanitizedAlt.attachments.map(serializeAttachmentForStorage);
       }
@@ -961,10 +1031,12 @@ export function sanitizeMessageForStorage(msg) {
 }
 
 export function buildFirestoreMessagePayload(targetMessage) {
-  const safeContent =
+  const rawContent =
     typeof targetMessage.content === 'string' && targetMessage.content.length > 0
       ? targetMessage.content
       : ' ';
+  const enforcedContent = enforceFirestoreMessageSizeLimit(rawContent);
+  const safeContent = enforcedContent.content;
 
   return {
     id: targetMessage.id,
@@ -979,12 +1051,14 @@ export function buildFirestoreMessagePayload(targetMessage) {
     activeAlternativeId: targetMessage.activeAlternativeId || null,
     alternatives: Array.isArray(targetMessage.alternatives)
       ? targetMessage.alternatives.map((alt) => {
+          const rawAltContent = typeof alt.content === 'string' ? alt.content : '';
+          const enforcedAlt = enforceFirestoreMessageSizeLimit(rawAltContent);
           const entry = {
             id: alt.id,
             parentMessageId: alt.parentMessageId || targetMessage.parentMessageId || null,
             interactionId: alt.interactionId || targetMessage.interactionId || null,
             sender: 'assistant',
-            content: typeof alt.content === 'string' ? alt.content : '',
+            content: enforcedAlt.content,
             provider: alt.provider || targetMessage.provider || 'gemini',
             modelUsed: alt.modelUsed || null,
             responseTimeMs: typeof alt.responseTimeMs === 'number' ? alt.responseTimeMs : null,
