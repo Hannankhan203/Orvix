@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import express from 'express';
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
+import { Redis } from 'ioredis';
 
 import {
   ATOMIC_RATE_LIMIT_LUA,
@@ -15,13 +16,24 @@ import {
   resetRateLimitersForTesting
 } from '../server/rateLimiter.ts';
 import {
+  InMemoryRedisMock,
+  ManagedRedisClient,
   closeRedisClient,
+  ensureRedisReady,
   getRedisClient,
   getRedisHealthStatus,
   resetRedisClientForTesting,
   setRedisClientForTesting,
   type RedisLikeClient
 } from '../server/redisClient.ts';
+import {
+  ATOMIC_WS_SLOT_ACQUIRE_LUA,
+  ATOMIC_WS_SLOT_REFRESH_LUA,
+  ATOMIC_WS_SLOT_RELEASE_LUA,
+  refreshDistributedWsSlot,
+  releaseDistributedWsSlot,
+  tryAcquireDistributedWsSlot
+} from '../server/voiceWebSocketSubsystem.ts';
 import {
   resetFirebaseAuthForTesting,
   setTestFirebaseProjectId,
@@ -583,3 +595,289 @@ test('WebSocket upgrade rate limiting and graceful Redis shutdown', async () => 
   assert.equal(mockRedis.status, 'end');
   await resetRedisClientForTesting();
 });
+
+test('ORVIX-HIGH-01: InMemoryRedisMock.eval supports WebSocket acquire, release, refresh Lua contracts alongside fixed-window rate limiting', async () => {
+  const mock = new InMemoryRedisMock();
+  await mock.connect();
+  assert.equal(mock.status, 'ready');
+
+  try {
+    const slotKey = 'orvix:rl:wsslots:uid:test-user-slots';
+    const otherUserSlotKey = 'orvix:rl:wsslots:uid:other-user-slots';
+    const rateKey = 'orvix:rl:chat:uid:test-user-rate';
+    const t0 = 1_750_000_000_000;
+    const ttlMs = 60_000;
+    const maxSlots = 3;
+
+    // 1. Acquire slots 1, 2, and 3 -> returns [1, currentCount]
+    const acq1 = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0), String(ttlMs), String(maxSlots), 'conn-1');
+    assert.deepEqual(acq1, [1, 1]);
+
+    // Duplicate acquisition for same member ('conn-1') renews score without inflating slot count
+    const acq1Dup = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0 + 5), String(ttlMs), String(maxSlots), 'conn-1');
+    assert.deepEqual(acq1Dup, [1, 1]);
+
+    // Invalid empty member is rejected without corrupting state
+    const acqInvalid = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0 + 5), String(ttlMs), String(maxSlots), '   ');
+    assert.deepEqual(acqInvalid, [0, 1]);
+
+    const acq2 = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0 + 10), String(ttlMs), String(maxSlots), 'conn-2');
+    assert.deepEqual(acq2, [1, 2]);
+
+    const acq3 = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0 + 20), String(ttlMs), String(maxSlots), 'conn-3');
+    assert.deepEqual(acq3, [1, 3]);
+
+    // 2. 4th slot exceeds maxSlots (3) -> rejected with [0, 3]
+    const acq4Rejected = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0 + 30), String(ttlMs), String(maxSlots), 'conn-4');
+    assert.deepEqual(acq4Rejected, [0, 3]);
+
+    // Multiple independent users/keys do not interfere with each other
+    const otherUserAcq = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, otherUserSlotKey, String(t0 + 30), String(ttlMs), String(maxSlots), 'other-conn-1');
+    assert.deepEqual(otherUserAcq, [1, 1]);
+
+    // 3. Release 'conn-2' -> decrements ZCARD from 3 to 2 (never increments or corrupts other users!)
+    const relConn2 = await mock.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, slotKey, 'conn-2');
+    assert.equal(relConn2, 2);
+
+    // Repeated release of 'conn-2' or releasing a missing member is idempotent and keeps count at 2
+    const relConn2Repeat = await mock.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, slotKey, 'conn-2');
+    assert.equal(relConn2Repeat, 2);
+    const relMissingMember = await mock.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, slotKey, 'conn-nonexistent');
+    assert.equal(relMissingMember, 2);
+    const relMissingKey = await mock.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, 'orvix:rl:wsslots:uid:missing-key', 'conn-1');
+    assert.equal(relMissingKey, 0);
+
+    // Releasing on slotKey did not affect otherUserSlotKey
+    const otherUserRefresh = await mock.eval(ATOMIC_WS_SLOT_REFRESH_LUA, 1, otherUserSlotKey, String(t0 + 35), String(ttlMs), 'other-conn-1');
+    assert.equal(otherUserRefresh, 1);
+
+    // Now 'conn-4' can acquire the freed 3rd slot
+    const acq4Success = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, slotKey, String(t0 + 50), String(ttlMs), String(maxSlots), 'conn-4');
+    assert.deepEqual(acq4Success, [1, 3]);
+
+    // 4. Refresh TTL for 'conn-1' at t0 + 40_000 -> returns 1 and extends conn-1 expiry to t0 + 100_000
+    const refreshConn1 = await mock.eval(ATOMIC_WS_SLOT_REFRESH_LUA, 1, slotKey, String(t0 + 40_000), String(ttlMs), 'conn-1');
+    assert.equal(refreshConn1, 1);
+
+    // Refreshing a removed/missing member returns 0
+    const refreshMissing = await mock.eval(ATOMIC_WS_SLOT_REFRESH_LUA, 1, slotKey, String(t0 + 40_000), String(ttlMs), 'conn-2');
+    assert.equal(refreshMissing, 0);
+
+    // 5. Advance time to t0 + 70_000:
+    // 'conn-3' (expires t0 + 60_020) and 'conn-4' (expires t0 + 60_050) have expired,
+    // while 'conn-1' (refreshed at t0 + 40_000, expires t0 + 100_000) remains active!
+    const acqAfterPartialExpiry = await mock.eval(
+      ATOMIC_WS_SLOT_ACQUIRE_LUA,
+      1,
+      slotKey,
+      String(t0 + 70_000),
+      String(ttlMs),
+      String(maxSlots),
+      'conn-5'
+    );
+    // Pruned conn-3 and conn-4 (leaving conn-1 = 1), then added conn-5 -> count is 2!
+    assert.deepEqual(acqAfterPartialExpiry, [1, 2]);
+
+    // Refreshing an expired member after full key expiration returns 0
+    const refreshAfterFullExpiry = await mock.eval(
+      ATOMIC_WS_SLOT_REFRESH_LUA,
+      1,
+      slotKey,
+      String(t0 + 200_000),
+      String(ttlMs),
+      'conn-1'
+    );
+    assert.equal(refreshAfterFullExpiry, 0);
+
+    // 6. Concurrent acquire/release burst via Promise.all
+    const concurrentKey = 'orvix:rl:wsslots:uid:concurrent-burst-user';
+    const concurrentNow = Date.now();
+    const burstResults = (await Promise.all(
+      Array.from({ length: 8 }, (_, idx) =>
+        mock.eval(
+          ATOMIC_WS_SLOT_ACQUIRE_LUA,
+          1,
+          concurrentKey,
+          String(concurrentNow),
+          String(ttlMs),
+          '3',
+          `burst-conn-${idx + 1}`
+        )
+      )
+    )) as [number, number][];
+    const acquiredBurstCount = burstResults.filter((r) => r[0] === 1).length;
+    const rejectedBurstCount = burstResults.filter((r) => r[0] === 0).length;
+    assert.equal(acquiredBurstCount, 3);
+    assert.equal(rejectedBurstCount, 5);
+
+    await Promise.all(
+      Array.from({ length: 8 }, (_, idx) =>
+        mock.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, concurrentKey, `burst-conn-${idx + 1}`)
+      )
+    );
+    const countAfterConcurrentRelease = await mock.eval(ATOMIC_WS_SLOT_RELEASE_LUA, 1, concurrentKey, 'burst-conn-1');
+    assert.equal(countAfterConcurrentRelease, 0);
+
+    // 7. Wall-clock TTL expiration check
+    const shortTtlKey = 'orvix:rl:wsslots:uid:short-ttl-user';
+    const wallT0 = Date.now();
+    const shortAcq = await mock.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, shortTtlKey, String(wallT0), '35', '1', 'short-conn-1');
+    assert.deepEqual(shortAcq, [1, 1]);
+    await new Promise((r) => setTimeout(r, 55));
+    const refreshAfterWallExpiry = await mock.eval(ATOMIC_WS_SLOT_REFRESH_LUA, 1, shortTtlKey, String(Date.now()), '35', 'short-conn-1');
+    assert.equal(refreshAfterWallExpiry, 0);
+
+    // 8. Existing fixed-window rate limiting on the same mock instance remains completely intact
+    const rl1 = (await mock.eval(ATOMIC_RATE_LIMIT_LUA, 1, rateKey, '10000')) as [number, number];
+    const rl2 = (await mock.eval(ATOMIC_RATE_LIMIT_LUA, 1, rateKey, '10000')) as [number, number];
+    assert.equal(rl1[0], 1);
+    assert.equal(rl2[0], 2);
+    assert.ok(rl1[1] > 0 && rl1[1] <= 10_000);
+  } finally {
+    mock.clearAllForTesting();
+    await mock.quit();
+  }
+});
+
+test('ORVIX-HIGH-01: voiceWebSocketSubsystem slot helpers and REDIS_URL selection with real ioredis + fallback', async () => {
+  const savedRedisUrl = process.env.REDIS_URL;
+  const savedOrvixRedisUrl = process.env.ORVIX_REDIS_URL;
+  const savedConnectTimeout = process.env.REDIS_CONNECT_TIMEOUT_MS;
+
+  try {
+    await resetRedisClientForTesting();
+
+    // 1. Test voiceWebSocketSubsystem slot lifecycle using InMemoryRedisMock
+    const mock = new InMemoryRedisMock();
+    await mock.connect();
+    setRedisClientForTesting(mock);
+
+    const s1 = await tryAcquireDistributedWsSlot('uid', 'user-ws-1', 2, 'sock-1');
+    const s2 = await tryAcquireDistributedWsSlot('uid', 'user-ws-1', 2, 'sock-2');
+    const s3 = await tryAcquireDistributedWsSlot('uid', 'user-ws-1', 2, 'sock-3');
+
+    assert.equal(s1.status, 'acquired');
+    assert.ok(s1.redisKey);
+    assert.equal(s2.status, 'acquired');
+    assert.equal(s3.status, 'limit-exceeded');
+    assert.equal(s3.redisKey, null);
+
+    // Refresh sock-1 and release sock-2
+    refreshDistributedWsSlot(s1.redisKey, 'sock-1');
+    releaseDistributedWsSlot(s2.redisKey, 'sock-2');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // After releasing sock-2, sock-3 can now acquire the slot!
+    const s3Retry = await tryAcquireDistributedWsSlot('uid', 'user-ws-1', 2, 'sock-3');
+    assert.equal(s3Retry.status, 'acquired');
+
+    await resetRedisClientForTesting();
+
+    // 2. Verify real ioredis selection when REDIS_URL is configured against a live local RESP TCP server
+    const respCommands: string[] = [];
+    const activeSockets = new Set<net.Socket>();
+    const respServer = net.createServer((socket) => {
+      activeSockets.add(socket);
+      socket.on('close', () => activeSockets.delete(socket));
+      socket.on('data', (chunk) => {
+        const text = chunk.toString('utf8');
+        // Split pipelined RESP arrays (*<count>\r\n...)
+        const frames = text.split(/(?=\*\d+\r\n)/).filter((f) => f.trim().length > 0);
+        for (const frame of frames) {
+          const lines = frame.split('\r\n');
+          const cmd = (lines[2] || '').toUpperCase();
+          if (cmd) {
+            respCommands.push(cmd);
+          }
+          if (cmd === 'HELLO') {
+            socket.write("-ERR unknown command 'hello'\r\n");
+          } else if (cmd === 'INFO') {
+            const infoPayload = 'redis_version:7.2.0\r\nrole:master\r\n';
+            socket.write(`$${infoPayload.length}\r\n${infoPayload}\r\n`);
+          } else if (cmd === 'EVAL') {
+            // Return [1, 1] array in RESP protocol: *2\r\n:1\r\n:1\r\n
+            socket.write('*2\r\n:1\r\n:1\r\n');
+          } else if (cmd === 'QUIT') {
+            socket.write('+OK\r\n');
+            socket.end();
+          } else {
+            socket.write('+OK\r\n');
+          }
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => respServer.listen(0, '127.0.0.1', () => resolve()));
+    const respPort = (respServer.address() as AddressInfo).port;
+
+    try {
+      process.env.REDIS_URL = `redis://127.0.0.1:${respPort}`;
+      process.env.REDIS_CONNECT_TIMEOUT_MS = '500';
+      await resetRedisClientForTesting();
+
+      const client = getRedisClient() as ManagedRedisClient;
+      assert.ok(client instanceof ManagedRedisClient);
+      assert.equal(client.isRealRedis, true);
+      assert.ok(client.getUnderlyingClient() instanceof Redis);
+
+      const ready = await ensureRedisReady(client, 500);
+      assert.equal(ready, true);
+      assert.equal(client.isRealRedis, true);
+      assert.equal(client.isFallbackMock, false);
+
+      const evalRes = await client.eval(ATOMIC_WS_SLOT_ACQUIRE_LUA, 1, 'test:key', '1000', '60000', '3', 'm1');
+      assert.deepEqual(evalRes, [1, 1]);
+      assert.ok(respCommands.includes('EVAL'));
+    } finally {
+      await resetRedisClientForTesting();
+      for (const s of activeSockets) {
+        s.destroy();
+      }
+      await new Promise<void>((resolve) => respServer.close(() => resolve()));
+    }
+
+    // 3. Verify graceful fallback to InMemoryRedisMock when REDIS_URL points to an unreachable port
+    const closedServer = net.createServer();
+    await new Promise<void>((resolve) => closedServer.listen(0, '127.0.0.1', () => resolve()));
+    const unusedPort = (closedServer.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => closedServer.close(() => resolve()));
+
+    process.env.REDIS_URL = `redis://127.0.0.1:${unusedPort}`;
+    process.env.REDIS_CONNECT_TIMEOUT_MS = '250';
+    await resetRedisClientForTesting();
+
+    const fallbackClient = getRedisClient() as ManagedRedisClient;
+    assert.ok(fallbackClient instanceof ManagedRedisClient);
+
+    const readyAfterFallback = await ensureRedisReady(fallbackClient, 500);
+    assert.equal(readyAfterFallback, true);
+    assert.equal(fallbackClient.isFallbackMock, true);
+    assert.equal(fallbackClient.status, 'ready');
+
+    // WebSocket slot acquisition works seamlessly on the activated fallback mock
+    const fbSlot1 = await tryAcquireDistributedWsSlot('ip', '203.0.113.88', 2, 'fb-1');
+    const fbSlot2 = await tryAcquireDistributedWsSlot('ip', '203.0.113.88', 2, 'fb-2');
+    const fbSlot3 = await tryAcquireDistributedWsSlot('ip', '203.0.113.88', 2, 'fb-3');
+    assert.equal(fbSlot1.status, 'acquired');
+    assert.equal(fbSlot2.status, 'acquired');
+    assert.equal(fbSlot3.status, 'limit-exceeded');
+  } finally {
+    if (savedRedisUrl === undefined) {
+      delete process.env.REDIS_URL;
+    } else {
+      process.env.REDIS_URL = savedRedisUrl;
+    }
+    if (savedOrvixRedisUrl === undefined) {
+      delete process.env.ORVIX_REDIS_URL;
+    } else {
+      process.env.ORVIX_REDIS_URL = savedOrvixRedisUrl;
+    }
+    if (savedConnectTimeout === undefined) {
+      delete process.env.REDIS_CONNECT_TIMEOUT_MS;
+    } else {
+      process.env.REDIS_CONNECT_TIMEOUT_MS = savedConnectTimeout;
+    }
+    await resetRedisClientForTesting();
+  }
+});
+

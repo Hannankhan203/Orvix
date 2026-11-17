@@ -247,7 +247,7 @@ async function runRedisSlotEvalWithTimeout(
   }
 }
 
-async function tryAcquireDistributedWsSlot(
+export async function tryAcquireDistributedWsSlot(
   scope: 'ip' | 'uid',
   rawIdentifier: string,
   maxSlots: number,
@@ -303,7 +303,7 @@ async function tryAcquireDistributedWsSlot(
   }
 }
 
-function releaseDistributedWsSlot(redisKey: string | null, member: string): void {
+export function releaseDistributedWsSlot(redisKey: string | null, member: string): void {
   if (!redisKey) return;
   const redisClient = getRedisClient();
   if (!redisClient || redisClient.status !== 'ready') return;
@@ -312,7 +312,7 @@ function releaseDistributedWsSlot(redisKey: string | null, member: string): void
   } catch (_) {}
 }
 
-function refreshDistributedWsSlot(redisKey: string | null, member: string): void {
+export function refreshDistributedWsSlot(redisKey: string | null, member: string): void {
   if (!redisKey) return;
   const redisClient = getRedisClient();
   if (!redisClient || redisClient.status !== 'ready') return;
