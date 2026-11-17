@@ -17,6 +17,11 @@ export function navigateTo(url) {
   if (typeof window === 'undefined') return;
   window.history.pushState(null, '', url);
   window.dispatchEvent(new PopStateEvent('popstate'));
+  try {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  } catch (_) {
+    window.scrollTo(0, 0);
+  }
 }
 
 /**
@@ -51,8 +56,16 @@ function AppContent() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const handleLocationChange = () => {
+    const handleLocationChange = (e) => {
       setRouteInfo(getShareRouteDetails(window.location.pathname));
+      // Reset scroll on programmatic navigation; preserve browser back/forward history scroll state
+      if (!e || e.state === undefined || e.type === 'pushstate') {
+        try {
+          window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+        } catch (_) {
+          window.scrollTo(0, 0);
+        }
+      }
     };
 
     window.addEventListener('popstate', handleLocationChange);

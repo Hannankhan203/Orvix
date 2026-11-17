@@ -1802,3 +1802,49 @@ export async function resetQuotaForTesting(identityKey?: string): Promise<void> 
     }
   } catch (_) {}
 }
+
+/**
+ * Sweeps expired upload quota reservations across Firestore and simulated memory store.
+ * Ensures unexpected server termination or abandoned uploads do not permanently consume quota.
+ */
+export async function pruneExpiredQuotaReservations(): Promise<number> {
+  const nowMs = Date.now();
+  let pruned = 0;
+  try {
+    const db = getFirestoreDb();
+    const colRef = db.collection('uploadQuotas');
+    if (typeof colRef.get === 'function') {
+      const snap = await colRef.get();
+      if (snap && Array.isArray(snap.docs)) {
+        for (const doc of snap.docs) {
+          const data = typeof doc.data === 'function' ? doc.data() : doc.data;
+          if (data && data.reservations && typeof data.reservations === 'object') {
+            let changed = false;
+            const cloned = { ...data, reservations: { ...data.reservations } };
+            for (const [resId, res] of Object.entries(cloned.reservations)) {
+              if (!res || typeof (res as any).expiresAt !== 'number' || (res as any).expiresAt <= nowMs) {
+                delete cloned.reservations[resId];
+                changed = true;
+                pruned++;
+              }
+            }
+            if (changed) {
+              if (Object.keys(cloned.reservations).length === 0 && (cloned.committed || 0) === 0) {
+                if (typeof doc.ref?.delete === 'function') {
+                  await doc.ref.delete();
+                }
+              } else {
+                cloned.lastUpdated = nowMs;
+                if (typeof doc.ref?.set === 'function') {
+                  await doc.ref.set(cloned, { merge: true });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+  return pruned;
+}
+

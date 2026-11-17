@@ -42,7 +42,7 @@ function warnProxyConfigThrottled(msg: string): void {
  */
 export function parseAndNormalizeIp(
   rawValue: unknown,
-  preserveIpv6Loopback = false
+  preserveIpv6Loopback = true
 ): string | null {
   if (typeof rawValue !== 'string') return null;
   let candidate = rawValue.trim();
@@ -138,7 +138,7 @@ function expandIpv6ToBigInt(ip: string): bigint {
   return result;
 }
 
-function ipToBigInt(ip: string, preserveIpv6Loopback = false): { family: 4 | 6; value: bigint } | null {
+function ipToBigInt(ip: string, preserveIpv6Loopback = true): { family: 4 | 6; value: bigint } | null {
   const normalized = parseAndNormalizeIp(ip, preserveIpv6Loopback);
   if (!normalized) return null;
   const family = net.isIP(normalized);
@@ -197,9 +197,12 @@ function isIpInCidr(ip: string, range: CidrRange): boolean {
   const parsed = ipToBigInt(ip);
   if (!parsed) return false;
 
-  // Treat 127.0.0.1 as matching ::1/128 if checked against IPv6 loopback or 127.0.0.0/8
+  // Symmetric cross-family loopback matching between 127.0.0.1 and ::1
   if (parsed.family !== range.family) {
-    if (ip === '127.0.0.1' && range.family === 6 && range.network === 1n && range.maskBits === 128) {
+    if ((ip === '127.0.0.1' || ip === '::1') && range.family === 6 && range.network === 1n && range.maskBits === 128) {
+      return true;
+    }
+    if ((ip === '127.0.0.1' || ip === '::1') && range.family === 4 && (range.network & 0xff000000n) === 0x7f000000n) {
       return true;
     }
     return false;

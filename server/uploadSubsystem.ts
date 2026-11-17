@@ -71,6 +71,7 @@ import {
   getUtcDayString,
   getNextUtcMidnight,
   getFirestoreDb,
+  pruneExpiredQuotaReservations,
   type QuotaIdentity,
   type QuotaReservation,
   type QuotaStatus
@@ -990,6 +991,7 @@ export function cleanupExpiredUploads() {
   try {
     void pruneExpiredDirectUploadTickets();
     void pruneExpiredDurableUploadRecords();
+    void pruneExpiredQuotaReservations();
     const now = Date.now();
     for (const [id, record] of fileRegistry.entries()) {
       if (record.expiresAt <= now) {
