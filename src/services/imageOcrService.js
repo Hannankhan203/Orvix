@@ -596,18 +596,25 @@ function isNetworkOrOfflineVisionError(err) {
   return false;
 }
 
-function resolveImageOcrApiKey(explicitKey = null) {
-  if (explicitKey && typeof explicitKey === 'string' && explicitKey.trim() && explicitKey !== 'MY_GEMINI_API_KEY') {
-    return explicitKey.trim();
-  }
-  try {
-    if (typeof import.meta !== 'undefined' && import.meta?.env?.VITE_GEMINI_API_KEY) {
-      const viteKey = String(import.meta.env.VITE_GEMINI_API_KEY).trim();
-      if (viteKey && viteKey !== 'MY_GEMINI_API_KEY') {
-        return viteKey;
-      }
+/**
+ * Resolves an explicit server-supplied Gemini API key for OCR.
+ * Never reads from client-exposed environment variables.
+ *
+ * @param {string|null} [explicitKey]
+ * @returns {string|null}
+ */
+export function resolveImageOcrApiKey(explicitKey = null) {
+  if (explicitKey && typeof explicitKey === 'string') {
+    const trimmed = explicitKey.trim();
+    if (
+      trimmed &&
+      trimmed !== 'MY_GEMINI_API_KEY' &&
+      !/^(?:undefined|null|none|false|true|todo|changeme|na|n\/a)$/i.test(trimmed) &&
+      !/^(?:your|my|replace|insert|placeholder|enter)_[a-z0-9_-]+$/i.test(trimmed)
+    ) {
+      return trimmed;
     }
-  } catch (_) {}
+  }
   return null;
 }
 

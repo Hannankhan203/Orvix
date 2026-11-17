@@ -22,7 +22,20 @@ import {
   buildFirestoreMessagePayload
 } from '../src/services/chatStorageService.js';
 import { VoiceStreamClient } from '../src/services/voiceStreamClient.js';
-import { getGeminiApiKey } from '../server/serverConfig.ts';
+import {
+  getGeminiApiKey,
+  getGroqApiKey,
+  getOpenRouterApiKey,
+  getCloudflareCredentials,
+  resolveEnvCredential,
+  warnIfPublicPrefixedSecretsConfigured,
+  resetPublicPrefixedSecretsWarningForTesting
+} from '../server/serverConfig.ts';
+// @ts-ignore - JS OCR service module
+import {
+  resolveImageOcrApiKey,
+  extractImageTextWithGeminiVision
+} from '../src/services/imageOcrService.js';
 import { setupVoiceWebSocketServer, resetVoiceWebSocketStateForTesting } from '../server/voiceWebSocketSubsystem.ts';
 import { resetFirebaseAuthForTesting, setTestFirebaseProjectId, setTestPublicKey } from '../server/firebaseAuthHelper.ts';
 
@@ -241,7 +254,7 @@ test('ORVIX-M03 WebSocket authentication: rejects URL query tokens and accepts A
   }
 });
 
-test('ORVIX-M04 Frontend credential isolation: zero server secrets in client bundle or image OCR helpers', () => {
+test('ORVIX-M04 & ORVIX-CRIT-01 Frontend credential isolation: zero server secrets in client bundle or image OCR helpers', async () => {
   // 1. Verify /proc/environ scanning is absent from serverConfig.ts
   const serverConfigSrc = fs.readFileSync(path.join(process.cwd(), 'server', 'serverConfig.ts'), 'utf8');
   assert.equal(
@@ -253,26 +266,184 @@ test('ORVIX-M04 Frontend credential isolation: zero server secrets in client bun
   const apiKey = getGeminiApiKey();
   assert.equal(typeof apiKey, 'string');
 
-  // 2. Verify imageOcrService.js has zero direct process.env.GEMINI_API_KEY reads
+  // 2. Verify imageOcrService.js has zero direct process.env or import.meta.env.VITE_GEMINI_API_KEY reads
   const ocrServiceSrc = fs.readFileSync(path.join(process.cwd(), 'src', 'services', 'imageOcrService.js'), 'utf8');
   assert.equal(
     ocrServiceSrc.includes('process.env.GEMINI_API_KEY'),
     false,
     'imageOcrService.js must not contain direct process.env.GEMINI_API_KEY reads'
   );
+  assert.equal(
+    ocrServiceSrc.includes('VITE_GEMINI_API_KEY'),
+    false,
+    'imageOcrService.js must not reference client-exposed VITE_GEMINI_API_KEY'
+  );
+  assert.equal(
+    ocrServiceSrc.includes('import.meta.env'),
+    false,
+    'imageOcrService.js must not read secrets from client import.meta.env'
+  );
 
-  // 3. Verify production client bundle in dist/assets does not contain raw server API keys or unredacted secrets
+  // 3. Verify runtime OCR key resolution strictly requires an explicit server-supplied key
+  assert.equal(resolveImageOcrApiKey(), null);
+  assert.equal(resolveImageOcrApiKey(null), null);
+  assert.equal(resolveImageOcrApiKey(''), null);
+  assert.equal(resolveImageOcrApiKey('MY_GEMINI_API_KEY'), null);
+  assert.equal(resolveImageOcrApiKey('your_api_key_here'), null);
+  assert.equal(resolveImageOcrApiKey('  server-supplied-key-123  '), 'server-supplied-key-123');
+
+  // Without an explicit server key, extractImageTextWithGeminiVision must immediately return null without invoking cloud API
+  const visionWithoutKey = await extractImageTextWithGeminiVision(Buffer.from('test'), 'image/png', null);
+  assert.equal(visionWithoutKey, null);
+
+  // 4. Verify production client bundle in dist/assets does not contain raw server API keys or VITE_GEMINI_API_KEY
   const distAssetsDir = path.join(process.cwd(), 'dist', 'assets');
   if (fs.existsSync(distAssetsDir)) {
     const jsFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.js'));
     for (const jsFile of jsFiles) {
       const content = fs.readFileSync(path.join(distAssetsDir, jsFile), 'utf8');
-      // Must not contain actual raw Google API keys (AIzaSy...)
       assert.equal(
         /AIzaSy[A-Za-z0-9_-]{33}/.test(content),
         false,
         `Production client bundle (${jsFile}) must not embed raw server-side Google API keys`
       );
+      assert.equal(
+        content.includes('VITE_GEMINI_API_KEY'),
+        false,
+        `Production client bundle (${jsFile}) must not reference VITE_GEMINI_API_KEY`
+      );
     }
   }
 });
+
+test('ORVIX-CRIT-01 Server secret isolation: rejects VITE_*, NEXT_PUBLIC_*, and REACT_APP_* secrets, preserves legitimate server keys, and logs safe startup warnings', () => {
+  const trackedKeys = [
+    'GEMINI_API_KEY',
+    'ORVIX_GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'VITE_GEMINI_API_KEY',
+    'NEXT_PUBLIC_GEMINI_API_KEY',
+    'REACT_APP_GEMINI_API_KEY',
+    'GROQ_API_KEY',
+    'ORVIX_GROQ_API_KEY',
+    'GROQ_KEY',
+    'GROQ_API_TOKEN',
+    'GROQ_API_SECRET',
+    'VITE_GROQ_API_KEY',
+    'NEXT_PUBLIC_GROQ_API_KEY',
+    'REACT_APP_GROQ_API_KEY',
+    'OPENROUTER_API_KEY',
+    'ORVIX_OPENROUTER_API_KEY',
+    'OPEN_ROUTER_API_KEY',
+    'OPENROUTER_KEY',
+    'OPENROUTER_API_TOKEN',
+    'OPENROUTER_API_SECRET',
+    'VITE_OPENROUTER_API_KEY',
+    'NEXT_PUBLIC_OPENROUTER_API_KEY',
+    'REACT_APP_OPENROUTER_API_KEY',
+    'CLOUDFLARE_ACCOUNT_ID',
+    'ORVIX_CLOUDFLARE_ACCOUNT_ID',
+    'VITE_CLOUDFLARE_ACCOUNT_ID',
+    'NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID',
+    'REACT_APP_CLOUDFLARE_ACCOUNT_ID',
+    'CLOUDFLARE_API_TOKEN',
+    'ORVIX_CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_TOKEN',
+    'CLOUDFLARE_API_KEY',
+    'VITE_CLOUDFLARE_API_TOKEN',
+    'NEXT_PUBLIC_CLOUDFLARE_API_TOKEN',
+    'REACT_APP_CLOUDFLARE_API_TOKEN'
+  ];
+
+  const savedEnv: Record<string, string | undefined> = {};
+  for (const k of trackedKeys) {
+    savedEnv[k] = process.env[k];
+    delete process.env[k];
+  }
+
+  try {
+    resetPublicPrefixedSecretsWarningForTesting();
+
+    // 1. Configure ONLY public-prefixed variables with sensitive values
+    const sensitiveGeminiSecret = 'SUPER_SECRET_VITE_GEMINI_VALUE_999';
+    const sensitiveGroqSecret = 'SUPER_SECRET_NEXT_GROQ_VALUE_888';
+    const sensitiveOpenRouterSecret = 'SUPER_SECRET_REACT_OPENROUTER_VALUE_777';
+    const sensitiveCfAccount = 'SUPER_SECRET_VITE_CF_ACCOUNT_666';
+    const sensitiveCfToken = 'SUPER_SECRET_NEXT_CF_TOKEN_555';
+
+    process.env.VITE_GEMINI_API_KEY = sensitiveGeminiSecret;
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY = sensitiveGeminiSecret;
+    process.env.REACT_APP_GEMINI_API_KEY = sensitiveGeminiSecret;
+
+    process.env.VITE_GROQ_API_KEY = sensitiveGroqSecret;
+    process.env.NEXT_PUBLIC_GROQ_API_KEY = sensitiveGroqSecret;
+    process.env.REACT_APP_GROQ_API_KEY = sensitiveGroqSecret;
+
+    process.env.VITE_OPENROUTER_API_KEY = sensitiveOpenRouterSecret;
+    process.env.NEXT_PUBLIC_OPENROUTER_API_KEY = sensitiveOpenRouterSecret;
+    process.env.REACT_APP_OPENROUTER_API_KEY = sensitiveOpenRouterSecret;
+
+    process.env.VITE_CLOUDFLARE_ACCOUNT_ID = sensitiveCfAccount;
+    process.env.NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID = sensitiveCfAccount;
+    process.env.VITE_CLOUDFLARE_API_TOKEN = sensitiveCfToken;
+    process.env.NEXT_PUBLIC_CLOUDFLARE_API_TOKEN = sensitiveCfToken;
+
+    // Backend credential getters MUST reject all public-prefixed variables
+    assert.equal(getGeminiApiKey(), '');
+    assert.equal(getGroqApiKey(), '');
+    assert.equal(getOpenRouterApiKey(), '');
+    assert.deepEqual(getCloudflareCredentials(), { accountId: '', apiToken: '' });
+    assert.equal(resolveEnvCredential('VITE_GEMINI_API_KEY', 'NEXT_PUBLIC_GROQ_API_KEY'), '');
+
+    // 2. Verify startup warning detects public-prefixed secrets and NEVER logs secret values
+    const warnings: string[] = [];
+    const detected = warnIfPublicPrefixedSecretsConfigured(process.env, (msg: string) => warnings.push(msg));
+    assert.equal(detected.includes('VITE_GEMINI_API_KEY'), true);
+    assert.equal(detected.includes('NEXT_PUBLIC_GROQ_API_KEY'), true);
+    assert.equal(detected.includes('REACT_APP_OPENROUTER_API_KEY'), true);
+    assert.equal(detected.includes('VITE_CLOUDFLARE_API_TOKEN'), true);
+    assert.equal(warnings.length, 1);
+
+    const warningMessage = warnings[0];
+    assert.equal(warningMessage.includes('VITE_GEMINI_API_KEY'), true);
+    assert.equal(warningMessage.includes(sensitiveGeminiSecret), false, 'Warning must never print the Gemini secret value');
+    assert.equal(warningMessage.includes(sensitiveGroqSecret), false, 'Warning must never print the Groq secret value');
+    assert.equal(warningMessage.includes(sensitiveOpenRouterSecret), false, 'Warning must never print the OpenRouter secret value');
+    assert.equal(warningMessage.includes(sensitiveCfAccount), false, 'Warning must never print the Cloudflare account value');
+    assert.equal(warningMessage.includes(sensitiveCfToken), false, 'Warning must never print the Cloudflare token value');
+
+    // 3. Verify legitimate server-only environment variable names continue to work properly
+    process.env.GEMINI_API_KEY = 'server-gemini-secret-key';
+    process.env.GROQ_API_KEY = 'server-groq-secret-key';
+    process.env.OPENROUTER_API_KEY = 'server-openrouter-secret-key';
+    process.env.CLOUDFLARE_ACCOUNT_ID = 'server-cf-account-id';
+    process.env.CLOUDFLARE_API_TOKEN = 'server-cf-api-token';
+
+    assert.equal(getGeminiApiKey(), 'server-gemini-secret-key');
+    assert.equal(getGroqApiKey(), 'server-groq-secret-key');
+    assert.equal(getOpenRouterApiKey(), 'server-openrouter-secret-key');
+    assert.deepEqual(getCloudflareCredentials(), {
+      accountId: 'server-cf-account-id',
+      apiToken: 'server-cf-api-token'
+    });
+
+    // Verify ORVIX_* and fallback server-only aliases also work
+    delete process.env.GEMINI_API_KEY;
+    process.env.ORVIX_GEMINI_API_KEY = 'orvix-gemini-alias-key';
+    assert.equal(getGeminiApiKey(), 'orvix-gemini-alias-key');
+
+    delete process.env.ORVIX_GEMINI_API_KEY;
+    process.env.GOOGLE_API_KEY = 'google-api-alias-key';
+    assert.equal(getGeminiApiKey(), 'google-api-alias-key');
+  } finally {
+    for (const k of trackedKeys) {
+      if (savedEnv[k] === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = savedEnv[k];
+      }
+    }
+    resetPublicPrefixedSecretsWarningForTesting();
+  }
+});
+

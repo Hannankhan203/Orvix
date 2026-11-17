@@ -193,6 +193,97 @@ export function ensureServerEnvLoaded(): void {
   } catch (_) {
     // Non-fatal in read-only or restricted serverless environments
   }
+  warnIfPublicPrefixedSecretsConfigured();
+}
+
+const PUBLIC_SECRET_PREFIX_PATTERN = /^(?:VITE|NEXT_PUBLIC|REACT_APP)_/i;
+const PUBLIC_PROVIDER_SECRET_KEY_PATTERN =
+  /^(?:VITE|NEXT_PUBLIC|REACT_APP)_(?:ORVIX_)?(?:GEMINI|GOOGLE|GROQ|OPENROUTER|OPEN_ROUTER|CLOUDFLARE)_(?:API_KEY|KEY|API_TOKEN|TOKEN|API_SECRET|SECRET|ACCOUNT_ID)$/i;
+
+export const PUBLIC_PREFIXED_PROVIDER_SECRET_ENV_KEYS = [
+  'VITE_GEMINI_API_KEY',
+  'NEXT_PUBLIC_GEMINI_API_KEY',
+  'REACT_APP_GEMINI_API_KEY',
+  'VITE_GOOGLE_API_KEY',
+  'NEXT_PUBLIC_GOOGLE_API_KEY',
+  'REACT_APP_GOOGLE_API_KEY',
+  'VITE_GROQ_API_KEY',
+  'NEXT_PUBLIC_GROQ_API_KEY',
+  'REACT_APP_GROQ_API_KEY',
+  'VITE_OPENROUTER_API_KEY',
+  'NEXT_PUBLIC_OPENROUTER_API_KEY',
+  'REACT_APP_OPENROUTER_API_KEY',
+  'VITE_CLOUDFLARE_ACCOUNT_ID',
+  'NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID',
+  'REACT_APP_CLOUDFLARE_ACCOUNT_ID',
+  'VITE_CLOUDFLARE_API_TOKEN',
+  'NEXT_PUBLIC_CLOUDFLARE_API_TOKEN',
+  'REACT_APP_CLOUDFLARE_API_TOKEN',
+  'VITE_CLOUDFLARE_API_KEY',
+  'NEXT_PUBLIC_CLOUDFLARE_API_KEY',
+  'REACT_APP_CLOUDFLARE_API_KEY'
+] as const;
+
+let publicPrefixedSecretsWarningLogged = false;
+
+export function resetPublicPrefixedSecretsWarningForTesting(): void {
+  publicPrefixedSecretsWarningLogged = false;
+}
+
+/**
+ * Scans an environment object for client-exposed (VITE_*, NEXT_PUBLIC_*, REACT_APP_*)
+ * AI provider credential variables. Returns only the variable names, never their values.
+ */
+export function detectPublicPrefixedProviderSecrets(
+  env: NodeJS.ProcessEnv = process.env
+): string[] {
+  const detected = new Set<string>();
+  if (!env || typeof env !== 'object') return [];
+
+  for (const [rawKey, rawVal] of Object.entries(env)) {
+    if (typeof rawVal !== 'string') continue;
+    const key = rawKey.trim();
+    if (!key) continue;
+    const isTrackedPublicSecretKey =
+      PUBLIC_PROVIDER_SECRET_KEY_PATTERN.test(key) ||
+      (PUBLIC_PREFIXED_PROVIDER_SECRET_ENV_KEYS as readonly string[]).some(
+        (candidate) => candidate.toUpperCase() === key.toUpperCase()
+      );
+    if (isTrackedPublicSecretKey && isConfiguredCredential(rawVal)) {
+      detected.add(key);
+    }
+  }
+
+  return Array.from(detected);
+}
+
+/**
+ * Emits a safe startup warning when public-prefixed provider secret variables are configured.
+ * Never logs or exposes the underlying secret values.
+ */
+export function warnIfPublicPrefixedSecretsConfigured(
+  env: NodeJS.ProcessEnv = process.env,
+  logger: (message: string) => void = console.warn
+): string[] {
+  const detectedKeys = detectPublicPrefixedProviderSecrets(env);
+  if (detectedKeys.length === 0) {
+    return [];
+  }
+
+  if (env === process.env && logger === console.warn) {
+    if (publicPrefixedSecretsWarningLogged) {
+      return detectedKeys;
+    }
+    publicPrefixedSecretsWarningLogged = true;
+  }
+
+  logger(
+    `[Security Warning] Ignored client-exposed provider secret environment variable(s): ${detectedKeys.join(
+      ', '
+    )}. Public prefixes (VITE_*, NEXT_PUBLIC_*, REACT_APP_*) risk exposing secrets in client bundles and are rejected by the server. Configure server-only variables instead (GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN).`
+  );
+
+  return detectedKeys;
 }
 
 /**
@@ -224,12 +315,17 @@ export function isConfiguredCredential(value: string): boolean {
  * Resolves a credential string from a list of candidate environment variable names.
  * Inspects process.env sequentially (skipping empty or placeholder values so valid fallback aliases win),
  * and falls back to a trimmed case-insensitive key scan for hosting dashboards with accidental key whitespace.
+ * Rejects any public-prefixed provider secret keys (VITE_*, NEXT_PUBLIC_*, REACT_APP_*).
  */
 export function resolveEnvCredential(...candidateNames: string[]): string {
   ensureServerEnvLoaded();
 
+  const safeCandidateNames = candidateNames.filter(
+    (name) => !PUBLIC_PROVIDER_SECRET_KEY_PATTERN.test(name.trim())
+  );
+
   // 1. Direct lookup across candidate names in priority order
-  for (const name of candidateNames) {
+  for (const name of safeCandidateNames) {
     const raw = process.env[name];
     if (typeof raw === 'string') {
       const sanitized = sanitizeCredentialValue(raw);
@@ -241,10 +337,15 @@ export function resolveEnvCredential(...candidateNames: string[]): string {
 
   // 2. Fallback: trimmed case-insensitive key match in process.env
   const envEntries = Object.entries(process.env);
-  for (const name of candidateNames) {
+  for (const name of safeCandidateNames) {
     const targetUpper = name.trim().toUpperCase();
     for (const [envKey, rawVal] of envEntries) {
-      if (typeof rawVal === 'string' && envKey.trim().toUpperCase() === targetUpper) {
+      const trimmedEnvKey = envKey.trim();
+      if (
+        typeof rawVal === 'string' &&
+        !PUBLIC_PROVIDER_SECRET_KEY_PATTERN.test(trimmedEnvKey) &&
+        trimmedEnvKey.toUpperCase() === targetUpper
+      ) {
         const sanitized = sanitizeCredentialValue(rawVal);
         if (isConfiguredCredential(sanitized)) {
           return sanitized;
@@ -434,40 +535,34 @@ export function resolveConfiguredSignedDecodeUrlSecret(): SignedDecodeUrlSecretR
 }
 
 export function getGroqApiKey(): string {
+  warnIfPublicPrefixedSecretsConfigured();
   return resolveEnvCredential(
     'GROQ_API_KEY',
     'ORVIX_GROQ_API_KEY',
-    'VITE_GROQ_API_KEY',
     'GROQ_KEY',
     'GROQ_API_TOKEN',
-    'GROQ_API_SECRET',
-    'NEXT_PUBLIC_GROQ_API_KEY',
-    'REACT_APP_GROQ_API_KEY'
+    'GROQ_API_SECRET'
   );
 }
 
 export function getOpenRouterApiKey(): string {
+  warnIfPublicPrefixedSecretsConfigured();
   return resolveEnvCredential(
     'OPENROUTER_API_KEY',
     'ORVIX_OPENROUTER_API_KEY',
-    'VITE_OPENROUTER_API_KEY',
     'OPEN_ROUTER_API_KEY',
     'OPENROUTER_KEY',
     'OPENROUTER_API_TOKEN',
-    'OPENROUTER_API_SECRET',
-    'NEXT_PUBLIC_OPENROUTER_API_KEY',
-    'REACT_APP_OPENROUTER_API_KEY'
+    'OPENROUTER_API_SECRET'
   );
 }
 
 export function getGeminiApiKey(): string {
+  warnIfPublicPrefixedSecretsConfigured();
   return resolveEnvCredential(
     'GEMINI_API_KEY',
     'ORVIX_GEMINI_API_KEY',
-    'VITE_GEMINI_API_KEY',
-    'GOOGLE_API_KEY',
-    'NEXT_PUBLIC_GEMINI_API_KEY',
-    'REACT_APP_GEMINI_API_KEY'
+    'GOOGLE_API_KEY'
   );
 }
 
@@ -541,19 +636,16 @@ export function getSupabaseAttachmentCleanupBatchSize(): number {
 }
 
 export function getCloudflareCredentials(): { accountId: string; apiToken: string } {
+  warnIfPublicPrefixedSecretsConfigured();
   const accountId = resolveEnvCredential(
     'CLOUDFLARE_ACCOUNT_ID',
-    'ORVIX_CLOUDFLARE_ACCOUNT_ID',
-    'VITE_CLOUDFLARE_ACCOUNT_ID',
-    'NEXT_PUBLIC_CLOUDFLARE_ACCOUNT_ID'
+    'ORVIX_CLOUDFLARE_ACCOUNT_ID'
   );
   const apiToken = resolveEnvCredential(
     'CLOUDFLARE_API_TOKEN',
     'ORVIX_CLOUDFLARE_API_TOKEN',
-    'VITE_CLOUDFLARE_API_TOKEN',
     'CLOUDFLARE_TOKEN',
-    'CLOUDFLARE_API_KEY',
-    'NEXT_PUBLIC_CLOUDFLARE_API_TOKEN'
+    'CLOUDFLARE_API_KEY'
   );
   return { accountId, apiToken };
 }
