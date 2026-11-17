@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Speech Text Cleaner
  * Prepares raw AI assistant Markdown content for clean, natural speech synthesis.
@@ -22,6 +23,7 @@ function cleanTableForSpeech(tableBlock) {
 
   if (lines.length < 2) return '';
 
+  /** @param {string} line */
   const parseRow = (line) =>
     line
       .slice(1, -1)
@@ -316,6 +318,7 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
     .replace(/\bi'd\b/g, "I'd");
 
   // 3. Technical Acronyms and Proper Names
+  /** @type {Array<[RegExp, string | ((match: string) => string)]>} */
   const techReplacements = [
     [/\b(?:or\s*vix|our\s*vix|or\s*fix)\s*['’]s\b/gi, "Orvix's"],
     [/\borvix\s*['’]s\b/gi, "Orvix's"],
@@ -350,7 +353,11 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
   ];
 
   for (const [pattern, replacement] of techReplacements) {
-    text = text.replace(pattern, replacement);
+    if (typeof replacement === 'function') {
+      text = text.replace(pattern, replacement);
+    } else {
+      text = text.replace(pattern, replacement);
+    }
   }
 
   // 4. Context-aware grammar and technical disambiguation
@@ -391,6 +398,7 @@ export function polishSpokenTranscript(transcript = '', surroundingContext = '')
 
   // Protect technical filenames, extensions, and dot notation from sentence-splitting
   const technicalIdentifiers = /\b([a-zA-Z0-9_-]+)\.(md|ts|js|jsx|tsx|json|html|css|py|txt|csv|pdf|png|jpg|svg|xml|yaml|yml|env|lock|random|log)\b/gi;
+  /** @type {string[]} */
   const techPlaceholders = [];
   text = text.replace(technicalIdentifiers, (m) => {
     techPlaceholders.push(m);

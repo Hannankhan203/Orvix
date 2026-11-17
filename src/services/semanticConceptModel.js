@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Orvix Client-Side Semantic Concept Ontology & Lexical Field Model
  * Provides zero-download, 100% offline conceptual representation mapping words, stems,
@@ -293,7 +294,7 @@ for (const group of RAW_CONCEPT_GROUPS) {
  * Retrieves semantic concept clusters and domain tags for a given token or stem.
  *
  * @param {string} word - Original lowercase word
- * @param {string} [stem] - Morphologically stemmed form
+ * @param {string | null} [stem=null] - Morphologically stemmed form
  * @returns {Array<{ cluster: string, domain: string }>}
  */
 export function getConceptsForWord(word, stem = null) {

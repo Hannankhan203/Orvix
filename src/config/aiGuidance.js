@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Orvix AI Model Selection Guidance Configuration
  *
@@ -21,6 +22,7 @@ import {
   QWEN3_06B_F32_WEBLLM_MODEL_ID
 } from './webllmModels.js';
 
+/** @type {Readonly<Record<string, string>>} */
 export const AI_PROVIDER_GUIDANCE = Object.freeze({
   gemini: 'Powerful general-purpose AI — delivers strong responses across a wide range of tasks, with cloud processing required.',
   groq: 'Fast cloud AI — optimized for very quick responses while providing strong general-purpose capabilities.',
@@ -28,6 +30,7 @@ export const AI_PROVIDER_GUIDANCE = Object.freeze({
   cloudflare: 'Cloud AI running through Cloudflare — provides convenient AI access with capabilities depending on the selected model.'
 });
 
+/** @type {Readonly<Record<string, string>>} */
 export const BROWSER_AI_MODEL_GUIDANCE = Object.freeze({
   [DEFAULT_WEBLLM_MODEL_ID]: 'Balanced Browser AI choice — offers the strongest overall response quality among the local models, but requires more resources than the smaller models.',
   [FALLBACK_F32_WEBLLM_MODEL_ID]: 'Balanced Browser AI choice — offers the strongest overall response quality among the local models, but requires more resources than the smaller models.',

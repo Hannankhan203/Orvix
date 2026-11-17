@@ -1,9 +1,28 @@
+// @ts-check
 import React from 'react';
 import { Eye, X, FileImage } from 'lucide-react';
 
 /**
+ * @typedef {{
+ *   id: string,
+ *   name: string,
+ *   isImage?: boolean,
+ *   extension?: string,
+ *   formattedSize?: string,
+ *   previewUrl?: string | null,
+ *   uploadProgress?: number
+ * }} AttachmentTrayItem
+ */
+
+/**
  * ComposerAttachmentTray Component
  * Renders the preview chip for the selected file or image attachment inside the composer dock.
+ *
+ * @param {Object} props
+ * @param {AttachmentTrayItem[]} [props.attachments=[]]
+ * @param {(att: AttachmentTrayItem) => void} [props.onPreview]
+ * @param {(id: string) => void} [props.onRemove]
+ * @param {string | null} [props.uploadQuotaText=null]
  */
 export default function ComposerAttachmentTray({
   attachments = [],
@@ -39,7 +58,7 @@ export default function ComposerAttachmentTray({
                     const fallback = e.currentTarget.parentElement?.querySelector(
                       '.composer-image-fallback-icon'
                     );
-                    if (fallback) fallback.style.display = 'flex';
+                    if (fallback instanceof HTMLElement) fallback.style.display = 'flex';
                   }}
                 />
               ) : null}

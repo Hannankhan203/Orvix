@@ -8,7 +8,8 @@ import { chunkDocument } from './semanticChunkingService.js';
 import {
   generateSemanticEmbedding,
   generateChunkEmbeddingsAsync,
-  computeCosineSimilarity
+  computeCosineSimilarity,
+  stemToken
 } from './semanticEmbeddingService.js';
 import {
   storeDocumentChunks,
@@ -22,6 +23,84 @@ import {
 
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MIN_SIMILARITY = 0.15; // Minimum cosine similarity for semantic relevance
+const MAX_IDF_RERANK_BOOST = 0.08; // Bounded lexical specificity boost preserving [0, 1] vector scores
+
+const QUERY_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'how',
+  'in', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'this', 'to', 'was',
+  'what', 'when', 'where', 'which', 'who', 'why', 'with', 'tell', 'about', 'me'
+]);
+
+/**
+ * Extracts normalized rare-term tokens and stems for lightweight corpus-IDF reranking.
+ * @param {string} text
+ * @returns {Set<string>}
+ */
+function extractSpecificityTerms(text) {
+  if (!text || typeof text !== 'string') return new Set();
+  const tokens = text.toLowerCase().match(/[a-z0-9]+(?:[-_'][a-z0-9]+)*/g) || [];
+  const terms = new Set();
+  for (const tok of tokens) {
+    if (QUERY_STOPWORDS.has(tok)) continue;
+    if (tok.length < 2 && !/^[0-9]$/.test(tok)) continue;
+    terms.add(tok);
+    terms.add(stemToken(tok));
+  }
+  return terms;
+}
+
+/**
+ * Computes normalized corpus-local BM25-style IDF specificity scores [0..1] for each candidate chunk
+ * against query terms, sharpening rare technical term / identifier disambiguation inside large docs.
+ * @param {string} query
+ * @param {Array<Object>} chunks
+ * @returns {Float32Array | null}
+ */
+function computeCorpusSpecificityScores(query, chunks) {
+  if (!Array.isArray(chunks) || chunks.length <= 1) return null;
+  const queryTerms = extractSpecificityTerms(query);
+  if (queryTerms.size === 0) return null;
+
+  const docCount = chunks.length;
+  const chunkTermSets = chunks.map((chunk) => extractSpecificityTerms(chunk.text || ''));
+  const docFreq = new Map();
+
+  for (const term of queryTerms) {
+    let df = 0;
+    for (let i = 0; i < docCount; i++) {
+      if (chunkTermSets[i].has(term)) df++;
+    }
+    if (df > 0) docFreq.set(term, df);
+  }
+
+  if (docFreq.size === 0) return null;
+
+  let maxPossibleIdf = 0;
+  const idfWeights = new Map();
+  const denom = Math.log(1 + docCount);
+  for (const [term, df] of docFreq.entries()) {
+    const idf = Math.max(0, Math.log(1 + (docCount - df + 0.5) / (df + 0.5)) / denom);
+    if (idf > 0) {
+      idfWeights.set(term, idf);
+      maxPossibleIdf += idf;
+    }
+  }
+
+  if (maxPossibleIdf <= 0) return null;
+
+  const scores = new Float32Array(docCount);
+  for (let i = 0; i < docCount; i++) {
+    const termSet = chunkTermSets[i];
+    let matchedIdf = 0;
+    for (const [term, weight] of idfWeights.entries()) {
+      if (termSet.has(term)) {
+        matchedIdf += weight;
+      }
+    }
+    scores[i] = Math.min(1, matchedIdf / maxPossibleIdf);
+  }
+  return scores;
+}
 
 const NON_INDEXABLE_STATUSES = new Set([
   'error',
@@ -500,18 +579,21 @@ export async function searchSemanticChunks({
     dedupedChunks.push(chunk);
   }
 
-  // 3. Compute cosine similarity for each chunk
+  // 3. Compute cosine similarity + lightweight corpus-local IDF specificity reranking
+  const specificityScores = computeCorpusSpecificityScores(query, dedupedChunks);
   const scored = [];
   for (let i = 0; i < dedupedChunks.length; i++) {
     const chunk = dedupedChunks[i];
     const sim = computeCosineSimilarity(queryEmbedding, chunk.embedding);
     if (sim >= minScore) {
+      const specificityBoost = specificityScores ? specificityScores[i] * MAX_IDF_RERANK_BOOST : 0;
+      const combinedScore = Math.min(1.0, sim + specificityBoost);
       scored.push({
         chunkId: chunk.id,
         docId: chunk.docId,
         docName: chunk.docName || 'Document',
         format: chunk.format || 'FILE',
-        score: Math.round(sim * 1000) / 1000,
+        score: Math.round(combinedScore * 1000) / 1000,
         text: chunk.text,
         pageNumber: chunk.pageNumber || null,
         slideNumber: chunk.slideNumber || null,

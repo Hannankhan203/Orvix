@@ -1,8 +1,15 @@
+// @ts-check
 import React from 'react';
 
 /**
  * SharedConversationBanner Component
  * Displays indicator banner for shared conversation previews (read-only vs interactive continuation).
+ *
+ * @param {Object} props
+ * @param {boolean} [props.isSharedView=false]
+ * @param {unknown} [props.sharedSnapshot=null]
+ * @param {boolean} [props.isAuthenticatedSharedPreview=false]
+ * @param {(() => void) | undefined} [props.onSignInClick]
  */
 export default function SharedConversationBanner({
   isSharedView = false,

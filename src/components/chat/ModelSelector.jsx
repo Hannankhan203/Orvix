@@ -1,3 +1,4 @@
+// @ts-check
 import React from 'react';
 import { Cpu, ChevronDown } from 'lucide-react';
 import { PROVIDER_OPTIONS, DEFAULT_PROVIDER } from '../../services/aiRouter.js';
@@ -46,6 +47,7 @@ export default function ModelSelector({
       ? `AI Model: ${currentBaseLabel} — Server API key not configured — ${guidanceText}`
       : `AI Model: ${currentBaseLabel} — ${guidanceText}`;
 
+  /** @param {React.ChangeEvent<HTMLSelectElement>} e */
   const handleChange = (e) => {
     if (disabled) return;
     const newProvider = e.target.value;
@@ -57,6 +59,7 @@ export default function ModelSelector({
   const cloudProviders = PROVIDER_OPTIONS.filter((p) => p.id !== 'webllm');
   const browserProviders = PROVIDER_OPTIONS.filter((p) => p.id === 'webllm');
 
+  /** @param {{ id: string, name: string, shortName?: string, label?: string, modelTag?: string }} provider */
   const renderProviderOption = (provider) => {
     const availability = getProviderConfigAvailability(provider.id, providerConfig);
     const isConfirmedUnconfigured = availability.state === 'unconfigured';

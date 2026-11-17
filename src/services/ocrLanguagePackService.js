@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Orvix Multilingual OCR Language Pack Service
  * Manages on-demand downloading, Cache API storage, offline reuse,
@@ -117,17 +118,19 @@ export function getPackCacheKey(code) {
 /**
  * Validates language pack buffer integrity.
  * Returns false if buffer is null, below minimum size, or contains HTML error text.
- * @param {ArrayBuffer|Uint8Array|Buffer} buffer
+ * @param {ArrayBuffer | ArrayBufferView | null | undefined} buffer
  * @returns {boolean}
  */
 export function validateLanguagePackBuffer(buffer) {
   if (!buffer) return false;
-  const byteLength = buffer.byteLength || buffer.length || 0;
+  const rawBuffer = buffer instanceof ArrayBuffer ? buffer : buffer.buffer;
+  const byteOffset = buffer instanceof ArrayBuffer ? 0 : buffer.byteOffset;
+  const byteLength = buffer.byteLength || 0;
   if (byteLength < MIN_VALID_PACK_SIZE) return false;
 
   // Check for common 404/500 HTML error responses: <!DOCTYPE html> or <html
   try {
-    const slice = new Uint8Array(buffer, 0, Math.min(100, byteLength));
+    const slice = new Uint8Array(rawBuffer, byteOffset, Math.min(100, byteLength));
     const headerStr = String.fromCharCode.apply(null, Array.from(slice)).toLowerCase();
     if (headerStr.includes('<!doctype html') || headerStr.includes('<html') || headerStr.includes('404: not found')) {
       return false;
@@ -256,6 +259,7 @@ export async function downloadLanguagePack(code, options = {}) {
 
   const clean = code.toLowerCase().trim();
   if (!isLanguageSupported(clean)) {
+    /** @type {Error & { code?: string }} */
     const err = new Error(`Language "${code}" is not supported. Supported: eng, spa, fra, deu, ara, urd.`);
     err.code = 'UNSUPPORTED_LANGUAGE';
     throw err;
@@ -305,6 +309,7 @@ export async function downloadLanguagePack(code, options = {}) {
         const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
 
         let downloadedBytes = 0;
+        /** @type {Uint8Array[]} */
         let chunks = [];
 
         if (response.body && response.body.getReader) {
@@ -372,13 +377,14 @@ export async function downloadLanguagePack(code, options = {}) {
       } catch (err) {
         lastError = err;
         // If aborted, don't continue to next mirror
-        if (options.signal?.aborted || err?.name === 'AbortError') {
+        if (options.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
           throw err;
         }
       }
     }
 
-    const detailMsg = lastError?.message || 'Network request failed';
+    const detailMsg = lastError instanceof Error ? lastError.message : 'Network request failed';
+    /** @type {Error & { code?: string, cause?: unknown }} */
     const err = new Error(`Failed to download language pack for ${clean}: ${detailMsg}`);
     err.code = 'DOWNLOAD_FAILED';
     err.cause = lastError;

@@ -42,6 +42,13 @@ jobs:
     - name: Type check / Lint
       run: bun run lint
 
+    - name: Type check frontend JS/JSX (incremental)
+      run: bun run lint:js
+
+    - name: Dependency security audit
+      continue-on-error: true
+      run: bun run audit
+
     - name: Run automated tests
       run: bun run test
 

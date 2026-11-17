@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Legacy Storage Migration Utility
  * Safely migrates legacy 'chatora_*' browser storage keys to canonical 'orvix_*' keys
@@ -24,11 +25,12 @@ const KEY_PAIR_BY_CURRENT = new Map(
   ])
 );
 
+/**
+ * @param {string} currentKey
+ * @returns {string | null}
+ */
 function resolveLegacyKey(currentKey) {
-  if (KEY_PAIR_BY_CURRENT.has(currentKey)) {
-    return KEY_PAIR_BY_CURRENT.get(currentKey);
-  }
-  return null;
+  return KEY_PAIR_BY_CURRENT.get(currentKey) ?? null;
 }
 
 /**

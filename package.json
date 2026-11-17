@@ -14,6 +14,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
+    "lint:js": "tsc -p tsconfig.checkjs.json --noEmit",
+    "audit": "bun audit",
+    "audit:json": "bun audit --json",
     "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "dependencies": {

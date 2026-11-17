@@ -5,6 +5,15 @@
   "functions": {
     "api/*.ts": {
       "maxDuration": 300,
+      "memory": 1024
+    },
+    "api/upload.ts": {
+      "maxDuration": 300,
+      "memory": 1024,
+      "includeFiles": "{eng.traineddata*,node_modules/tesseract.js/**,node_modules/tesseract.js-core/**}"
+    },
+    "api/chat.ts": {
+      "maxDuration": 300,
       "memory": 1024,
       "includeFiles": "{eng.traineddata*,node_modules/tesseract.js/**,node_modules/tesseract.js-core/**}"
     }

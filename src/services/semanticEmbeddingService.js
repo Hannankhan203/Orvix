@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Orvix Lightweight Client-Side Semantic Embedding Service
  * Provides zero-download, 100% offline, deterministic dense vector embeddings
@@ -268,11 +269,13 @@ export function computeCosineSimilarity(vecA, vecB) {
  * Generates embeddings for an array of chunks in non-blocking batches.
  * Yields cooperatively to the browser event loop every `batchSize` items to prevent UI jank.
  *
- * @param {Array<Object>} chunks
+ * @typedef {{ text?: string } & Record<string, unknown>} ChunkRecord
+ *
+ * @param {Array<ChunkRecord>} chunks
  * @param {Object} [options]
  * @param {number} [options.batchSize=16]
  * @param {(progress: number) => void} [options.onProgress]
- * @returns {Promise<Array<Object>>} Chunks augmented with `.embedding`
+ * @returns {Promise<Array<ChunkRecord & { embedding: number[] }>>} Chunks augmented with `.embedding`
  */
 export async function generateChunkEmbeddingsAsync(chunks = [], options = {}) {
   if (!Array.isArray(chunks) || chunks.length === 0) return [];

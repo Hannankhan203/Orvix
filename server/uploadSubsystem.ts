@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
+import zlib from 'zlib';
 import multer from 'multer';
 
 import {
@@ -1780,10 +1781,37 @@ export function registerUploadRoutes(app: express.Express) {
 
     if (langCode === 'eng' && (rawFile === 'eng.traineddata' || rawFile === 'eng.traineddata.gz')) {
       const rootEngPath = path.resolve(process.cwd(), 'eng.traineddata');
-      if (fs.existsSync(rootEngPath)) {
+      const rootEngGzPath = path.resolve(process.cwd(), 'eng.traineddata.gz');
+      const wantsGzip = rawFile.endsWith('.gz');
+
+      if (wantsGzip && fs.existsSync(rootEngGzPath)) {
+        res.setHeader('Content-Type', 'application/gzip');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.sendFile(rootEngGzPath);
+      }
+
+      if (!wantsGzip && fs.existsSync(rootEngPath)) {
         res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         return res.sendFile(rootEngPath);
+      }
+
+      if (wantsGzip && fs.existsSync(rootEngPath)) {
+        const rawBytes = await fs.promises.readFile(rootEngPath);
+        const gzBytes = zlib.gzipSync(rawBytes);
+        res.setHeader('Content-Type', 'application/gzip');
+        res.setHeader('Content-Length', String(gzBytes.length));
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.send(gzBytes);
+      }
+
+      if (!wantsGzip && fs.existsSync(rootEngGzPath)) {
+        const gzBytes = await fs.promises.readFile(rootEngGzPath);
+        const rawBytes = zlib.gunzipSync(gzBytes);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Length', String(rawBytes.length));
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        return res.send(rawBytes);
       }
     }
 

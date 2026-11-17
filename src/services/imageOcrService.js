@@ -186,7 +186,7 @@ export function resolveLocalTesseractAssets() {
 
 /**
  * Initializes and returns a shared, managed local Tesseract worker instance with strict offline asset paths.
- * Uses local workerPath, local corePath, local langPath, gzip=false (for raw eng.traineddata),
+ * Uses local workerPath, local corePath, local langPath, gzip matched to local asset (.gz vs raw),
  * and cacheMethod='none' to avoid remote CDN requests and avoid temp-cache corruption.
  */
 export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Orvix Chat Modes Configuration
  * Defines supported conversational modes, metadata, icons, and system instruction extensions.
@@ -5,6 +6,9 @@
 
 import { Sparkles, Code, PenTool, BookOpen } from 'lucide-react';
 
+/** @typedef {{ id: string, name: string, shortName: string, tagline: string, description: string, icon: unknown, iconName: string, instruction: string }} ChatModeEntry */
+
+/** @type {Record<string, ChatModeEntry> & { general: ChatModeEntry, coding: ChatModeEntry, writing: ChatModeEntry, learning: ChatModeEntry }} */
 export const CHAT_MODES = {
   general: {
     id: 'general',

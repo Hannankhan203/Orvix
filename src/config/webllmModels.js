@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Static WebLLM Browser AI model catalog, constants, and error definitions.
  * Decoupled from webllmService.js runtime logic so UI components and configs
@@ -23,7 +24,10 @@ export const QWEN3_06B_F32_WEBLLM_MODEL_ID = 'Qwen3-0.6B-q4f32_1-MLC';
  * 2. SmolLM2 360M (Compact)
  * 3. Qwen3 0.6B (Lightweight)
  * 4. Qwen 2.5 1.5B (Standard — default)
+ *
+ * @typedef {{ id: string, label: string, shortLabel: string, tier: string, tierLabel: string, parameters: string, description?: string, quantization: string, prefersShaderF16: boolean, f32FallbackModelId: string | null, vramRequiredMB: number, estimatedDownloadMB: number, minStorageBytes: number, contextWindowSize: number, maxDocChars: number, maxHistoryMessages: number, defaultMaxTokens: number, isDefault: boolean }} WebLLMModelEntry
  */
+/** @type {Readonly<Record<string, Readonly<WebLLMModelEntry>>>} */
 export const WEBLLM_MODEL_CATALOG = Object.freeze({
   [SMOLLM2_135M_WEBLLM_MODEL_ID]: Object.freeze({
     id: SMOLLM2_135M_WEBLLM_MODEL_ID,
@@ -227,6 +231,9 @@ export class WebLLMError extends Error {
    * @param {string} [options.code]
    * @param {number} [options.httpCode]
    * @param {boolean} [options.retryable]
+   * @param {boolean} [options.timeout]
+   * @param {boolean} [options.partial]
+   * @param {string} [options.partialText]
    * @param {unknown} [options.cause]
    */
   constructor(message, options = {}) {

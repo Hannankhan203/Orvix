@@ -1,3 +1,4 @@
+// @ts-check
 import React, { useState, useEffect, useRef } from 'react';
 import { Timer } from 'lucide-react';
 import { formatLiveElapsed } from '../../utils/formatResponseTime.js';
@@ -6,6 +7,8 @@ import { formatLiveElapsed } from '../../utils/formatResponseTime.js';
  * Helper to get current timestamp aligned with the origin of startTime.
  * If startTime > 1e11 (epoch ms, Date.now()), returns Date.now().
  * Otherwise returns performance.now() (or Date.now() if performance is unavailable).
+ * @param {number} startTime
+ * @returns {number}
  */
 function getNow(startTime) {
   const isEpoch = typeof startTime === 'number' && startTime > 1e11;
@@ -19,6 +22,8 @@ function getNow(startTime) {
 /**
  * Calculates remaining milliseconds until the next whole-second rollover,
  * ensuring timer updates land directly on second boundaries without drift.
+ * @param {number} startTime
+ * @returns {number}
  */
 function getMsUntilNextSecond(startTime) {
   const elapsedMs = Math.max(0, getNow(startTime) - startTime);
@@ -46,11 +51,13 @@ function getMsUntilNextSecond(startTime) {
  *    Conversely, state updates inside LiveResponseTimer only re-render this isolated badge.
  * 4. Resilient lifecycle & cleanup:
  *    Immediately clears pending timeouts on unmount, response completion, or startTime change.
+ *
+ * @param {{ startTime: number, isLocalGpu?: boolean }} props
  */
 function LiveResponseTimer({ startTime, isLocalGpu = false }) {
-  const [elapsedText, setElapsedText] = useState(() => formatLiveElapsed(startTime));
+  const [elapsedText, setElapsedText] = useState(() => formatLiveElapsed(startTime) || '0.0s');
   const lastTextRef = useRef(elapsedText);
-  const timeoutRef = useRef(null);
+  const timeoutRef = useRef(/** @type {ReturnType<typeof setTimeout> | null} */ (null));
 
   useEffect(() => {
     if (typeof startTime !== 'number' || startTime <= 0) return;
