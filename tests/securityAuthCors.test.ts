@@ -13,6 +13,7 @@ import {
 } from '../server/serverConfig.ts';
 import { registerChatRoutes } from '../server/chatSubsystem.ts';
 import { registerTranscriptionRoutes } from '../server/transcriptionSubsystem.ts';
+import { registerShareRoutes } from '../server/shareSubsystem.ts';
 import {
   setupVoiceWebSocketServer,
   resetVoiceWebSocketStateForTesting
@@ -62,6 +63,11 @@ async function startSecurityTestServer(): Promise<SecurityTestServer> {
   applyJsonBodyMiddleware(app);
   registerTranscriptionRoutes(app);
   registerChatRoutes(app);
+  registerShareRoutes(app);
+
+  // Unrelated routes sharing the "/share" prefix must not be mistakenly classified as the /share API alias
+  app.post('/shared', (_req, res) => res.status(200).json({ route: 'shared' }));
+  app.get('/share-other', (_req, res) => res.status(200).json({ route: 'share-other' }));
 
   const server = http.createServer(app);
   const wss = setupVoiceWebSocketServer(server);
@@ -647,6 +653,90 @@ test('ORVIX-CRIT-03 CORS policy: blocks arbitrary wildcard cloud domains and hon
         headers: { Origin: 'https://evil-service.run.app' }
       });
       assert.equal(postBlocked.status, 403);
+
+      // ORVIX-LOW-08: bare /share and /share/ must match /api/share cross-origin protection
+      for (const sharePath of ['/api/share', '/share', '/share/']) {
+        const sharePreflightBlocked = await fetch(`${srv.baseUrl}${sharePath}`, {
+          method: 'OPTIONS',
+          headers: {
+            Origin: 'https://evil-attacker.vercel.app',
+            'Access-Control-Request-Method': 'POST'
+          }
+        });
+        assert.equal(sharePreflightBlocked.status, 403, `OPTIONS ${sharePath} from disallowed origin must return 403`);
+        assert.equal(((await sharePreflightBlocked.json()) as any).status, 'FORBIDDEN');
+
+        const sharePostBlocked = await fetch(`${srv.baseUrl}${sharePath}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Origin: 'https://evil-attacker.vercel.app'
+          },
+          body: JSON.stringify({})
+        });
+        assert.equal(sharePostBlocked.status, 403, `POST ${sharePath} from disallowed origin must return 403`);
+        assert.equal(((await sharePostBlocked.json()) as any).status, 'FORBIDDEN');
+
+        // Explicitly allowed origins still pass CORS preflight and reach route auth (401 without token)
+        const sharePreflightAllowed = await fetch(`${srv.baseUrl}${sharePath}`, {
+          method: 'OPTIONS',
+          headers: {
+            Origin: 'https://trusted-orvix.vercel.app',
+            'Access-Control-Request-Method': 'POST'
+          }
+        });
+        assert.equal(sharePreflightAllowed.status, 204);
+        assert.equal(
+          sharePreflightAllowed.headers.get('access-control-allow-origin'),
+          'https://trusted-orvix.vercel.app'
+        );
+
+        const sharePostAllowedOrigin = await fetch(`${srv.baseUrl}${sharePath}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Origin: 'https://trusted-orvix.vercel.app'
+          },
+          body: JSON.stringify({})
+        });
+        assert.equal(sharePostAllowedOrigin.status, 401);
+        assert.equal(
+          sharePostAllowedOrigin.headers.get('access-control-allow-origin'),
+          'https://trusted-orvix.vercel.app'
+        );
+
+        // Same-origin requests (matching Host / no Origin) bypass CORS block and enforce normal route auth (401)
+        const shareSameOrigin = await fetch(`${srv.baseUrl}${sharePath}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Origin: srv.baseUrl
+          },
+          body: JSON.stringify({})
+        });
+        assert.equal(shareSameOrigin.status, 401);
+      }
+
+      // Unrelated routes starting with /share (such as /shared and /share-other) are NOT blocked with CORS 403
+      const unrelatedShared = await fetch(`${srv.baseUrl}/shared`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'https://evil-attacker.vercel.app'
+        },
+        body: JSON.stringify({})
+      });
+      assert.equal(unrelatedShared.status, 200);
+      assert.equal(unrelatedShared.headers.get('access-control-allow-origin'), null);
+
+      const unrelatedShareOther = await fetch(`${srv.baseUrl}/share-other`, {
+        method: 'GET',
+        headers: {
+          Origin: 'https://evil-attacker.vercel.app'
+        }
+      });
+      assert.equal(unrelatedShareOther.status, 200);
+      assert.equal(unrelatedShareOther.headers.get('access-control-allow-origin'), null);
     } finally {
       await srv.close();
     }

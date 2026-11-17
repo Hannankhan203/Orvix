@@ -123,6 +123,126 @@ export function formatTableAsPlainText(headers, rows) {
   return formattedRows.join('\n\n');
 }
 
+const ALLOWED_CLIPBOARD_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const UNSAFE_URL_CHAR_REGEX = /[\u0000-\u0020\u007F-\u009F\u200B-\u200D\uFEFF\\]/;
+
+function decodeHtmlEntitiesOnce(value) {
+  return String(value)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function normalizeAndValidateClipboardLinkUrl(escapedUrl) {
+  if (typeof escapedUrl !== 'string') return null;
+
+  const decoded = decodeHtmlEntitiesOnce(escapedUrl).trim();
+  if (!decoded || UNSAFE_URL_CHAR_REGEX.test(decoded)) {
+    return null;
+  }
+
+  // Reject any literal HTML brackets/quotes or backticks before scheme parsing
+  if (/[<>"'`]/.test(decoded)) {
+    return null;
+  }
+
+  // Require an explicit http://, https://, or mailto: prefix prior to URL normalization
+  if (!/^(?:https?:\/\/|mailto:)/i.test(decoded)) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(decoded);
+    if (!ALLOWED_CLIPBOARD_LINK_PROTOCOLS.has(parsed.protocol)) {
+      return null;
+    }
+
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      // Reject malformed empty/triple-slash authority URLs such as https:///path
+      if (!/^https?:\/\/[^\s/?#]+/i.test(decoded) || !parsed.hostname) {
+        return null;
+      }
+      return parsed.href;
+    }
+
+    // mailto: validation — require non-empty recipient/address part without path-like '//' injection
+    const rawMailtoTarget = decoded.slice('mailto:'.length);
+    const recipientPart = rawMailtoTarget.split(/[?#]/)[0];
+    if (!recipientPart || recipientPart.startsWith('//') || !/^[^\s@<>"]+@[^\s@<>"]+$/.test(recipientPart)) {
+      return null;
+    }
+
+    return `mailto:${rawMailtoTarget}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Linear-time Markdown link replacer `[label](url)` that preserves balanced nested
+ * parentheses inside URLs (e.g. Wikipedia links or `javascript:alert(1)`).
+ */
+function replaceMarkdownLinks(input, renderLink) {
+  let result = '';
+  let cursor = 0;
+
+  while (cursor < input.length) {
+    const openBracket = input.indexOf('[', cursor);
+    if (openBracket === -1) {
+      result += input.slice(cursor);
+      break;
+    }
+
+    const closeBracket = input.indexOf(']', openBracket + 1);
+    if (closeBracket === -1 || closeBracket === openBracket + 1) {
+      result += input.slice(cursor, openBracket + 1);
+      cursor = openBracket + 1;
+      continue;
+    }
+
+    const label = input.slice(openBracket + 1, closeBracket);
+    if (label.includes('\n') || input[closeBracket + 1] !== '(') {
+      result += input.slice(cursor, openBracket + 1);
+      cursor = openBracket + 1;
+      continue;
+    }
+
+    let i = closeBracket + 2;
+    let depth = 1;
+    let hitNewline = false;
+    while (i < input.length && depth > 0) {
+      const ch = input[i];
+      if (ch === '\n') {
+        hitNewline = true;
+        break;
+      }
+      if (ch === '(') depth += 1;
+      else if (ch === ')') depth -= 1;
+      i += 1;
+    }
+
+    if (hitNewline || depth !== 0) {
+      result += input.slice(cursor, openBracket + 1);
+      cursor = openBracket + 1;
+      continue;
+    }
+
+    const rawUrl = input.slice(closeBracket + 2, i - 1);
+    if (!rawUrl) {
+      result += input.slice(cursor, i);
+      cursor = i;
+      continue;
+    }
+
+    result += input.slice(cursor, openBracket) + renderLink(label, rawUrl);
+    cursor = i;
+  }
+
+  return result;
+}
+
 /**
  * Converts inline markdown (bold, italic, code, links) to safe HTML
  */
@@ -143,8 +263,14 @@ export function inlineMarkdownToHtml(text) {
   // Inline Code
   out = out.replace(/`([^`]+)`/g, '<code style="background-color: #f1f5f9; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.9em;">$1</code>');
 
-  // Links
-  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color: #2563eb; text-decoration: underline;" target="_blank" rel="noopener noreferrer">$1</a>');
+  // Links (strictly allow https://, http://, and mailto:; render rejected links as escaped plain text)
+  out = replaceMarkdownLinks(out, (label, rawUrl) => {
+    const safeUrl = normalizeAndValidateClipboardLinkUrl(rawUrl);
+    if (!safeUrl) {
+      return label;
+    }
+    return `<a href="${escapeHtml(safeUrl)}" style="color: #2563eb; text-decoration: underline;" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
 
   return out;
 }

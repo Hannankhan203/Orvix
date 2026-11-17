@@ -1008,6 +1008,8 @@ export function applyCorsMiddleware(app: express.Express): void {
           req.path.startsWith('/transcribe') ||
           req.path.startsWith('/config') ||
           req.path.startsWith('/health') ||
+          req.path === '/share' ||
+          req.path === '/share/' ||
           (req.path === '/' && req.method !== 'GET' && req.method !== 'HEAD')
         ) {
           return res.status(403).json({
