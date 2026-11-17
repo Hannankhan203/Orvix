@@ -172,3 +172,27 @@ export function formatFileSize(bytes) {
   const size = (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1);
   return `${size} ${units[i]}`;
 }
+
+/**
+ * Checks live DOM state to determine whether a composer input element is disabled,
+ * read-only, disconnected, or aria-disabled so programmatic/global shortcuts
+ * cannot bypass its non-editable state.
+ */
+export function isComposerElementUnavailable(el) {
+  if (!el) return true;
+  if (el.isConnected === false) return true;
+  if (Boolean(el.disabled || el.readOnly)) return true;
+  if (
+    typeof el.hasAttribute === 'function' &&
+    (el.hasAttribute('disabled') || el.hasAttribute('readonly'))
+  ) {
+    return true;
+  }
+  if (
+    typeof el.getAttribute === 'function' &&
+    el.getAttribute('aria-disabled') === 'true'
+  ) {
+    return true;
+  }
+  return false;
+}

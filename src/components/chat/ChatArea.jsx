@@ -35,7 +35,8 @@ import {
   getExtensionFromMime,
   resolvePastedFileName,
   isFileDragEvent,
-  formatFileSize
+  formatFileSize,
+  isComposerElementUnavailable
 } from './chatAreaUtils.js';
 import { formatDailyUploadQuotaText } from '../../services/uploadQuotaClientService.js';
 
@@ -107,6 +108,11 @@ export default function ChatArea({
   attachmentProcessingStatus = null
 }) {
   const isComposerDisabled = isPublicSharedViewer || (isReadOnly && !isAuthenticatedSharedPreview);
+  const isComposerBlocked = Boolean(
+    isComposerDisabled || isLoading || isSubmittingFirstSharedMessage
+  );
+  const isComposerBlockedRef = useRef(isComposerBlocked);
+  isComposerBlockedRef.current = isComposerBlocked;
   const uploadQuotaText = !isReadOnly && !isSharedView ? formatDailyUploadQuotaText(uploadQuota) : null;
   const isUploadQuotaLoading =
     !isReadOnly &&
@@ -299,7 +305,10 @@ export default function ChatArea({
   };
 
   const handlePaste = (e) => {
-    if (isComposerDisabled) {
+    if (
+      isComposerBlockedRef.current ||
+      isComposerElementUnavailable(textareaRef.current)
+    ) {
       e.preventDefault();
       return;
     }
@@ -947,21 +956,20 @@ export default function ChatArea({
   }, [inputValue, recordingState, isExpandedInput, isCompactViewport]);
 
   const inputValueRef = useRef(inputValue);
-  useEffect(() => {
-    inputValueRef.current = inputValue;
-  }, [inputValue]);
+  inputValueRef.current = inputValue;
 
   const onInputChangeRef = useRef(onInputChange);
-  useEffect(() => {
-    onInputChangeRef.current = onInputChange;
-  }, [onInputChange]);
+  onInputChangeRef.current = onInputChange;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleGlobalKeyDown = (e) => {
-      if (isReadOnly) return;
-      if (!textareaRef.current || document.activeElement === textareaRef.current) return;
+      if (e.defaultPrevented) return;
+      if (isComposerBlockedRef.current) return;
+      const textareaEl = textareaRef.current;
+      if (isComposerElementUnavailable(textareaEl)) return;
+      if (document.activeElement === textareaEl) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (!e.key || e.key.length !== 1 || e.key === ' ') return;
       if (e.isComposing || e.keyCode === 229) return;
@@ -1004,11 +1012,15 @@ export default function ChatArea({
         return;
       }
 
+      if (isComposerBlockedRef.current || isComposerElementUnavailable(textareaEl)) {
+        return;
+      }
+
       e.preventDefault();
 
       const currentVal = inputValueRef.current || '';
-      const start = textareaRef.current.selectionStart ?? currentVal.length;
-      const end = textareaRef.current.selectionEnd ?? start;
+      const start = textareaEl.selectionStart ?? currentVal.length;
+      const end = textareaEl.selectionEnd ?? start;
       const before = currentVal.slice(0, start);
       const after = currentVal.slice(end);
       const newVal = before + e.key + after;
@@ -1017,26 +1029,30 @@ export default function ChatArea({
       if (onInputChangeRef.current) {
         onInputChangeRef.current(newVal);
       }
-      textareaRef.current.value = newVal;
+      textareaEl.value = newVal;
 
       try {
-        textareaRef.current.style.height = 'auto';
-        const newHeight = Math.min(textareaRef.current.scrollHeight, 180);
-        textareaRef.current.style.height = `${Math.max(newHeight, 36)}px`;
+        textareaEl.style.height = 'auto';
+        const newHeight = Math.min(textareaEl.scrollHeight, 180);
+        textareaEl.style.height = `${Math.max(newHeight, 36)}px`;
       } catch (_) {}
 
-      textareaRef.current.focus();
+      textareaEl.focus();
       try {
-        textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+        textareaEl.setSelectionRange(newCursorPos, newCursorPos);
       } catch (_) {}
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [isReadOnly]);
+  }, [isComposerBlocked]);
 
   const submitComposerMessage = async (textToSend) => {
-    if (isComposerDisabled || (!textToSend.trim() && attachments.length === 0) || isLoading) {
+    if (
+      isComposerBlockedRef.current ||
+      isComposerElementUnavailable(textareaRef.current) ||
+      (!textToSend.trim() && attachments.length === 0)
+    ) {
       return;
     }
 
@@ -1077,6 +1093,14 @@ export default function ChatArea({
       return;
     }
 
+    if (
+      isComposerBlockedRef.current ||
+      isComposerElementUnavailable(e?.currentTarget) ||
+      isComposerElementUnavailable(textareaRef.current)
+    ) {
+      return;
+    }
+
     if (e.nativeEvent?.isComposing) return;
 
     const isModifierEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter';
@@ -1103,7 +1127,12 @@ export default function ChatArea({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (isComposerDisabled) return;
+    if (
+      isComposerBlockedRef.current ||
+      isComposerElementUnavailable(textareaRef.current)
+    ) {
+      return;
+    }
     let textToSend = inputValue;
     if (isListening || isPaused || isRequesting) {
       const completed = await stopListening();
@@ -1205,7 +1234,13 @@ Transcript:
   };
 
   const handleApplyRefinement = () => {
-    if (!suggestedRefinement) return;
+    if (
+      !suggestedRefinement ||
+      isComposerBlockedRef.current ||
+      isComposerElementUnavailable(textareaRef.current)
+    ) {
+      return;
+    }
 
     if (inputValue.includes(lastSessionTranscript)) {
       onInputChange(inputValue.replace(lastSessionTranscript, suggestedRefinement));
@@ -1688,8 +1723,19 @@ Transcript:
                 placeholder={composerPlaceholder}
                 value={inputValue}
                 rows={1}
-                disabled={isComposerDisabled || isLoading}
-                onChange={(e) => onInputChange && onInputChange(e.target.value)}
+                disabled={isComposerBlocked}
+                onChange={(e) => {
+                  if (
+                    isComposerBlockedRef.current ||
+                    isComposerElementUnavailable(e?.target) ||
+                    isComposerElementUnavailable(textareaRef.current)
+                  ) {
+                    return;
+                  }
+                  if (onInputChange) {
+                    onInputChange(e.target.value);
+                  }
+                }}
                 onFocus={() => {
                   if (scrollViewportRef.current && messagesLengthRef.current > 0) {
                     const sc = scrollViewportRef.current;
