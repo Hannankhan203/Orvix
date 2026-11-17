@@ -10,7 +10,8 @@ import {
   isServerless,
   isSignedDecodeProductionMode,
   resolveConfiguredSignedDecodeUrlSecret,
-  setForceProductionSignedUrlSecretCheckForTesting
+  setForceProductionSignedUrlSecretCheckForTesting,
+  getGeminiApiKey
 } from './serverConfig.ts';
 import { logUploadDiagnostic, sanitizeErrorLog } from './diagnosticLogger.ts';
 import { resolveSafeRequestOrigin } from './trustedProxy.ts';
@@ -1287,7 +1288,7 @@ export async function resolveRegisteredAttachmentForChat(
             : undefined;
 
         if (!extraction) {
-          const geminiKey = process.env.GEMINI_API_KEY || null;
+          const geminiKey = getGeminiApiKey() || null;
           try {
             if (isImg) {
               extraction = await extractImageText(
@@ -1757,7 +1758,7 @@ export function registerUploadRoutes(app: express.Express) {
       if (inputSource) {
         if (isImg) {
           const isOfflineReq = req.query?.offline === 'true';
-          const geminiKey = process.env.GEMINI_API_KEY || null;
+          const geminiKey = getGeminiApiKey() || null;
           const imgExtraction = await extractImageText(
             inputSource,
             record.originalName,
@@ -1897,7 +1898,7 @@ export function registerUploadRoutes(app: express.Express) {
       Boolean(mimeType.startsWith('image/'));
     const originalName = lookup.filename || 'attachment';
     const isOfflineReq = req.query?.offline === 'true';
-    const geminiKey = process.env.GEMINI_API_KEY || null;
+    const geminiKey = getGeminiApiKey() || null;
 
     const rawLang = String(req.query.lang || req.query.language || 'eng').toLowerCase().trim();
     const validLangs = ['eng', 'spa', 'fra', 'deu', 'ara', 'urd'];
@@ -3118,7 +3119,7 @@ export function registerUploadRoutes(app: express.Express) {
       canonicalMime.startsWith('image/');
 
     let extraction: any = null;
-    const geminiKey = process.env.GEMINI_API_KEY || null;
+    const geminiKey = getGeminiApiKey() || null;
     try {
       if (isImg) {
         extraction = await extractImageText(
@@ -3525,7 +3526,7 @@ export function registerUploadRoutes(app: express.Express) {
           if (isImg) {
             rec.isImage = true;
             const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
-            const geminiKey = process.env.GEMINI_API_KEY || null;
+            const geminiKey = getGeminiApiKey() || null;
             const imgExtraction = (await extractImageText(
               inputSource,
               rec.originalName,
@@ -3540,7 +3541,7 @@ export function registerUploadRoutes(app: express.Express) {
             rec.status = imgExtraction?.status === 'error' ? 'error' : 'ready';
           } else {
             const isOfflineUpload = String(req.body?.offline || '').toLowerCase() === 'true';
-            const geminiKey = process.env.GEMINI_API_KEY || null;
+            const geminiKey = getGeminiApiKey() || null;
             const extraction = (await extractDocumentContent(
               inputSource,
               rec.originalName,

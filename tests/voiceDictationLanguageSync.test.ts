@@ -534,7 +534,9 @@ test('ORVIX-LOW-04 backend WS: live config updates active session language and s
 
   try {
     const ws = await new Promise<WebSocket>((resolve, reject) => {
-      const sock = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(token)}`);
+      const sock = new WebSocket(srv.wsUrl, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       sock.on('message', (raw) => {
         try {
           messages.push(JSON.parse(raw.toString()));
@@ -655,7 +657,9 @@ test('ORVIX-LOW-04 backend WS: invalid language updates are rejected safely with
 
   try {
     const ws = await new Promise<WebSocket>((resolve, reject) => {
-      const sock = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(token)}`);
+      const sock = new WebSocket(srv.wsUrl, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       sock.on('message', (raw) => {
         try {
           messages.push(JSON.parse(raw.toString()));

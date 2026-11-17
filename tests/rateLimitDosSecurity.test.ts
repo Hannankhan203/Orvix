@@ -394,7 +394,9 @@ test('ORVIX-CRIT-04: Multiple simulated instances share WebSocket connection slo
     const openSockets: WebSocket[] = [];
     const connectWs = (wsUrl: string, token: string) =>
       new Promise<WebSocket>((resolve, reject) => {
-        const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+        const ws = new WebSocket(wsUrl, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
         ws.on('open', () => resolve(ws));
         ws.on('error', (err) => reject(err));
       });

@@ -104,8 +104,11 @@ test('Voice WebSocket subsystem: enforces max connections per IP and cleans up s
     const spoofedIp = '198.51.100.123';
     const connectWs = (forwardedFor = spoofedIp) =>
       new Promise<WebSocket>((resolve, reject) => {
-        const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(validToken)}`, {
-          headers: { 'x-forwarded-for': forwardedFor }
+        const ws = new WebSocket(srv.wsUrl, {
+          headers: {
+            'x-forwarded-for': forwardedFor,
+            Authorization: `Bearer ${validToken}`
+          }
         });
         ws.on('open', () => resolve(ws));
         ws.on('error', (err) => reject(err));

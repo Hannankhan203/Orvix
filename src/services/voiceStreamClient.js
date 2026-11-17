@@ -81,16 +81,12 @@ export class VoiceStreamClient {
   /**
    * Resolves the WebSocket endpoint URL based on window location and options.
    */
-  resolveWebSocketUrl(token = '') {
+  resolveWebSocketUrl() {
     let url = this.options.url;
     if (!url) {
       const loc = window.location;
       const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
       url = `${protocol}//${loc.host}/api/voice-stream`;
-    }
-    if (token && !/[?&]token=/.test(url)) {
-      const separator = url.includes('?') ? '&' : '?';
-      url += `${separator}token=${encodeURIComponent(token)}`;
     }
     return url;
   }
@@ -131,7 +127,8 @@ export class VoiceStreamClient {
       }, 4000);
 
       try {
-        const ws = new WebSocket(url);
+        const protocols = resolvedToken ? ['orvix-auth', encodeURIComponent(resolvedToken)] : undefined;
+        const ws = protocols ? new WebSocket(url, protocols) : new WebSocket(url);
         this.ws = ws;
         ws.binaryType = 'arraybuffer';
 

@@ -738,7 +738,14 @@ export function cleanupSession(session: VoiceStreamSession, code = 1000, reason 
 export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServer {
   const wss = new WebSocketServer({
     noServer: true,
-    maxPayload: MAX_WS_PAYLOAD_BYTES
+    maxPayload: MAX_WS_PAYLOAD_BYTES,
+    handleProtocols: (protocols) => {
+      const arr = Array.isArray(protocols) ? protocols : Array.from(protocols || []);
+      if (arr.includes('orvix-auth')) {
+        return 'orvix-auth';
+      }
+      return false;
+    }
   });
 
   httpServer.on('upgrade', async (req: IncomingMessage, socket, head) => {
@@ -849,7 +856,9 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
       }
       ipRedisKey = ipSlotResult.redisKey;
 
-      // 4. Authenticate handshake strictly via Bearer token in Authorization header or ?token= query param
+      // 4. Authenticate handshake strictly via Bearer token in Authorization header or Sec-WebSocket-Protocol.
+      // URL query parameters (?token=) are explicitly forbidden to prevent credential exposure in logs and history.
+      req.url = (req.url || '').split('?')[0];
       const rawAuthHeader = req.headers.authorization;
       let token = '';
       if (typeof rawAuthHeader === 'string' && rawAuthHeader.trim()) {
@@ -865,8 +874,17 @@ export function setupVoiceWebSocketServer(httpServer: HttpServer): WebSocketServ
           return;
         }
         token = match[1].trim();
-      } else if (parsed.query?.token && typeof parsed.query.token === 'string') {
-        token = parsed.query.token.trim();
+      } else if (req.headers['sec-websocket-protocol']) {
+        const rawProto = String(req.headers['sec-websocket-protocol']);
+        const parts = rawProto.split(',').map((p) => p.trim());
+        const authIndex = parts.indexOf('orvix-auth');
+        if (authIndex !== -1 && parts[authIndex + 1]) {
+          try {
+            token = decodeURIComponent(parts[authIndex + 1]);
+          } catch (_) {
+            token = parts[authIndex + 1];
+          }
+        }
       }
 
       if (!token) {

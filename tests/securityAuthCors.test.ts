@@ -536,7 +536,9 @@ test('ORVIX-CRIT-03 /api/voice-stream WebSocket: rejects unauthenticated, expire
     await assert.rejects(
       () =>
         new Promise((resolve, reject) => {
-          const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(keys.expiredToken)}`);
+          const ws = new WebSocket(srv.wsUrl, {
+            headers: { Authorization: `Bearer ${keys.expiredToken}` }
+          });
           ws.on('open', () => resolve(ws));
           ws.on('error', reject);
         }),
@@ -547,7 +549,7 @@ test('ORVIX-CRIT-03 /api/voice-stream WebSocket: rejects unauthenticated, expire
     await assert.rejects(
       () =>
         new Promise((resolve, reject) => {
-          const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(keys.validToken)}`, {
+          const ws = new WebSocket(srv.wsUrl, {
             headers: { Authorization: 'Basic abc123' }
           });
           ws.on('open', () => resolve(ws));
@@ -560,8 +562,11 @@ test('ORVIX-CRIT-03 /api/voice-stream WebSocket: rejects unauthenticated, expire
     await assert.rejects(
       () =>
         new Promise((resolve, reject) => {
-          const ws = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(keys.validToken)}`, {
-            headers: { Origin: 'https://evil-attacker.vercel.app' }
+          const ws = new WebSocket(srv.wsUrl, {
+            headers: {
+              Origin: 'https://evil-attacker.vercel.app',
+              Authorization: `Bearer ${keys.validToken}`
+            }
           });
           ws.on('open', () => resolve(ws));
           ws.on('error', reject);
@@ -572,7 +577,9 @@ test('ORVIX-CRIT-03 /api/voice-stream WebSocket: rejects unauthenticated, expire
     // 5. Authenticated connection succeeds, returns verified userId with isGuest=false, and rejects guest downgrade attempts
     const messages: any[] = [];
     const ws = await new Promise<WebSocket>((resolve, reject) => {
-      const sock = new WebSocket(`${srv.wsUrl}?token=${encodeURIComponent(keys.validToken)}`);
+      const sock = new WebSocket(srv.wsUrl, {
+        headers: { Authorization: `Bearer ${keys.validToken}` }
+      });
       sock.on('message', (raw) => {
         try {
           messages.push(JSON.parse(raw.toString()));
@@ -835,8 +842,8 @@ test('ORVIX-CRIT-03 client services: transcriptionService attaches Bearer token 
     try {
       const client = new VoiceStreamClient({ url: 'wss://example.test/api/voice-stream' });
       assert.equal(
-        client.resolveWebSocketUrl('my-jwt-token'),
-        'wss://example.test/api/voice-stream?token=my-jwt-token'
+        client.resolveWebSocketUrl(),
+        'wss://example.test/api/voice-stream'
       );
       await client.connect('');
       assert.equal(

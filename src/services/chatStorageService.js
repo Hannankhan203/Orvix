@@ -839,9 +839,44 @@ function upsertCachedChatMessage(userId, chatId, messageObj) {
   return orderedNext;
 }
 
-function sanitizeExtractionForStorage(extraction) {
+export const MAX_ATTACHMENT_EXTRACTION_BYTES = 64 * 1024; // 64 KiB ceiling per extracted attachment text
+export const MAX_FIRESTORE_DOCUMENT_BYTES = 900 * 1024; // 900 KiB (921,600 bytes) safe ceiling with 124+ KiB safety margin below Firestore's 1 MiB hard limit
+
+export function sanitizeExtractionForStorage(extraction) {
   if (!extraction || typeof extraction !== 'object') return null;
   const { base64, dataUrl, data, previewUrl, file, blob, ...cleanExtraction } = extraction;
+
+  if (typeof cleanExtraction.text === 'string') {
+    const textBytes = getUtf8ByteLength(cleanExtraction.text);
+    if (textBytes > MAX_ATTACHMENT_EXTRACTION_BYTES) {
+      const notice = '\n\n[Notice: Extracted text truncated for Firestore document limit.]';
+      const noticeBytes = getUtf8ByteLength(notice);
+      const targetBytes = Math.max(0, MAX_ATTACHMENT_EXTRACTION_BYTES - noticeBytes);
+      let low = 0;
+      let high = cleanExtraction.text.length;
+      let best = '';
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const candidate = cleanExtraction.text.slice(0, mid);
+        if (getUtf8ByteLength(candidate) <= targetBytes) {
+          best = candidate;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      cleanExtraction.text = best + notice;
+      cleanExtraction.wasTruncated = true;
+    }
+  }
+
+  if (Array.isArray(cleanExtraction.pages) && cleanExtraction.pages.length > 15) {
+    cleanExtraction.pages = cleanExtraction.pages.slice(0, 15);
+  }
+  if (Array.isArray(cleanExtraction.slides) && cleanExtraction.slides.length > 15) {
+    cleanExtraction.slides = cleanExtraction.slides.slice(0, 15);
+  }
+
   return cleanExtraction;
 }
 
@@ -1030,6 +1065,251 @@ export function sanitizeMessageForStorage(msg) {
   return next;
 }
 
+/**
+ * Calculates the exact Firestore document byte size following official Google Cloud Firestore
+ * sizing rules:
+ * - Document path overhead: length of path string + 16 bytes overhead + 32 bytes document overhead.
+ * - Each field name: UTF-8 byte length + 1 byte.
+ * - Field values:
+ *   - Boolean / Null: 1 byte
+ *   - Number: 8 bytes
+ *   - Timestamp / Date: 8 bytes
+ *   - String: UTF-8 byte length + 1 byte
+ *   - Array: sum of element sizes
+ *   - Map / Object: sum of field name + field value sizes
+ *
+ * @param {*} value
+ * @param {string} [docPath='']
+ * @returns {number}
+ */
+export function calculateFirestoreDocumentByteSize(value, docPath = '') {
+  if (value === null || value === undefined) return 0;
+
+  // Path overhead: length of path string + 16 bytes overhead + 32 bytes document overhead.
+  // Standard chat message doc path (/users/<uid>/chats/<cid>/messages/<mid>) is ~160-200 bytes.
+  const pathOverhead = docPath ? getUtf8ByteLength(docPath) + 48 : 200;
+
+  function measureVal(val) {
+    if (val === null || val === undefined) return 1;
+    if (typeof val === 'boolean') return 1;
+    if (typeof val === 'number') return 8;
+    if (typeof val === 'string') return getUtf8ByteLength(val) + 1;
+    if (val instanceof Date) return 8;
+    if (typeof val === 'function' || typeof val === 'symbol') return 8;
+    if (typeof val === 'object') {
+      if (val._methodName === 'serverTimestamp' || typeof val.toMillis === 'function') {
+        return 8;
+      }
+      if (Array.isArray(val)) {
+        let arrSize = 0;
+        for (const item of val) {
+          arrSize += measureVal(item);
+        }
+        return arrSize;
+      }
+      let mapSize = 0;
+      for (const [k, v] of Object.entries(val)) {
+        if (v === undefined || typeof v === 'function' || typeof v === 'symbol') continue;
+        mapSize += getUtf8ByteLength(k) + 1;
+        mapSize += measureVal(v);
+      }
+      return mapSize;
+    }
+    return 8;
+  }
+
+  return pathOverhead + measureVal(value);
+}
+
+/**
+ * Calculates the conservative worst-case byte size of a Firestore document payload
+ * by evaluating both official Firestore storage encoding and JSON serialization.
+ * @param {Object} docData
+ * @param {string} [docPath='']
+ * @returns {number}
+ */
+export function calculateDocumentByteSize(docData, docPath = '') {
+  if (!docData) return 0;
+  const firestoreBytes = calculateFirestoreDocumentByteSize(docData, docPath);
+  let jsonBytes = 0;
+  try {
+    const jsonStr = JSON.stringify(docData, (key, value) => {
+      if (typeof value === 'function' || typeof value === 'symbol') return undefined;
+      return value;
+    });
+    jsonBytes = getUtf8ByteLength(jsonStr || '');
+  } catch (_) {}
+
+  return Math.max(firestoreBytes, jsonBytes);
+}
+
+/**
+ * Enforces the Firestore 1 MiB document limit on a message payload.
+ * If the payload exceeds MAX_FIRESTORE_DOCUMENT_BYTES (900 KiB), it progressively trims:
+ * 1. Truncates attachment extractions.
+ * 2. Prunes oldest non-active alternatives while preserving essential metadata (preserving active alternative).
+ * 3. Truncates non-active alternative content.
+ * 4. Strips extractions completely if still over limit.
+ * 5. Truncates active alternative/message content to standard message limit if still over limit.
+ * 6. Bounds excessive attachment lists if pathological worst-case payload is encountered.
+ *
+ * Essential metadata (id, sender, createdAt, modelUsed, activeAlternativeId) is strictly preserved.
+ */
+export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
+  if (!payload || typeof payload !== 'object') return payload;
+
+  let currentSize = calculateDocumentByteSize(payload);
+  if (currentSize <= MAX_FIRESTORE_DOCUMENT_BYTES) {
+    return payload;
+  }
+
+  const pruned = { ...payload };
+
+  // Pass 1: Prune extraction texts in attachments and referencedAttachments
+  if (Array.isArray(pruned.attachments)) {
+    pruned.attachments = pruned.attachments.map((att) => {
+      if (!att || !att.extraction) return att;
+      const { text, pages, slides, ...restExtraction } = att.extraction;
+      return {
+        ...att,
+        extraction: {
+          ...restExtraction,
+          text:
+            typeof text === 'string' && text.length > 1000
+              ? text.slice(0, 1000) + '\n\n[Notice: Extraction truncated to protect Firestore document size.]'
+              : text,
+          pages: Array.isArray(pages) ? pages.slice(0, 10) : pages,
+          slides: Array.isArray(slides) ? slides.slice(0, 10) : slides
+        }
+      };
+    });
+  }
+  if (Array.isArray(pruned.referencedAttachments)) {
+    pruned.referencedAttachments = pruned.referencedAttachments.map((att) => {
+      if (!att || !att.extraction) return att;
+      const { text, pages, slides, ...restExtraction } = att.extraction;
+      return {
+        ...att,
+        extraction: {
+          ...restExtraction,
+          text:
+            typeof text === 'string' && text.length > 1000
+              ? text.slice(0, 1000) + '\n\n[Notice: Extraction truncated to protect Firestore document size.]'
+              : text,
+          pages: Array.isArray(pages) ? pages.slice(0, 10) : pages,
+          slides: Array.isArray(slides) ? slides.slice(0, 10) : slides
+        }
+      };
+    });
+  }
+
+  currentSize = calculateDocumentByteSize(pruned);
+  if (currentSize <= MAX_FIRESTORE_DOCUMENT_BYTES) {
+    return pruned;
+  }
+
+  // Pass 2: Prune cumulative alternatives if present
+  if (Array.isArray(pruned.alternatives) && pruned.alternatives.length > 1) {
+    const activeId = activeAltId || pruned.activeAlternativeId;
+    let alts = [...pruned.alternatives];
+    while (
+      alts.length > 1 &&
+      calculateDocumentByteSize({ ...pruned, alternatives: alts }) > MAX_FIRESTORE_DOCUMENT_BYTES
+    ) {
+      // Find the first non-active alternative from the start (oldest)
+      const dropIndex = alts.findIndex((alt) => alt.id !== activeId);
+      if (dropIndex === -1) {
+        break;
+      }
+      alts.splice(dropIndex, 1);
+    }
+    pruned.alternatives = alts;
+  }
+
+  currentSize = calculateDocumentByteSize(pruned);
+  if (currentSize <= MAX_FIRESTORE_DOCUMENT_BYTES) {
+    return pruned;
+  }
+
+  // Pass 3: Truncate remaining non-active alternatives' content
+  if (Array.isArray(pruned.alternatives)) {
+    const activeId = activeAltId || pruned.activeAlternativeId;
+    pruned.alternatives = pruned.alternatives.map((alt) => {
+      if (alt.id === activeId || !alt.content || typeof alt.content !== 'string') {
+        return alt;
+      }
+      if (alt.content.length > 1500) {
+        return {
+          ...alt,
+          content:
+            alt.content.slice(0, 1500) +
+            '\n\n[Notice: Alternative content truncated to protect Firestore document limit.]',
+          wasTruncated: true
+        };
+      }
+      return alt;
+    });
+  }
+
+  currentSize = calculateDocumentByteSize(pruned);
+  if (currentSize <= MAX_FIRESTORE_DOCUMENT_BYTES) {
+    return pruned;
+  }
+
+  // Pass 4: Strip extraction completely from attachments if still over
+  if (Array.isArray(pruned.attachments)) {
+    pruned.attachments = pruned.attachments.map((att) => {
+      if (!att || !att.extraction) return att;
+      const { text, ...minimalExtraction } = att.extraction;
+      return { ...att, extraction: minimalExtraction };
+    });
+  }
+  if (Array.isArray(pruned.referencedAttachments)) {
+    pruned.referencedAttachments = pruned.referencedAttachments.map((att) => {
+      if (!att || !att.extraction) return att;
+      const { text, ...minimalExtraction } = att.extraction;
+      return { ...att, extraction: minimalExtraction };
+    });
+  }
+
+  currentSize = calculateDocumentByteSize(pruned);
+  if (currentSize <= MAX_FIRESTORE_DOCUMENT_BYTES) {
+    return pruned;
+  }
+
+  // Pass 5: Truncate active alternative or top-level content if still exceeding
+  if (typeof pruned.content === 'string' && pruned.content.length > 10000) {
+    const enforced = enforceFirestoreMessageSizeLimit(pruned.content);
+    pruned.content = enforced.content;
+    pruned.wasTruncated = true;
+  }
+  if (Array.isArray(pruned.alternatives)) {
+    const activeId = activeAltId || pruned.activeAlternativeId;
+    pruned.alternatives = pruned.alternatives.map((alt) => {
+      if (alt.id === activeId && typeof alt.content === 'string' && alt.content.length > 10000) {
+        const enforced = enforceFirestoreMessageSizeLimit(alt.content);
+        return { ...alt, content: enforced.content, wasTruncated: true };
+      }
+      return alt;
+    });
+  }
+
+  currentSize = calculateDocumentByteSize(pruned);
+  if (currentSize <= MAX_FIRESTORE_DOCUMENT_BYTES) {
+    return pruned;
+  }
+
+  // Pass 6: Bound attachment arrays in extreme pathological payloads
+  if (Array.isArray(pruned.attachments) && pruned.attachments.length > 15) {
+    pruned.attachments = pruned.attachments.slice(0, 15);
+  }
+  if (Array.isArray(pruned.referencedAttachments) && pruned.referencedAttachments.length > 15) {
+    pruned.referencedAttachments = pruned.referencedAttachments.slice(0, 15);
+  }
+
+  return pruned;
+}
+
 export function buildFirestoreMessagePayload(targetMessage) {
   const rawContent =
     typeof targetMessage.content === 'string' && targetMessage.content.length > 0
@@ -1038,7 +1318,7 @@ export function buildFirestoreMessagePayload(targetMessage) {
   const enforcedContent = enforceFirestoreMessageSizeLimit(rawContent);
   const safeContent = enforcedContent.content;
 
-  return {
+  const payload = {
     id: targetMessage.id,
     sender: targetMessage.sender,
     content: safeContent,
@@ -1115,6 +1395,8 @@ export function buildFirestoreMessagePayload(targetMessage) {
       targetMessage.timestamp ||
       new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
+
+  return enforceFirestoreDocumentSizeLimit(payload, targetMessage.activeAlternativeId);
 }
 
 /**
