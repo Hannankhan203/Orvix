@@ -4,6 +4,39 @@ import type {
   GeminiLifecycleLogEntry
 } from './serverTypes.ts';
 
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+const LOG_LEVEL_HIERARCHY: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3
+};
+
+/**
+ * Returns the currently active server log level based on process.env.LOG_LEVEL,
+ * with graceful fallback to 'info' (or 'debug' if debug flags are set).
+ */
+export function getActiveLogLevel(): LogLevel {
+  const envLevel = String(process.env.LOG_LEVEL || '').trim().toLowerCase();
+  if (envLevel in LOG_LEVEL_HIERARCHY) {
+    return envLevel as LogLevel;
+  }
+  if (process.env.DEBUG === 'true' || process.env.ORVIX_DEBUG_GEMINI_LOGS === '1') {
+    return 'debug';
+  }
+  return 'info';
+}
+
+/**
+ * Determines whether a message at the specified log level should be emitted
+ * based on the active LOG_LEVEL configuration.
+ */
+export function shouldLog(level: LogLevel): boolean {
+  const current = getActiveLogLevel();
+  return LOG_LEVEL_HIERARCHY[level] >= LOG_LEVEL_HIERARCHY[current];
+}
+
 // Sanitizes error messages to ensure no API keys, tokens, PEM private keys, or headers are ever logged or sent to users
 export function sanitizeErrorLog(msg: string): string {
   if (!msg) return '';
@@ -47,6 +80,7 @@ export interface UploadDiagnosticEntry {
  * Never logs secrets, Bearer tokens, raw service-account JSON, or PEM private keys.
  */
 export function logUploadDiagnostic(entry: UploadDiagnosticEntry): void {
+  if (!shouldLog('error')) return;
   const payload = {
     stage: entry.stage,
     ...(entry.code ? { code: String(entry.code) } : {}),
@@ -65,6 +99,7 @@ export function logUploadDiagnostic(entry: UploadDiagnosticEntry): void {
  * retry attempt number, and streaming phase without exposing credentials or user data.
  */
 export function logAIDiagnostic(data: DiagnosticLogData) {
+  if (!shouldLog('warn')) return;
   const statusStr = data.upstreamStatus ? `HTTP ${data.upstreamStatus}` : 'HTTP N/A';
   const codeStr = data.upstreamErrorCode ? `[${data.upstreamErrorCode}]` : '';
   const actionDesc = data.willRetry
@@ -107,22 +142,27 @@ export function logGeminiLifecycleEvent(
     } catch (_) {}
   }
 
-  const isDebugLogsEnabled = process.env.ORVIX_DEBUG_GEMINI_LOGS === '1';
-  const isDebugModeEnabled = isDebugLogsEnabled || process.env.DEBUG === 'true';
+  const isErrorEvent = entry.event === 'upstream_error' || entry.event === 'timeout';
+  const targetLevel: LogLevel = isErrorEvent ? 'warn' : 'debug';
 
-  if (entry.event === 'chunk_received' && !isDebugLogsEnabled) {
-    return safeEntry;
-  }
+  if (!shouldLog(targetLevel)) {
+    const isDebugLogsEnabled = process.env.ORVIX_DEBUG_GEMINI_LOGS === '1' || getActiveLogLevel() === 'debug';
+    const isDebugModeEnabled = isDebugLogsEnabled || process.env.DEBUG === 'true';
 
-  const isRoutineInformational =
-    entry.event === 'request_start' ||
-    entry.event === 'upstream_fetch_start' ||
-    entry.event === 'upstream_headers_received' ||
-    entry.event === 'first_chunk_received' ||
-    entry.event === 'upstream_complete';
+    if (entry.event === 'chunk_received' && !isDebugLogsEnabled) {
+      return safeEntry;
+    }
 
-  if (isRoutineInformational && !isDebugModeEnabled) {
-    return safeEntry;
+    const isRoutineInformational =
+      entry.event === 'request_start' ||
+      entry.event === 'upstream_fetch_start' ||
+      entry.event === 'upstream_headers_received' ||
+      entry.event === 'first_chunk_received' ||
+      entry.event === 'upstream_complete';
+
+    if (isRoutineInformational && !isDebugModeEnabled && !shouldLog('info')) {
+      return safeEntry;
+    }
   }
 
   const parts = [

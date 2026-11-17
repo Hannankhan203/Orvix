@@ -125,6 +125,7 @@ export default defineConfig(({ command, mode }) => {
     },
     build: {
       target: ['es2020', 'safari15'],
+      chunkSizeWarningLimit: 600,
       rollupOptions: {
         output: {
           manualChunks(id) {
