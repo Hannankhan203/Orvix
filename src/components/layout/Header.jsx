@@ -11,7 +11,7 @@ import { useSettings } from '../../context/SettingsContext.jsx';
 import { validateUsername } from '../../services/userProfileService.js';
 import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 import { getAISelectionGuidance } from '../../config/aiGuidance.js';
-import { DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
+import { DEFAULT_WEBLLM_MODEL_ID } from '../../config/webllmModels.js';
 
 /**
  * Header Component

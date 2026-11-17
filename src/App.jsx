@@ -4,7 +4,7 @@ import { SettingsProvider, useSettings } from './context/SettingsContext.jsx';
 import { Bot } from 'lucide-react';
 import { APP_CONFIG } from './config/appConfig.js';
 import { SpeechProvider } from './context/SpeechContext.jsx';
-import { getShareRouteDetails } from './services/shareChatService.js';
+import { getShareRouteDetails } from './utils/shareRouteUtils.js';
 
 const SettingsModal = lazy(() => import('./components/settings/SettingsModal.jsx'));
 const AuthScreen = lazy(() => import('./components/auth/AuthScreen.jsx'));

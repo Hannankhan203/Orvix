@@ -3,7 +3,7 @@ import { Cpu, ChevronDown } from 'lucide-react';
 import { PROVIDER_OPTIONS, DEFAULT_PROVIDER } from '../../services/aiRouter.js';
 import { getProviderConfigAvailability } from '../../services/providerModelSanitizer.js';
 import { getAISelectionGuidance } from '../../config/aiGuidance.js';
-import { DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
+import { DEFAULT_WEBLLM_MODEL_ID } from '../../config/webllmModels.js';
 
 /**
  * ModelSelector Component

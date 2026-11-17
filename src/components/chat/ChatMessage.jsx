@@ -22,10 +22,11 @@ import OrvixLogo from '../ui/OrvixLogo.jsx';
 import AttachmentCard from './AttachmentCard.jsx';
 import ImageAttachmentCard from './ImageAttachmentCard.jsx';
 import LiveResponseTimer from './LiveResponseTimer.jsx';
-import MarkdownContent from './MarkdownContent.jsx';
 import MessageErrorBox from './MessageErrorBox.jsx';
 import UserInlineEditor from './UserInlineEditor.jsx';
 import AlternativeResponseNav from './AlternativeResponseNav.jsx';
+
+const MarkdownContent = React.lazy(() => import('./MarkdownContent.jsx'));
 import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
@@ -402,11 +403,15 @@ function ChatMessage({
                   <span className="typing-dot dot-3" />
                 </div>
               ) : (
-                <MarkdownContent
-                  content={message.content || ''}
-                  isStreaming={isStreaming}
-                  effectiveMode={effectiveMode}
-                />
+                <React.Suspense
+                  fallback={<p className="markdown-p whitespace-pre-wrap">{message.content || ''}</p>}
+                >
+                  <MarkdownContent
+                    content={message.content || ''}
+                    isStreaming={isStreaming}
+                    effectiveMode={effectiveMode}
+                  />
+                </React.Suspense>
               )}
 
               {message.isInterrupted && message.failedPrompt && (

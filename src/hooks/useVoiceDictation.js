@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { transcribeAudioBlob } from '../services/transcriptionService.js';
-import { VoiceStreamClient } from '../services/voiceStreamClient.js';
 import { getIdToken } from '../services/authService.js';
 import { auth } from '../config/firebaseConfig.js';
 import {
@@ -1865,6 +1864,7 @@ export function useVoiceDictation({
           const stream = await acquireMicrophoneStream();
           attachAudioAnalyser(stream);
 
+          const { VoiceStreamClient } = await import('../services/voiceStreamClient.js');
           const client = new VoiceStreamClient({
             url: webSocketUrlRef.current,
             language: selectedLanguageRef.current,

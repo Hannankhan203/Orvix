@@ -1,6 +1,6 @@
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { PROVIDER_DEFAULT_MODELS } from '../../services/providerModelSanitizer.js';
-import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
+import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../config/webllmModels.js';
 
 export function formatGeminiModelDisplayName(modelId) {
   if (typeof modelId !== 'string' || !modelId.trim()) return '';

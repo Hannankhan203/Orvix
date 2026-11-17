@@ -19,7 +19,7 @@ import {
   SMOLLM2_360M_F32_WEBLLM_MODEL_ID,
   QWEN3_06B_WEBLLM_MODEL_ID,
   QWEN3_06B_F32_WEBLLM_MODEL_ID
-} from '../services/webllmService.js';
+} from './webllmModels.js';
 
 export const AI_PROVIDER_GUIDANCE = Object.freeze({
   gemini: 'Powerful general-purpose AI — delivers strong responses across a wide range of tasks, with cloud processing required.',

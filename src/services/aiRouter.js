@@ -6,11 +6,10 @@
  */
 
 import {
-  streamWebLLMMessage,
   DEFAULT_WEBLLM_MODEL_ID,
   WebLLMError,
   WEBLLM_ERROR_CODES
-} from './webllmService.js';
+} from '../config/webllmModels.js';
 import {
   prepareChatRequestBody,
   sanitizeAttachmentForNetwork,
@@ -688,6 +687,11 @@ export async function streamAIMessage(params = {}) {
         ? `Previous section ended with:\n"""\n${previousContentSummary}\n"""\n`
         : '';
       effectivePrompt = `${contHeader}${tailContext}Continue directly from where the previous response stopped without repeating prior text.\n\nUser request: ${prompt}`;
+    }
+
+    const { streamWebLLMMessage } = await import('./webllmService.js');
+    if (!isActive()) {
+      throw createRouterAbortError();
     }
 
     return streamWebLLMMessage({

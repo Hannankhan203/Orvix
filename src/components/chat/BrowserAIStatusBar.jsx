@@ -19,7 +19,7 @@ import {
   QWEN3_06B_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
   getSupportedWebLLMModels
-} from '../../services/webllmService.js';
+} from '../../config/webllmModels.js';
 
 /**
  * Clean, non-blocking status and progress bar for Browser AI (WebLLM).

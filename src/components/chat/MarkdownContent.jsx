@@ -1,8 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import {
   AlertCircle,
   AlertTriangle,
@@ -27,17 +25,33 @@ export function extractNodeText(node) {
   return '';
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
-const REHYPE_PLUGINS = [
-  [
-    rehypeKatex,
-    {
-      throwOnError: false,
-      strict: 'ignore',
-      errorColor: 'var(--status-danger, #ef4444)'
-    }
-  ]
-];
+const BASE_REMARK_PLUGINS = [remarkGfm];
+const EMPTY_REHYPE_PLUGINS = [];
+const UNESCAPED_DOLLAR_RE = /(?:^|[^\\])(?:\\\\)*\$/;
+
+let cachedMathPlugins = null;
+let mathPluginsPromise = null;
+
+function loadMathMarkdownPlugins() {
+  if (cachedMathPlugins) {
+    return Promise.resolve(cachedMathPlugins);
+  }
+  if (!mathPluginsPromise) {
+    mathPluginsPromise = import('./mathMarkdownPlugins.js')
+      .then((mod) => {
+        cachedMathPlugins = {
+          remarkPlugins: [remarkGfm, mod.MATH_REMARK_PLUGIN],
+          rehypePlugins: [mod.MATH_REHYPE_PLUGIN]
+        };
+        return cachedMathPlugins;
+      })
+      .catch((err) => {
+        mathPluginsPromise = null;
+        throw err;
+      });
+  }
+  return mathPluginsPromise;
+}
 
 function isFenceStart(line) {
   const match = line.match(/^( {0,3})(`{3,}|~{3,})(.*)$/);
@@ -681,10 +695,37 @@ export default function MarkdownContent({ content = '', isStreaming = false, eff
     [content, isStreaming]
   );
 
+  const needsMath = useMemo(
+    () => UNESCAPED_DOLLAR_RE.test(processedContent),
+    [processedContent]
+  );
+
+  const [mathPlugins, setMathPlugins] = useState(() => cachedMathPlugins);
+
+  useEffect(() => {
+    if (!needsMath || mathPlugins) return undefined;
+    let cancelled = false;
+    loadMathMarkdownPlugins()
+      .then((plugins) => {
+        if (!cancelled) {
+          setMathPlugins(plugins);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load math rendering plugins:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsMath, mathPlugins]);
+
+  const remarkPlugins = needsMath && mathPlugins ? mathPlugins.remarkPlugins : BASE_REMARK_PLUGINS;
+  const rehypePlugins = needsMath && mathPlugins ? mathPlugins.rehypePlugins : EMPTY_REHYPE_PLUGINS;
+
   return (
     <ReactMarkdown
-      remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={REHYPE_PLUGINS}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
       components={markdownComponents}
     >
       {processedContent}

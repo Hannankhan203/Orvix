@@ -25,7 +25,7 @@ import SharedConversationBanner from './SharedConversationBanner.jsx';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation.js';
 import { sendAIMessage, PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { PROVIDER_DEFAULT_MODELS } from '../../services/providerModelSanitizer.js';
-import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../services/webllmService.js';
+import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../config/webllmModels.js';
 import { responseHasContinuationNotice } from '../../services/multiPartResponseService.js';
 import { polishSpokenTranscript } from '../../utils/speechTextCleaner.js';
 import {

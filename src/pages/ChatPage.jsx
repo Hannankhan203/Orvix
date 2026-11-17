@@ -34,7 +34,6 @@ import {
   syncOfflineUserChatsToFirestore,
   replayPendingDeletions
 } from '../services/chatStorageService.js';
-import { exportAsMarkdown, exportAsPlainText } from '../utils/exportConversation.js';
 import {
   isFirebaseConfigured,
   isBrowserOnline,
@@ -86,16 +85,8 @@ import {
 import {
   DEFAULT_WEBLLM_MODEL_ID,
   WEBLLM_MODEL_CATALOG,
-  getWebLLMState,
-  subscribeWebLLMState,
-  checkWebGPUSupport,
-  inspectWebLLMReadiness,
-  preloadWebLLMRuntimeModule,
-  ensureWebLLMEngine,
-  stopWebLLMGeneration,
-  unloadWebLLMEngine,
-  logWebLLMStage
-} from '../services/webllmService.js';
+  INITIAL_WEBLLM_STATE
+} from '../config/webllmModels.js';
 import {
   getAppShellState,
   subscribeAppShellState
@@ -107,7 +98,6 @@ import {
   cancelActiveChatRequest,
   runIsolatedPromptStream
 } from '../services/requestIsolationService.js';
-import { prepareAttachmentsForUpload } from '../services/attachmentCompressionCoordinator.js';
 import { normalizeAIError } from '../services/errorNormalizationService.js';
 import {
   createSharedChatSnapshot,
@@ -120,10 +110,37 @@ import {
   createSharedPreviewState,
   importSharedConversationToAccount
 } from '../services/shareChatService.js';
-import ShareChatModal from '../components/chat/ShareChatModal.jsx';
 import { AlertCircle, X, Check, WifiOff } from 'lucide-react';
 
+const ShareChatModal = React.lazy(() => import('../components/chat/ShareChatModal.jsx'));
 const AuthScreenModal = React.lazy(() => import('../components/auth/AuthScreen.jsx'));
+
+let loadedWebLLMService = null;
+let webllmServicePromise = null;
+
+async function loadWebLLMService() {
+  if (loadedWebLLMService) {
+    return loadedWebLLMService;
+  }
+  if (!webllmServicePromise) {
+    webllmServicePromise = import('../services/webllmService.js')
+      .then((mod) => {
+        loadedWebLLMService = mod;
+        return mod;
+      })
+      .catch((err) => {
+        webllmServicePromise = null;
+        throw err;
+      });
+  }
+  return webllmServicePromise;
+}
+
+function stopWebLLMIfLoaded() {
+  if (loadedWebLLMService && typeof loadedWebLLMService.stopWebLLMGeneration === 'function') {
+    loadedWebLLMService.stopWebLLMGeneration();
+  }
+}
 
 export default function ChatPage({
   isSharedView = false,
@@ -240,7 +257,9 @@ export default function ChatPage({
     }
     return DEFAULT_WEBLLM_MODEL_ID;
   });
-  const [webllmState, setWebllmState] = useState(() => getWebLLMState());
+  const [webllmState, setWebllmState] = useState(() =>
+    loadedWebLLMService ? loadedWebLLMService.getWebLLMState() : { ...INITIAL_WEBLLM_STATE }
+  );
   const [appShellState, setAppShellState] = useState(() => getAppShellState());
   const [webllmGpuCheck, setWebllmGpuCheck] = useState({
     checking: false,
@@ -312,7 +331,7 @@ export default function ChatPage({
       onPersistMessage: (chatId, message, force) => persistMessageSafe(chatId, message, force),
       onSetLoadingState: setLoadingAndSubmitting,
       findExistingAssistantMessage,
-      stopLocalEngine: stopWebLLMGeneration,
+      stopLocalEngine: stopWebLLMIfLoaded,
       forceStopLocalEngine:
         reason === 'stopped' &&
         (selectedProvider === 'webllm' ||
@@ -350,14 +369,14 @@ export default function ChatPage({
       webllmState.status === 'downloading' ||
       webllmState.status === 'loading'
     ) {
-      stopWebLLMGeneration();
+      stopWebLLMIfLoaded();
     }
     setWebllmModelId(nextModelId);
     if (typeof window !== 'undefined') {
       localStorage.setItem('orvix_webllm_model_id', nextModelId);
     }
-    if (selectedProvider !== 'webllm') {
-      void inspectWebLLMReadiness(nextModelId).catch(() => {});
+    if (selectedProvider !== 'webllm' && loadedWebLLMService) {
+      void loadedWebLLMService.inspectWebLLMReadiness(nextModelId).catch(() => {});
     }
   };
 
@@ -428,12 +447,28 @@ export default function ChatPage({
     }
   }, [isRealUser, showAuthModal]);
 
-  // Subscribe to real Browser AI engine state updates
+  // Subscribe to real Browser AI engine state updates once WebLLM is selected or loaded
   useEffect(() => {
-    return subscribeWebLLMState((snapshot) => {
-      setWebllmState(snapshot);
-    });
-  }, []);
+    if (selectedProvider !== 'webllm' && !loadedWebLLMService) {
+      return undefined;
+    }
+    let cancelled = false;
+    let unsubscribe = null;
+    loadWebLLMService()
+      .then((mod) => {
+        if (cancelled) return;
+        unsubscribe = mod.subscribeWebLLMState((snapshot) => {
+          setWebllmState(snapshot);
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, [selectedProvider]);
 
   // Subscribe to service worker app-shell offline readiness updates
   useEffect(() => {
@@ -541,8 +576,9 @@ export default function ChatPage({
     }
     let cancelled = false;
     setWebllmGpuCheck((prev) => ({ ...prev, checking: true }));
-    inspectWebLLMReadiness(webllmModelId)
-      .then((res) => {
+    loadWebLLMService()
+      .then((mod) => mod.inspectWebLLMReadiness(webllmModelId).then((res) => ({ mod, res })))
+      .then(({ mod, res }) => {
         if (cancelled) return;
         const isSupported = Boolean(res?.gpuSupport?.supported);
         setWebllmGpuCheck({
@@ -551,7 +587,7 @@ export default function ChatPage({
           message: res?.gpuSupport?.message || null
         });
         if (isSupported) {
-          preloadWebLLMRuntimeModule();
+          mod.preloadWebLLMRuntimeModule();
         }
       })
       .catch(() => {
@@ -574,29 +610,43 @@ export default function ChatPage({
       webllmState.status === 'downloading' ||
       webllmState.status === 'loading' ||
       webllmState.status === 'generating';
-    logWebLLMStage('ui_load_clicked', {
-      modelId: webllmModelId,
-      currentStatus: webllmState.status,
-      ignoredBusy: busy,
-      online: isBrowserOnline()
-    });
     if (busy) {
+      if (loadedWebLLMService) {
+        loadedWebLLMService.logWebLLMStage('ui_load_clicked', {
+          modelId: webllmModelId,
+          currentStatus: webllmState.status,
+          ignoredBusy: true,
+          online: isBrowserOnline()
+        });
+      }
       return;
     }
-    void ensureWebLLMEngine({ modelId: webllmModelId }).catch((err) => {
-      if (err?.name !== 'AbortError') {
-        console.warn('[Orvix Browser AI] Initialization failed:', err?.message || err);
-      }
-    });
+    void loadWebLLMService()
+      .then((mod) => {
+        mod.logWebLLMStage('ui_load_clicked', {
+          modelId: webllmModelId,
+          currentStatus: webllmState.status,
+          ignoredBusy: false,
+          online: isBrowserOnline()
+        });
+        return mod.ensureWebLLMEngine({ modelId: webllmModelId });
+      })
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          console.warn('[Orvix Browser AI] Initialization failed:', err?.message || err);
+        }
+      });
   };
 
   const handleCancelWebLLMLoad = () => {
-    stopWebLLMGeneration();
+    stopWebLLMIfLoaded();
   };
 
   const handleUnloadWebLLMModel = () => {
     if (isLoading || webllmState.status === 'generating') return;
-    void unloadWebLLMEngine();
+    if (loadedWebLLMService) {
+      void loadedWebLLMService.unloadWebLLMEngine();
+    }
   };
 
   // Stop any running animation, speech synthesis, and network request when the page unmounts.
@@ -607,7 +657,7 @@ export default function ChatPage({
         getActiveChatId: () => activeChatIdRef.current,
         onUpdateMessages: () => {},
         onSetLoadingState: () => {},
-        stopLocalEngine: stopWebLLMGeneration
+        stopLocalEngine: stopWebLLMIfLoaded
       });
     };
   }, [stopSpeech]);
@@ -1728,6 +1778,7 @@ export default function ChatPage({
         // Smart Compression preflight (runs once per unique file before ALL upload/extraction branches)
         let filesToUpload = rawFilesToUpload;
         try {
+          const { prepareAttachmentsForUpload } = await import('../services/attachmentCompressionCoordinator.js');
           filesToUpload = await prepareAttachmentsForUpload(rawFilesToUpload, {
             signal: preflightEntry.signal,
             isActive: isPreflightActive,
@@ -3675,7 +3726,7 @@ export default function ChatPage({
     (m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
   );
 
-  const handleExportMarkdown = () => {
+  const handleExportMarkdown = async () => {
     if (messagesLoading) {
       setExportNotice({
         type: 'warning',
@@ -3684,6 +3735,7 @@ export default function ChatPage({
       return;
     }
 
+    const { exportAsMarkdown } = await import('../utils/exportConversation.js');
     const result = exportAsMarkdown({
       title: activeTitle || 'Conversation',
       messages,
@@ -3703,7 +3755,7 @@ export default function ChatPage({
     }
   };
 
-  const handleExportText = () => {
+  const handleExportText = async () => {
     if (messagesLoading) {
       setExportNotice({
         type: 'warning',
@@ -3712,6 +3764,7 @@ export default function ChatPage({
       return;
     }
 
+    const { exportAsPlainText } = await import('../utils/exportConversation.js');
     const result = exportAsPlainText({
       title: activeTitle || 'Conversation',
       messages,
@@ -4010,11 +4063,15 @@ export default function ChatPage({
         attachmentProcessingStatus={attachmentProcessingStatus}
       />
 
-      <ShareChatModal
-        isOpen={Boolean(shareModalData)}
-        onClose={() => setShareModalData(null)}
-        shareData={shareModalData}
-      />
+      {Boolean(shareModalData) && (
+        <React.Suspense fallback={null}>
+          <ShareChatModal
+            isOpen={Boolean(shareModalData)}
+            onClose={() => setShareModalData(null)}
+            shareData={shareModalData}
+          />
+        </React.Suspense>
+      )}
 
       {showAuthModal && !isRealUser && (
         <div
