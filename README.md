@@ -839,23 +839,41 @@ RATE_LIMIT_VOICE_WS_WINDOW_MS=60000
 
 ### Prerequisites
 - **Node.js**: Version 18.0.0 or higher (`engines.node: ">=18.0.0"`, Node.js 22 LTS recommended).
-- **npm**: Version 9.0.0 or higher.
+- **Bun**: Version 1.0.0 or higher (package manager and lockfile `bun.lock`).
 
 ### 1. Install Dependencies
 ```bash
-npm install
+bun install
 ```
 
 ### 2. Start the Development Server
 ```bash
-npm run dev
+bun run dev
 ```
 The server will start on `http://localhost:3000` (`0.0.0.0:3000`).
 
 ### 3. Verify Types & Linting
 ```bash
-npm run lint
+bun run lint
+bun run lint:js
 ```
+
+### 4. Run Unit, Integration & Browser E2E Tests
+```bash
+# Node unit & integration suite
+bun run test
+
+# Install Playwright Chromium browser binaries (first-time setup)
+bunx playwright install chromium
+
+# Run full Playwright E2E suite (desktop-chromium + mobile-chromium)
+bun run test:e2e
+
+# Run a specific browser project
+bun run test:e2e:desktop
+bun run test:e2e:mobile
+```
+Playwright automatically starts an isolated development server on port `3100` (`PLAYWRIGHT_PORT=3100`) and executes deterministic specs under `e2e/` (`auth`, `chat`, `settings`, `sharing`, `responsive-a11y`) across `desktop-chromium` (`1280x800`) and `mobile-chromium` (`Pixel 7`, `390x844`).
 
 ---
 
@@ -863,10 +881,10 @@ npm run lint
 
 ### Full-Stack Production Build
 ```bash
-npm run build
-npm start
+bun run build
+bun run start
 ```
-`npm start` executes `tsx server.ts` (with `tsx` included in production `dependencies`), allowing the TypeScript backend to run reliably across all supported Node.js versions (`>=18.0.0`, including versions below Node.js 22.6 that lack native `.ts` strip-types execution). In production (`NODE_ENV=production`), the Express server serves prebuilt static client assets from `dist/` with SPA routing and API proxying.
+`bun run start` executes `tsx server.ts` (with `tsx` included in production `dependencies`), allowing the TypeScript backend to run reliably across all supported Node.js versions (`>=18.0.0`, including versions below Node.js 22.6 that lack native `.ts` strip-types execution). In production (`NODE_ENV=production`), the Express server serves prebuilt static client assets from `dist/` with SPA routing and API proxying.
 
 ### Vercel Serverless Deployment
 Configured via `vercel.json` with handlers in `api/`:
@@ -892,7 +910,7 @@ Configured via `vercel.json` with handlers in `api/`:
 | **Cloud provider fails offline** | Cloud models require internet connectivity | Click **"Switch to Browser AI"** in the offline notice to run models locally on-device. |
 | **Pasted table distorted in WhatsApp** | Messaging app uses proportional fonts | Use Orvix's **Copy** button; it formats tables as clean plain-text records (`• Header: Value`). |
 | **Swipe gesture does not open drawer** | Touching inside composer, header, or code block | Initiate the swipe from the neutral conversation area. |
-| **Port 3000 in use (`EADDRINUSE`)** | Another process is bound to port 3000 | Stop conflicting process or run `PORT=3001 npm run dev`. |
+| **Port 3000 in use (`EADDRINUSE`)** | Another process is bound to port 3000 | Stop conflicting process or run `PORT=3001 bun run dev`. |
 | **`EROFS: read-only file system`** | Serverless disk write restriction | Orvix stages uploads in memory via `multer.memoryStorage()`, avoiding local disk writes. |
 | **Gemini timeout (504 DEADLINE_EXCEEDED)** | Upstream model demand spike | Orvix automatically fails over to `gemini-2.5-flash-lite`. If all cloud attempts fail, switch to Groq, OpenRouter, or Browser AI. |
 

@@ -12,6 +12,14 @@ import {
   Info
 } from 'lucide-react';
 import CodeBlock from './CodeBlock.jsx';
+import {
+  isFenceStart,
+  isFenceClose,
+  splitMarkdownIntoStreamingBlocks,
+  usesReferenceOrFootnoteDefs
+} from './markdownStreamingUtils.js';
+
+export { splitMarkdownIntoStreamingBlocks, usesReferenceOrFootnoteDefs };
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
@@ -28,6 +36,8 @@ export function extractNodeText(node) {
 const BASE_REMARK_PLUGINS = [remarkGfm];
 const EMPTY_REHYPE_PLUGINS = [];
 const UNESCAPED_DOLLAR_RE = /(?:^|[^\\])(?:\\\\)*\$/;
+const POTENTIAL_MATH_RE = /(?:\$|\\\(|\\\[)/;
+const MARKDOWN_COMPONENTS_CACHE = new Map();
 
 let cachedMathPlugins = null;
 let mathPluginsPromise = null;
@@ -51,22 +61,6 @@ function loadMathMarkdownPlugins() {
       });
   }
   return mathPluginsPromise;
-}
-
-function isFenceStart(line) {
-  const match = line.match(/^( {0,3})(`{3,}|~{3,})(.*)$/);
-  if (!match) return null;
-  const fenceChar = match[2][0];
-  const fenceLen = match[2].length;
-  const info = match[3] || '';
-  if (fenceChar === '`' && info.includes('`')) return null;
-  return { fenceChar, fenceLen };
-}
-
-function isFenceClose(line, fenceChar, fenceLen) {
-  const match = line.match(/^( {0,3})(`{3,}|~{3,})\s*$/);
-  if (!match) return false;
-  return match[2][0] === fenceChar && match[2].length >= fenceLen;
 }
 
 function findClosingInlineCode(text, startIdx, tickLen) {
@@ -184,7 +178,14 @@ function isCurrencyDollar(text, dollarIdx) {
 export function preprocessMathMarkdown(markdown, { isStreaming = false } = {}) {
   if (!markdown || typeof markdown !== 'string') return '';
 
-  const text = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Fast-path: skip character-by-character math scanner when no '$', '\', or '\r' exists
+  if (!markdown.includes('$') && !markdown.includes('\\') && !markdown.includes('\r')) {
+    return markdown;
+  }
+
+  const text = markdown.includes('\r')
+    ? markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    : markdown;
   let out = '';
   let i = 0;
   let inFence = false;
@@ -680,30 +681,69 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
   };
 }
 
-/**
- * MarkdownContent Component
- * Renders sanitized Markdown with custom typography, code highlighting, tables, and callouts
- */
-export default function MarkdownContent({ content = '', isStreaming = false, effectiveMode = 'general' }) {
-  const markdownComponents = useMemo(
-    () => createMarkdownComponents(isStreaming, effectiveMode),
-    [isStreaming, effectiveMode]
-  );
+function getCachedMarkdownComponents(isStreaming = false, effectiveMode = 'general') {
+  const key = `${isStreaming ? '1' : '0'}:${effectiveMode || 'general'}`;
+  let cached = MARKDOWN_COMPONENTS_CACHE.get(key);
+  if (!cached) {
+    cached = createMarkdownComponents(isStreaming, effectiveMode);
+    MARKDOWN_COMPONENTS_CACHE.set(key, cached);
+  }
+  return cached;
+}
 
+/**
+ * Single memoized Markdown block renderer.
+ * Completed prefix blocks during streaming retain stable props so React skips
+ * both preprocessMathMarkdown() and ReactMarkdown AST reparsing on every new token.
+ */
+const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
+  rawBlock,
+  isStreaming = false,
+  effectiveMode = 'general',
+  mathPlugins = null
+}) {
   const processedContent = useMemo(
-    () => preprocessMathMarkdown(content || '', { isStreaming }),
-    [content, isStreaming]
+    () => preprocessMathMarkdown(rawBlock, { isStreaming }),
+    [rawBlock, isStreaming]
   );
 
   const needsMath = useMemo(
-    () => UNESCAPED_DOLLAR_RE.test(processedContent),
+    () => processedContent.includes('$') && UNESCAPED_DOLLAR_RE.test(processedContent),
     [processedContent]
+  );
+
+  const components = getCachedMarkdownComponents(isStreaming, effectiveMode);
+  const remarkPlugins = needsMath && mathPlugins ? mathPlugins.remarkPlugins : BASE_REMARK_PLUGINS;
+  const rehypePlugins = needsMath && mathPlugins ? mathPlugins.rehypePlugins : EMPTY_REHYPE_PLUGINS;
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
+      components={components}
+    >
+      {processedContent}
+    </ReactMarkdown>
+  );
+});
+
+/**
+ * MarkdownContent Component
+ * Renders sanitized Markdown with incremental block-level memoization during streaming
+ * while preserving code highlighting, tables, math, callouts, and reference links.
+ */
+function MarkdownContent({ content = '', isStreaming = false, effectiveMode = 'general' }) {
+  const text = typeof content === 'string' ? content : '';
+
+  const mayNeedMath = useMemo(
+    () => POTENTIAL_MATH_RE.test(text),
+    [text]
   );
 
   const [mathPlugins, setMathPlugins] = useState(() => cachedMathPlugins);
 
   useEffect(() => {
-    if (!needsMath || mathPlugins) return undefined;
+    if (!mayNeedMath || mathPlugins) return undefined;
     let cancelled = false;
     loadMathMarkdownPlugins()
       .then((plugins) => {
@@ -717,18 +757,50 @@ export default function MarkdownContent({ content = '', isStreaming = false, eff
     return () => {
       cancelled = true;
     };
-  }, [needsMath, mathPlugins]);
+  }, [mayNeedMath, mathPlugins]);
 
-  const remarkPlugins = needsMath && mathPlugins ? mathPlugins.remarkPlugins : BASE_REMARK_PLUGINS;
-  const rehypePlugins = needsMath && mathPlugins ? mathPlugins.rehypePlugins : EMPTY_REHYPE_PLUGINS;
+  // Keep cross-block reference links and footnotes unified once streaming finishes.
+  const shouldUseBlockSplitting = useMemo(() => {
+    if (!text) return false;
+    if (isStreaming) return true;
+    return !usesReferenceOrFootnoteDefs(text);
+  }, [text, isStreaming]);
 
+  const blocks = useMemo(() => {
+    if (!text) return [];
+    if (!shouldUseBlockSplitting) return [text];
+    return splitMarkdownIntoStreamingBlocks(text);
+  }, [text, shouldUseBlockSplitting]);
+
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  if (blocks.length === 1) {
+    return (
+      <MemoizedMarkdownBlock
+        rawBlock={blocks[0]}
+        isStreaming={isStreaming}
+        effectiveMode={effectiveMode}
+        mathPlugins={mathPlugins}
+      />
+    );
+  }
+
+  const lastIndex = blocks.length - 1;
   return (
-    <ReactMarkdown
-      remarkPlugins={remarkPlugins}
-      rehypePlugins={rehypePlugins}
-      components={markdownComponents}
-    >
-      {processedContent}
-    </ReactMarkdown>
+    <>
+      {blocks.map((block, index) => (
+        <MemoizedMarkdownBlock
+          key={index}
+          rawBlock={block}
+          isStreaming={index === lastIndex ? isStreaming : false}
+          effectiveMode={effectiveMode}
+          mathPlugins={mathPlugins}
+        />
+      ))}
+    </>
   );
 }
+
+export default React.memo(MarkdownContent);

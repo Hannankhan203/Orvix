@@ -29,6 +29,8 @@
     "server/**/*",
     "api/**/*",
     "tests/**/*",
+    "e2e/**/*",
+    "playwright.config.ts",
     "server.ts",
     "vite.config.ts"
   ],

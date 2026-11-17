@@ -123,15 +123,22 @@ service cloud.firestore {
       }
     }
 
-    // Deliberately published, immutable shared conversation snapshots
+    function isActiveSharedChat(data) {
+      return (!('revoked' in data) || data.revoked != true)
+             && (!('expiresAt' in data)
+                 || data.expiresAt == null
+                 || (data.expiresAt is timestamp && request.time < data.expiresAt));
+    }
+
+    // Deliberately published shared conversation snapshots with owner revocation & optional expiration
     match /sharedChats/{shareId} {
-      // Allow reading an individual shared conversation by its exact shareId (including unauthenticated visitors)
-      allow get: if true;
+      // Allow reading an individual active (unrevoked and unexpired) shared conversation by exact shareId
+      allow get: if isActiveSharedChat(resource.data);
 
       // Never allow listing or querying the sharedChats collection to prevent enumeration
       allow list: if false;
 
-      // Direct client writes are strictly disallowed. All shared chat creation is handled via the trusted server-side API endpoint (/api/share) which rigorously validates every message in the conversation.
+      // Direct client writes are strictly disallowed. All shared chat creation and owner revocation are handled via trusted server-side API endpoints (/api/share).
       allow create, update, delete: if false;
     }
 

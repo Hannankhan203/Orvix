@@ -105,6 +105,7 @@ import {
 import { normalizeAIError } from '../services/errorNormalizationService.js';
 import {
   createSharedChatSnapshot,
+  revokeSharedChatSnapshot,
   evaluateShareEligibility,
   loadSharedChatSnapshot,
   clearSharedSnapshotSession,
@@ -214,7 +215,12 @@ export default function ChatPage({
   const [exportNotice, setExportNotice] = useState(null);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [isSharingChat, setIsSharingChat] = useState(false);
+  const [isRevokingShare, setIsRevokingShare] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareModalChatMeta, setShareModalChatMeta] = useState(null);
   const [shareModalData, setShareModalData] = useState(null);
+  const [chatShareLinks, setChatShareLinks] = useState({});
+  const [shareModalError, setShareModalError] = useState(null);
   const [shareErrorNotice, setShareErrorNotice] = useState(null);
   const isSharingChatRef = useRef(false);
 
@@ -3799,14 +3805,7 @@ export default function ChatPage({
     isSharedPreview: Boolean(isSharedView)
   });
 
-  const handleShareChat = async () => {
-    if (isSharedView) {
-      return;
-    }
-    if (isSharingChatRef.current) {
-      return;
-    }
-
+  const resolveCurrentShareTarget = () => {
     const latestChatId = activeChatIdRef.current;
     const latestChatRecord = userChatsRef.current.find((c) => c.id === latestChatId);
     const latestChat = latestChatRecord
@@ -3831,8 +3830,52 @@ export default function ChatPage({
       isSharedPreview: Boolean(isSharedView)
     });
 
-    if (!latestEligibility.eligible) {
+    return { latestChat, latestEligibility };
+  };
+
+  const handleShareChat = () => {
+    if (isSharedView) {
+      return;
+    }
+
+    const { latestChat, latestEligibility } = resolveCurrentShareTarget();
+    if (!latestEligibility.eligible || !latestChat) {
       setShareErrorNotice(
+        latestEligibility.reason || 'This conversation cannot be shared right now.'
+      );
+      return;
+    }
+
+    const shareableCount = messagesRef.current.filter(
+      (m) => m && typeof m === 'object' && !m.isError && m.sender !== 'error'
+    ).length;
+
+    const existingLink = chatShareLinks[latestChat.id];
+    const hasUnexpiredExisting =
+      existingLink &&
+      !existingLink.revoked &&
+      (!existingLink.expiresAtMs || Date.now() < existingLink.expiresAtMs);
+
+    setShareErrorNotice(null);
+    setShareModalError(null);
+    setShareModalChatMeta({
+      id: latestChat.id,
+      title: latestChat.title || 'Shared Chat',
+      mode: latestChat.mode || 'general',
+      messageCount: shareableCount
+    });
+    setShareModalData(hasUnexpiredExisting ? existingLink : null);
+    setShareModalOpen(true);
+  };
+
+  const handleCreateShareLink = async (expirationPreset = 'never') => {
+    if (isSharedView || isSharingChatRef.current) {
+      return;
+    }
+
+    const { latestChat, latestEligibility } = resolveCurrentShareTarget();
+    if (!latestEligibility.eligible || !latestChat) {
+      setShareModalError(
         latestEligibility.reason || 'This conversation cannot be shared right now.'
       );
       return;
@@ -3841,6 +3884,7 @@ export default function ChatPage({
     isSharingChatRef.current = true;
     setIsSharingChat(true);
     setShareErrorNotice(null);
+    setShareModalError(null);
 
     try {
       const snapshotResult = await createSharedChatSnapshot(
@@ -3849,19 +3893,56 @@ export default function ChatPage({
         {
           user: currentUser,
           isLoading: isSubmittingRef.current || isLoading || messagesLoading,
-          isSharedPreview: Boolean(isSharedView)
+          isSharedPreview: Boolean(isSharedView),
+          expirationPreset
         }
       );
 
       setShareModalData(snapshotResult);
+      setChatShareLinks((prev) => ({
+        ...prev,
+        [latestChat.id]: snapshotResult
+      }));
     } catch (error) {
       console.error('Failed to create shared conversation snapshot:', error);
-      setShareErrorNotice(
+      setShareModalError(
         error?.message || 'Failed to generate share link. Please try again.'
       );
     } finally {
       isSharingChatRef.current = false;
       setIsSharingChat(false);
+    }
+  };
+
+  const handleRevokeShareLink = async (shareIdToRevoke) => {
+    if (!shareIdToRevoke || isRevokingShare) return;
+    setIsRevokingShare(true);
+    setShareModalError(null);
+    try {
+      const result = await revokeSharedChatSnapshot(shareIdToRevoke, {
+        user: currentUser
+      });
+      setShareModalData((prev) =>
+        prev && prev.shareId === shareIdToRevoke
+          ? { ...prev, revoked: true, revokedAtMs: result.revokedAtMs }
+          : prev
+      );
+      setChatShareLinks((prev) => {
+        const next = { ...prev };
+        for (const [cid, entry] of Object.entries(next)) {
+          if (entry && entry.shareId === shareIdToRevoke) {
+            delete next[cid];
+          }
+        }
+        return next;
+      });
+    } catch (error) {
+      console.error('Failed to revoke shared link:', error);
+      setShareModalError(
+        error?.message || 'Failed to revoke share link. Please try again.'
+      );
+    } finally {
+      setIsRevokingShare(false);
     }
   };
 
@@ -4055,12 +4136,25 @@ export default function ChatPage({
         attachmentProcessingStatus={attachmentProcessingStatus}
       />
 
-      {Boolean(shareModalData) && (
+      {shareModalOpen && (
         <React.Suspense fallback={null}>
           <ShareChatModal
-            isOpen={Boolean(shareModalData)}
-            onClose={() => setShareModalData(null)}
+            isOpen={shareModalOpen}
+            onClose={() => {
+              setShareModalOpen(false);
+              setShareModalError(null);
+            }}
             shareData={shareModalData}
+            chatMeta={shareModalChatMeta}
+            onCreateShare={handleCreateShareLink}
+            onRevokeShare={handleRevokeShareLink}
+            isCreatingShare={isSharingChat}
+            isRevokingShare={isRevokingShare}
+            errorMessage={shareModalError}
+            onResetShare={() => {
+              setShareModalData(null);
+              setShareModalError(null);
+            }}
           />
         </React.Suspense>
       )}

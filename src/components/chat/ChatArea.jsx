@@ -1387,12 +1387,16 @@ Transcript:
               <div className="shared-chat-error-card">
                 <AlertCircle size={32} className="shared-error-icon" />
                 <h2 className="shared-error-title">
-                  {sharedError.code === 'INVALID_SHARE_ID' || sharedError.code === 'SNAPSHOT_NOT_FOUND' || sharedError.code === 'MALFORMED_SHARE_URL'
+                  {sharedError.code === 'SHARE_REVOKED'
+                    ? 'Share Link Revoked'
+                    : sharedError.code === 'SHARE_EXPIRED'
+                    ? 'Share Link Expired'
+                    : sharedError.code === 'INVALID_SHARE_ID' || sharedError.code === 'SNAPSHOT_NOT_FOUND' || sharedError.code === 'NOT_FOUND' || sharedError.code === 'MALFORMED_SHARE_URL'
                     ? 'Conversation Unavailable'
                     : 'Unable to Load Shared Conversation'}
                 </h2>
                 <p className="shared-error-message">
-                  {sharedError.message || 'This shared conversation link may have expired or is unavailable.'}
+                  {sharedError.message || 'This shared conversation link may have expired or been revoked by its owner.'}
                 </p>
                 <div className="shared-error-actions">
                   <button

@@ -10,4 +10,6 @@ coverage/
 .vercel
 .env*
 uploads/
-
+playwright-report/
+test-results/
+blob-report/

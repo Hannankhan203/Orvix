@@ -17,6 +17,7 @@ test('ORVIX-H01 CI workflow: uses Bun with bun.lock caching, --frozen-lockfile, 
 
   const ciContent = fs.readFileSync(ciPath, 'utf8');
   const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  const vercelCfg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'vercel.json'), 'utf8'));
 
   // Must not retain broken npm CI / npm cache steps
   assert.equal(/\bnpm\s+ci\b/.test(ciContent), false, 'CI must not use npm ci');
@@ -35,9 +36,14 @@ test('ORVIX-H01 CI workflow: uses Bun with bun.lock caching, --frozen-lockfile, 
   // Must install strictly from frozen bun.lock and preserve all verification steps
   assert.match(ciContent, /run:\s*bun install --frozen-lockfile/, 'CI must run bun install --frozen-lockfile');
   assert.match(ciContent, /run:\s*bun run lint/, 'CI must run bun run lint');
+  assert.match(ciContent, /run:\s*bun run lint:js/, 'CI must run bun run lint:js');
+  assert.match(ciContent, /run:\s*bun run audit/, 'CI must run bun run audit');
   assert.match(ciContent, /run:\s*bun run test/, 'CI must run bun run test');
   assert.match(ciContent, /run:\s*bun run build/, 'CI must run bun run build');
 
+  assert.equal(vercelCfg.buildCommand, 'bun run build', 'vercel.json buildCommand must use bun run build');
+  assert.equal(pkg.scripts?.audit, 'bun audit', 'package.json audit script must use bun audit');
+  assert.equal(pkg.scripts?.['audit:json'], 'bun audit --json', 'package.json audit:json script must use bun audit --json');
   assert.ok(pkg.scripts?.lint, 'package.json must define lint script');
   assert.ok(pkg.scripts?.test, 'package.json must define test script');
   assert.ok(pkg.scripts?.build, 'package.json must define build script');
@@ -81,6 +87,7 @@ test('ORVIX-HIGH-03 production start script: uses tsx server.ts, includes tsx in
   const child = spawn(tsxBin, ['server.ts', '--port', String(testPort)], {
     cwd: REPO_ROOT,
     detached: true,
+    windowsHide: true,
     env: {
       ...process.env,
       NODE_ENV: 'production',

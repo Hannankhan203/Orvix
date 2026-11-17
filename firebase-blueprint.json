@@ -204,7 +204,7 @@
     },
     "SharedChat": {
       "title": "SharedChat",
-      "description": "An immutable, sanitized public snapshot of a deliberately shared conversation containing no private owner identifiers.",
+      "description": "A deliberately shared conversation snapshot with server-side owner tracking, revocation status, and optional expiration.",
       "type": "object",
       "properties": {
         "id": {
@@ -212,6 +212,10 @@
           "minLength": 12,
           "maxLength": 128,
           "description": "Unique unguessable share identifier matching the sharedChats/{shareId} document ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Verified Firebase UID of the share creator, used strictly server-side for revocation authorization and stripped from public responses."
         },
         "title": {
           "type": "string",
@@ -228,6 +232,28 @@
           "type": "string",
           "format": "date-time",
           "description": "Firestore server timestamp when the shared snapshot was created."
+        },
+        "expiresAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Optional Firestore timestamp after which the shared link automatically expires."
+        },
+        "expiresAtMs": {
+          "type": ["integer", "null"],
+          "description": "Optional expiration epoch timestamp in milliseconds, or null when never expiring."
+        },
+        "revoked": {
+          "type": "boolean",
+          "description": "Whether the owner has revoked this shared conversation link."
+        },
+        "revokedAt": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "Firestore server timestamp when the link was revoked, or null."
+        },
+        "revokedAtMs": {
+          "type": ["integer", "null"],
+          "description": "Epoch timestamp in milliseconds when the link was revoked, or null."
         },
         "messageCount": {
           "type": "integer",

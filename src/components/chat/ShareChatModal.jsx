@@ -7,6 +7,11 @@ import {
   MessageCircle,
   Link2,
   ShieldCheck,
+  Clock,
+  Ban,
+  AlertCircle,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import {
   copyShareUrlToClipboard,
@@ -15,24 +20,73 @@ import {
   triggerNativeShare,
 } from '../../services/shareChatService.js';
 
+const EXPIRATION_OPTIONS = [
+  { value: 'never', label: 'Never' },
+  { value: '1h', label: '1 hour' },
+  { value: '24h', label: '24 hours' },
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+];
+
+function formatExpirationLabel(expiresAtMs) {
+  if (!expiresAtMs || !Number.isFinite(expiresAtMs)) {
+    return 'Never expires';
+  }
+  try {
+    const formatted = new Date(expiresAtMs).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    return `Expires ${formatted}`;
+  } catch {
+    return 'Expires automatically';
+  }
+}
+
 /**
- * Accessible modal dialog presenting a newly generated immutable Share Chat link.
+ * Accessible modal dialog for configuring expiration, generating, sharing,
+ * and revoking a conversation share link.
  *
  * @param {Object} props
  * @param {boolean} props.isOpen
  * @param {() => void} props.onClose
- * @param {Object|null} props.shareData - `{ shareId, shareUrl, title, mode, messageCount }`
+ * @param {Object|null} props.shareData - `{ shareId, shareUrl, title, mode, messageCount, expiresAtMs, revoked }`
+ * @param {Object|null} [props.chatMeta] - `{ id, title, messageCount }`
+ * @param {(expirationPreset: string) => Promise<void>|void} [props.onCreateShare]
+ * @param {(shareId: string) => Promise<void>|void} [props.onRevokeShare]
+ * @param {boolean} [props.isCreatingShare=false]
+ * @param {boolean} [props.isRevokingShare=false]
+ * @param {string|null} [props.errorMessage=null]
+ * @param {() => void} [props.onResetShare]
  */
-export default function ShareChatModal({ isOpen, onClose, shareData }) {
+export default function ShareChatModal({
+  isOpen,
+  onClose,
+  shareData,
+  chatMeta = null,
+  onCreateShare,
+  onRevokeShare,
+  isCreatingShare = false,
+  isRevokingShare = false,
+  errorMessage = null,
+  onResetShare,
+}) {
   const [copied, setCopied] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [nativeShareSupported, setNativeShareSupported] = useState(false);
+  const [selectedExpiration, setSelectedExpiration] = useState('never');
+  const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const inputRef = useRef(null);
   const copyTimerRef = useRef(null);
 
   const shareUrl = shareData?.shareUrl || '';
-  const title = shareData?.title || 'Shared Chat';
-  const messageCount = shareData?.messageCount || 0;
+  const isRevoked = Boolean(shareData?.revoked);
+  const hasActiveShare = Boolean(shareData && shareUrl && !isRevoked);
+  const title = shareData?.title || chatMeta?.title || 'Shared Chat';
+  const messageCount = shareData?.messageCount ?? chatMeta?.messageCount ?? 0;
 
   useEffect(() => {
     setNativeShareSupported(canUseNativeShare());
@@ -42,6 +96,7 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
     if (!isOpen) {
       setCopied(false);
       setStatusMessage('');
+      setConfirmingRevoke(false);
       if (copyTimerRef.current) {
         clearTimeout(copyTimerRef.current);
       }
@@ -51,6 +106,10 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
+        if (confirmingRevoke && !isRevokingShare) {
+          setConfirmingRevoke(false);
+          return;
+        }
         onClose?.();
       }
     };
@@ -59,7 +118,7 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, confirmingRevoke, isRevokingShare]);
 
   useEffect(() => {
     return () => {
@@ -69,13 +128,14 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
     };
   }, []);
 
-  if (!isOpen || !shareData || !shareUrl) {
+  if (!isOpen || (!shareData && !chatMeta)) {
     return null;
   }
 
-  const whatsAppUrl = buildWhatsAppShareUrl(shareUrl, title);
+  const whatsAppUrl = hasActiveShare ? buildWhatsAppShareUrl(shareUrl, title) : '';
 
   const handleCopyLink = async () => {
+    if (!hasActiveShare) return;
     const ok = await copyShareUrlToClipboard(shareUrl);
     if (ok) {
       setCopied(true);
@@ -99,6 +159,7 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
   };
 
   const handleNativeShare = async () => {
+    if (!hasActiveShare) return;
     if (!nativeShareSupported) {
       await handleCopyLink();
       return;
@@ -109,13 +170,27 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
         setStatusMessage('Shared successfully.');
       }
     } catch {
-      // Fallback to copying link if native share fails
       await handleCopyLink();
     }
   };
 
+  const handleGenerateClick = async () => {
+    if (!onCreateShare || isCreatingShare) return;
+    setStatusMessage('');
+    setConfirmingRevoke(false);
+    await onCreateShare(selectedExpiration);
+  };
+
+  const handleConfirmRevoke = async () => {
+    if (!onRevokeShare || !shareData?.shareId || isRevokingShare) return;
+    await onRevokeShare(shareData.shareId);
+    setConfirmingRevoke(false);
+    setCopied(false);
+    setStatusMessage('Share link revoked. Anyone visiting the old link can no longer access it.');
+  };
+
   const handleBackdropClick = (e) => {
-    if (e.target === e.currentTarget) {
+    if (e.target === e.currentTarget && !isCreatingShare && !isRevokingShare) {
       onClose?.();
     }
   };
@@ -143,7 +218,11 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
                 Share Conversation
               </h2>
               <p id="share-chat-modal-desc" className="share-chat-modal-subtitle">
-                Anyone with this link can view this {messageCount}-message snapshot
+                {isRevoked
+                  ? 'This share link has been revoked'
+                  : hasActiveShare
+                  ? `Anyone with this link can view this ${messageCount}-message snapshot`
+                  : `Create a read-only link for this ${messageCount}-message snapshot`}
               </p>
             </div>
           </div>
@@ -152,6 +231,7 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
             type="button"
             className="share-chat-modal-close-btn"
             onClick={onClose}
+            disabled={isCreatingShare || isRevokingShare}
             aria-label="Close share dialog"
             title="Close (Esc)"
           >
@@ -169,70 +249,196 @@ export default function ShareChatModal({ isOpen, onClose, shareData }) {
             </span>
           </div>
 
-          <div className="share-chat-url-box">
-            <Link2 size={15} className="share-chat-url-icon" aria-hidden="true" />
-            <input
-              ref={inputRef}
-              type="text"
-              readOnly
-              value={shareUrl}
-              onClick={(e) => e.currentTarget.select()}
-              className="share-chat-url-input"
-              aria-label="Shareable conversation URL"
-            />
-            <button
-              type="button"
-              onClick={handleCopyLink}
-              className={`share-chat-inline-copy-btn ${copied ? 'copied' : ''}`}
-              aria-label={copied ? 'Link copied to clipboard' : 'Copy share link'}
-            >
-              {copied ? (
-                <>
-                  <Check size={14} aria-hidden="true" />
-                  <span>Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Copy size={14} aria-hidden="true" />
-                  <span>Copy Link</span>
-                </>
+          {errorMessage && (
+            <div className="share-chat-error-banner" role="alert">
+              <AlertCircle size={14} aria-hidden="true" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
+          {isRevoked ? (
+            <div className="share-chat-revoked-panel" role="status">
+              <div className="share-chat-revoked-badge">
+                <Ban size={15} aria-hidden="true" />
+                <span>Link Revoked</span>
+              </div>
+              <p className="share-chat-revoked-desc">
+                This shared link has been deactivated. Previous recipients will see a revocation notice if they try to open it.
+              </p>
+              {onResetShare && (
+                <button
+                  type="button"
+                  className="share-chat-option-btn primary"
+                  onClick={() => {
+                    setStatusMessage('');
+                    onResetShare();
+                  }}
+                >
+                  <RefreshCw size={15} aria-hidden="true" />
+                  <span>Create a New Share Link</span>
+                </button>
               )}
-            </button>
-          </div>
+            </div>
+          ) : !hasActiveShare ? (
+            <div className="share-chat-create-section">
+              <div className="share-chat-expiry-field">
+                <label htmlFor="share-expiration-select" className="share-chat-expiry-label">
+                  <Clock size={14} aria-hidden="true" />
+                  <span>Link expiration</span>
+                </label>
+                <div
+                  className="share-chat-expiry-options"
+                  role="radiogroup"
+                  aria-label="Share link expiration"
+                >
+                  {EXPIRATION_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selectedExpiration === opt.value}
+                      disabled={isCreatingShare}
+                      onClick={() => setSelectedExpiration(opt.value)}
+                      className={`share-chat-expiry-option ${selectedExpiration === opt.value ? 'active' : ''}`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          <div className="share-chat-actions-grid">
-            <button
-              type="button"
-              onClick={handleCopyLink}
-              className={`share-chat-option-btn primary ${copied ? 'copied' : ''}`}
-            >
-              {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
-              <span>{copied ? 'Link Copied' : 'Copy Link'}</span>
-            </button>
-
-            <a
-              href={whatsAppUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="share-chat-option-btn whatsapp"
-              aria-label="Share conversation link on WhatsApp"
-            >
-              <MessageCircle size={16} aria-hidden="true" />
-              <span>WhatsApp</span>
-            </a>
-
-            {nativeShareSupported && (
               <button
                 type="button"
-                onClick={handleNativeShare}
-                className="share-chat-option-btn native-share"
-                aria-label="Share using device share sheet"
+                className="share-chat-option-btn primary share-chat-create-btn"
+                onClick={handleGenerateClick}
+                disabled={isCreatingShare}
               >
-                <Share2 size={16} aria-hidden="true" />
-                <span>Share</span>
+                {isCreatingShare ? (
+                  <>
+                    <Loader2 size={16} className="spin-icon" aria-hidden="true" />
+                    <span>Generating Link...</span>
+                  </>
+                ) : (
+                  <>
+                    <Link2 size={16} aria-hidden="true" />
+                    <span>Create Share Link</span>
+                  </>
+                )}
               </button>
-            )}
-          </div>
+            </div>
+          ) : (
+            <>
+              <div className="share-chat-url-box">
+                <Link2 size={15} className="share-chat-url-icon" aria-hidden="true" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  readOnly
+                  value={shareUrl}
+                  onClick={(e) => e.currentTarget.select()}
+                  className="share-chat-url-input"
+                  aria-label="Shareable conversation URL"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className={`share-chat-inline-copy-btn ${copied ? 'copied' : ''}`}
+                  aria-label={copied ? 'Link copied to clipboard' : 'Copy share link'}
+                >
+                  {copied ? (
+                    <>
+                      <Check size={14} aria-hidden="true" />
+                      <span>Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={14} aria-hidden="true" />
+                      <span>Copy Link</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="share-chat-expiry-status">
+                <Clock size={13} aria-hidden="true" />
+                <span>{formatExpirationLabel(shareData.expiresAtMs)}</span>
+              </div>
+
+              <div className="share-chat-actions-grid">
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className={`share-chat-option-btn primary ${copied ? 'copied' : ''}`}
+                >
+                  {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+                  <span>{copied ? 'Link Copied' : 'Copy Link'}</span>
+                </button>
+
+                <a
+                  href={whatsAppUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="share-chat-option-btn whatsapp"
+                  aria-label="Share conversation link on WhatsApp"
+                >
+                  <MessageCircle size={16} aria-hidden="true" />
+                  <span>WhatsApp</span>
+                </a>
+
+                {nativeShareSupported && (
+                  <button
+                    type="button"
+                    onClick={handleNativeShare}
+                    className="share-chat-option-btn native-share"
+                    aria-label="Share using device share sheet"
+                  >
+                    <Share2 size={16} aria-hidden="true" />
+                    <span>Share</span>
+                  </button>
+                )}
+              </div>
+
+              {onRevokeShare && (
+                <div className="share-chat-revoke-section">
+                  {confirmingRevoke ? (
+                    <div className="share-chat-revoke-confirm" role="alertdialog" aria-label="Confirm revoke share link">
+                      <span className="share-chat-revoke-confirm-text">
+                        Revoke this link? Anyone opening it will lose access immediately.
+                      </span>
+                      <div className="share-chat-revoke-confirm-actions">
+                        <button
+                          type="button"
+                          className="share-chat-revoke-cancel-btn"
+                          onClick={() => setConfirmingRevoke(false)}
+                          disabled={isRevokingShare}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="share-chat-revoke-confirm-btn"
+                          onClick={handleConfirmRevoke}
+                          disabled={isRevokingShare}
+                        >
+                          {isRevokingShare ? 'Revoking...' : 'Confirm Revoke'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="share-chat-revoke-btn"
+                      onClick={() => setConfirmingRevoke(true)}
+                      disabled={isRevokingShare}
+                    >
+                      <Ban size={14} aria-hidden="true" />
+                      <span>Revoke Link</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
+          )}
 
           {statusMessage && (
             <div className="share-chat-status-feedback" role="status" aria-live="polite">

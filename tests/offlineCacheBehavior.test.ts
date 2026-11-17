@@ -121,7 +121,7 @@ test('Generated Service Worker (when dist exists) executes install/activate/prec
   const swPath = path.resolve('dist', 'sw.js');
   const htmlPath = path.resolve('dist', 'index.html');
   if (!fs.existsSync(swPath) || !fs.existsSync(htmlPath)) {
-    // CI runs tests before `npm run build`; Vite config assertions above still execute unconditionally.
+    // CI runs tests before `bun run build`; Vite config assertions above still execute unconditionally.
     return;
   }
 

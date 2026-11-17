@@ -64,8 +64,200 @@ const ALLOWED_SHARED_MESSAGE_KEY_SET = new Set(ALLOWED_SHARED_MESSAGE_KEYS);
 const URL_SAFE_ALPHABET =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
 
+export const MIN_SHARE_TTL_MS = 60 * 1000; // 1 minute
+export const MAX_SHARE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
+export const SHARE_EXPIRATION_PRESETS = Object.freeze({
+  never: null,
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+});
+
 // Track in-flight publication requests by chat ID to prevent duplicate concurrent writes
 const inFlightShareRequests = new Set();
+
+/**
+ * Extracts epoch milliseconds from numeric, Date, ISO string, or Firestore Timestamp values.
+ * Returns `null` when explicitly unset (`null`/`undefined`), or `NaN` when malformed.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function extractShareTimestampMs(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.trunc(value) : Number.NaN;
+  }
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : Number.NaN;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^-?\d+$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      return Number.isFinite(numeric) ? Math.trunc(numeric) : Number.NaN;
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+  if (typeof value === 'object') {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    if (typeof record.toMillis === 'function') {
+      try {
+        const ms = Number(record.toMillis());
+        return Number.isFinite(ms) ? Math.trunc(ms) : Number.NaN;
+      } catch {
+        return Number.NaN;
+      }
+    }
+    const sec =
+      typeof record.seconds === 'number'
+        ? record.seconds
+        : typeof record._seconds === 'number'
+        ? record._seconds
+        : null;
+    if (sec !== null && Number.isFinite(sec)) {
+      const nano =
+        typeof record.nanoseconds === 'number'
+          ? record.nanoseconds
+          : typeof record._nanoseconds === 'number'
+          ? record._nanoseconds
+          : 0;
+      const safeNano = Number.isFinite(nano) ? nano : 0;
+      return Math.trunc(sec * 1000 + safeNano / 1e6);
+    }
+  }
+  return Number.NaN;
+}
+
+/**
+ * Validates and resolves an optional share expiration setting (`expirationPreset`,
+ * `expiresInSeconds`, or `expiresAt`) into a canonical future epoch timestamp in ms.
+ *
+ * @param {Object} [params]
+ * @param {string|null} [params.expirationPreset]
+ * @param {number|string|null} [params.expiresInSeconds]
+ * @param {number|string|Date|Object|null} [params.expiresAt]
+ * @param {number} [params.nowMs=Date.now()]
+ * @returns {{ expiresAtMs: number|null, ttlMs: number|null, preset: string }}
+ */
+export function resolveShareExpiration({
+  expirationPreset,
+  expiresInSeconds,
+  expiresAt,
+  nowMs = Date.now(),
+} = {}) {
+  const safeNowMs = Number.isFinite(nowMs) ? Math.trunc(nowMs) : Date.now();
+
+  if (expiresAt !== undefined && expiresAt !== null && expiresAt !== '') {
+    const resolvedMs = extractShareTimestampMs(expiresAt);
+    if (resolvedMs === null || !Number.isFinite(resolvedMs)) {
+      throw new ShareChatError(
+        'Invalid share expiration timestamp.',
+        'INVALID_EXPIRATION'
+      );
+    }
+    const ttlMs = resolvedMs - safeNowMs;
+    if (ttlMs < MIN_SHARE_TTL_MS) {
+      throw new ShareChatError(
+        'Share expiration timestamp must be at least 1 minute in the future.',
+        'INVALID_EXPIRATION'
+      );
+    }
+    if (ttlMs > MAX_SHARE_TTL_MS) {
+      throw new ShareChatError(
+        'Share expiration cannot exceed 365 days.',
+        'INVALID_EXPIRATION'
+      );
+    }
+    return { expiresAtMs: resolvedMs, ttlMs, preset: 'custom' };
+  }
+
+  if (expiresInSeconds !== undefined && expiresInSeconds !== null && expiresInSeconds !== '') {
+    const numericSeconds = typeof expiresInSeconds === 'number' ? expiresInSeconds : Number(expiresInSeconds);
+    if (!Number.isFinite(numericSeconds)) {
+      throw new ShareChatError(
+        'Share expiration duration must be a valid number of seconds.',
+        'INVALID_EXPIRATION'
+      );
+    }
+    const ttlMs = Math.trunc(numericSeconds * 1000);
+    if (ttlMs < MIN_SHARE_TTL_MS) {
+      throw new ShareChatError(
+        'Share expiration duration must be at least 60 seconds.',
+        'INVALID_EXPIRATION'
+      );
+    }
+    if (ttlMs > MAX_SHARE_TTL_MS) {
+      throw new ShareChatError(
+        'Share expiration cannot exceed 365 days.',
+        'INVALID_EXPIRATION'
+      );
+    }
+    return {
+      expiresAtMs: safeNowMs + ttlMs,
+      ttlMs,
+      preset: 'custom',
+    };
+  }
+
+  if (expirationPreset !== undefined && expirationPreset !== null && expirationPreset !== '') {
+    const normalizedPreset = String(expirationPreset).trim().toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(SHARE_EXPIRATION_PRESETS, normalizedPreset)) {
+      throw new ShareChatError(
+        `Unsupported share expiration preset "${normalizedPreset}".`,
+        'INVALID_EXPIRATION'
+      );
+    }
+    const durationMs = SHARE_EXPIRATION_PRESETS[normalizedPreset];
+    if (durationMs === null) {
+      return { expiresAtMs: null, ttlMs: null, preset: 'never' };
+    }
+    return {
+      expiresAtMs: safeNowMs + durationMs,
+      ttlMs: durationMs,
+      preset: normalizedPreset,
+    };
+  }
+
+  return { expiresAtMs: null, ttlMs: null, preset: 'never' };
+}
+
+/**
+ * Checks whether a shared snapshot payload has passed its expiration timestamp.
+ * Fails closed (`true`) if an expiration field is present but malformed.
+ *
+ * @param {Object|null} data
+ * @param {number} [nowMs=Date.now()]
+ * @returns {boolean}
+ */
+export function isShareSnapshotExpired(data, nowMs = Date.now()) {
+  if (!data || typeof data !== 'object') return false;
+  const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+
+  const candidate =
+    data.expiresAtMs !== undefined && data.expiresAtMs !== null
+      ? data.expiresAtMs
+      : data.expiresAt !== undefined && data.expiresAt !== null
+      ? data.expiresAt
+      : null;
+
+  if (candidate === null) {
+    return false;
+  }
+
+  const expiresAtMs = extractShareTimestampMs(candidate);
+  if (expiresAtMs === null || !Number.isFinite(expiresAtMs)) {
+    return true;
+  }
+
+  return safeNowMs >= expiresAtMs;
+}
 
 /**
  * Custom error class for Share Chat validation and publication failures.
@@ -655,12 +847,31 @@ export function calculateSnapshotByteSize(snapshotPayload) {
  * @param {string} params.shareId
  * @param {Object} params.chat
  * @param {Array} params.messages
+ * @param {string|null} [params.expirationPreset]
+ * @param {number|string|null} [params.expiresInSeconds]
+ * @param {number|string|Date|Object|null} [params.expiresAt]
+ * @param {number} [params.nowMs]
  * @returns {{ documentData: Object, byteSize: number }}
  */
-export function buildValidatedSharedSnapshot({ shareId, chat, messages }) {
+export function buildValidatedSharedSnapshot({
+  shareId,
+  chat,
+  messages,
+  expirationPreset = undefined,
+  expiresInSeconds = undefined,
+  expiresAt = undefined,
+  nowMs = Date.now(),
+}) {
   if (!isValidShareId(shareId)) {
     throw new ShareChatError('Invalid share ID.', 'INVALID_SHARE_ID');
   }
+
+  const expiration = resolveShareExpiration({
+    expirationPreset,
+    expiresInSeconds,
+    expiresAt,
+    nowMs,
+  });
 
   if (!chat || typeof chat !== 'object' || typeof chat.id !== 'string' || !chat.id.trim()) {
     throw new ShareChatError(
@@ -751,6 +962,8 @@ export function buildValidatedSharedSnapshot({ shareId, chat, messages }) {
     title: safeTitle,
     mode: safeMode,
     createdAt: serverTimestamp(),
+    expiresAtMs: expiration.expiresAtMs,
+    revoked: false,
     messageCount: sanitizedMessages.length,
     messages: sanitizedMessages,
   };
@@ -798,7 +1011,10 @@ function withPublishTimeout(promise, ms = 12000) {
  * @param {Function} [options.fetchImpl] - Optional `fetch` override for testing
  * @param {string} [options.baseUrl] - Optional base URL override
  * @param {boolean} [options.isSharedPreview=false] - Whether currently viewing a temporary shared preview
- * @returns {Promise<{ shareId: string, shareUrl: string, title: string, mode: string, messageCount: number, byteSize: number }>}
+ * @param {string|null} [options.expirationPreset] - Expiration preset (`never`, `1h`, `24h`, `7d`, `30d`)
+ * @param {number|string|null} [options.expiresInSeconds] - Optional TTL in seconds
+ * @param {number|string|Date|null} [options.expiresAt] - Optional explicit expiration timestamp
+ * @returns {Promise<{ shareId: string, shareUrl: string, title: string, mode: string, messageCount: number, byteSize: number, expiresAtMs: number|null, revoked: boolean }>}
  */
 export async function createSharedChatSnapshot(chat, messages, options = {}) {
   const effectiveUser = options.user !== undefined ? options.user : auth?.currentUser;
@@ -816,6 +1032,13 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       'NOT_ELIGIBLE'
     );
   }
+
+  // Validate expiration parameters early before network call
+  const resolvedExpiration = resolveShareExpiration({
+    expirationPreset: options.expirationPreset,
+    expiresInSeconds: options.expiresInSeconds,
+    expiresAt: options.expiresAt,
+  });
 
   // Also ensure Firebase Auth session matches when using live Firebase
   if (!options.fetchImpl) {
@@ -856,6 +1079,9 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       shareId,
       chat,
       messages,
+      expirationPreset: options.expirationPreset,
+      expiresInSeconds: options.expiresInSeconds,
+      expiresAt: options.expiresAt,
     });
 
     const token = effectiveUser && typeof effectiveUser.getIdToken === 'function'
@@ -869,12 +1095,27 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
+    const requestBody = {
+      shareId,
+      chat,
+      messages,
+    };
+    if (options.expirationPreset !== undefined) {
+      requestBody.expirationPreset = options.expirationPreset;
+    }
+    if (options.expiresInSeconds !== undefined) {
+      requestBody.expiresInSeconds = options.expiresInSeconds;
+    }
+    if (options.expiresAt !== undefined) {
+      requestBody.expiresAt = options.expiresAt;
+    }
+
     const fetchFn = typeof options.fetchImpl === 'function' ? options.fetchImpl : fetch;
     const res = await withPublishTimeout(
       fetchFn('/api/share', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ shareId, chat, messages }),
+        body: JSON.stringify(requestBody),
       })
     );
 
@@ -889,7 +1130,13 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       );
     }
 
+    let responseData = {};
+    try {
+      responseData = await res.json();
+    } catch (_) {}
+
     const shareUrl = buildShareChatUrl(shareId, options.baseUrl);
+    const responseExpiresAtMs = extractShareTimestampMs(responseData?.expiresAtMs);
 
     return {
       shareId,
@@ -898,6 +1145,11 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       mode: documentData.mode,
       messageCount: documentData.messageCount,
       byteSize,
+      expiresAtMs:
+        responseExpiresAtMs !== null && Number.isFinite(responseExpiresAtMs)
+          ? responseExpiresAtMs
+          : resolvedExpiration.expiresAtMs,
+      revoked: false,
     };
   } catch (err) {
     if (err instanceof ShareChatError) {
@@ -917,6 +1169,96 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
   } finally {
     inFlightShareRequests.delete(lockKey);
   }
+}
+
+/**
+ * Revokes a previously published shared conversation link owned by the signed-in user.
+ * Enforces owner authorization server-side via Firebase ID token authentication.
+ *
+ * @param {string} shareId
+ * @param {Object} [options]
+ * @param {Object} [options.user] - Optional user override
+ * @param {Function} [options.fetchImpl] - Optional `fetch` override for testing
+ * @returns {Promise<{ success: boolean, shareId: string, revoked: boolean, revokedAtMs: number }>}
+ */
+export async function revokeSharedChatSnapshot(shareId, options = {}) {
+  const trimmedId = typeof shareId === 'string' ? shareId.trim() : '';
+  if (!isValidShareId(trimmedId)) {
+    throw new ShareChatError('Invalid or malformed share ID.', 'INVALID_SHARE_ID');
+  }
+
+  const effectiveUser = options.user !== undefined ? options.user : auth?.currentUser;
+  if (!isEligibleShareUser(effectiveUser)) {
+    throw new ShareChatError(
+      'Please sign in with your Orvix account to revoke this share link.',
+      'AUTH_REQUIRED'
+    );
+  }
+
+  if (!options.fetchImpl) {
+    if (!isFirebaseConfigured() || !db) {
+      throw new ShareChatError(
+        'Cloud sharing is currently unavailable because Firebase is not configured.',
+        'FIREBASE_UNAVAILABLE'
+      );
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new ShareChatError(
+        'You appear to be offline. Please reconnect to the internet to revoke this share link.',
+        'OFFLINE'
+      );
+    }
+  }
+
+  const token =
+    effectiveUser && typeof effectiveUser.getIdToken === 'function'
+      ? await effectiveUser.getIdToken()
+      : null;
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const fetchFn = typeof options.fetchImpl === 'function' ? options.fetchImpl : fetch;
+  let res;
+  try {
+    res = await withPublishTimeout(
+      fetchFn(`/api/share/${encodeURIComponent(trimmedId)}`, {
+        method: 'DELETE',
+        headers,
+      })
+    );
+  } catch (err) {
+    if (err instanceof ShareChatError) throw err;
+    throw new ShareChatError(
+      'Failed to revoke share link. Please check your connection and try again.',
+      'REVOKE_FAILED'
+    );
+  }
+
+  let body = {};
+  try {
+    body = await res.json();
+  } catch (_) {}
+
+  if (!res.ok) {
+    throw new ShareChatError(
+      body?.error || `Failed to revoke share link (HTTP ${res.status}).`,
+      body?.code || (res.status === 403 ? 'FORBIDDEN' : res.status === 404 ? 'NOT_FOUND' : 'REVOKE_FAILED')
+    );
+  }
+
+  clearSharedSnapshotSession(trimmedId);
+
+  return {
+    success: true,
+    shareId: trimmedId,
+    revoked: true,
+    revokedAtMs: typeof body?.revokedAtMs === 'number' ? body.revokedAtMs : Date.now(),
+  };
 }
 
 /**
@@ -1050,6 +1392,7 @@ export function getSharedSnapshotSession(shareId) {
     const parsed = JSON.parse(raw);
     return validateSharedSnapshotPayload(parsed, shareId);
   } catch {
+    clearSharedSnapshotSession(shareId);
     return null;
   }
 }
@@ -1106,7 +1449,7 @@ export function clearSharedSnapshotSession(shareId) {
  * @param {string} [expectedShareId=null] - The requested shareId
  * @returns {Object} Clean, validated, and canonically ordered snapshot
  */
-export function validateSharedSnapshotPayload(data, expectedShareId = null) {
+export function validateSharedSnapshotPayload(data, expectedShareId = null, options = {}) {
   const targetShareId = expectedShareId || data?.id;
   if (!targetShareId || !isValidShareId(targetShareId)) {
     throw new ShareChatError('Invalid or malformed share ID.', 'INVALID_SHARE_ID');
@@ -1114,6 +1457,23 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null) {
 
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     throw new ShareChatError('Invalid shared conversation structure.', 'MALFORMED_SNAPSHOT');
+  }
+
+  if (data.revoked === true) {
+    throw new ShareChatError(
+      'This shared conversation link has been revoked by its owner.',
+      'SHARE_REVOKED'
+    );
+  }
+
+  const nowMs = typeof options?.nowMs === 'number' && Number.isFinite(options.nowMs)
+    ? options.nowMs
+    : Date.now();
+  if (isShareSnapshotExpired(data, nowMs)) {
+    throw new ShareChatError(
+      'This shared conversation link has expired.',
+      'SHARE_EXPIRED'
+    );
   }
 
   if (typeof data.id === 'string' && expectedShareId && data.id !== expectedShareId) {
@@ -1161,15 +1521,66 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null) {
     ensureConversationAlternatives(sanitizedMessages)
   );
 
+  const rawExpires =
+    data.expiresAtMs !== undefined && data.expiresAtMs !== null
+      ? data.expiresAtMs
+      : data.expiresAt;
+  const resolvedExpiresAtMs = extractShareTimestampMs(rawExpires);
+
   return {
     id: targetShareId,
     title: cleanTitle,
     mode: data.mode,
     createdAt: data.createdAt || null,
+    expiresAtMs:
+      resolvedExpiresAtMs !== null && Number.isFinite(resolvedExpiresAtMs)
+        ? resolvedExpiresAtMs
+        : null,
+    revoked: false,
     messageCount: orderedMessages.length,
     messages: orderedMessages,
     isSharedSnapshot: true,
   };
+}
+
+/**
+ * Fetches a shared conversation snapshot through the server `/api/share/:shareId` endpoint.
+ * Used as a diagnostic fallback when Firestore denies direct reads (revoked/expired)
+ * or when Firebase client SDK is unconfigured in browser contexts.
+ */
+async function fetchSharedSnapshotViaServerApi(shareId, fetchFn, timeoutMs = 10000) {
+  const res = await withPublishTimeout(
+    fetchFn(`/api/share/${encodeURIComponent(shareId)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    }),
+    timeoutMs
+  );
+
+  let body = {};
+  try {
+    body = await res.json();
+  } catch (_) {}
+
+  if (!res.ok) {
+    const code =
+      body?.code ||
+      (res.status === 410
+        ? 'SHARE_REVOKED'
+        : res.status === 404
+        ? 'NOT_FOUND'
+        : res.status === 400
+        ? 'INVALID_SHARE_ID'
+        : 'LOAD_FAILED');
+    throw new ShareChatError(
+      body?.error || 'This shared conversation is unavailable.',
+      code
+    );
+  }
+
+  const validated = validateSharedSnapshotPayload(body?.snapshot || body, shareId);
+  setSharedSnapshotSession(shareId, validated);
+  return validated;
 }
 
 /**
@@ -1179,7 +1590,7 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null) {
  * Implements strict error handling:
  * - Validates shareId format before attempting network call
  * - Consults session cache first for fast reload resilience
- * - Rejects nonexistent or missing shared documents
+ * - Rejects nonexistent, revoked, expired, or malformed shared documents
  * - Handles network, permission-denied, and offline scenarios gracefully
  * - Completely validates and sanitizes all document data and message fields
  * - Does NOT write to the shared document or modify chat history
@@ -1189,6 +1600,7 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null) {
  * @param {Object} [options.firestoreDb] - Optional Firestore instance override for testing
  * @param {Function} [options.docImpl] - Optional `doc` override for testing
  * @param {Function} [options.getDocImpl] - Optional `getDoc` override for testing
+ * @param {Function} [options.fetchImpl] - Optional `fetch` override for testing server API reads
  * @param {boolean} [options.forceNetwork=false] - If true, bypasses session cache
  * @param {number} [options.timeoutMs=10000] - Firestore operation timeout
  * @returns {Promise<Object>} The validated shared snapshot
@@ -1210,9 +1622,23 @@ export async function loadSharedChatSnapshot(shareId, options = {}) {
     }
   }
 
-  // 3. Ensure Firestore is configured if using live database
+  const hasBrowserWindow = typeof window !== 'undefined';
+  const fetchCandidate =
+    typeof options.fetchImpl === 'function'
+      ? options.fetchImpl
+      : typeof fetch === 'function'
+      ? fetch
+      : null;
+
+  // 3. Ensure Firestore is configured if using live database (allow server API fallback in browser or explicit fetchImpl)
   if (!options.getDocImpl) {
+    if (typeof options.fetchImpl === 'function') {
+      return await fetchSharedSnapshotViaServerApi(shareId, options.fetchImpl, options.timeoutMs || 10000);
+    }
     if (!isFirebaseConfigured() || !db) {
+      if (hasBrowserWindow && fetchCandidate) {
+        return await fetchSharedSnapshotViaServerApi(shareId, fetchCandidate, options.timeoutMs || 10000);
+      }
       throw new ShareChatError(
         'Shared conversations are currently unavailable because Firebase is not configured.',
         'FIREBASE_UNAVAILABLE'
@@ -1234,6 +1660,17 @@ export async function loadSharedChatSnapshot(shareId, options = {}) {
     }
     const rawMsg = String(err?.message || '');
     if (rawMsg.includes('permission-denied') || err?.code === 'permission-denied') {
+      // Firestore rules block reads of revoked or expired sharedChats; consult server API if available to distinguish why
+      if ((!options.getDocImpl || typeof options.fetchImpl === 'function') && fetchCandidate) {
+        try {
+          return await fetchSharedSnapshotViaServerApi(shareId, fetchCandidate, options.timeoutMs || 10000);
+        } catch (apiErr) {
+          if (apiErr instanceof ShareChatError && (apiErr.code === 'SHARE_REVOKED' || apiErr.code === 'SHARE_EXPIRED' || apiErr.code === 'NOT_FOUND')) {
+            clearSharedSnapshotSession(shareId);
+            throw apiErr;
+          }
+        }
+      }
       throw new ShareChatError(
         'Access to this shared conversation was denied.',
         'PERMISSION_DENIED'
@@ -1263,7 +1700,18 @@ export async function loadSharedChatSnapshot(shareId, options = {}) {
   }
 
   const rawData = typeof docSnap.data === 'function' ? docSnap.data() : docSnap;
-  const validated = validateSharedSnapshotPayload(rawData, shareId);
+  let validated;
+  try {
+    validated = validateSharedSnapshotPayload(rawData, shareId);
+  } catch (validationErr) {
+    if (
+      validationErr instanceof ShareChatError &&
+      (validationErr.code === 'SHARE_REVOKED' || validationErr.code === 'SHARE_EXPIRED')
+    ) {
+      clearSharedSnapshotSession(shareId);
+    }
+    throw validationErr;
+  }
 
   // Cache in session storage for fast reload resilience
   setSharedSnapshotSession(shareId, validated);

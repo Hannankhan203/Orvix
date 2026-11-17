@@ -1,6 +1,6 @@
 {
   "framework": "vite",
-  "buildCommand": "npm run build",
+  "buildCommand": "bun run build",
   "outputDirectory": "dist",
   "functions": {
     "api/*.ts": {
@@ -22,6 +22,10 @@
     {
       "source": "/api/upload/:subpath*",
       "destination": "/api/upload?__subpath=:subpath*"
+    },
+    {
+      "source": "/api/share/:subpath*",
+      "destination": "/api/share?__subpath=:subpath*"
     },
     {
       "source": "/share/:path*",
