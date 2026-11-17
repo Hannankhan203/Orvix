@@ -51,7 +51,10 @@ import {
   conversationDocuments,
   UPLOAD_DIR,
   buildGeminiImageParts,
-  resolveRegisteredAttachmentForChat
+  resolveRegisteredAttachmentForChat,
+  saveDurableUploadRecord,
+  getDurableUploadRecord,
+  getDurableConversationUploadRecords
 } from './uploadSubsystem.ts';
 import { authenticateRequest } from './firebaseAuthHelper.ts';
 import { createRateLimiterMiddleware } from './rateLimiter.ts';
@@ -743,8 +746,9 @@ export function registerChatRoutes(app: express.Express) {
         if (att?.id) {
           docSet.add(att.id);
           const existing = fileRegistry.get(att.id);
-          if (existing) {
+          if (existing && existing.conversationId !== conversationId) {
             existing.conversationId = conversationId;
+            await saveDurableUploadRecord(existing);
           }
         }
       }
@@ -869,9 +873,17 @@ export function registerChatRoutes(app: express.Express) {
         if (Array.isArray(hMsg?.attachments)) {
           for (const hAtt of hMsg.attachments) {
             if (!hAtt?.id) continue;
-            const record = fileRegistry.get(hAtt.id);
+            const record = fileRegistry.get(hAtt.id) || (await getDurableUploadRecord(hAtt.id)) || undefined;
             if (record) {
-              if (record.userId && authStatus.userId && record.userId !== authStatus.userId) {
+              if (record.userId && (!authStatus.userId || record.userId !== authStatus.userId)) {
+                continue;
+              }
+              if (
+                !record.isPermanent &&
+                typeof record.expiresAt === 'number' &&
+                Number.isFinite(record.expiresAt) &&
+                record.expiresAt <= Date.now()
+              ) {
                 continue;
               }
               if (record.extraction) {
@@ -897,13 +909,30 @@ export function registerChatRoutes(app: express.Express) {
       }
     }
 
-    // 3. Conversation-registered files for this conversation
-    if (conversationId && conversationDocuments.has(conversationId)) {
-      const convSet = Array.from(conversationDocuments.get(conversationId)!).reverse();
-      for (const fileId of convSet) {
-        const record = fileRegistry.get(fileId);
-        if (record?.extraction) {
-          addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId);
+    // 3. Conversation-registered files for this conversation (hydrate from durable Firestore if missing in memory)
+    if (conversationId) {
+      if (!conversationDocuments.has(conversationId)) {
+        await getDurableConversationUploadRecords(conversationId, authStatus.userId);
+      }
+      if (conversationDocuments.has(conversationId)) {
+        const convSet = Array.from(conversationDocuments.get(conversationId)!).reverse();
+        for (const fileId of convSet) {
+          const record = fileRegistry.get(fileId) || (await getDurableUploadRecord(fileId)) || undefined;
+          if (!record) continue;
+          if (record.userId && (!authStatus.userId || record.userId !== authStatus.userId)) {
+            continue;
+          }
+          if (
+            !record.isPermanent &&
+            typeof record.expiresAt === 'number' &&
+            Number.isFinite(record.expiresAt) &&
+            record.expiresAt <= Date.now()
+          ) {
+            continue;
+          }
+          if (record.extraction) {
+            addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId);
+          }
         }
       }
     }
@@ -912,9 +941,11 @@ export function registerChatRoutes(app: express.Express) {
     if (isContinuation && Array.isArray(multiPartCtx.referencedAttachments)) {
       for (const rAtt of multiPartCtx.referencedAttachments) {
         if (!rAtt?.id) continue;
-        const record = fileRegistry.get(rAtt.id);
+        const record = fileRegistry.get(rAtt.id) || (await getDurableUploadRecord(rAtt.id)) || undefined;
         if (record?.extraction) {
-          addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+          if (!record.userId || (authStatus.userId && record.userId === authStatus.userId)) {
+            addDocIfValid(record.extraction as DocumentData, record.conversationId || conversationId || undefined);
+          }
         } else if (rAtt.extraction) {
           addDocIfValid(rAtt.extraction as DocumentData, conversationId || undefined);
         }

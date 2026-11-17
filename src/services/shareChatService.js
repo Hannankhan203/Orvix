@@ -1,6 +1,5 @@
 import {
   doc,
-  setDoc,
   getDoc,
   writeBatch,
   serverTimestamp,
@@ -456,7 +455,7 @@ function sanitizeAlternativeForShare(alt, index = 0, fallbackMode = 'general') {
 
 /**
  * Validates and sanitizes a single conversation message for the shared snapshot.
- * Enforces strict alignment with `isValidSharedMessageItem` in `firestore.rules`.
+ * Enforces strict alignment with the server-side shared snapshot validation contract.
  * Rejects malformed messages rather than silently truncating or dropping them.
  *
  * @param {Object} msg
@@ -796,9 +795,7 @@ function withPublishTimeout(promise, ms = 12000) {
  * @param {Array} messages - Complete list of messages in the active conversation
  * @param {Object} [options]
  * @param {Object} [options.user] - Current authenticated user (defaults to `auth.currentUser`)
- * @param {Object} [options.firestoreDb] - Optional Firestore instance override for testing
- * @param {Function} [options.setDocImpl] - Optional `setDoc` override for testing
- * @param {Function} [options.docImpl] - Optional `doc` override for testing
+ * @param {Function} [options.fetchImpl] - Optional `fetch` override for testing
  * @param {string} [options.baseUrl] - Optional base URL override
  * @param {boolean} [options.isSharedPreview=false] - Whether currently viewing a temporary shared preview
  * @returns {Promise<{ shareId: string, shareUrl: string, title: string, mode: string, messageCount: number, byteSize: number }>}
@@ -821,7 +818,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
   }
 
   // Also ensure Firebase Auth session matches when using live Firebase
-  if (!options.setDocImpl) {
+  if (!options.fetchImpl) {
     if (!isFirebaseConfigured() || !db) {
       throw new ShareChatError(
         'Cloud sharing is currently unavailable because Firebase is not configured.',
@@ -861,43 +858,35 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       messages,
     });
 
-    if (options.firestoreDb !== undefined || options.setDocImpl !== undefined || options.docImpl !== undefined || options.useDirectFirestore === true) {
-      const targetDb = options.firestoreDb !== undefined ? options.firestoreDb : db;
-      const docFn = options.docImpl || doc;
-      const setDocFn = options.setDocImpl || setDoc;
+    const token = effectiveUser && typeof effectiveUser.getIdToken === 'function'
+      ? await effectiveUser.getIdToken()
+      : null;
 
-      const shareDocRef = docFn(targetDb, 'sharedChats', shareId);
-      await withPublishTimeout(setDocFn(shareDocRef, documentData));
-    } else {
-      const token = effectiveUser && typeof effectiveUser.getIdToken === 'function'
-        ? await effectiveUser.getIdToken()
-        : null;
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
+    const fetchFn = typeof options.fetchImpl === 'function' ? options.fetchImpl : fetch;
+    const res = await withPublishTimeout(
+      fetchFn('/api/share', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ shareId, chat, messages }),
+      })
+    );
 
-      const res = await withPublishTimeout(
-        fetch('/api/share', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ shareId, chat, messages }),
-        })
+    if (!res.ok) {
+      let errData = {};
+      try {
+        errData = await res.json();
+      } catch (_) {}
+      throw new ShareChatError(
+        errData.error || `Server responded with HTTP ${res.status}`,
+        errData.code || 'PUBLISH_FAILED'
       );
-
-      if (!res.ok) {
-        let errData = {};
-        try {
-          errData = await res.json();
-        } catch (_) {}
-        throw new ShareChatError(
-          errData.error || `Server responded with HTTP ${res.status}`,
-          errData.code || 'PUBLISH_FAILED'
-        );
-      }
     }
 
     const shareUrl = buildShareChatUrl(shareId, options.baseUrl);

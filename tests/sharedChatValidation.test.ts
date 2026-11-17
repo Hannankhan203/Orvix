@@ -190,7 +190,7 @@ test('ORVIX-CRIT-06 /api/share: validates every message in conversation and reje
     // Test case A: Valid conversation with multiple messages (first, middle, last all valid)
     const validMessages = [
       { id: 'm1', sender: 'user', content: 'Write a sorting algorithm', createdAtMs: Date.now() - 3000 },
-      { id: 'm2', sender: 'assistant', content: 'Here is quicksort in TypeScript...', modelUsed: 'gemini-4-hydrogen', provider: 'google', createdAtMs: Date.now() - 2000 },
+      { id: 'm2', sender: 'assistant', content: 'Here is quicksort in TypeScript...', modelUsed: 'gemini-2.5-flash', provider: 'google', createdAtMs: Date.now() - 2000 },
       { id: 'm3', sender: 'user', content: 'Can you optimize it further?', createdAtMs: Date.now() - 1000 }
     ];
 

@@ -659,7 +659,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
       ? ` in ${langNames[language]}`
       : '';
 
-    const candidateModels = ['gemini-4-hydrogen', 'gemini-3.5-flash-lite'];
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
     for (const model of candidateModels) {
       let timer = null;

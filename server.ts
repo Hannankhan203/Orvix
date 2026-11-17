@@ -123,7 +123,7 @@ import {
 } from './src/config/appConfig.js';
 
 // Canonical fallback candidates for Gemini model resiliency (configured in appConfig.js)
-// Verification invariant: const fallbackCandidates = ['gemini-4-hydrogen', 'gemini-3.5-flash-lite']
+// Verification invariant: const fallbackCandidates = ['gemini-2.5-flash', 'gemini-2.5-flash-lite']
 const fallbackCandidates = [...GEMINI_FALLBACK_CANDIDATES];
 
 const app = express();
@@ -253,6 +253,7 @@ async function startServer() {
   app.use(express.static(publicPath));
 
   const distPath = path.resolve(__dirname, 'dist');
+  let viteInitPromise: Promise<any> | null = null;
   if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
     // Service worker and web app manifest must NEVER be cached by browsers or CDNs
     app.get(['/sw.js', '/manifest.webmanifest'], (_req, res, next) => {
@@ -284,12 +285,32 @@ async function startServer() {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa'
+    let viteMiddleware: any = null;
+    viteInitPromise = import('vite')
+      .then(({ createServer: createViteServer }) =>
+        createViteServer({
+          server: { middlewareMode: true },
+          appType: 'spa'
+        })
+      )
+      .then((vite) => {
+        viteMiddleware = vite.middlewares;
+        return vite;
+      });
+
+    app.use(async (req, res, next) => {
+      try {
+        if (!viteMiddleware && viteInitPromise) {
+          await viteInitPromise;
+        }
+        if (viteMiddleware) {
+          return viteMiddleware(req, res, next);
+        }
+        next();
+      } catch (err) {
+        next(err);
+      }
     });
-    app.use(vite.middlewares);
   }
 
   const httpServer = app.listen(Number(PORT), '0.0.0.0', () => {

@@ -171,6 +171,9 @@ const SYNTHETIC_NON_MODEL_LABELS = new Set([
  * and must never be sent upstream as raw API model identifiers.
  */
 const KNOWN_UI_DISPLAY_LABELS = new Set([
+  'gemini 2.5 flash',
+  'gemini 2.5 flash lite',
+  'gemini 2.5 pro',
   'gemini 4 hydrogen',
   'gemini 3.5 flash lite',
   'gemini 3.8 flash',
@@ -332,7 +335,29 @@ export function checkModelCompatibilityForProvider(provider, candidateModel) {
 
   switch (normProvider) {
     case 'gemini': {
-      // Valid Gemini IDs: gemini-*, learnlm-*, gemma-*, or models/gemini-*
+      const strippedModel = lower.startsWith('models/') ? lower.slice('models/'.length) : lower;
+      const invalidOrRetiredGeminiSet = new Set([
+        'gemini-4-hydrogen',
+        'gemini-3.5-flash-lite',
+        'gemini-3.5-transcribe',
+        'gemini-3.8-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-1.0-pro',
+        'gemini-1.0-pro-vision',
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-8b',
+        'gemini-1.5-pro',
+        'gemini-pro',
+        'gemini-pro-vision'
+      ]);
+      if (invalidOrRetiredGeminiSet.has(strippedModel)) {
+        return {
+          compatible: false,
+          normalizedModel: null,
+          reason: `Model "${trimmed}" is not a supported Google Gemini model identifier. Please use "${GEMINI_PRIMARY_MODEL}" or "${GEMINI_FALLBACK_MODEL}".`
+        };
+      }
+      // Valid Gemini IDs: gemini-2.5-*, gemini-3*, learnlm-*, gemma-*, or models/gemini-*
       if (/^(?:models\/)?(?:gemini|learnlm|gemma)-[a-z0-9._-]+$/i.test(trimmed) && !/-mlc$/i.test(trimmed)) {
         return { compatible: true, normalizedModel: trimmed };
       }
@@ -570,6 +595,14 @@ export function sanitizeStoredDisplayModel(provider, model) {
 
   const normProvider = normalizeProviderId(provider);
   const lower = trimmed.toLowerCase();
+  if (normProvider === 'gemini') {
+    if (lower === 'gemini-4-hydrogen' || lower === 'gemini-3.8-flash' || lower === 'gemini-3.5-transcribe') {
+      return GEMINI_PRIMARY_MODEL;
+    }
+    if (lower === 'gemini-3.5-flash-lite' || lower === 'gemini-3.1-flash-lite') {
+      return GEMINI_FALLBACK_MODEL;
+    }
+  }
   if (normProvider === 'groq' && (lower.includes('llama-3.3') || lower.includes('llama-3.1-70b'))) {
     return 'openai/gpt-oss-120b';
   }

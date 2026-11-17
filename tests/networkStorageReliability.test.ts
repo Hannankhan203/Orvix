@@ -720,7 +720,7 @@ test('aiRouter: streamAIMessage Part 2 continuation failure preserves partial te
       const stream = new ReadableStream({
         start(controller) {
           const enc = new TextEncoder();
-          controller.enqueue(enc.encode('data: {"type":"start","provider":"gemini","modelUsed":"gemini-4-hydrogen"}\n\n'));
+          controller.enqueue(enc.encode('data: {"type":"start","provider":"gemini","modelUsed":"gemini-2.5-flash"}\n\n'));
           controller.enqueue(enc.encode('data: {"type":"chunk","text":"PartOneText "}\n\n'));
           controller.close();
         }
@@ -742,7 +742,7 @@ test('aiRouter: streamAIMessage Part 2 continuation failure preserves partial te
       () =>
         streamAIMessage({
           provider: 'gemini',
-          model: 'gemini-4-hydrogen',
+          model: 'gemini-2.5-flash',
           prompt: 'Write a very long story',
           retryBaseDelayMs: 0
         }),

@@ -88,7 +88,7 @@ export function normalizeAndValidateVoiceLanguage(
 
 /**
  * Extracts transcription text from Gemini generateContent response.
- * Supports both standard text parts and dedicated audioTranscription parts from gemini-3.5-transcribe.
+ * Supports both standard text parts and dedicated audioTranscription parts from Gemini audio models.
  */
 export function extractGeminiTranscript(result: any): string {
   if (!result) return '';
@@ -463,7 +463,7 @@ ${isoLang ? `Language: ${isoLang}.` : ''}
 ${incomingHint ? `Prior context: ${incomingHint}` : ''}
 Output ONLY the transcription text. Do not summarize, do not translate, do not add commentary.`;
 
-      const candidateModels = ['gemini-3.5-transcribe', 'gemini-4-hydrogen'];
+      const candidateModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
       for (const model of candidateModels) {
         try {
           const result = await ai.models.generateContent({

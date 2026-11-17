@@ -69,6 +69,7 @@ import {
   getQuotaStatus,
   getUtcDayString,
   getNextUtcMidnight,
+  getFirestoreDb,
   type QuotaIdentity,
   type QuotaReservation,
   type QuotaStatus
@@ -611,6 +612,347 @@ export const fileRegistry = new Map<string, UploadedFileRecord>();
 // Conversation to file IDs association mapping (strictly isolates documents per conversation)
 export const conversationDocuments = new Map<string, Set<string>>();
 
+// Durable Firestore collection for cross-instance upload metadata and extracted text (ORVIX-MED-04)
+export const UPLOADED_FILES_COLLECTION = 'uploadedFiles';
+const MAX_DURABLE_EXTRACTION_TEXT_CHARS = 250_000;
+
+function sanitizeExtractionForFirestore(extraction: any): any {
+  if (!extraction || typeof extraction !== 'object') {
+    return null;
+  }
+  try {
+    const clone = JSON.parse(JSON.stringify(extraction));
+    delete clone.buffer;
+    delete clone.base64;
+    delete clone.previewUrl;
+    delete clone.dataUrl;
+    if (typeof clone.text === 'string' && clone.text.length > MAX_DURABLE_EXTRACTION_TEXT_CHARS) {
+      clone.text = clone.text.slice(0, MAX_DURABLE_EXTRACTION_TEXT_CHARS);
+      clone.isTruncated = true;
+    }
+    if (Array.isArray(clone.pages)) {
+      let runningChars = 0;
+      clone.pages = clone.pages.map((p: any) => {
+        if (!p || typeof p !== 'object') return p;
+        const pageText = typeof p.text === 'string' ? p.text : '';
+        if (runningChars >= MAX_DURABLE_EXTRACTION_TEXT_CHARS) {
+          return { ...p, text: '' };
+        }
+        const remaining = MAX_DURABLE_EXTRACTION_TEXT_CHARS - runningChars;
+        const bounded = pageText.length > remaining ? pageText.slice(0, remaining) : pageText;
+        runningChars += bounded.length;
+        return { ...p, text: bounded };
+      });
+    }
+    return clone;
+  } catch (_) {
+    return null;
+  }
+}
+
+function sanitizeExtractionsByLangForFirestore(
+  byLang: Record<string, any> | undefined
+): Record<string, any> | null {
+  if (!byLang || typeof byLang !== 'object') {
+    return null;
+  }
+  const result: Record<string, any> = {};
+  const keys = Object.keys(byLang).slice(0, 3);
+  for (const k of keys) {
+    const sanitized = sanitizeExtractionForFirestore(byLang[k]);
+    if (sanitized) {
+      result[k] = sanitized;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+/**
+ * Persists an UploadedFileRecord (metadata + bounded extracted text, excluding raw binary buffers)
+ * to Firestore so that upload records remain reliably accessible across serverless instances
+ * even when Supabase Storage is not configured (ORVIX-MED-04).
+ */
+export async function saveDurableUploadRecord(record: UploadedFileRecord): Promise<void> {
+  if (!record || !record.id) return;
+  try {
+    const db = getFirestoreDb();
+    const docRef = db.collection(UPLOADED_FILES_COLLECTION).doc(record.id);
+    if (typeof docRef.set === 'function') {
+      const payload = {
+        id: record.id,
+        originalName: record.originalName,
+        diskFilename: record.diskFilename,
+        mimeType: record.mimeType,
+        extension: record.extension,
+        size: record.size,
+        formattedSize: record.formattedSize,
+        status: record.status,
+        uploadedAt: record.uploadedAt,
+        expiresAt: record.expiresAt,
+        conversationId: record.conversationId || null,
+        userId: record.userId || null,
+        isPermanent: Boolean(record.isPermanent),
+        storageProvider: record.storageProvider || 'local',
+        storagePath: record.storagePath || null,
+        storageBucket: record.storageBucket || null,
+        storageEncoding: record.storageEncoding || null,
+        storedSize: typeof record.storedSize === 'number' ? record.storedSize : record.size,
+        storageChecksum: record.storageChecksum || null,
+        isImage: Boolean(record.isImage),
+        dimensions: record.dimensions || null,
+        extraction: sanitizeExtractionForFirestore(record.extraction),
+        extractionsByLang: sanitizeExtractionsByLangForFirestore(record.extractionsByLang),
+        lastUpdated: Date.now()
+      };
+      await docRef.set(JSON.parse(JSON.stringify(payload)), { merge: true });
+    }
+  } catch (err: any) {
+    console.warn('[UploadRegistry] Warning: Could not save upload record to Firestore:', err?.message || err);
+  }
+}
+
+function hydrateRecordFromDurableData(data: any): UploadedFileRecord | null {
+  if (!data || typeof data.id !== 'string' || !data.id.trim()) {
+    return null;
+  }
+  const diskFilename = typeof data.diskFilename === 'string' && data.diskFilename
+    ? data.diskFilename
+    : `${data.id}.${String(data.extension || 'txt').toLowerCase()}`;
+  let localBuffer: Buffer | undefined;
+  try {
+    const fullDiskPath = path.join(UPLOAD_DIR, path.basename(diskFilename));
+    if (fs.existsSync(fullDiskPath)) {
+      localBuffer = fs.readFileSync(fullDiskPath);
+    }
+  } catch (_) {}
+
+  const record: UploadedFileRecord = {
+    id: data.id,
+    originalName: data.originalName || 'attachment',
+    diskFilename,
+    mimeType: data.mimeType || 'application/octet-stream',
+    extension: data.extension || 'TXT',
+    size: Number(data.size) || 0,
+    formattedSize: data.formattedSize || formatBytes(Number(data.size) || 0),
+    status: data.status || 'ready',
+    uploadedAt: data.uploadedAt || new Date().toISOString(),
+    expiresAt: typeof data.expiresAt === 'number' ? data.expiresAt : Date.now() + TEMP_FILE_TTL_MS,
+    conversationId: typeof data.conversationId === 'string' && data.conversationId ? data.conversationId : undefined,
+    userId: typeof data.userId === 'string' && data.userId ? data.userId : undefined,
+    isPermanent: Boolean(data.isPermanent),
+    storageProvider: data.storageProvider || 'local',
+    storagePath: typeof data.storagePath === 'string' && data.storagePath ? data.storagePath : undefined,
+    storageBucket: typeof data.storageBucket === 'string' && data.storageBucket ? data.storageBucket : undefined,
+    storageEncoding: typeof data.storageEncoding === 'string' && data.storageEncoding ? data.storageEncoding : null,
+    storedSize: typeof data.storedSize === 'number' ? data.storedSize : Number(data.size) || 0,
+    ...(typeof data.storageChecksum === 'string' && data.storageChecksum ? { storageChecksum: data.storageChecksum } : {}),
+    isImage: Boolean(data.isImage),
+    dimensions: data.dimensions || undefined,
+    extraction: data.extraction || undefined,
+    extractionsByLang: data.extractionsByLang && typeof data.extractionsByLang === 'object' ? data.extractionsByLang : undefined,
+    ...(localBuffer ? { buffer: localBuffer } : {})
+  };
+  return record;
+}
+
+/**
+ * Retrieves an UploadedFileRecord from durable Firestore storage when the local in-memory
+ * `fileRegistry` misses (e.g., across serverless instances or cold starts).
+ */
+export async function getDurableUploadRecord(fileId: string): Promise<UploadedFileRecord | null> {
+  if (!fileId || typeof fileId !== 'string') return null;
+  try {
+    const db = getFirestoreDb();
+    const docRef = db.collection(UPLOADED_FILES_COLLECTION).doc(fileId);
+    if (typeof docRef.get === 'function') {
+      const snap = await docRef.get();
+      if (snap && snap.exists) {
+        const data = typeof snap.data === 'function' ? snap.data() : snap.data;
+        const hydrated = hydrateRecordFromDurableData(data);
+        if (hydrated) {
+          fileRegistry.set(fileId, hydrated);
+          if (hydrated.conversationId) {
+            let docSet = conversationDocuments.get(hydrated.conversationId);
+            if (!docSet) {
+              docSet = new Set<string>();
+              conversationDocuments.set(hydrated.conversationId, docSet);
+            }
+            docSet.add(fileId);
+          }
+          return hydrated;
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[UploadRegistry] Notice: Firestore upload record lookup failed:', err?.message || err);
+  }
+  return null;
+}
+
+/**
+ * Re-hydrates all unexpired upload records associated with a conversation from Firestore
+ * into `fileRegistry` and `conversationDocuments`, enforcing user ownership.
+ */
+export async function getDurableConversationUploadRecords(
+  conversationId: string,
+  authenticatedUserId?: string | null
+): Promise<UploadedFileRecord[]> {
+  if (!conversationId || typeof conversationId !== 'string') return [];
+  const nowMs = Date.now();
+  const results: UploadedFileRecord[] = [];
+  try {
+    const db = getFirestoreDb();
+    const colRef = db.collection(UPLOADED_FILES_COLLECTION);
+    if (typeof colRef.where === 'function') {
+      const snap = await colRef.where('conversationId', '==', conversationId).get();
+      if (snap && Array.isArray(snap.docs)) {
+        for (const doc of snap.docs) {
+          const data = typeof doc.data === 'function' ? doc.data() : doc.data;
+          const hydrated = hydrateRecordFromDurableData(data);
+          if (!hydrated) continue;
+          if (
+            !hydrated.isPermanent &&
+            typeof hydrated.expiresAt === 'number' &&
+            Number.isFinite(hydrated.expiresAt) &&
+            hydrated.expiresAt <= nowMs
+          ) {
+            void deleteDurableUploadRecord(hydrated.id);
+            continue;
+          }
+          if (hydrated.userId) {
+            if (!authenticatedUserId || hydrated.userId !== authenticatedUserId) {
+              continue;
+            }
+          }
+          fileRegistry.set(hydrated.id, hydrated);
+          let docSet = conversationDocuments.get(conversationId);
+          if (!docSet) {
+            docSet = new Set<string>();
+            conversationDocuments.set(conversationId, docSet);
+          }
+          docSet.add(hydrated.id);
+          results.push(hydrated);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[UploadRegistry] Notice: Firestore conversation upload lookup failed:', err?.message || err);
+  }
+  return results;
+}
+
+/**
+ * Deletes an upload record from durable Firestore storage.
+ */
+export async function deleteDurableUploadRecord(fileId: string): Promise<void> {
+  if (!fileId) return;
+  try {
+    const db = getFirestoreDb();
+    const docRef = db.collection(UPLOADED_FILES_COLLECTION).doc(fileId);
+    if (typeof docRef.delete === 'function') {
+      await docRef.delete();
+    }
+  } catch (_) {}
+}
+
+/**
+ * Deletes all durable upload records in Firestore belonging to a conversation and user.
+ */
+export async function deleteDurableConversationUploadRecords(
+  conversationId: string,
+  authenticatedUserId: string
+): Promise<number> {
+  if (!conversationId || !authenticatedUserId) return 0;
+  let deleted = 0;
+  try {
+    const db = getFirestoreDb();
+    const colRef = db.collection(UPLOADED_FILES_COLLECTION);
+    if (typeof colRef.where === 'function') {
+      const snap = await colRef.where('conversationId', '==', conversationId).get();
+      if (snap && Array.isArray(snap.docs)) {
+        for (const doc of snap.docs) {
+          const data = typeof doc.data === 'function' ? doc.data() : doc.data;
+          if (!data || (data.userId && data.userId !== authenticatedUserId)) {
+            continue;
+          }
+          if (typeof doc.ref?.delete === 'function') {
+            await doc.ref.delete();
+          } else if (data.id) {
+            await colRef.doc(data.id).delete();
+          }
+          deleted++;
+        }
+      }
+    }
+  } catch (_) {}
+  return deleted;
+}
+
+/**
+ * Sweeps expired non-permanent upload records from durable Firestore storage.
+ */
+export async function pruneExpiredDurableUploadRecords(): Promise<number> {
+  const now = Date.now();
+  let pruned = 0;
+  try {
+    const db = getFirestoreDb();
+    const colRef = db.collection(UPLOADED_FILES_COLLECTION);
+    if (typeof colRef.get === 'function') {
+      const snap = await colRef.get();
+      if (snap && Array.isArray(snap.docs)) {
+        for (const doc of snap.docs) {
+          const data = typeof doc.data === 'function' ? doc.data() : doc.data;
+          if (
+            data &&
+            !data.isPermanent &&
+            typeof data.expiresAt === 'number' &&
+            data.expiresAt <= now
+          ) {
+            if (typeof doc.ref?.delete === 'function') {
+              await doc.ref.delete();
+            } else if (data.id) {
+              await colRef.doc(data.id).delete();
+            }
+            pruned++;
+          }
+        }
+      }
+    }
+  } catch (_) {}
+  return pruned;
+}
+
+/**
+ * Resets in-memory upload registries and simulated Firestore upload records for testing.
+ */
+export function resetUploadRegistryForTesting(options?: { memoryOnly?: boolean }): void {
+  fileRegistry.clear();
+  conversationDocuments.clear();
+  if (options?.memoryOnly) {
+    return;
+  }
+  try {
+    const db = getFirestoreDb();
+    if (typeof (db as any).collection === 'function') {
+      const col = db.collection(UPLOADED_FILES_COLLECTION);
+      if (typeof col.get === 'function') {
+        void col
+          .get()
+          .then((snap: any) => {
+            if (snap && Array.isArray(snap.docs)) {
+              for (const doc of snap.docs) {
+                if (typeof doc.ref?.delete === 'function') {
+                  void doc.ref.delete();
+                }
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    }
+  } catch (_) {}
+}
+
 // Durable Direct-Upload Ticket Service integration (ORVIX-SUPABASE-FINAL-001)
 export {
   pendingDirectUploads,
@@ -641,15 +983,17 @@ import {
 
 /**
  * Automated lifecycle cleanup: Sweeps the temporary upload directory, registry,
- * and abandoned direct upload tickets.
+ * durable Firestore upload metadata, and abandoned direct upload tickets.
  */
 export function cleanupExpiredUploads() {
   try {
     void pruneExpiredDirectUploadTickets();
+    void pruneExpiredDurableUploadRecords();
     const now = Date.now();
     for (const [id, record] of fileRegistry.entries()) {
       if (record.expiresAt <= now) {
         fileRegistry.delete(id);
+        void deleteDurableUploadRecord(id);
         const fullPath = path.join(UPLOAD_DIR, record.diskFilename);
         fs.promises.unlink(fullPath).catch(() => {});
       }
@@ -1125,8 +1469,11 @@ export async function resolveRegisteredAttachmentForChat(
     return { status: 'not_found', record: null };
   }
 
-  // 1. Check in-memory fileRegistry first
-  const existing = fileRegistry.get(attId);
+  // 1. Check in-memory fileRegistry first, then fall back to durable Firestore upload registry (ORVIX-MED-04)
+  let existing = fileRegistry.get(attId) || null;
+  if (!existing) {
+    existing = await getDurableUploadRecord(attId);
+  }
   if (existing) {
     // Deterministically enforce expiration before allowing chat submission
     if (
@@ -1136,6 +1483,7 @@ export async function resolveRegisteredAttachmentForChat(
       existing.expiresAt <= nowMs
     ) {
       fileRegistry.delete(attId);
+      void deleteDurableUploadRecord(attId);
       if (existing.conversationId && conversationDocuments.has(existing.conversationId)) {
         conversationDocuments.get(existing.conversationId)!.delete(attId);
       }
@@ -1164,7 +1512,7 @@ export async function resolveRegisteredAttachmentForChat(
     return { status: 'ok', record: existing };
   }
 
-  // 2. When missing from in-memory fileRegistry (e.g., serverless /api/upload -> /api/chat boundary),
+  // 2. When missing from in-memory fileRegistry and durable Firestore registry (e.g., external storage reference),
   //    check explicit ownership hints first to reject cross-user tampering with 403.
   if (typeof att?.storagePath === 'string' && att.storagePath.trim()) {
     const parsedClientPath = parseStoragePath(att.storagePath);
@@ -1350,6 +1698,7 @@ export async function resolveRegisteredAttachmentForChat(
           }
           docSet.add(attId);
         }
+        await saveDurableUploadRecord(rehydratedRecord);
 
         return { status: 'ok', record: rehydratedRecord };
       }
@@ -1556,7 +1905,21 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const rawChatId = (typeof req.query.chatId === 'string' ? req.query.chatId : '').trim();
-    const record = fileRegistry.get(fileId);
+    let record = fileRegistry.get(fileId) || (await getDurableUploadRecord(fileId)) || undefined;
+    if (
+      record &&
+      !record.isPermanent &&
+      typeof record.expiresAt === 'number' &&
+      Number.isFinite(record.expiresAt) &&
+      record.expiresAt <= Date.now()
+    ) {
+      fileRegistry.delete(fileId);
+      void deleteDurableUploadRecord(fileId);
+      if (record.conversationId && conversationDocuments.has(record.conversationId)) {
+        conversationDocuments.get(record.conversationId)!.delete(fileId);
+      }
+      record = undefined;
+    }
 
     if (!record) {
       const authStatus = await authenticateRequest(req);
@@ -1670,7 +2033,21 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     const rawChatId = (typeof req.query.chatId === 'string' ? req.query.chatId : '').trim();
-    const record = fileRegistry.get(fileId);
+    let record = fileRegistry.get(fileId) || (await getDurableUploadRecord(fileId)) || undefined;
+    if (
+      record &&
+      !record.isPermanent &&
+      typeof record.expiresAt === 'number' &&
+      Number.isFinite(record.expiresAt) &&
+      record.expiresAt <= Date.now()
+    ) {
+      fileRegistry.delete(fileId);
+      void deleteDurableUploadRecord(fileId);
+      if (record.conversationId && conversationDocuments.has(record.conversationId)) {
+        conversationDocuments.get(record.conversationId)!.delete(fileId);
+      }
+      record = undefined;
+    }
 
     if (record) {
       // For every Supabase-backed attachment, require a non-empty record.userId and successful Firebase authentication.
@@ -1773,6 +2150,7 @@ export function registerUploadRoutes(app: express.Express) {
           if (lang === 'eng' || !record.extraction) {
             record.extraction = imgExtraction;
           }
+          await saveDurableUploadRecord(record);
           return res.json(imgExtraction);
         }
 
@@ -1785,6 +2163,7 @@ export function registerUploadRoutes(app: express.Express) {
         )) as DocumentExtractionResult;
         record.extraction = extraction;
         record.extractionsByLang[lang] = extraction;
+        await saveDurableUploadRecord(record);
         return res.json(extraction);
       }
 
@@ -2503,7 +2882,8 @@ export function registerUploadRoutes(app: express.Express) {
 
     const authenticatedUserId = authStatus.userId;
 
-    // 2. Clear conversation records from in-memory maps and disk for this user
+    // 2. Clear conversation records from in-memory maps, durable Firestore registry, and disk for this user
+    let localOrDurableDeletedCount = 0;
     if (conversationDocuments.has(chatId)) {
       const fileIds = conversationDocuments.get(chatId)!;
       for (const fileId of fileIds) {
@@ -2511,13 +2891,15 @@ export function registerUploadRoutes(app: express.Express) {
         if (rec && (!rec.userId || rec.userId === authenticatedUserId)) {
           fileRegistry.delete(fileId);
           await unlinkLocalAttachmentFiles(fileId);
+          localOrDurableDeletedCount++;
         }
       }
       conversationDocuments.delete(chatId);
     }
+    const durableDeletedCount = await deleteDurableConversationUploadRecords(chatId, authenticatedUserId);
 
     // 3. Delete from Supabase Storage with pagination support
-    let deletedCount = 0;
+    let deletedCount = Math.max(localOrDurableDeletedCount, durableDeletedCount);
     if (isSupabaseConfigured()) {
       const deleteResult = await deleteAttachmentsForChatInStorage(
         authenticatedUserId,
@@ -2556,7 +2938,7 @@ export function registerUploadRoutes(app: express.Express) {
       return res.status(400).json({ error: 'Invalid attachment ID format.', code: 'INVALID_ID_FORMAT' });
     }
 
-    const record = fileRegistry.get(fileId);
+    const record = fileRegistry.get(fileId) || (await getDurableUploadRecord(fileId)) || undefined;
     const rawChatId = (typeof req.query.chatId === 'string' ? req.query.chatId : typeof req.body?.chatId === 'string' ? req.body.chatId : '').trim();
     const rawStoragePath = (typeof req.query.storagePath === 'string' ? req.query.storagePath : typeof req.body?.storagePath === 'string' ? req.body.storagePath : '').trim();
 
@@ -2649,8 +3031,9 @@ export function registerUploadRoutes(app: express.Express) {
         }
       }
 
-      // Clean local in-memory registry & disk
+      // Clean local in-memory registry, durable Firestore registry, & disk
       fileRegistry.delete(fileId);
+      await deleteDurableUploadRecord(fileId);
       if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
         conversationDocuments.get(record.conversationId)!.delete(fileId);
       }
@@ -2672,6 +3055,7 @@ export function registerUploadRoutes(app: express.Express) {
     }
 
     fileRegistry.delete(fileId);
+    await deleteDurableUploadRecord(fileId);
     if (record?.conversationId && conversationDocuments.has(record.conversationId)) {
       conversationDocuments.get(record.conversationId)!.delete(fileId);
     }
@@ -3185,6 +3569,7 @@ export function registerUploadRoutes(app: express.Express) {
       conversationDocuments.set(ticket.chatId, docSet);
     }
     docSet.add(ticket.attachmentId);
+    await saveDurableUploadRecord(record);
 
     await finalizeCompletedDirectUploadTicket(attachmentId);
 
@@ -3688,6 +4073,10 @@ export function registerUploadRoutes(app: express.Express) {
         throw commitErr;
       }
       attachQuotaHeaders(res, committedStatus, quotaIdentity);
+
+      for (const rec of uploadedResults) {
+        await saveDurableUploadRecord(rec);
+      }
 
       const serializedAttachments = uploadedResults.map((r) => serializeRegisteredAttachment(r));
 

@@ -474,7 +474,7 @@ Orvix provides four specialized conversational modes configured in `src/config/c
 
 | Provider | Model Identifier | Architecture | Failover / Backup Model |
 | :--- | :--- | :--- | :--- |
-| **Google Gemini** | `gemini-3.8-flash` | Cloud API via `@google/genai` SDK | `gemini-3.1-flash-lite` |
+| **Google Gemini** | `gemini-2.5-flash` | Cloud API via `@google/genai` SDK | `gemini-2.5-flash-lite` |
 | **Groq Cloud** | `openai/gpt-oss-120b` | Ultra-low latency LPU inference | `llama-3.1-8b-instant` |
 | **OpenRouter** | `openrouter/free` | Dynamic free community model router | Dynamic routing |
 | **Cloudflare Workers AI** | `@cf/meta/llama-3.1-8b-instruct` | Serverless edge inference | Edge fallback |
@@ -625,7 +625,7 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 │ 1. PRIVATE CONVERSATION (`users/{uid}/chats/{chatId}`)                 │
 │    • User clicks "Share" in header or sidebar context menu             │
 │    • Client sanitizes message payloads, removes auth & private metadata│
-│    • Creates immutable snapshot in `sharedChats/{shareId}` (<= 950 KB) │
+│    • Creates immutable snapshot in `sharedChats/{shareId}` (<= 900 KB) │
 │                                    │                                   │
 │                                    ▼                                   │
 │ 2. PUBLIC SHARED VIEWER (`/share/{shareId}`)                           │
@@ -677,7 +677,7 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 - **Immutable Database Rules**: Firestore security rules enforce `allow update: if false;` and `allow delete: if false;`, ensuring snapshots cannot be tampered with or deleted through client operations.
 - **No Collection Enumeration**: Exact document lookups are permitted (`allow get: if true;`), while collection listing is strictly blocked (`allow list: if false;`) to protect user privacy and prevent link harvesting.
 - **Sanitization Pipeline**: Private user attributes (`userId`, user profile emails, private authentication tokens, local filesystem paths, and raw binary attachments) are strictly stripped during snapshot generation.
-- **Strict Boundary Constraints**: Payload size is capped at 950 KB (UTF-8 encoded) to guarantee single-document Firestore integrity, and conversations are constrained to a maximum of 500 messages with titles up to 120 characters.
+- **Strict Boundary Constraints**: Payload size is capped at 900 KB (UTF-8 encoded) to guarantee single-document Firestore integrity, and conversations are constrained to a maximum of 500 messages with titles up to 120 characters.
 
 ### Persistence and Reliability
 - **History Cleanliness**: Merely visiting or reloading `/share/{shareId}` never injects placeholder entries into local storage or account history.
@@ -893,7 +893,7 @@ Configured via `vercel.json` with handlers in `api/`:
 | **Swipe gesture does not open drawer** | Touching inside composer, header, or code block | Initiate the swipe from the neutral conversation area. |
 | **Port 3000 in use (`EADDRINUSE`)** | Another process is bound to port 3000 | Stop conflicting process or run `PORT=3001 npm run dev`. |
 | **`EROFS: read-only file system`** | Serverless disk write restriction | Orvix stages uploads in memory via `multer.memoryStorage()`, avoiding local disk writes. |
-| **Gemini timeout (504 DEADLINE_EXCEEDED)** | Upstream model demand spike | Orvix automatically fails over to `gemini-3.1-flash-lite`. If all cloud attempts fail, switch to Groq, OpenRouter, or Browser AI. |
+| **Gemini timeout (504 DEADLINE_EXCEEDED)** | Upstream model demand spike | Orvix automatically fails over to `gemini-2.5-flash-lite`. If all cloud attempts fail, switch to Groq, OpenRouter, or Browser AI. |
 
 ### Troubleshooting Gemini Timeouts & Streaming
 
@@ -909,7 +909,7 @@ Configured via `vercel.json` with handlers in `api/`:
 3. **Text Sanitization**: Document and OCR text is stripped of non-printable control characters before insertion into prompts.
 4. **Memory Management**: Object URLs are revoked upon unmounting to avoid browser memory leaks.
 5. **Microphone Release**: Audio tracks stop immediately when the tab is hidden or closed to release hardware.
-6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 950 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
+6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 900 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
 7. **Envelope Integrity & Signed Download URLs**: `orvix-gzip-v1` payloads enforce CRC-32, SHA-256, extension/MIME parity, and bounded decompression caps (25 MB). Attachment retrieval URLs (`/api/upload/:id/file`) are HMAC-SHA256 signed (`ORVIX_SIGNED_URL_SECRET`, failing closed in production when missing or weak) and enforce Firebase user ownership checks.
 
 ---
@@ -933,7 +933,7 @@ Orvix includes robust automated verification coverage across core compression, e
 4. **Binary Storage TTL**: Raw binary attachments are cached locally in browser IndexedDB; temporary server files expire after a 2-hour TTL.
 5. **Initial Online Requirement**: Browser AI requires one initial online visit to precache the PWA app shell and download model weights.
 6. **Online Snapshot Generation**: Creating a shared conversation snapshot requires active internet connectivity to contact Cloud Firestore; offline snapshot creation is disabled to prevent invalid or unreachable share links.
-7. **Shared Snapshot Size & Message Boundaries**: Individual shared snapshots are limited to 950 KB UTF-8 and a maximum of 500 messages to ensure single-document atomic storage limits.
+7. **Shared Snapshot Size & Message Boundaries**: Individual shared snapshots are limited to 900 KB UTF-8 and a maximum of 500 messages to ensure single-document atomic storage limits.
 8. **iOS 15 Standalone PWA Microphone Limitation**: On iOS 15, microphone access may remain unavailable inside the standalone Home Screen PWA even after the user grants microphone permission. This appears to be an iOS/WebKit standalone-PWA limitation rather than a core Orvix dictation failure. Safari should be used for voice dictation on iOS 15 when this occurs.
 
 ---
@@ -1098,7 +1098,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Interaction-Gated Independent Import**: Atomic conversation forking into recipient's private history triggered only upon recipient's first message turn receiving a successfully completed AI response (`status: 'completed'`).
 - **Zero Ghost Chats on Abort/Failure**: Generation errors or cancellations during the first turn cleanly leave no orphan chat documents or partial history items.
 - **Provenance & Resharing**: Imported conversations display an Imported indicator badge, maintain deep-link provenance to the source snapshot, and support standard chat operations including renaming, pinning, client-side export, and resharing under a new distinct snapshot ID.
-- **Data Sanitization & Strict Security Boundaries**: Automated stripping of private credentials, local file paths, and large binary attachments before snapshot generation; strict enforcement of 950 KB UTF-8 payload limit and 500-message ceiling.
+- **Data Sanitization & Strict Security Boundaries**: Automated stripping of private credentials, local file paths, and large binary attachments before snapshot generation; strict enforcement of 900 KB UTF-8 payload limit and 500-message ceiling.
 - **Multi-Tab & Offline Resilience**: Integrated cross-tab `BroadcastChannel` synchronization and offline write queue protection for imported conversations.
 
 ### V 0.2.9 — AI Model Selection Guidance and Provider Ordering
@@ -1123,7 +1123,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Legacy Fallback Hardening**: Hardened provider fallback normalization and legacy session handling to ensure smooth failover across supported providers.
 
 ### V 0.2.2 — Gemini Reliability and Fallback Hardening
-- **Gemini Reliability & Fallback Hardening**: Configured `gemini-3.8-flash` as primary default and `gemini-3.1-flash-lite` as automatic fallback candidate for rate limits and timeouts. Added 50ms SSE header priming (`: prime`) and 8s keepalive heartbeats.
+- **Gemini Reliability & Fallback Hardening**: Configured `gemini-2.5-flash` as primary default and `gemini-2.5-flash-lite` as automatic fallback candidate for rate limits and timeouts. Added 50ms SSE header priming (`: prime`) and 8s keepalive heartbeats.
 
 ### V 0.2.1 — Empty New Chat Hero and Responsive CSS Refinements
 - **Empty New Chat Hero & Responsive CSS Refinement**: Refined empty-state layout with fluid clamp sizing across screen widths from 320px mobile to 2560px widescreen.

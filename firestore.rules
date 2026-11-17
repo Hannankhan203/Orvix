@@ -33,48 +33,6 @@ service cloud.firestore {
                  && val.matches('^[a-zA-Z0-9_-]+$'));
     }
 
-    function isValidSharedMessageItem(msg) {
-      return msg is map
-             && msg.keys().hasAll(['id', 'sender', 'content'])
-             && msg.keys().hasOnly([
-               'id',
-               'sender',
-               'content',
-               'modelUsed',
-               'provider',
-               'mode',
-               'responseTimeMs',
-               'parentMessageId',
-               'interactionId',
-               'activeAlternativeId',
-               'alternatives',
-               'attachments',
-               'referencedAttachments',
-               'createdAtMs',
-               'clientTimestamp',
-               'timestamp'
-             ])
-             && msg.id is string
-             && msg.id.size() > 0
-             && msg.id.size() <= 128
-             && msg.sender in ['user', 'assistant']
-             && msg.content is string
-             && msg.content.size() <= 100000
-             && (!('modelUsed' in msg) || msg.modelUsed == null || msg.modelUsed is string)
-             && (!('provider' in msg) || msg.provider == null || msg.provider is string)
-             && (!('mode' in msg) || msg.mode == null || isValidChatMode(msg.mode))
-             && (!('responseTimeMs' in msg) || msg.responseTimeMs == null || msg.responseTimeMs is number)
-             && (!('parentMessageId' in msg) || msg.parentMessageId == null || msg.parentMessageId is string)
-             && (!('interactionId' in msg) || msg.interactionId == null || msg.interactionId is string)
-             && (!('activeAlternativeId' in msg) || msg.activeAlternativeId == null || msg.activeAlternativeId is string)
-             && (!('alternatives' in msg) || msg.alternatives is list)
-             && (!('attachments' in msg) || msg.attachments is list)
-             && (!('referencedAttachments' in msg) || msg.referencedAttachments is list)
-             && (!('createdAtMs' in msg) || msg.createdAtMs is number)
-             && (!('clientTimestamp' in msg) || msg.clientTimestamp is string)
-             && (!('timestamp' in msg) || msg.timestamp is string);
-    }
-
     // User profile document: strictly restricted to authenticated owner
     match /users/{userId} {
       allow read, delete: if isOwner(userId);
@@ -184,6 +142,11 @@ service cloud.firestore {
 
     // Internal server-side direct upload tickets: public client read and write strictly denied
     match /uploadTickets/{ticketId} {
+      allow read, write: if false;
+    }
+
+    // Internal server-side upload registry metadata & extracted text: public client read and write strictly denied
+    match /uploadedFiles/{fileId} {
       allow read, write: if false;
     }
 

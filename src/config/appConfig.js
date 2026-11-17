@@ -7,8 +7,8 @@
  * Centralized Gemini Model Configuration
  * Primary production model and secondary fallback candidate for rate-limit / availability failover.
  */
-export const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
-export const GEMINI_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+export const GEMINI_PRIMARY_MODEL = 'gemini-2.5-flash';
+export const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash-lite';
 
 export const GEMINI_FALLBACK_CANDIDATES = Object.freeze([
   GEMINI_PRIMARY_MODEL,

@@ -1100,8 +1100,13 @@ export function applyCorsMiddleware(app: express.Express): void {
   });
 }
 
+export const DEFAULT_JSON_BODY_LIMIT = '1mb';
+export const SHARE_JSON_BODY_LIMIT = '2mb';
+export const CHAT_JSON_BODY_LIMIT = '5mb';
+
 /**
- * Applies Vercel pre-parsed body detection, 25 MB JSON parsing, and structured 413 handling.
+ * Applies Vercel pre-parsed body detection, restricted route-specific and global JSON parsing,
+ * and structured 413 handling (ORVIX-MED-05).
  */
 export function applyJsonBodyMiddleware(app: express.Express): void {
   app.use((req, _res, next) => {
@@ -1112,7 +1117,13 @@ export function applyJsonBodyMiddleware(app: express.Express): void {
     next();
   });
 
-  app.use(express.json({ limit: '25mb' }));
+  // Route-specific JSON body limits tailored to actual endpoint payload budgets:
+  // - /api/chat & /chat: 5 MB parser ceiling (enforces 4.4 MB MAX_CHAT_REQUEST_BYTES budget)
+  // - /api/share & /share: 2 MB parser ceiling (enforces 900 KB MAX_SHARED_SNAPSHOT_BYTES budget)
+  // - Global default: 1 MB parser ceiling for all other JSON endpoints
+  app.use(['/api/chat', '/chat'], express.json({ limit: CHAT_JSON_BODY_LIMIT }));
+  app.use(['/api/share', '/share'], express.json({ limit: SHARE_JSON_BODY_LIMIT }));
+  app.use(express.json({ limit: DEFAULT_JSON_BODY_LIMIT }));
 
   // Return structured JSON on oversized HTTP request bodies instead of default HTML 413 responses
   app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
