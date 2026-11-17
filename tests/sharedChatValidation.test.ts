@@ -1,12 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { applyCorsMiddleware, applyJsonBodyMiddleware } from '../server/serverConfig.ts';
 import { registerShareRoutes } from '../server/shareSubsystem.ts';
+import {
+  createSharedChatSnapshot,
+  loadSharedChatSnapshot,
+  ShareChatError
+} from '../src/services/shareChatService.js';
+import { isFirebaseConfigured } from '../src/config/firebaseConfig.js';
 import {
   resetFirebaseAuthForTesting,
   setTestFirebaseProjectId,
@@ -433,3 +441,51 @@ test('ORVIX-LOW-09 /api/share: maps string ALREADY_EXISTS codes to HTTP 409 Conf
     resetFirestoreForTesting();
   }
 });
+
+test('ORVIX-H03 shareChatService: invokes isFirebaseConfigured() and rejects with FIREBASE_UNAVAILABLE when Firebase is unconfigured', async () => {
+  assert.equal(
+    isFirebaseConfigured(),
+    false,
+    'Test environment should have Firebase unconfigured'
+  );
+
+  const shareServiceSource = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'services', 'shareChatService.js'),
+    'utf8'
+  );
+  // Regression guard: ensure no uninvoked !isFirebaseConfigured function-reference checks remain
+  assert.equal(
+    /!isFirebaseConfigured(?!\s*\()/.test(shareServiceSource),
+    false,
+    'shareChatService.js must always invoke isFirebaseConfigured() as a function'
+  );
+
+  await assert.rejects(
+    () =>
+      createSharedChatSnapshot(
+        { id: 'chat-h03-1', title: 'H03 Unconfigured Firebase Test', mode: 'general' },
+        [
+          { id: 'm1', sender: 'user', content: 'Hello world', timestamp: Date.now() },
+          { id: 'm2', sender: 'assistant', content: 'Hi there!', timestamp: Date.now() + 1 }
+        ],
+        {
+          user: { uid: 'user-h03-1', isAnonymous: false }
+        }
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof ShareChatError, 'Should throw ShareChatError');
+      assert.equal(err.code, 'FIREBASE_UNAVAILABLE');
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => loadSharedChatSnapshot('ValidShareIdH03_123', { forceNetwork: true }),
+    (err: unknown) => {
+      assert.ok(err instanceof ShareChatError, 'loadSharedChatSnapshot should throw ShareChatError');
+      assert.equal(err.code, 'FIREBASE_UNAVAILABLE');
+      return true;
+    }
+  );
+});
+

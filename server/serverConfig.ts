@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import type { GeminiTimeoutStage } from './serverTypes.ts';
 import { logAIDiagnostic } from './diagnosticLogger.ts';
-import { applyTrustedProxySetting } from './trustedProxy.ts';
+import { applyTrustedProxySetting, resolveEffectiveRequestHost } from './trustedProxy.ts';
 // @ts-ignore - provider model sanitizer service
 import { getProviderDisplayName } from '../src/services/providerModelSanitizer.js';
 
@@ -926,12 +926,11 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
     return false;
   }
 
-  const hostHeader = (req.headers?.['x-forwarded-host'] as string) || req.headers?.host || '';
+  const hostHeader = resolveEffectiveRequestHost(req);
 
-  // 1. Direct same-origin match (Origin matches Host header)
+  // 1. Direct same-origin match (Origin matches verified effective Host header)
   if (hostHeader) {
-    const expectedHost = hostHeader.split(',')[0].trim().toLowerCase();
-    if (originUrl.host.toLowerCase() === expectedHost) {
+    if (originUrl.host.toLowerCase() === hostHeader) {
       return true;
     }
   }
@@ -959,7 +958,7 @@ export function isAllowedOrigin(origin: string | undefined, req: express.Request
   const isRemoteProductionHost =
     (process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL)) &&
     Boolean(hostHeader) &&
-    !isLoopbackHostname(hostHeader.split(',')[0]);
+    !isLoopbackHostname(hostHeader);
 
   if (!isRemoteProductionHost && isLoopbackHostname(hostname)) {
     return true;

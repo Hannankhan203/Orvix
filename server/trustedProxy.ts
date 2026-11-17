@@ -40,7 +40,10 @@ function warnProxyConfigThrottled(msg: string): void {
  * Normalizes a raw IP token (stripping brackets, ports, IPv4-mapped IPv6 prefixes, and zone IDs)
  * and validates it strictly via Node's `net.isIP`. Returns null if invalid.
  */
-export function parseAndNormalizeIp(rawValue: unknown): string | null {
+export function parseAndNormalizeIp(
+  rawValue: unknown,
+  preserveIpv6Loopback = false
+): string | null {
   if (typeof rawValue !== 'string') return null;
   let candidate = rawValue.trim();
   if (!candidate || candidate.length > 128) return null;
@@ -90,7 +93,7 @@ export function parseAndNormalizeIp(rawValue: unknown): string | null {
     return null;
   }
 
-  if (candidate === '::1') {
+  if (candidate === '::1' && !preserveIpv6Loopback) {
     return '127.0.0.1';
   }
 
@@ -135,8 +138,8 @@ function expandIpv6ToBigInt(ip: string): bigint {
   return result;
 }
 
-function ipToBigInt(ip: string): { family: 4 | 6; value: bigint } | null {
-  const normalized = parseAndNormalizeIp(ip);
+function ipToBigInt(ip: string, preserveIpv6Loopback = false): { family: 4 | 6; value: bigint } | null {
+  const normalized = parseAndNormalizeIp(ip, preserveIpv6Loopback);
   if (!normalized) return null;
   const family = net.isIP(normalized);
   if (family === 4) {
@@ -154,9 +157,9 @@ function parseCidrToken(token: string): CidrRange | null {
 
   const slashIdx = trimmed.indexOf('/');
   if (slashIdx === -1) {
-    const normalized = parseAndNormalizeIp(trimmed);
+    const normalized = parseAndNormalizeIp(trimmed, true);
     if (!normalized) return null;
-    const parsed = ipToBigInt(normalized);
+    const parsed = ipToBigInt(normalized, true);
     if (!parsed) return null;
     return {
       family: parsed.family,
@@ -169,9 +172,9 @@ function parseCidrToken(token: string): CidrRange | null {
   const prefixRaw = trimmed.slice(slashIdx + 1).trim();
   if (!/^\d{1,3}$/.test(prefixRaw)) return null;
 
-  const normalized = parseAndNormalizeIp(ipPart);
+  const normalized = parseAndNormalizeIp(ipPart, true);
   if (!normalized) return null;
-  const parsed = ipToBigInt(normalized);
+  const parsed = ipToBigInt(normalized, true);
   if (!parsed) return null;
 
   const maxBits = parsed.family === 4 ? 32 : 128;
@@ -433,3 +436,208 @@ export function extractClientIp(
 
   return socketIp || 'unknown';
 }
+
+export interface ForwardedRequestLike {
+  headers?: Record<string, string | string[] | undefined>;
+  socket?: { remoteAddress?: string | undefined; encrypted?: boolean | undefined } | null;
+  protocol?: string;
+  get?: (name: string) => unknown;
+}
+
+/**
+ * Determines whether forwarding headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) on `req`
+ * may be trusted under the active reverse-proxy policy.
+ *
+ * Security guarantees:
+ * - `disabled` mode NEVER trusts forwarded headers.
+ * - `allowlist` mode requires the immediate TCP socket peer IP to match a configured trusted CIDR.
+ * - `hops`, `platform-vercel`, and `platform-cloud-run` trust proxy headers inserted by the edge/proxy hop(s).
+ */
+export function shouldTrustForwardedHeaders(req?: ForwardedRequestLike | null): boolean {
+  const policy = resolveTrustedProxyPolicy();
+  if (policy.mode === 'disabled') {
+    return false;
+  }
+
+  if (policy.mode === 'allowlist') {
+    const socketIp = parseAndNormalizeIp(req?.socket?.remoteAddress);
+    if (!socketIp) {
+      return false;
+    }
+    return isIpInCidrList(socketIp, policy.cidrs);
+  }
+
+  return true;
+}
+
+/**
+ * Strictly validates and normalizes a single HTTP `Host` authority token (`hostname[:port]` or `[ipv6][:port]`).
+ * Rejects empty values, whitespace, control characters, path separators, `@` userinfo injection,
+ * query/fragment delimiters, and invalid port numbers.
+ */
+export function sanitizeHostHeaderValue(rawValue: unknown): string {
+  const raw = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  if (typeof raw !== 'string') return '';
+
+  const candidate = raw.trim().toLowerCase();
+  if (!candidate || candidate.length > 255) return '';
+
+  // Reject control chars, whitespace, commas, delimiters, and authority-spoofing characters
+  if (/[\x00-\x20\x7f\/\\@?#;,'"`<>]/.test(candidate)) {
+    return '';
+  }
+
+  // Bracketed IPv6 literal with optional port
+  if (candidate.startsWith('[')) {
+    const match = /^\[([0-9a-f:]+)\](?::(\d{1,5}))?$/.exec(candidate);
+    if (!match) return '';
+    const ipPart = match[1];
+    const portPart = match[2];
+    if (!net.isIPv6(ipPart)) return '';
+    if (portPart !== undefined) {
+      const port = Number(portPart);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return '';
+      return `[${ipPart}]:${port}`;
+    }
+    return `[${ipPart}]`;
+  }
+
+  // Hostname or IPv4 with optional single :port
+  const firstColon = candidate.indexOf(':');
+  const lastColon = candidate.lastIndexOf(':');
+  if (firstColon !== lastColon) {
+    return '';
+  }
+
+  let hostPart = candidate;
+  let portSuffix = '';
+  if (firstColon !== -1) {
+    hostPart = candidate.slice(0, firstColon);
+    const portRaw = candidate.slice(firstColon + 1);
+    if (!/^\d{1,5}$/.test(portRaw)) return '';
+    const port = Number(portRaw);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return '';
+    portSuffix = `:${port}`;
+  }
+
+  const isValidIpv4 = net.isIPv4(hostPart);
+  const isValidHostname =
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
+      hostPart
+    );
+
+  if (!isValidIpv4 && !isValidHostname) {
+    return '';
+  }
+
+  return `${hostPart}${portSuffix}`;
+}
+
+function selectForwardedHeaderToken(rawHeader: string | string[] | undefined, hops: number): string {
+  if (!rawHeader) return '';
+  const joined = Array.isArray(rawHeader) ? rawHeader.join(',') : rawHeader;
+  if (typeof joined !== 'string' || !joined.trim()) return '';
+  const parts = joined
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return '';
+  const effectiveHops = hops > 0 ? hops : 1;
+  const targetIdx = Math.max(0, parts.length - effectiveHops);
+  return parts[targetIdx] || '';
+}
+
+function sanitizeProtocolToken(rawToken: string): 'http' | 'https' | null {
+  const lower = rawToken.trim().toLowerCase();
+  if (lower === 'https' || lower === 'http') {
+    return lower;
+  }
+  return null;
+}
+
+/**
+ * Returns the configured application origin (`APP_URL` or `VITE_PUBLIC_APP_URL`) if valid,
+ * otherwise `null`.
+ */
+export function getConfiguredFallbackOrigin(): string | null {
+  const candidates = [process.env.APP_URL, process.env.VITE_PUBLIC_APP_URL];
+  for (const raw of candidates) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    try {
+      const parsed = new URL(raw.trim());
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return `${parsed.protocol}//${parsed.host}`;
+      }
+    } catch (_) {
+      // Ignore malformed URL env values
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolves the effective request host (`hostname[:port]`) enforcing trusted-proxy verification.
+ * Untrusted `X-Forwarded-Host` headers are completely ignored, falling back safely to the HTTP `Host` header.
+ */
+export function resolveEffectiveRequestHost(req?: ForwardedRequestLike | null): string {
+  const policy = resolveTrustedProxyPolicy();
+
+  if (shouldTrustForwardedHeaders(req)) {
+    const hops = policy.mode === 'allowlist' ? 1 : policy.hops;
+    const forwardedToken = selectForwardedHeaderToken(req?.headers?.['x-forwarded-host'], hops);
+    const sanitizedForwarded = sanitizeHostHeaderValue(forwardedToken);
+    if (sanitizedForwarded) {
+      return sanitizedForwarded;
+    }
+  }
+
+  const rawDirectHost =
+    req?.headers?.host ?? (typeof req?.get === 'function' ? req.get('host') : undefined);
+  return sanitizeHostHeaderValue(rawDirectHost);
+}
+
+/**
+ * Resolves the effective request protocol (`'http'` or `'https'`) enforcing trusted-proxy verification.
+ * Untrusted `X-Forwarded-Proto` headers are completely ignored, falling back to TLS socket state.
+ */
+export function resolveEffectiveRequestProtocol(req?: ForwardedRequestLike | null): 'http' | 'https' {
+  const policy = resolveTrustedProxyPolicy();
+
+  if (shouldTrustForwardedHeaders(req)) {
+    const hops = policy.mode === 'allowlist' ? 1 : policy.hops;
+    const forwardedToken = selectForwardedHeaderToken(req?.headers?.['x-forwarded-proto'], hops);
+    const sanitizedProto = sanitizeProtocolToken(forwardedToken);
+    if (sanitizedProto) {
+      return sanitizedProto;
+    }
+  }
+
+  if (req?.socket && typeof req.socket.encrypted === 'boolean') {
+    return req.socket.encrypted ? 'https' : 'http';
+  }
+
+  // Only honor req.protocol === 'https' if no untrusted X-Forwarded-Proto header was supplied
+  if (!req?.headers?.['x-forwarded-proto'] && req?.protocol === 'https') {
+    return 'https';
+  }
+
+  return 'http';
+}
+
+/**
+ * Resolves a validated request origin (`http(s)://host`) enforcing trusted-proxy policy,
+ * falling back safely to configured `APP_URL`/`VITE_PUBLIC_APP_URL` or a local default.
+ */
+export function resolveSafeRequestOrigin(
+  req?: ForwardedRequestLike | null,
+  defaultOrigin = 'http://127.0.0.1:3000'
+): string {
+  const host = resolveEffectiveRequestHost(req);
+  if (host) {
+    const proto = resolveEffectiveRequestProtocol(req);
+    return `${proto}://${host}`;
+  }
+
+  return getConfiguredFallbackOrigin() || defaultOrigin;
+}
+

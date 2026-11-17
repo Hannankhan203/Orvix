@@ -19,6 +19,17 @@ import {
   resetVoiceWebSocketStateForTesting
 } from '../server/voiceWebSocketSubsystem.ts';
 import {
+  resolveEffectiveRequestHost,
+  resolveEffectiveRequestProtocol,
+  resolveSafeRequestOrigin,
+  shouldTrustForwardedHeaders
+} from '../server/trustedProxy.ts';
+import {
+  createSignedDecodeUrl,
+  resolveRequestOrigin,
+  resetDevSignedDecodeUrlSecretForTesting
+} from '../server/uploadSubsystem.ts';
+import {
   resetFirebaseAuthForTesting,
   setTestFirebaseProjectId,
   setTestPublicKey
@@ -842,3 +853,322 @@ test('ORVIX-CRIT-03 client services: transcriptionService attaches Bearer token 
     await resetRedisClientForTesting();
   }
 });
+
+async function withEnvOverrides(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<void> | void
+) {
+  const keys = Object.keys(overrides);
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    if (overrides[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = overrides[key];
+    }
+  }
+  try {
+    await fn();
+  } finally {
+    for (const key of keys) {
+      const prev = previous.get(key);
+      if (prev === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = prev;
+      }
+    }
+  }
+}
+
+test('ORVIX-H02 forwarded headers: enforces trusted-proxy policy in CORS origin validation and blocks spoofed X-Forwarded-Host', async () => {
+  await withEnvOverrides(
+    {
+      TRUST_PROXY: undefined,
+      ORVIX_TRUST_PROXY: undefined,
+      VERCEL: undefined,
+      VERCEL_ENV: undefined,
+      K_SERVICE: undefined,
+      ALLOWED_ORIGINS: undefined,
+      CORS_ALLOWED_ORIGINS: undefined,
+      VITE_PUBLIC_APP_URL: undefined,
+      APP_URL: undefined,
+      NODE_ENV: 'production'
+    },
+    async () => {
+      // 1. Default standalone server (proxy trust disabled): spoofed X-Forwarded-Host MUST be ignored
+      const spoofedReq = {
+        headers: {
+          host: 'api.orvix.example.com',
+          'x-forwarded-host': 'evil.attacker.com'
+        },
+        socket: { remoteAddress: '203.0.113.10' }
+      } as unknown as express.Request;
+
+      assert.equal(shouldTrustForwardedHeaders(spoofedReq), false);
+      assert.equal(resolveEffectiveRequestHost(spoofedReq), 'api.orvix.example.com');
+      assert.equal(isAllowedOrigin('https://evil.attacker.com', spoofedReq), false);
+      assert.equal(isAllowedOrigin('https://api.orvix.example.com', spoofedReq), true);
+
+      // Spoofing X-Forwarded-Host: localhost:3000 MUST NOT bypass production loopback restriction
+      const loopbackSpoofReq = {
+        headers: {
+          host: 'api.orvix.example.com',
+          'x-forwarded-host': 'localhost:3000'
+        },
+        socket: { remoteAddress: '203.0.113.10' }
+      } as unknown as express.Request;
+      assert.equal(isAllowedOrigin('http://localhost:3000', loopbackSpoofReq), false);
+
+      // Live HTTP server check with proxy trust disabled
+      const srv = await startSecurityTestServer();
+      try {
+        const resSpoofedCors = await fetch(`${srv.baseUrl}/api/chat`, {
+          method: 'OPTIONS',
+          headers: {
+            Origin: 'https://spoofed-host.attacker.test',
+            'X-Forwarded-Host': 'spoofed-host.attacker.test',
+            'Access-Control-Request-Method': 'POST'
+          }
+        });
+        assert.equal(resSpoofedCors.status, 403);
+      } finally {
+        await srv.close();
+      }
+    }
+  );
+
+  // 2. Allowlist mode (TRUST_PROXY=loopback): trust ONLY when TCP peer IP is in allowlist
+  await withEnvOverrides(
+    {
+      TRUST_PROXY: 'loopback',
+      ORVIX_TRUST_PROXY: undefined,
+      VERCEL: undefined,
+      VERCEL_ENV: undefined,
+      K_SERVICE: undefined
+    },
+    () => {
+      const untrustedPeerReq = {
+        headers: {
+          host: 'internal.orvix.local:3000',
+          'x-forwarded-host': 'app.orvix.example.com'
+        },
+        socket: { remoteAddress: '198.51.100.44' }
+      } as unknown as express.Request;
+
+      assert.equal(shouldTrustForwardedHeaders(untrustedPeerReq), false);
+      assert.equal(resolveEffectiveRequestHost(untrustedPeerReq), 'internal.orvix.local:3000');
+      assert.equal(isAllowedOrigin('https://app.orvix.example.com', untrustedPeerReq), false);
+
+      const trustedLoopbackReq = {
+        headers: {
+          host: '127.0.0.1:3000',
+          'x-forwarded-host': 'app.orvix.example.com'
+        },
+        socket: { remoteAddress: '::ffff:127.0.0.1' }
+      } as unknown as express.Request;
+
+      assert.equal(shouldTrustForwardedHeaders(trustedLoopbackReq), true);
+      assert.equal(resolveEffectiveRequestHost(trustedLoopbackReq), 'app.orvix.example.com');
+      assert.equal(isAllowedOrigin('https://app.orvix.example.com', trustedLoopbackReq), true);
+    }
+  );
+
+  // 3. Legitimate Vercel platform deployment preserves X-Forwarded-Host while rejecting malformed authority tokens
+  await withEnvOverrides(
+    {
+      TRUST_PROXY: undefined,
+      ORVIX_TRUST_PROXY: undefined,
+      VERCEL: '1',
+      VERCEL_ENV: 'production',
+      K_SERVICE: undefined
+    },
+    () => {
+      const vercelReq = {
+        headers: {
+          host: 'orvix-internal.vercel.internal',
+          'x-forwarded-host': 'orvix-prod.vercel.app'
+        }
+      } as unknown as express.Request;
+
+      assert.equal(shouldTrustForwardedHeaders(vercelReq), true);
+      assert.equal(isAllowedOrigin('https://orvix-prod.vercel.app', vercelReq), true);
+
+      const malformedHeaderReq = {
+        headers: {
+          host: 'orvix-prod.vercel.app',
+          'x-forwarded-host': 'trusted.vercel.app@evil.com/path'
+        }
+      } as unknown as express.Request;
+      assert.equal(resolveEffectiveRequestHost(malformedHeaderReq), 'orvix-prod.vercel.app');
+      assert.equal(isAllowedOrigin('https://evil.com', malformedHeaderReq), false);
+    }
+  );
+});
+
+test('ORVIX-H02 signed decode URLs: prevents X-Forwarded-Host/Proto spoofing and preserves trusted Vercel/proxy origins', async () => {
+  await withEnvOverrides(
+    {
+      TRUST_PROXY: undefined,
+      ORVIX_TRUST_PROXY: undefined,
+      VERCEL: undefined,
+      VERCEL_ENV: undefined,
+      K_SERVICE: undefined,
+      APP_URL: undefined,
+      VITE_PUBLIC_APP_URL: undefined,
+      NODE_ENV: 'development'
+    },
+    async () => {
+      resetDevSignedDecodeUrlSecretForTesting();
+
+      // Direct untrusted request with spoofed X-Forwarded-Host & X-Forwarded-Proto
+      const untrustedHeaders: Record<string, string> = {
+        host: '127.0.0.1:3000',
+        'x-forwarded-host': 'attacker-download.evil',
+        'x-forwarded-proto': 'https'
+      };
+      const untrustedReq = {
+        headers: untrustedHeaders,
+        protocol: 'https', // Even if Express/mock reflected proto, untrusted X-Forwarded-Proto must not make it https
+        socket: { remoteAddress: '203.0.113.55', encrypted: false },
+        get(name: string) {
+          return untrustedHeaders[name.toLowerCase()];
+        }
+      } as unknown as express.Request;
+
+      assert.equal(resolveEffectiveRequestProtocol(untrustedReq), 'http');
+      assert.equal(resolveRequestOrigin(untrustedReq), 'http://127.0.0.1:3000');
+
+      const untrustedSigned = createSignedDecodeUrl(untrustedReq, {
+        fileId: 'file_h02_1',
+        userId: 'user_h02',
+        chatId: 'chat_h02',
+        forceDownload: true
+      });
+      const parsedUntrusted = new URL(untrustedSigned.signedUrl);
+      assert.equal(parsedUntrusted.origin, 'http://127.0.0.1:3000');
+      assert.notEqual(parsedUntrusted.hostname, 'attacker-download.evil');
+
+      // Missing Host header falls back safely to configured APP_URL instead of spoofed X-Forwarded-Host
+      process.env.APP_URL = 'https://safe.orvix.app';
+      const missingHostReq = {
+        headers: {
+          'x-forwarded-host': 'attacker-download.evil',
+          'x-forwarded-proto': 'http'
+        },
+        socket: { remoteAddress: '203.0.113.55', encrypted: false }
+      } as unknown as express.Request;
+      assert.equal(resolveSafeRequestOrigin(missingHostReq), 'https://safe.orvix.app');
+      delete process.env.APP_URL;
+
+      // Live Express HTTP round-trip ensuring spoofed headers over TCP do not alter generated signed URLs
+      const app = express();
+      applyCorsMiddleware(app);
+      app.get('/test-signed-origin', (req, res) => {
+        const result = createSignedDecodeUrl(req, {
+          fileId: 'file_h02_http',
+          userId: 'user_h02',
+          chatId: 'chat_h02',
+          forceDownload: true
+        });
+        res.json(result);
+      });
+      const server = http.createServer(app);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      try {
+        const addr = server.address() as AddressInfo;
+        const resp = await fetch(`http://127.0.0.1:${addr.port}/test-signed-origin`, {
+          headers: {
+            'X-Forwarded-Host': 'evil-proxy.attacker.test',
+            'X-Forwarded-Proto': 'https'
+          }
+        });
+        assert.equal(resp.status, 200);
+        const body = (await resp.json()) as { signedUrl: string };
+        const parsedHttpSigned = new URL(body.signedUrl);
+        assert.equal(parsedHttpSigned.origin, `http://127.0.0.1:${addr.port}`);
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((err) => (err ? reject(err) : resolve()))
+        );
+      }
+    }
+  );
+
+  // Trusted allowlist peer vs untrusted peer for signed URL generation
+  await withEnvOverrides(
+    {
+      TRUST_PROXY: '10.0.0.0/8',
+      ORVIX_TRUST_PROXY: undefined,
+      VERCEL: undefined,
+      VERCEL_ENV: undefined,
+      K_SERVICE: undefined,
+      NODE_ENV: 'development'
+    },
+    () => {
+      const untrustedReq = {
+        headers: {
+          host: 'backend.local:3000',
+          'x-forwarded-host': 'phishing.evil',
+          'x-forwarded-proto': 'https'
+        },
+        socket: { remoteAddress: '198.51.100.7', encrypted: false }
+      } as unknown as express.Request;
+      assert.equal(resolveRequestOrigin(untrustedReq), 'http://backend.local:3000');
+
+      const trustedProxyReq = {
+        headers: {
+          host: 'backend.local:3000',
+          'x-forwarded-host': 'cdn.orvix.ai',
+          'x-forwarded-proto': 'https'
+        },
+        socket: { remoteAddress: '10.24.0.5', encrypted: false }
+      } as unknown as express.Request;
+      const trustedSigned = createSignedDecodeUrl(trustedProxyReq, {
+        fileId: 'file_h02_trusted',
+        userId: 'user_h02',
+        chatId: 'chat_h02',
+        forceDownload: false
+      });
+      assert.equal(new URL(trustedSigned.signedUrl).origin, 'https://cdn.orvix.ai');
+    }
+  );
+
+  // Legitimate Vercel deployment + protocol/host injection resistance
+  await withEnvOverrides(
+    {
+      TRUST_PROXY: undefined,
+      ORVIX_TRUST_PROXY: undefined,
+      VERCEL: '1',
+      VERCEL_ENV: 'production',
+      K_SERVICE: undefined,
+      NODE_ENV: 'development'
+    },
+    () => {
+      const legitimateVercelReq = {
+        headers: {
+          host: 'internal.vercel',
+          'x-forwarded-host': 'orvix.vercel.app',
+          'x-forwarded-proto': 'https'
+        },
+        socket: { encrypted: false }
+      } as unknown as express.Request;
+      assert.equal(resolveRequestOrigin(legitimateVercelReq), 'https://orvix.vercel.app');
+
+      // Rightmost hop takes precedence over client-prepended values and invalid schemes fall back safely
+      const injectedProtoReq = {
+        headers: {
+          host: 'orvix.vercel.app',
+          'x-forwarded-host': 'spoofed.evil, orvix.vercel.app',
+          'x-forwarded-proto': 'javascript'
+        },
+        socket: { encrypted: false }
+      } as unknown as express.Request;
+      assert.equal(resolveRequestOrigin(injectedProtoReq), 'http://orvix.vercel.app');
+    }
+  );
+
+  resetDevSignedDecodeUrlSecretForTesting();
+});
+

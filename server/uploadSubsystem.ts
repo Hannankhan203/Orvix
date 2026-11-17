@@ -13,6 +13,7 @@ import {
   setForceProductionSignedUrlSecretCheckForTesting
 } from './serverConfig.ts';
 import { logUploadDiagnostic, sanitizeErrorLog } from './diagnosticLogger.ts';
+import { resolveSafeRequestOrigin } from './trustedProxy.ts';
 import type { UploadedFileRecord, DocumentExtractionResult } from './serverTypes.ts';
 // @ts-ignore - Document extraction JavaScript service
 import { extractDocumentContent } from '../src/services/documentExtractor.js';
@@ -749,18 +750,8 @@ function firstFieldValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function resolveRequestOrigin(req: express.Request): string {
-  const protoHeader = req.headers['x-forwarded-proto'];
-  const proto =
-    (Array.isArray(protoHeader) ? protoHeader[0] : protoHeader)?.split(',')[0]?.trim() ||
-    req.protocol ||
-    'http';
-  const hostHeader = req.headers['x-forwarded-host'];
-  const host =
-    (Array.isArray(hostHeader) ? hostHeader[0] : hostHeader)?.split(',')[0]?.trim() ||
-    req.get('host') ||
-    '127.0.0.1:3000';
-  return `${proto}://${host}`;
+export function resolveRequestOrigin(req: express.Request): string {
+  return resolveSafeRequestOrigin(req);
 }
 
 function computeSignedDecodeSignature(
@@ -778,7 +769,7 @@ function computeSignedDecodeSignature(
     .digest('base64url');
 }
 
-function createSignedDecodeUrl(
+export function createSignedDecodeUrl(
   req: express.Request,
   params: {
     fileId: string;

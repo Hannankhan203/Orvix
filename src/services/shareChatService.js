@@ -822,7 +822,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
 
   // Also ensure Firebase Auth session matches when using live Firebase
   if (!options.setDocImpl) {
-    if (!isFirebaseConfigured || !db) {
+    if (!isFirebaseConfigured() || !db) {
       throw new ShareChatError(
         'Cloud sharing is currently unavailable because Firebase is not configured.',
         'FIREBASE_UNAVAILABLE'
