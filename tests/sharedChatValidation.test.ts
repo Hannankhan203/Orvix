@@ -24,6 +24,15 @@ import {
   setFirestoreForTesting,
   resetFirestoreForTesting
 } from '../server/uploadQuotaService.ts';
+import {
+  getRateLimitPolicyConfig,
+  resetRateLimitersForTesting
+} from '../server/rateLimiter.ts';
+import {
+  InMemoryRedisMock,
+  resetRedisClientForTesting,
+  setRedisClientForTesting
+} from '../server/redisClient.ts';
 
 function buildSignedJwt(
   claims: Record<string, any>,
@@ -41,11 +50,18 @@ function buildSignedJwt(
   return `${header}.${payload}.${signature}`;
 }
 
-async function startShareTestServer() {
+async function startShareTestServer(resetLimiter = true) {
+  if (resetLimiter) {
+    resetRateLimitersForTesting();
+  }
   const app = express();
   applyCorsMiddleware(app);
   applyJsonBodyMiddleware(app);
   registerShareRoutes(app);
+  // Read-only route to verify share creation rate limiter never affects GET access
+  app.get('/share/:shareId', (req, res) => {
+    res.status(200).json({ ok: true, shareId: req.params.shareId });
+  });
 
   const server = http.createServer(app);
   await new Promise<void>((resolve) => {
@@ -84,6 +100,19 @@ function setupTestKeys() {
     privateKey
   );
 
+  const secondUserToken = buildSignedJwt(
+    {
+      sub: 'share-user-202',
+      user_id: 'share-user-202',
+      email: 'sharer2@orvix.test',
+      aud: projectId,
+      iss: `https://securetoken.google.com/${projectId}`,
+      iat: nowSec - 30,
+      exp: nowSec + 3600
+    },
+    privateKey
+  );
+
   const anonymousToken = buildSignedJwt(
     {
       sub: 'anon-user-999',
@@ -100,6 +129,7 @@ function setupTestKeys() {
 
   return {
     validToken,
+    secondUserToken,
     anonymousToken
   };
 }
@@ -487,5 +517,208 @@ test('ORVIX-H03 shareChatService: invokes isFirebaseConfigured() and rejects wit
       return true;
     }
   );
+});
+
+test('ORVIX-HIGH-02 /api/share & /share: enforces 10 req/min rate limit before Firestore writes, isolates users, and protects unauthenticated requests by IP', async () => {
+  resetFirebaseAuthForTesting();
+  resetFirestoreForTesting();
+  resetRateLimitersForTesting();
+  await resetRedisClientForTesting();
+
+  const policyCfg = getRateLimitPolicyConfig('share');
+  assert.equal(policyCfg.policy, 'share');
+  assert.equal(policyCfg.max, 10);
+  assert.equal(policyCfg.windowMs, 60_000);
+
+  const keys = setupTestKeys();
+  const fakeFs = createImmutableShareTestFirestore();
+  setFirestoreForTesting(fakeFs.db);
+  const srv = await startShareTestServer();
+
+  try {
+    // 1. Authenticated User 1 sends 10 requests across both /api/share and /share -> all 10 succeed (200 OK)
+    for (let i = 1; i <= 10; i++) {
+      const endpoint = i % 2 === 1 ? '/api/share' : '/share';
+      const res = await fetch(`${srv.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${keys.validToken}`
+        },
+        body: JSON.stringify({
+          shareId: `High02User1Share_${String(i).padStart(3, '0')}`,
+          chat: { id: `chat-u1-${i}`, title: `User 1 Share ${i}`, mode: 'general' },
+          messages: [
+            { id: 'm1', sender: 'user', content: `Prompt ${i}`, createdAtMs: 1700000000000 + i }
+          ]
+        })
+      });
+      assert.equal(res.status, 200, `Request ${i} on ${endpoint} should succeed`);
+      assert.equal(res.headers.get('ratelimit-limit'), '10');
+      assert.equal(res.headers.get('x-ratelimit-limit'), '10');
+      assert.equal(res.headers.get('x-ratelimit-remaining'), String(10 - i));
+    }
+
+    assert.equal(fakeFs.getStats().createCalls, 10, 'Exactly 10 Firestore writes should have occurred');
+
+    // 2. 11th request from Authenticated User 1 on /api/share and 12th on /share -> rejected with HTTP 429 BEFORE Firestore write
+    for (const blockedRoute of ['/api/share', '/share']) {
+      const resBlocked = await fetch(`${srv.baseUrl}${blockedRoute}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${keys.validToken}`
+        },
+        body: JSON.stringify({
+          shareId: 'High02User1Share_Blocked_011',
+          chat: { id: 'chat-u1-11', title: 'Should Be Rate Limited', mode: 'general' },
+          messages: [
+            { id: 'm1', sender: 'user', content: 'Blocked prompt', createdAtMs: 1700000099000 }
+          ]
+        })
+      });
+      assert.equal(resBlocked.status, 429, `Over-limit request on ${blockedRoute} must return HTTP 429`);
+      assert.ok(Number(resBlocked.headers.get('retry-after')) >= 1);
+      const errBody = (await resBlocked.json()) as any;
+      assert.equal(errBody.code, 'RATE_LIMIT_EXCEEDED');
+      assert.equal(errBody.status, 'RESOURCE_EXHAUSTED');
+      assert.equal(errBody.policy, 'share');
+      assert.equal(errBody.limit, 10);
+      assert.equal(errBody.remaining, 0);
+    }
+
+    // Firestore write count MUST remain 10 (rate limiter blocked before Firestore!)
+    assert.equal(
+      fakeFs.getStats().createCalls,
+      10,
+      'Rate-limited share requests must never execute Firestore writes'
+    );
+
+    // 3. Separate Authenticated User 2 has an isolated rate-limit bucket and succeeds (200 OK)
+    const resUser2 = await fetch(`${srv.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys.secondUserToken}`
+      },
+      body: JSON.stringify({
+        shareId: 'High02User2Share_001',
+        chat: { id: 'chat-u2-1', title: 'User 2 Independent Share', mode: 'coding' },
+        messages: [
+          { id: 'm1', sender: 'user', content: 'User 2 message', createdAtMs: 1700000100000 }
+        ]
+      })
+    });
+    assert.equal(resUser2.status, 200);
+    assert.equal(resUser2.headers.get('x-ratelimit-remaining'), '9');
+    assert.equal(fakeFs.getStats().createCalls, 11);
+
+    // 4. Read-only GET access to shared conversations is NOT rate limited by share creation exhaustion
+    const resReadOnly = await fetch(`${srv.baseUrl}/share/High02User1Share_001`);
+    assert.equal(resReadOnly.status, 200);
+
+    // 5. Unauthenticated IP-based protection across both /api/share and /share
+    resetRateLimitersForTesting();
+    for (let i = 1; i <= 10; i++) {
+      const endpoint = i <= 5 ? '/api/share' : '/share';
+      const resUnauth = await fetch(`${srv.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shareId: `High02Unauth_${String(i).padStart(3, '0')}`,
+          chat: { id: 'chat-unauth', title: 'Unauth', mode: 'general' },
+          messages: [{ id: 'm1', sender: 'user', content: 'Hi', createdAtMs: 1700000200000 }]
+        })
+      });
+      // Below the 10 req/min IP limit, unauthenticated requests pass the rate limiter and hit the 401 auth guard
+      assert.equal(resUnauth.status, 401);
+      assert.equal(resUnauth.headers.get('x-ratelimit-remaining'), String(10 - i));
+    }
+
+    // 11th unauthenticated request from the same IP is blocked with HTTP 429
+    const resUnauth11 = await fetch(`${srv.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shareId: 'High02Unauth_011',
+        chat: { id: 'chat-unauth', title: 'Unauth 11', mode: 'general' },
+        messages: [{ id: 'm1', sender: 'user', content: 'Hi', createdAtMs: 1700000200011 }]
+      })
+    });
+    assert.equal(resUnauth11.status, 429);
+    const unauth11Json = (await resUnauth11.json()) as any;
+    assert.equal(unauth11Json.code, 'RATE_LIMIT_EXCEEDED');
+    assert.equal(unauth11Json.policy, 'share');
+  } finally {
+    await srv.close();
+    resetFirestoreForTesting();
+    resetRateLimitersForTesting();
+  }
+});
+
+test('ORVIX-HIGH-02 distributed Redis share rate limiting across multiple instances', async () => {
+  resetFirebaseAuthForTesting();
+  resetFirestoreForTesting();
+  resetRateLimitersForTesting();
+  await resetRedisClientForTesting();
+
+  const keys = setupTestKeys();
+  const fakeFs = createImmutableShareTestFirestore();
+  setFirestoreForTesting(fakeFs.db);
+
+  const mockRedis = new InMemoryRedisMock();
+  await mockRedis.connect();
+  setRedisClientForTesting(mockRedis);
+
+  const srvA = await startShareTestServer(false);
+  const srvB = await startShareTestServer(false);
+
+  try {
+    // Send 5 requests to Instance A (/api/share) and 5 requests to Instance B (/share) -> shared Redis counter reaches 10
+    for (let i = 1; i <= 10; i++) {
+      const targetBase = i <= 5 ? srvA.baseUrl : srvB.baseUrl;
+      const endpoint = i <= 5 ? '/api/share' : '/share';
+      const res = await fetch(`${targetBase}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${keys.validToken}`
+        },
+        body: JSON.stringify({
+          shareId: `High02RedisShare_${String(i).padStart(3, '0')}`,
+          chat: { id: `chat-r-${i}`, title: `Redis Share ${i}`, mode: 'general' },
+          messages: [{ id: 'm1', sender: 'user', content: `Hello ${i}`, createdAtMs: 1700000300000 + i }]
+        })
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-ratelimit-remaining'), String(10 - i));
+    }
+
+    // 11th request hitting Instance B is rejected with 429 via shared Redis state
+    const res11 = await fetch(`${srvB.baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys.validToken}`
+      },
+      body: JSON.stringify({
+        shareId: 'High02RedisShare_011',
+        chat: { id: 'chat-r-11', title: 'Redis Share 11', mode: 'general' },
+        messages: [{ id: 'm1', sender: 'user', content: 'Hello 11', createdAtMs: 1700000300011 }]
+      })
+    });
+    assert.equal(res11.status, 429);
+    const body11 = (await res11.json()) as any;
+    assert.equal(body11.code, 'RATE_LIMIT_EXCEEDED');
+    assert.equal(body11.policy, 'share');
+    assert.equal(fakeFs.getStats().createCalls, 10);
+  } finally {
+    await srvA.close();
+    await srvB.close();
+    mockRedis.clearAllForTesting();
+    await resetRedisClientForTesting();
+    resetFirestoreForTesting();
+    resetRateLimitersForTesting();
+  }
 });
 

@@ -25,6 +25,7 @@ export type RateLimitPolicyName =
   | 'transcribe'
   | 'upload'
   | 'uploadRead'
+  | 'share'
   | 'config'
   | 'voiceWs'
   | 'voiceWsHandshake';
@@ -254,6 +255,14 @@ export function getRateLimitPolicyConfig(policy: RateLimitPolicyName): RateLimit
         headerMode: 'ietf-only',
         message: 'Too many attachment status requests. Please wait a moment before trying again.'
       };
+    case 'share':
+      return {
+        policy: 'share',
+        max: parsePositiveEnvInt('RATE_LIMIT_SHARE_MAX', 10),
+        windowMs: parsePositiveEnvInt('RATE_LIMIT_SHARE_WINDOW_MS', 60_000),
+        headerMode: 'all',
+        message: 'Too many conversation share requests. Please wait a moment before sharing again.'
+      };
     case 'config':
       return {
         policy: 'config',
@@ -285,6 +294,7 @@ const COSTLY_FAIL_CLOSED_POLICIES = new Set([
   'chat',
   'transcribe',
   'upload',
+  'share',
   'voiceWs',
   'voiceWsHandshake'
 ]);
@@ -724,6 +734,7 @@ function isKnownPolicy(policy: string): policy is RateLimitPolicyName {
     policy === 'transcribe' ||
     policy === 'upload' ||
     policy === 'uploadRead' ||
+    policy === 'share' ||
     policy === 'config' ||
     policy === 'voiceWs' ||
     policy === 'voiceWsHandshake'

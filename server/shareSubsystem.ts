@@ -6,6 +6,10 @@ import {
 import { getFirestoreDb } from './uploadQuotaService.ts';
 import { FieldValue } from 'firebase-admin/firestore';
 import { buildValidatedSharedSnapshot, ShareChatError } from '../src/services/shareChatService.js';
+import {
+  createRateLimiterMiddleware,
+  type CreateRateLimiterOptions
+} from './rateLimiter.ts';
 
 /**
  * Checks if a verified Firebase user is non-anonymous and eligible to publish shared chats.
@@ -177,8 +181,15 @@ export async function handleShareChatRequest(req: express.Request, res: express.
 }
 
 /**
- * Registers share routes on the Express app.
+ * Registers share routes on the Express app with distributed rate limiting (10 requests/minute per user/IP).
  */
-export function registerShareRoutes(app: express.Express) {
-  app.post(['/api/share', '/share'], handleShareChatRequest);
+export function registerShareRoutes(
+  app: express.Express,
+  rateLimitOptions?: Partial<CreateRateLimiterOptions>
+) {
+  const shareRateLimiter = createRateLimiterMiddleware({
+    policy: 'share',
+    ...rateLimitOptions
+  });
+  app.post(['/api/share', '/share'], shareRateLimiter, handleShareChatRequest);
 }

@@ -822,6 +822,8 @@ RATE_LIMIT_UPLOAD_MAX=30
 RATE_LIMIT_UPLOAD_WINDOW_MS=60000
 RATE_LIMIT_UPLOAD_READ_MAX=120
 RATE_LIMIT_UPLOAD_READ_WINDOW_MS=60000
+RATE_LIMIT_SHARE_MAX=10
+RATE_LIMIT_SHARE_WINDOW_MS=60000
 RATE_LIMIT_CONFIG_MAX=120
 RATE_LIMIT_CONFIG_WINDOW_MS=60000
 RATE_LIMIT_VOICE_WS_MAX=20
@@ -835,7 +837,7 @@ RATE_LIMIT_VOICE_WS_WINDOW_MS=60000
 ## Installation & Running Locally
 
 ### Prerequisites
-- **Node.js**: Version 18.0.0 or higher (Node.js 22 LTS recommended).
+- **Node.js**: Version 18.0.0 or higher (`engines.node: ">=18.0.0"`, Node.js 22 LTS recommended).
 - **npm**: Version 9.0.0 or higher.
 
 ### 1. Install Dependencies
@@ -863,7 +865,7 @@ npm run lint
 npm run build
 npm start
 ```
-The Express server serves static client assets from `dist/` with SPA routing and API proxying.
+`npm start` executes `tsx server.ts` (with `tsx` included in production `dependencies`), allowing the TypeScript backend to run reliably across all supported Node.js versions (`>=18.0.0`, including versions below Node.js 22.6 that lack native `.ts` strip-types execution). In production (`NODE_ENV=production`), the Express server serves prebuilt static client assets from `dist/` with SPA routing and API proxying.
 
 ### Vercel Serverless Deployment
 Configured via `vercel.json` with handlers in `api/`:
