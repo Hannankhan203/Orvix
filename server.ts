@@ -194,42 +194,39 @@ app.use((err: any, _req: express.Request, res: express.Response, next: express.N
   });
 });
 
-// Service worker and web app manifest must NEVER be cached by browsers, proxies, or CDNs
-app.use((req, res, next) => {
-  if (
-    req.path === '/sw.js' ||
-    req.path === '/manifest.webmanifest' ||
-    req.path === '/registerSW.js'
-  ) {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-  }
-  next();
-});
-
-app.get('/sw.js', (_req, res) => {
+function applyNoCacheHeaders(res: express.Response): void {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
+}
+
+// Service worker and web app manifest must NEVER be cached by browsers, proxies, or CDNs
+app.get('/sw.js', (_req, res) => {
+  applyNoCacheHeaders(res);
+  const isProd = process.env.NODE_ENV === 'production';
   const distSw = path.resolve(__dirname, 'dist', 'sw.js');
-  if (fs.existsSync(distSw)) {
-    return res.sendFile(distSw);
+  if (isProd) {
+    if (fs.existsSync(distSw)) {
+      return res.sendFile(distSw);
+    }
+    return res.status(404).type('text/plain').send('Service worker bundle not found.');
   }
-  return res.type('application/javascript').send('// Orvix service worker');
+  return res.type('application/javascript').send('// Orvix development service worker stub');
 });
 
 app.get('/manifest.webmanifest', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  applyNoCacheHeaders(res);
+  res.type('application/manifest+json; charset=utf-8');
   const distManifest = path.resolve(__dirname, 'dist', 'manifest.webmanifest');
   const publicManifest = path.resolve(__dirname, 'public', 'manifest.webmanifest');
-  if (fs.existsSync(distManifest)) {
+  if (process.env.NODE_ENV === 'production' && fs.existsSync(distManifest)) {
     return res.sendFile(distManifest);
   }
   if (fs.existsSync(publicManifest)) {
     return res.sendFile(publicManifest);
+  }
+  if (fs.existsSync(distManifest)) {
+    return res.sendFile(distManifest);
   }
   return res.json({ name: 'Orvix' });
 });
@@ -255,21 +252,22 @@ async function startServer() {
   const distPath = path.resolve(__dirname, 'dist');
   let viteInitPromise: Promise<any> | null = null;
   if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
-    // Service worker and web app manifest must NEVER be cached by browsers or CDNs
-    app.get(['/sw.js', '/manifest.webmanifest'], (_req, res, next) => {
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      next();
-    });
-
     // Immutable caching for hashed JS/CSS assets
     const assetsPath = path.resolve(distPath, 'assets');
     if (fs.existsSync(assetsPath)) {
       app.use('/assets', express.static(assetsPath, { maxAge: '1y', immutable: true }));
     }
 
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          const baseName = path.basename(filePath);
+          if (baseName === 'sw.js' || baseName === 'manifest.webmanifest' || baseName === 'registerSW.js') {
+            applyNoCacheHeaders(res);
+          }
+        }
+      })
+    );
 
     app.get('*', (req, res) => {
       if (req.path.startsWith('/api/')) {

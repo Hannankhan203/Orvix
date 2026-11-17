@@ -72,6 +72,7 @@ export type ReservationResult =
 let customDateHook: (() => Date) | null = null;
 let serverSecretOverride: string | null = null;
 let customFirestoreOverride: any | null = null;
+let customLockTimeoutMsForTesting: number | null = null;
 
 export function setCustomDateHookForTesting(hook: (() => Date) | null): void {
   customDateHook = hook;
@@ -79,6 +80,25 @@ export function setCustomDateHookForTesting(hook: (() => Date) | null): void {
 
 export function setServerSecretOverrideForTesting(secret: string | null): void {
   serverSecretOverride = secret;
+}
+
+export function setLockTimeoutMsForTesting(ms: number | null): void {
+  customLockTimeoutMsForTesting =
+    typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+function resolveEffectiveLockTimeoutMs(overrideMs?: number): number {
+  if (typeof overrideMs === 'number' && Number.isFinite(overrideMs) && overrideMs > 0) {
+    return overrideMs;
+  }
+  if (
+    typeof customLockTimeoutMsForTesting === 'number' &&
+    Number.isFinite(customLockTimeoutMsForTesting) &&
+    customLockTimeoutMsForTesting > 0
+  ) {
+    return customLockTimeoutMsForTesting;
+  }
+  return LOCK_TIMEOUT_MS;
 }
 
 /**
@@ -716,6 +736,8 @@ export function setFirestoreForTesting(db: any): void {
 export function resetFirestoreForTesting(): void {
   customFirestoreOverride = null;
   forceProductionModeForTesting = null;
+  customLockTimeoutMsForTesting = null;
+  clearAllQuotaLocksForTesting();
   sharedInMemoryFirestoreStore.clear();
 }
 
@@ -1062,6 +1084,255 @@ function pruneExpiredReservations(record: QuotaRecord, nowMs: number): number {
   return activeCount;
 }
 
+// ==============================================================================
+// Token-Safe Per-Identity Quota Lock & Bounded Firestore Operation Timeouts
+// ==============================================================================
+
+interface IdentityLockEntry {
+  token: string;
+  identityKey: string;
+  acquiredAt: number;
+  expiresAt: number;
+  releasePromise: Promise<void>;
+  resolveRelease: () => void;
+}
+
+export interface AcquiredQuotaLock {
+  token: string;
+  identityKey: string;
+  expiresAt: number;
+  release: () => boolean;
+}
+
+const activeIdentityLocks = new Map<string, IdentityLockEntry>();
+
+function clearAllQuotaLocksForTesting(): void {
+  for (const [, entry] of activeIdentityLocks.entries()) {
+    try {
+      entry.resolveRelease();
+    } catch (_) {}
+  }
+  activeIdentityLocks.clear();
+}
+
+export function isQuotaLockHeldForTesting(identityKey: string): boolean {
+  const entry = activeIdentityLocks.get(identityKey);
+  return Boolean(entry && Date.now() < entry.expiresAt);
+}
+
+export function getActiveQuotaLockCountForTesting(): number {
+  return activeIdentityLocks.size;
+}
+
+/**
+ * Acquires a token-owned per-identity lock bounded by LOCK_TIMEOUT_MS.
+ * Reclaims stale expired locks safely without letting a timed-out or failed operation
+ * release another operation's active lock.
+ */
+export async function acquireQuotaLock(
+  identityKey: string,
+  timeoutMs: number = resolveEffectiveLockTimeoutMs()
+): Promise<AcquiredQuotaLock> {
+  const safeTimeoutMs =
+    typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + safeTimeoutMs;
+
+  while (true) {
+    const existing = activeIdentityLocks.get(identityKey);
+    if (!existing) {
+      break;
+    }
+
+    const now = Date.now();
+    if (now >= existing.expiresAt) {
+      // Stale holder exceeded its lock lease; reclaim strictly by matching token
+      if (activeIdentityLocks.get(identityKey)?.token === existing.token) {
+        activeIdentityLocks.delete(identityKey);
+        existing.resolveRelease();
+        logUploadDiagnostic({
+          stage: 'firestore_transaction',
+          code: 'STALE_LOCK_RECLAIMED',
+          message: `Reclaimed expired upload quota lock for identity ${identityKey}.`,
+          details: { identityKey, lockAgeMs: now - existing.acquiredAt }
+        });
+      }
+      continue;
+    }
+
+    const remainingWaitMs = Math.min(deadline - now, existing.expiresAt - now);
+    if (remainingWaitMs <= 0) {
+      const timeoutErr: any = new Error(
+        `Timed out after ${safeTimeoutMs}ms waiting for upload quota lock.`
+      );
+      timeoutErr.code = 'UPLOAD_LOCK_TIMEOUT';
+      timeoutErr.status = 'UPLOAD_LOCK_TIMEOUT';
+      timeoutErr.diagnosticStage = 'firestore_transaction';
+      logUploadDiagnostic({
+        stage: 'firestore_transaction',
+        code: 'UPLOAD_LOCK_TIMEOUT',
+        message: timeoutErr.message,
+        details: { identityKey, timeoutMs: safeTimeoutMs }
+      });
+      throw timeoutErr;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timedOutWaiting = false;
+    try {
+      await Promise.race([
+        existing.releasePromise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            timedOutWaiting = true;
+            resolve();
+          }, remainingWaitMs);
+        })
+      ]);
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    }
+
+    if (timedOutWaiting && Date.now() >= deadline) {
+      const stillHeld = activeIdentityLocks.get(identityKey);
+      if (stillHeld && Date.now() < stillHeld.expiresAt) {
+        const timeoutErr: any = new Error(
+          `Timed out after ${safeTimeoutMs}ms waiting for upload quota lock.`
+        );
+        timeoutErr.code = 'UPLOAD_LOCK_TIMEOUT';
+        timeoutErr.status = 'UPLOAD_LOCK_TIMEOUT';
+        timeoutErr.diagnosticStage = 'firestore_transaction';
+        logUploadDiagnostic({
+          stage: 'firestore_transaction',
+          code: 'UPLOAD_LOCK_TIMEOUT',
+          message: timeoutErr.message,
+          details: { identityKey, timeoutMs: safeTimeoutMs }
+        });
+        throw timeoutErr;
+      }
+    }
+  }
+
+  let resolveRelease!: () => void;
+  const releasePromise = new Promise<void>((resolve) => {
+    resolveRelease = resolve;
+  });
+
+  const token = crypto.randomUUID();
+  const acquiredAt = Date.now();
+  const entry: IdentityLockEntry = {
+    token,
+    identityKey,
+    acquiredAt,
+    expiresAt: acquiredAt + safeTimeoutMs,
+    releasePromise,
+    resolveRelease
+  };
+  activeIdentityLocks.set(identityKey, entry);
+
+  let localReleased = false;
+  const release = (): boolean => {
+    if (localReleased) {
+      return false;
+    }
+    localReleased = true;
+    const current = activeIdentityLocks.get(identityKey);
+    if (current && current.token === token) {
+      activeIdentityLocks.delete(identityKey);
+      current.resolveRelease();
+      return true;
+    }
+    // Strict no-op if lock was already reclaimed or belongs to another operation
+    return false;
+  };
+
+  return {
+    token,
+    identityKey,
+    expiresAt: entry.expiresAt,
+    release
+  };
+}
+
+/**
+ * Executes a Firestore transaction bounded by timeoutMs so hanging SDK calls fail cleanly
+ * instead of blocking per-user quota locks indefinitely.
+ */
+async function runFirestoreTransactionWithTimeout<T>(
+  db: any,
+  updateFunction: (transaction: any) => Promise<T>,
+  timeoutMs: number,
+  operationName: string
+): Promise<T> {
+  const safeTimeoutMs =
+    typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : LOCK_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const err: any = new Error(
+        `Firestore quota operation '${operationName}' timed out after ${safeTimeoutMs}ms.`
+      );
+      err.code = 'FIRESTORE_TIMEOUT';
+      err.status = 'SERVICE_UNAVAILABLE';
+      err.diagnosticStage = 'firestore_transaction';
+      logUploadDiagnostic({
+        stage: 'firestore_transaction',
+        code: 'FIRESTORE_TIMEOUT',
+        message: err.message,
+        details: { operation: operationName, timeoutMs: safeTimeoutMs }
+      });
+      reject(err);
+    }, safeTimeoutMs);
+  });
+
+  const txPromise = Promise.resolve().then(() =>
+    db.runTransaction(async (transaction: any) => {
+      if (timedOut) {
+        const lateErr: any = new Error(
+          `Firestore quota operation '${operationName}' aborted after timeout.`
+        );
+        lateErr.code = 'FIRESTORE_TIMEOUT';
+        lateErr.diagnosticStage = 'firestore_transaction';
+        throw lateErr;
+      }
+      return await updateFunction(transaction);
+    })
+  );
+
+  // Prevent unhandled rejection if the underlying transaction settles after timeoutPromise rejects
+  txPromise.catch(() => {});
+
+  try {
+    return await Promise.race([txPromise, timeoutPromise]);
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function withIdentityQuotaLock<T>(
+  identityKey: string,
+  timeoutMs: number,
+  operation: (effectiveTimeoutMs: number) => Promise<T>
+): Promise<T> {
+  const effectiveTimeoutMs = resolveEffectiveLockTimeoutMs(timeoutMs);
+  const lock = await acquireQuotaLock(identityKey, effectiveTimeoutMs);
+  try {
+    return await operation(effectiveTimeoutMs);
+  } finally {
+    lock.release();
+  }
+}
+
 /**
  * Atomically reserves 1 upload slot for an identity on the current UTC calendar day
  * using an atomic Firestore transaction.
@@ -1069,7 +1340,7 @@ function pruneExpiredReservations(record: QuotaRecord, nowMs: number): number {
  */
 export async function reserveUploadSlot(
   identity: QuotaIdentity,
-  options: { customNow?: Date } = {}
+  options: { customNow?: Date; lockTimeoutMs?: number } = {}
 ): Promise<ReservationResult> {
   const now = options.customNow || getCurrentDate();
   const nowMs = now.getTime();
@@ -1077,69 +1348,77 @@ export async function reserveUploadSlot(
   const resetAt = getNextUtcMidnight(now).toISOString();
   const docId = `${identity.key}_${utcDay}`;
   const db = getFirestoreDb();
+  const timeoutMs = resolveEffectiveLockTimeoutMs(options.lockTimeoutMs);
 
-  return await db.runTransaction(async (transaction: any) => {
-    const docRef = db.collection('uploadQuotas').doc(docId);
-    const snap = await transaction.get(docRef);
+  return await withIdentityQuotaLock(identity.key, timeoutMs, (effectiveTimeoutMs) =>
+    runFirestoreTransactionWithTimeout(
+      db,
+      async (transaction: any) => {
+        const docRef = db.collection('uploadQuotas').doc(docId);
+        const snap = await transaction.get(docRef);
 
-    const record: QuotaRecord = (snap.exists && snap.data())
-      ? (snap.data() as QuotaRecord)
-      : {
-          identityKey: identity.key,
-          utcDay,
-          committed: 0,
-          reservations: {},
-          lastUpdated: nowMs
+        const record: QuotaRecord = (snap.exists && snap.data())
+          ? (snap.data() as QuotaRecord)
+          : {
+              identityKey: identity.key,
+              utcDay,
+              committed: 0,
+              reservations: {},
+              lastUpdated: nowMs
+            };
+
+        if (!record.reservations || typeof record.reservations !== 'object') {
+          record.reservations = {};
+        }
+        if (typeof record.committed !== 'number') {
+          record.committed = 0;
+        }
+
+        const activeReservationsCount = pruneExpiredReservations(record, nowMs);
+        const totalUsage = record.committed + activeReservationsCount;
+
+        if (totalUsage >= DAILY_UPLOAD_LIMIT) {
+          const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - totalUsage);
+          return {
+            allowed: false as const,
+            limit: DAILY_UPLOAD_LIMIT,
+            remaining,
+            resetAt,
+            error: `Daily attachment upload limit of ${DAILY_UPLOAD_LIMIT} uploads per day exceeded. Quota resets at midnight PKT.`
+          };
+        }
+
+        const reservationId = 'res_' + crypto.randomUUID();
+        const expiresAt = nowMs + RESERVATION_TTL_MS;
+
+        record.reservations[reservationId] = {
+          expiresAt,
+          createdAt: nowMs
         };
+        record.lastUpdated = nowMs;
 
-    if (!record.reservations || typeof record.reservations !== 'object') {
-      record.reservations = {};
-    }
-    if (typeof record.committed !== 'number') {
-      record.committed = 0;
-    }
+        transaction.set(docRef, record, { merge: true });
 
-    const activeReservationsCount = pruneExpiredReservations(record, nowMs);
-    const totalUsage = record.committed + activeReservationsCount;
+        const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + activeReservationsCount + 1));
 
-    if (totalUsage >= DAILY_UPLOAD_LIMIT) {
-      const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - totalUsage);
-      return {
-        allowed: false as const,
-        limit: DAILY_UPLOAD_LIMIT,
-        remaining,
-        resetAt,
-        error: `Daily attachment upload limit of ${DAILY_UPLOAD_LIMIT} uploads per day exceeded. Quota resets at midnight PKT.`
-      };
-    }
-
-    const reservationId = 'res_' + crypto.randomUUID();
-    const expiresAt = nowMs + RESERVATION_TTL_MS;
-
-    record.reservations[reservationId] = {
-      expiresAt,
-      createdAt: nowMs
-    };
-    record.lastUpdated = nowMs;
-
-    transaction.set(docRef, record, { merge: true });
-
-    const remaining = Math.max(0, DAILY_UPLOAD_LIMIT - (record.committed + activeReservationsCount + 1));
-
-    return {
-      allowed: true as const,
-      reservation: {
-        reservationId,
-        identityKey: identity.key,
-        utcDay,
-        expiresAt,
-        createdAt: nowMs
+        return {
+          allowed: true as const,
+          reservation: {
+            reservationId,
+            identityKey: identity.key,
+            utcDay,
+            expiresAt,
+            createdAt: nowMs
+          },
+          remaining,
+          resetAt,
+          limit: DAILY_UPLOAD_LIMIT
+        };
       },
-      remaining,
-      resetAt,
-      limit: DAILY_UPLOAD_LIMIT
-    };
-  });
+      effectiveTimeoutMs,
+      'reserveUploadSlot'
+    )
+  );
 }
 
 function computeCurrentDayStatusFromSnapshot(
@@ -1195,7 +1474,7 @@ function computeCurrentDayStatusFromSnapshot(
  */
 export async function commitUploadSlot(
   reservation: QuotaReservation,
-  options: { customNow?: Date } = {}
+  options: { customNow?: Date; lockTimeoutMs?: number } = {}
 ): Promise<QuotaStatus> {
   const now = options.customNow || getCurrentDate();
   const nowMs = now.getTime();
@@ -1204,8 +1483,12 @@ export async function commitUploadSlot(
   const docId = `${reservation.identityKey}_${reservation.utcDay}`;
   const isCrossMidnight = reservation.utcDay !== currentDay;
   const db = getFirestoreDb();
+  const timeoutMs = resolveEffectiveLockTimeoutMs(options.lockTimeoutMs);
 
-  return await db.runTransaction(async (transaction: any) => {
+  return await withIdentityQuotaLock(reservation.identityKey, timeoutMs, (effectiveTimeoutMs) =>
+    runFirestoreTransactionWithTimeout(
+      db,
+      async (transaction: any) => {
     const docRef = db.collection('uploadQuotas').doc(docId);
     const currentDocRef = isCrossMidnight
       ? db.collection('uploadQuotas').doc(`${reservation.identityKey}_${currentDay}`)
@@ -1320,7 +1603,11 @@ export async function commitUploadSlot(
       resetAt,
       utcDay: currentDay
     };
-  });
+      },
+      effectiveTimeoutMs,
+      'commitUploadSlot'
+    )
+  );
 }
 
 /**
@@ -1333,7 +1620,7 @@ export async function commitUploadSlot(
  */
 export async function releaseUploadSlot(
   reservation: QuotaReservation,
-  options: { customNow?: Date } = {}
+  options: { customNow?: Date; lockTimeoutMs?: number } = {}
 ): Promise<QuotaStatus> {
   const now = options.customNow || getCurrentDate();
   const nowMs = now.getTime();
@@ -1342,8 +1629,12 @@ export async function releaseUploadSlot(
   const docId = `${reservation.identityKey}_${reservation.utcDay}`;
   const isCrossMidnight = reservation.utcDay !== currentDay;
   const db = getFirestoreDb();
+  const timeoutMs = resolveEffectiveLockTimeoutMs(options.lockTimeoutMs);
 
-  return await db.runTransaction(async (transaction: any) => {
+  return await withIdentityQuotaLock(reservation.identityKey, timeoutMs, (effectiveTimeoutMs) =>
+    runFirestoreTransactionWithTimeout(
+      db,
+      async (transaction: any) => {
     const docRef = db.collection('uploadQuotas').doc(docId);
     const currentDocRef = isCrossMidnight
       ? db.collection('uploadQuotas').doc(`${reservation.identityKey}_${currentDay}`)
@@ -1390,7 +1681,11 @@ export async function releaseUploadSlot(
       resetAt,
       utcDay: currentDay
     };
-  });
+      },
+      effectiveTimeoutMs,
+      'releaseUploadSlot'
+    )
+  );
 }
 
 /**
@@ -1398,7 +1693,7 @@ export async function releaseUploadSlot(
  */
 export async function getQuotaStatus(
   identity: QuotaIdentity,
-  options: { customNow?: Date } = {}
+  options: { customNow?: Date; lockTimeoutMs?: number } = {}
 ): Promise<QuotaStatus> {
   const now = options.customNow || getCurrentDate();
   const nowMs = now.getTime();
@@ -1406,14 +1701,22 @@ export async function getQuotaStatus(
   const resetAt = getNextUtcMidnight(now).toISOString();
   const docId = `${identity.key}_${utcDay}`;
   const db = getFirestoreDb();
+  const timeoutMs = resolveEffectiveLockTimeoutMs(options.lockTimeoutMs);
 
   try {
-    return await db.runTransaction(async (transaction: any) => {
-      const docRef = db.collection('uploadQuotas').doc(docId);
-      const snap = await transaction.get(docRef);
+    return await withIdentityQuotaLock(identity.key, timeoutMs, (effectiveTimeoutMs) =>
+      runFirestoreTransactionWithTimeout(
+        db,
+        async (transaction: any) => {
+          const docRef = db.collection('uploadQuotas').doc(docId);
+          const snap = await transaction.get(docRef);
 
-      return computeCurrentDayStatusFromSnapshot(snap, nowMs, resetAt, utcDay);
-    });
+          return computeCurrentDayStatusFromSnapshot(snap, nowMs, resetAt, utcDay);
+        },
+        effectiveTimeoutMs,
+        'getQuotaStatus'
+      )
+    );
   } catch (txErr: any) {
     if (!txErr?.diagnosticStage) {
       txErr.diagnosticStage = 'firestore_transaction';
@@ -1462,6 +1765,17 @@ export function attachQuotaHeaders(
  * Testing utility: Clears quota records in Firestore and on disk.
  */
 export async function resetQuotaForTesting(identityKey?: string): Promise<void> {
+  if (!identityKey) {
+    customLockTimeoutMsForTesting = null;
+    clearAllQuotaLocksForTesting();
+  } else {
+    const entry = activeIdentityLocks.get(identityKey);
+    if (entry) {
+      activeIdentityLocks.delete(identityKey);
+      entry.resolveRelease();
+    }
+  }
+
   // Clear simulated in-memory Firestore records
   if (identityKey) {
     for (const key of Array.from(sharedInMemoryFirestoreStore.keys())) {

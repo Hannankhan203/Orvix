@@ -11,6 +11,10 @@ import {
 } from '../services/authService.js';
 import { getCachedUserProfile } from '../services/userProfileService.js';
 import { isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
+import {
+  readMigratedStorageItem,
+  removeMigratedStorageItem
+} from '../utils/legacyStorageMigration.js';
 
 const AuthContext = createContext(null);
 
@@ -18,9 +22,9 @@ function readStoredGuestSession() {
   try {
     const raw =
       (typeof sessionStorage !== 'undefined' &&
-        (sessionStorage.getItem('orvix_guest_session') ||
-          sessionStorage.getItem('chatora_guest_session'))) ||
-      (typeof localStorage !== 'undefined' && localStorage.getItem('orvix_guest_session')) ||
+        readMigratedStorageItem(sessionStorage, 'orvix_guest_session')) ||
+      (typeof localStorage !== 'undefined' &&
+        readMigratedStorageItem(localStorage, 'orvix_guest_session')) ||
       null;
     if (!raw) return null;
     const parsed = JSON.parse(raw);
@@ -50,13 +54,12 @@ function writeStoredGuestSession(guestUser) {
 function clearStoredGuestSession() {
   try {
     if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem('orvix_guest_session');
-      sessionStorage.removeItem('chatora_guest_session');
+      removeMigratedStorageItem(sessionStorage, 'orvix_guest_session');
     }
   } catch (_) {}
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem('orvix_guest_session');
+      removeMigratedStorageItem(localStorage, 'orvix_guest_session');
     }
   } catch (_) {}
 }

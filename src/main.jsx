@@ -4,7 +4,9 @@ import App from './App.jsx';
 import './index.css';
 import { initServiceWorker } from './services/serviceWorkerManager.js';
 import { initFrontendSentry, SentryErrorBoundary } from './services/sentryService.js';
+import { migrateLegacyStorage } from './utils/legacyStorageMigration.js';
 
+migrateLegacyStorage();
 initFrontendSentry();
 initServiceWorker();
 

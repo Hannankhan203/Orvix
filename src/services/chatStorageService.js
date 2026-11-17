@@ -46,6 +46,7 @@ import {
   ensureConversationAlternatives,
   orderConversationMessages
 } from './alternativeResponseService.js';
+import { readMigratedStorageItem } from '../utils/legacyStorageMigration.js';
 import {
   deleteAttachmentsForConversation,
   deleteAttachmentRecords,
@@ -2666,7 +2667,10 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
   // If cached was empty but guest chats exist, check guest chats in localStorage
   if (allMessages.length === 0 && (userId === 'guest' || typeof window !== 'undefined')) {
     try {
-      const guestRaw = localStorage.getItem('orvix_guest_chats') || localStorage.getItem('chatora_guest_chats');
+      const guestRaw =
+        typeof localStorage !== 'undefined'
+          ? readMigratedStorageItem(localStorage, 'orvix_guest_chats')
+          : null;
       if (guestRaw) {
         const guestChats = JSON.parse(guestRaw);
         if (Array.isArray(guestChats)) {

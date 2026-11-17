@@ -45,6 +45,10 @@ import { getAuthHeaders } from '../services/authService.js';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { useSpeech } from '../context/SpeechContext.jsx';
 import {
+  readMigratedStorageItem,
+  removeMigratedStorageItem
+} from '../utils/legacyStorageMigration.js';
+import {
   saveAttachmentBlob,
   hydrateAttachmentsWithImageBytes,
   sanitizeAttachmentForNetwork,
@@ -192,11 +196,7 @@ export default function ChatPage({
       return null;
     }
     if (typeof window !== 'undefined') {
-      return (
-        sessionStorage.getItem('orvix_active_chat') ||
-        sessionStorage.getItem('chatora_active_chat') ||
-        null
-      );
+      return readMigratedStorageItem(sessionStorage, 'orvix_active_chat');
     }
     return null;
   });
@@ -221,16 +221,14 @@ export default function ChatPage({
   const [selectedProvider, setSelectedProvider] = useState(() => {
     if (typeof window !== 'undefined') {
       const isGuestStored = Boolean(
-        sessionStorage.getItem('orvix_guest_session') ||
-        sessionStorage.getItem('chatora_guest_session') ||
-        localStorage.getItem('orvix_guest_session')
+        readMigratedStorageItem(sessionStorage, 'orvix_guest_session') ||
+        readMigratedStorageItem(localStorage, 'orvix_guest_session')
       );
       if (isGuestStored) {
         return 'webllm';
       }
       const saved =
-        localStorage.getItem('orvix_selected_provider') ||
-        localStorage.getItem('chatora_selected_provider') ||
+        readMigratedStorageItem(localStorage, 'orvix_selected_provider') ||
         DEFAULT_PROVIDER;
       const normalized = normalizeProviderId(saved);
       if (saved && saved !== normalized) {
@@ -691,9 +689,7 @@ export default function ChatPage({
   const getGuestPinnedIds = () => {
     try {
       if (typeof window !== 'undefined') {
-        const stored =
-          localStorage.getItem('orvix_guest_pins') ||
-          localStorage.getItem('chatora_guest_pins');
+        const stored = readMigratedStorageItem(localStorage, 'orvix_guest_pins');
 
         return stored ? JSON.parse(stored) : [];
       }
@@ -720,9 +716,7 @@ export default function ChatPage({
   const getGuestChats = () => {
     try {
       if (typeof window !== 'undefined') {
-        const stored =
-          localStorage.getItem('orvix_guest_chats') ||
-          localStorage.getItem('chatora_guest_chats');
+        const stored = readMigratedStorageItem(localStorage, 'orvix_guest_chats');
 
         if (stored) {
           const parsed = JSON.parse(stored);
@@ -902,8 +896,7 @@ export default function ChatPage({
       setMessages([]);
       setMessagesLoading(false);
       setActiveMode(settings?.defaultMode || 'general');
-      sessionStorage.removeItem('orvix_active_chat');
-      sessionStorage.removeItem('chatora_active_chat');
+      removeMigratedStorageItem(sessionStorage, 'orvix_active_chat');
       return undefined;
     }
 
@@ -1137,8 +1130,7 @@ export default function ChatPage({
     setShareErrorNotice(null);
     setActiveMode(settings?.defaultMode || 'general');
 
-    sessionStorage.removeItem('orvix_active_chat');
-    sessionStorage.removeItem('chatora_active_chat');
+    removeMigratedStorageItem(sessionStorage, 'orvix_active_chat');
   };
 
   // Switch conversations without allowing old history or active streams to overwrite new messages.
