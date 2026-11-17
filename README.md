@@ -91,6 +91,7 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
 23. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
     - [Troubleshooting Gemini Timeouts & Streaming](#troubleshooting-gemini-timeouts--streaming)
 24. [Security Architecture](#security-architecture)
+    - [Open Security Advisory](#open-security-advisory)
 25. [Verification & Security Coverage](#verification--security-coverage)
 26. [Current Limitations](#current-limitations)
 27. [Security, Performance & Architecture Improvements (v0.3.2)](#security-performance--architecture-improvements-v032)
@@ -912,6 +913,24 @@ Configured via `vercel.json` with handlers in `api/`:
 6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 900 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
 7. **Envelope Integrity & Signed Download URLs**: `orvix-gzip-v1` payloads enforce CRC-32, SHA-256, extension/MIME parity, and bounded decompression caps (25 MB). Attachment retrieval URLs (`/api/upload/:id/file`) are HMAC-SHA256 signed (`ORVIX_SIGNED_URL_SECRET`, failing closed in production when missing or weak) and enforce Firebase user ownership checks.
 
+### Open Security Advisory
+
+The project currently tracks one open transitive dependency advisory identified by `bun audit`:
+
+| Field | Details |
+| :--- | :--- |
+| **Package** | `picomatch@4.0.7` |
+| **Advisory** | `GHSA-fc5q-39xc-vjpf` |
+| **CVE** | `CVE-2026-112366` |
+| **Severity** | High (CVSS 7.5 — Regular Expression Denial of Service via single-branch repeated extglobs) |
+| **Vulnerable range** | `<=4.0.7` |
+| **First patched version** | Not yet published |
+| **Dependency paths** | Vite (`vite > tinyglobby > fdir > picomatch`) and `vite-plugin-pwa` (`vite-plugin-pwa > tinyglobby > fdir > picomatch`) build toolchains |
+| **Status** | **Open — Blocked upstream, not resolved.** |
+
+- **Usage & Risk Context**: `picomatch` is currently used in Vite and `vite-plugin-pwa` build/development tooling rather than Express runtime request handlers. That limits exposure during normal runtime request handling, though build tooling remains exposed to ReDoS if malicious/untrusted extglob patterns are evaluated and dependency audit status is not clean while this advisory remains open.
+- **Remediation Condition**: Update to a verified upstream patched release of `picomatch` (or updated parent build packages pulling the patched release) once published, regenerate `bun.lock`, and confirm `bun audit` reports no remaining advisory.
+
 ---
 
 ## Verification & Security Coverage
@@ -1065,7 +1084,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Orphan Prevention & Automated Cleanup**: Enforced `conversationId` validation on uploads, added binary magic-number verification on direct upload completion, preserved 2-hour TTL expiry cleanup (`supabaseAttachmentCleanupService.ts`), and integrated durable attachment cleanup queues for conversation deletion and edit/resend branch truncation.
 
 ### V 0.3.2 — Security, Performance & Architecture Improvements
-- **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered complete remediation for all reported security, performance, storage, and architectural findings.
+- **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered remediation for those nine v0.3.2 application security, performance, storage, and architectural findings (separate from any later open transitive dependency advisories tracked under [Open Security Advisory](#open-security-advisory)).
 - **Server-Side Credential Isolation (ORVIX-001)**: Prevented accidental client-bundle credential leakage by enforcing server-only API key resolution and rejecting `VITE_`-prefixed backend secrets.
 - **Serverless In-Memory Upload Processing (ORVIX-002)**: Replaced disk-backed file storage with in-memory Multer processing and clear documentation of ephemeral storage boundaries.
 - **Strict CORS Domain Whitelisting (ORVIX-003)**: Hardened cross-origin request policies, eliminating wildcard access on credentialed and sensitive API routes.
