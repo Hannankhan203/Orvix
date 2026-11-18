@@ -2497,8 +2497,12 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
     lower.includes('allocation failed') ||
     lower.includes('oom')
   ) {
-    return new WebLLMError(
-      `Your device ran out of GPU memory or lost the WebGPU device while running ${label}. Try closing other GPU-heavy browser tabs or selecting a smaller model (such as SmolLM2 360M or 135M) and retry.`,
+    const isSmallerModel = modelId === SMOLLM2_135M_WEBLLM_MODEL_ID || modelId === SMOLLM2_360M_WEBLLM_MODEL_ID;
+    const fallbackModel = isSmallerModel ? null : SMOLLM2_360M_WEBLLM_MODEL_ID;
+    const fallbackLabel = isSmallerModel ? 'SmolLM2 135M' : 'SmolLM2 360M';
+
+    const err = new WebLLMError(
+      `Your device ran out of GPU memory (VRAM) or lost the WebGPU device while loading or running ${label}. Try closing other GPU-heavy browser tabs or applications, switch to a lighter model (${fallbackLabel}), or switch to an online cloud provider (Gemini or Groq).`,
       {
         code: WEBLLM_ERROR_CODES.DEVICE_LOST,
         httpCode: 507,
@@ -2506,6 +2510,10 @@ export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID
         cause: rawErr
       }
     );
+    err.canFallback = true;
+    err.suggestedFallbackModelId = fallbackModel;
+    err.suggestedProvider = 'gemini';
+    return err;
   }
 
   if (lower.includes('quotaexceedederror') || lower.includes('quota') || lower.includes('storage')) {

@@ -5,6 +5,8 @@ import {
   checkWebGPUSupport,
   evaluateWebGPUWarmupSuitability,
   DEFAULT_WEBLLM_MODEL_ID,
+  SMOLLM2_360M_WEBLLM_MODEL_ID,
+  normalizeWebLLMError,
   ensureWebLLMEngine,
   destroyWebLLMEngine,
   streamWebLLMMessage,
@@ -462,3 +464,17 @@ test('WebLLM attachment regression: carry-forward document context across multi-
     env.cleanup();
   }
 });
+
+test('MED-01 WebLLM model download and loading reliability: OOM and VRAM constraint errors provide granular retry guidance and fallback model suggestions', () => {
+  const oomErr = new Error('GPUOutOfMemoryError: WebGPU maxStorageBufferBindingSize exceeded');
+  const normalized = normalizeWebLLMError(oomErr, { modelId: DEFAULT_WEBLLM_MODEL_ID, phase: 'init' });
+
+  assert.equal(normalized.status, 'WEBLLM_DEVICE_LOST');
+  assert.equal(normalized.retryable, true);
+  assert.equal(normalized.canFallback, true);
+  assert.equal(normalized.suggestedFallbackModelId, SMOLLM2_360M_WEBLLM_MODEL_ID);
+  assert.equal(normalized.suggestedProvider, 'gemini');
+  assert.match(normalized.message, /device ran out of GPU memory/i);
+  assert.match(normalized.message, /SmolLM2 360M/i);
+});
+
