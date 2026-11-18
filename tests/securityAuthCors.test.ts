@@ -284,7 +284,29 @@ test('ORVIX-CRIT-03 /api/chat: rejects unauthenticated, malformed, expired, and 
   const prevDemo = process.env.ORVIX_ENABLE_DEMO_MODE;
   const prevGemini = process.env.GEMINI_API_KEY;
   process.env.ORVIX_ENABLE_DEMO_MODE = 'true'; // Even with demo mode enabled, unauthenticated users must be blocked
-  delete process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'AIzaSyTestKeyForGemini1234567890';
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const urlStr = typeof input === 'string' ? input : input?.url || '';
+    if (urlStr.includes('generativelanguage.googleapis.com')) {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: 'Authenticated Gemini chat response succeeded.' }],
+                role: 'model'
+              },
+              finishReason: 'STOP'
+            }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return origFetch(input, init);
+  }) as typeof fetch;
 
   try {
     const payload = JSON.stringify({ provider: 'gemini', prompt: 'Hello from attacker', stream: false });
@@ -351,8 +373,9 @@ test('ORVIX-CRIT-03 /api/chat: rejects unauthenticated, malformed, expired, and 
     assert.equal(resValid.status, 200);
     const validJson: any = await resValid.json();
     assert.equal(validJson.provider, 'gemini');
-    assert.ok(typeof validJson.text === 'string' && validJson.text.length > 0);
+    assert.match(validJson.text, /Authenticated Gemini chat response succeeded/);
   } finally {
+    globalThis.fetch = origFetch;
     if (prevDemo !== undefined) process.env.ORVIX_ENABLE_DEMO_MODE = prevDemo;
     else delete process.env.ORVIX_ENABLE_DEMO_MODE;
     if (prevGemini !== undefined) process.env.GEMINI_API_KEY = prevGemini;
