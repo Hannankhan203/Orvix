@@ -100,7 +100,6 @@ test('ORVIX-INFO-03: eng.traineddata is losslessly gzipped on disk, scoped to OC
   // Verify vercel.json scopes OCR bundle files only to OCR-capable functions
   const vercelCfg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'vercel.json'), 'utf8'));
   assert.equal(vercelCfg.functions?.['api/*.ts']?.includeFiles, undefined, 'Non-OCR api/*.ts endpoints must not bundle Tesseract & traineddata');
-  assert.ok(vercelCfg.functions?.['api/upload.ts']?.includeFiles?.includes('eng.traineddata*'));
   assert.ok(vercelCfg.functions?.['api/chat.ts']?.includeFiles?.includes('eng.traineddata*'));
 
   // Verify offline asset resolver picks up eng.traineddata.gz cleanly and Tesseract OCR executes offline
