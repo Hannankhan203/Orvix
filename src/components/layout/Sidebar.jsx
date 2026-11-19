@@ -9,11 +9,21 @@ import { useSettings } from '../../context/SettingsContext.jsx';
 import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 
 /**
+ * @typedef {Object} SidebarChatSummary
+ * @property {string} id
+ * @property {string} [title]
+ * @property {boolean} [isPinned]
+ * @property {string} [mode]
+ * @property {string | number | null} [updatedAt]
+ * @property {number | null} [rawUpdatedAt]
+ */
+
+/**
  * @param {Object} props
  * @param {boolean} props.isOpen
  * @param {() => void} props.onClose
  * @param {() => void} props.onNewChat
- * @param {any[]} [props.recentChats=[]]
+ * @param {SidebarChatSummary[]} [props.recentChats=[]]
  * @param {string|null} [props.activeChatId=null]
  * @param {(chatId: string) => void} [props.onSelectChat]
  * @param {(chatId: string, newTitle: string) => Promise<void>} [props.onRenameChat]
@@ -310,4 +320,3 @@ export default function Sidebar({
     </aside>
   );
 }
-w

@@ -304,7 +304,7 @@ export function createRequestIsolationController() {
 
     /**
      * Cancels and detaches the currently active request (if any) with an explicit reason.
-     * @param {'stopped' | 'superseded' | 'provider_switched' | 'conversation_switched' | 'unmounted'} [reason='stopped']
+     * @param {'stopped' | 'superseded' | 'provider_switched' | 'model_switched' | 'conversation_switched' | 'auth_logged_out' | 'unmounted'} [reason='stopped']
      */
     cancelActiveRequest(reason = 'stopped') {
       if (!activeEntry) return null;
@@ -348,7 +348,7 @@ export function createRequestIsolationController() {
  * polluting any newly selected conversation), and resets loading state if idle.
  *
  * @param {ReturnType<typeof createRequestIsolationController>} controller
- * @param {'stopped' | 'superseded' | 'provider_switched' | 'conversation_switched' | 'unmounted'} reason
+ * @param {'stopped' | 'superseded' | 'provider_switched' | 'model_switched' | 'conversation_switched' | 'auth_logged_out' | 'unmounted'} reason
  * @param {Object} callbacks
  * @param {() => string | null} callbacks.getActiveChatId
  * @param {(updater: (prev: any[]) => any[]) => void} callbacks.onUpdateMessages

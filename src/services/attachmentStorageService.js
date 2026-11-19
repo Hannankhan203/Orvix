@@ -47,6 +47,7 @@ const DB_NAME = 'orvix_attachments_db';
 const DB_VERSION = 1;
 const STORE_NAME = 'attachments';
 
+/** @type {Promise<IDBDatabase|null>|null} */
 let dbPromise = null;
 
 const IDB_BLOCKED_TIMEOUT_MS = 2500;
@@ -71,9 +72,11 @@ function getDB() {
 
   if (dbPromise) return dbPromise;
 
+  /** @type {Promise<IDBDatabase|null>|null} */
   let currentPromise = null;
   currentPromise = new Promise((resolve) => {
     let settled = false;
+    /** @type {ReturnType<typeof setTimeout> | null} */
     let blockedTimer = null;
 
     const clearBlockedTimer = () => {
@@ -83,6 +86,9 @@ function getDB() {
       }
     };
 
+    /**
+     * @param {unknown} reason
+     */
     const failOpen = (reason) => {
       if (settled) return;
       settled = true;
@@ -99,8 +105,9 @@ function getDB() {
     try {
       const request = idb.open(DB_NAME, DB_VERSION);
 
-      request.onupgradeneeded = (event) => {
-        const db = event.target.result;
+      request.onupgradeneeded = (/** @type {IDBVersionChangeEvent} */ event) => {
+        const target = /** @type {IDBOpenDBRequest | null} */ (event?.target ?? null);
+        const db = target?.result || request.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
           store.createIndex('conversationId', 'conversationId', { unique: false });
@@ -115,8 +122,9 @@ function getDB() {
         }, IDB_BLOCKED_TIMEOUT_MS);
       };
 
-      request.onsuccess = (event) => {
-        const db = event.target.result;
+      request.onsuccess = (/** @type {Event} */ event) => {
+        const target = /** @type {IDBOpenDBRequest | null} */ (event?.target ?? null);
+        const db = target?.result || request.result;
         clearBlockedTimer();
         if (settled) {
           try {
@@ -155,9 +163,43 @@ function getDB() {
   return dbPromise;
 }
 
+/** @type {DOMException | Error | null} */
 let lastStorageError = null;
+/** @type {Set<(err: unknown) => void>} */
 const quotaListeners = new Set();
 let isQuotaExhaustedState = false;
+
+/**
+ * Normalizes an unknown error into a DOMException or Error instance for storage diagnostics.
+ * @param {unknown} err
+ * @returns {DOMException | Error | null}
+ */
+function normalizeStorageError(err) {
+  if (!err) return null;
+  if (err instanceof Error) return err;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException) return err;
+  if (typeof err === 'object') {
+    const obj = /** @type {{ message?: unknown, name?: unknown }} */ (err);
+    const wrapped = new Error(typeof obj.message === 'string' ? obj.message : String(err));
+    if (typeof obj.name === 'string' && obj.name) {
+      wrapped.name = obj.name;
+    }
+    return wrapped;
+  }
+  return new Error(String(err));
+}
+
+/**
+ * Converts a Uint8Array view into an ArrayBuffer-backed Uint8Array compatible with `BlobPart`.
+ * @param {Uint8Array} bytes
+ * @returns {Uint8Array<ArrayBuffer>}
+ */
+function toStorageBlobPart(bytes) {
+  if (bytes.buffer instanceof ArrayBuffer) {
+    return /** @type {Uint8Array<ArrayBuffer>} */ (bytes);
+  }
+  return new Uint8Array(bytes);
+}
 
 /**
  * Returns whether browser IndexedDB storage quota is currently exhausted.
@@ -169,7 +211,7 @@ export function isStorageQuotaExhausted() {
 
 /**
  * Subscribes to IndexedDB storage quota exhaustion events.
- * @param {(err: any) => void} callback
+ * @param {(err: unknown) => void} callback
  * @returns {() => void} Unsubscribe function
  */
 export function subscribeStorageQuotaExceeded(callback) {
@@ -180,7 +222,7 @@ export function subscribeStorageQuotaExceeded(callback) {
 
 /**
  * Notifies all subscribers that browser storage quota has been exhausted.
- * @param {any} err
+ * @param {unknown} err
  */
 export function notifyStorageQuotaExceeded(err) {
   isQuotaExhaustedState = true;
@@ -225,15 +267,21 @@ export function resetAttachmentDBForTesting() {
 /**
  * Identifies whether an error represents a browser storage quota exhaustion.
  * Distinguishes QuotaExceededError from other IndexedDB or DOM exceptions.
- * @param {any} err
+ * @param {unknown} err
  * @returns {boolean}
  */
 export function isQuotaExceededError(err) {
   if (!err) return false;
-  const candidate = err.target?.error || err.error || err.cause || err;
-  const name = candidate.name || err.name || '';
-  const code = candidate.code || err.code;
-  const message = String(candidate.message || err.message || candidate || err || '').toLowerCase();
+  const errObj = /** @type {{ target?: { error?: unknown }, error?: unknown, cause?: unknown, name?: unknown, code?: unknown, message?: unknown } | null} */ (
+    typeof err === 'object' ? err : null
+  );
+  const rawCandidate = errObj?.target?.error || errObj?.error || errObj?.cause || err;
+  const candidate = /** @type {{ name?: unknown, code?: unknown, message?: unknown } | null} */ (
+    rawCandidate && typeof rawCandidate === 'object' ? rawCandidate : null
+  );
+  const name = String(candidate?.name || errObj?.name || '');
+  const code = candidate?.code ?? errObj?.code;
+  const message = String(candidate?.message || errObj?.message || rawCandidate || err || '').toLowerCase();
 
   return (
     name === 'QuotaExceededError' ||
@@ -265,8 +313,9 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
 
     return new Promise((resolve) => {
       let resolved = false;
+      /** @type {ReturnType<typeof setTimeout> | null} */
       let fallbackTimer = null;
-      const finish = (success, err = null) => {
+      const finish = (/** @type {boolean} */ success, /** @type {unknown} */ err = null) => {
         if (resolved) return;
         resolved = true;
         if (fallbackTimer) {
@@ -278,7 +327,7 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
           resetStorageQuotaState();
           resolve(true);
         } else {
-          lastStorageError = err || lastStorageError;
+          lastStorageError = normalizeStorageError(err) || lastStorageError;
           if (isQuotaExceededError(lastStorageError)) {
             notifyStorageQuotaExceeded(lastStorageError);
             console.warn(
@@ -292,10 +341,11 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
       };
 
       try {
+        /** @type {IDBTransaction} */
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const hasNativeLifecycle =
-          'oncomplete' in transaction ||
-          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction) ||
+          'oncomplete' in /** @type {object} */ (transaction);
         const store = transaction.objectStore(STORE_NAME);
         const currentAuthUserId = getAuthUserId();
         const recordUserId =
@@ -307,10 +357,12 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
           metadata.storageProvider ||
           (metadata.isCloud ? 'supabase' : (recordUserId ? 'supabase' : 'local'));
 
+        const blobFileName =
+          'name' in fileOrBlob && typeof fileOrBlob.name === 'string' ? fileOrBlob.name : '';
         const record = {
           id,
-          name: metadata.name || metadata.originalName || fileOrBlob.name || 'document',
-          originalName: metadata.originalName || metadata.name || fileOrBlob.name || 'document',
+          name: metadata.name || metadata.originalName || blobFileName || 'document',
+          originalName: metadata.originalName || metadata.name || blobFileName || 'document',
           size: metadata.size || fileOrBlob.size || 0,
           formattedSize: metadata.formattedSize || '',
           type: metadata.type || metadata.mimeType || fileOrBlob.type || 'application/octet-stream',
@@ -336,10 +388,11 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
           }
         };
 
-        putRequest.onerror = (event) => {
+        putRequest.onerror = (/** @type {Event} */ event) => {
           requestSucceeded = false;
           event?.preventDefault?.();
-          const domErr = putRequest.error || event?.target?.error || event;
+          const target = /** @type {IDBRequest | null} */ (event?.target ?? null);
+          const domErr = putRequest.error || target?.error || event;
           finish(false, domErr);
         };
 
@@ -347,27 +400,32 @@ export async function saveAttachmentBlob(id, fileOrBlob, metadata = {}) {
           finish(true);
         };
 
-        transaction.onerror = (event) => {
+        transaction.onerror = (/** @type {Event} */ event) => {
           requestSucceeded = false;
           event?.preventDefault?.();
-          const domErr = transaction.error || putRequest.error || event?.target?.error || event;
+          const target = /** @type {IDBTransaction | IDBRequest | null} */ (event?.target ?? null);
+          const domErr = transaction.error || putRequest.error || target?.error || event;
           finish(false, domErr);
         };
 
-        transaction.onabort = (event) => {
+        transaction.onabort = (/** @type {Event} */ event) => {
           requestSucceeded = false;
-          const domErr = transaction.error || putRequest.error || event?.target?.error;
+          const target = /** @type {IDBTransaction | IDBRequest | null} */ (event?.target ?? null);
+          const domErr = transaction.error || putRequest.error || target?.error;
           finish(false, domErr);
         };
       } catch (syncErr) {
-        if (syncErr?.name === 'InvalidStateError') {
+        const syncErrObj = /** @type {{ name?: unknown } | null} */ (
+          syncErr && typeof syncErr === 'object' ? syncErr : null
+        );
+        if (syncErrObj?.name === 'InvalidStateError') {
           dbPromise = null;
         }
         finish(false, syncErr);
       }
     });
   } catch (err) {
-    lastStorageError = err;
+    lastStorageError = normalizeStorageError(err);
     if (isQuotaExceededError(err)) {
       notifyStorageQuotaExceeded(err);
       console.warn(
@@ -393,8 +451,9 @@ export async function deleteAttachmentRecord(id) {
     if (!db) return false;
     return new Promise((resolve) => {
       let resolved = false;
+      /** @type {ReturnType<typeof setTimeout> | null} */
       let fallbackTimer = null;
-      const finish = (val) => {
+      const finish = (/** @type {boolean} */ val) => {
         if (!resolved) {
           resolved = true;
           if (fallbackTimer) {
@@ -405,10 +464,11 @@ export async function deleteAttachmentRecord(id) {
         }
       };
       try {
+        /** @type {IDBTransaction} */
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const hasNativeLifecycle =
-          'oncomplete' in transaction ||
-          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction) ||
+          'oncomplete' in /** @type {object} */ (transaction);
         const store = transaction.objectStore(STORE_NAME);
         const req = store.delete(id);
         req.onsuccess = () => {
@@ -421,7 +481,10 @@ export async function deleteAttachmentRecord(id) {
         transaction.onerror = () => finish(false);
         transaction.onabort = () => finish(false);
       } catch (err) {
-        if (err?.name === 'InvalidStateError') {
+        const errObj = /** @type {{ name?: unknown } | null} */ (
+          err && typeof err === 'object' ? err : null
+        );
+        if (errObj?.name === 'InvalidStateError') {
           dbPromise = null;
         }
         finish(false);
@@ -449,8 +512,9 @@ export async function deleteAttachmentRecords(ids = []) {
 
     return new Promise((resolve) => {
       let resolved = false;
+      /** @type {ReturnType<typeof setTimeout> | null} */
       let fallbackTimer = null;
-      const finish = (count) => {
+      const finish = (/** @type {number} */ count) => {
         if (!resolved) {
           resolved = true;
           if (fallbackTimer) {
@@ -462,10 +526,11 @@ export async function deleteAttachmentRecords(ids = []) {
       };
 
       try {
+        /** @type {IDBTransaction} */
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const hasNativeLifecycle =
-          'oncomplete' in transaction ||
-          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction) ||
+          'oncomplete' in /** @type {object} */ (transaction);
         const store = transaction.objectStore(STORE_NAME);
         let deletedCount = 0;
         let completedOps = 0;
@@ -504,7 +569,10 @@ export async function deleteAttachmentRecords(ids = []) {
           fallbackTimer = setTimeout(() => finish(deletedCount), 25);
         }
       } catch (err) {
-        if (err?.name === 'InvalidStateError') {
+        const errObj = /** @type {{ name?: unknown } | null} */ (
+          err && typeof err === 'object' ? err : null
+        );
+        if (errObj?.name === 'InvalidStateError') {
           dbPromise = null;
         }
         finish(0);
@@ -531,8 +599,9 @@ export async function deleteAttachmentsForConversation(conversationId) {
 
     return new Promise((resolve) => {
       let resolved = false;
+      /** @type {ReturnType<typeof setTimeout> | null} */
       let fallbackTimer = null;
-      const finish = (count) => {
+      const finish = (/** @type {number} */ count) => {
         if (!resolved) {
           resolved = true;
           if (fallbackTimer) {
@@ -544,10 +613,11 @@ export async function deleteAttachmentsForConversation(conversationId) {
       };
 
       try {
+        /** @type {IDBTransaction} */
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const hasNativeLifecycle =
-          'oncomplete' in transaction ||
-          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction);
+          (typeof IDBTransaction !== 'undefined' && transaction instanceof IDBTransaction) ||
+          'oncomplete' in /** @type {object} */ (transaction);
         const store = transaction.objectStore(STORE_NAME);
         let deletedCount = 0;
 
@@ -561,8 +631,9 @@ export async function deleteAttachmentsForConversation(conversationId) {
                 ? index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(conversationId) : undefined)
                 : null;
               if (cursorReq) {
-                cursorReq.onsuccess = (event) => {
-                  const cursor = event?.target?.result;
+                cursorReq.onsuccess = (/** @type {Event} */ event) => {
+                  const target = /** @type {IDBRequest<IDBCursorWithValue | null> | null} */ (event?.target ?? null);
+                  const cursor = target?.result || cursorReq.result;
                   if (cursor) {
                     if (cursor.value?.conversationId === conversationId || cursor.key === conversationId) {
                       try {
@@ -589,8 +660,9 @@ export async function deleteAttachmentsForConversation(conversationId) {
           if (typeof store.openCursor === 'function') {
             const cursorReq = store.openCursor();
             if (cursorReq) {
-              cursorReq.onsuccess = (event) => {
-                const cursor = event?.target?.result;
+              cursorReq.onsuccess = (/** @type {Event} */ event) => {
+                const target = /** @type {IDBRequest<IDBCursorWithValue | null> | null} */ (event?.target ?? null);
+                const cursor = target?.result || cursorReq.result;
                 if (cursor) {
                   if (cursor.value?.conversationId === conversationId) {
                     try {
@@ -612,8 +684,11 @@ export async function deleteAttachmentsForConversation(conversationId) {
           } else if (typeof store.getAll === 'function') {
             const getReq = store.getAll();
             if (getReq) {
-              getReq.onsuccess = (event) => {
-                const items = event?.target?.result || [];
+              getReq.onsuccess = (/** @type {Event} */ event) => {
+                const target = /** @type {IDBRequest<Array<{ id?: string, conversationId?: string | null }>> | null} */ (
+                  event?.target ?? null
+                );
+                const items = target?.result || getReq.result || [];
                 for (const item of items) {
                   if (item?.conversationId === conversationId && item?.id) {
                     try {
@@ -639,7 +714,10 @@ export async function deleteAttachmentsForConversation(conversationId) {
           fallbackTimer = setTimeout(() => finish(deletedCount), 15);
         }
       } catch (err) {
-        if (err?.name === 'InvalidStateError') {
+        const errObj = /** @type {{ name?: unknown } | null} */ (
+          err && typeof err === 'object' ? err : null
+        );
+        if (errObj?.name === 'InvalidStateError') {
           dbPromise = null;
         }
         finish(0);
@@ -665,8 +743,9 @@ export async function updateAttachmentConversationId(attachmentId, conversationI
 
     return new Promise((resolve) => {
       let resolved = false;
+      /** @type {any} */
       let fallbackTimer = null;
-      const finish = (val) => {
+      const finish = (/** @type {boolean} */ val) => {
         if (!resolved) {
           resolved = true;
           if (fallbackTimer) {
@@ -678,6 +757,7 @@ export async function updateAttachmentConversationId(attachmentId, conversationI
       };
 
       try {
+        /** @type {any} */
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const hasNativeLifecycle =
           'oncomplete' in transaction ||
@@ -705,7 +785,7 @@ export async function updateAttachmentConversationId(attachmentId, conversationI
         transaction.oncomplete = () => finish(true);
         transaction.onerror = () => finish(false);
         transaction.onabort = () => finish(false);
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           dbPromise = null;
         }
@@ -731,7 +811,7 @@ export async function getAttachmentRecord(id) {
 
     return new Promise((resolve) => {
       let settled = false;
-      const finish = (val) => {
+      const finish = (/** @type {any} */ val) => {
         if (!settled) {
           settled = true;
           resolve(val);
@@ -753,7 +833,7 @@ export async function getAttachmentRecord(id) {
 
         transaction.onerror = () => finish(null);
         transaction.onabort = () => finish(null);
-      } catch (txErr) {
+      } catch (/** @type {any} */ txErr) {
         if (txErr?.name === 'InvalidStateError') {
           dbPromise = null;
         }
@@ -871,6 +951,7 @@ export const SUPPORTED_VISION_IMAGE_MIMES = new Set([
   'image/heif'
 ]);
 
+/** @type {Record<string, string>} */
 const RASTER_MIME_ALIASES = {
   'image/jpg': 'image/jpeg',
   'image/pjpeg': 'image/jpeg',
@@ -883,6 +964,7 @@ const RASTER_MIME_ALIASES = {
   'image/heif-sequence': 'image/heif'
 };
 
+/** @type {Record<string, string>} */
 const SUPPORTED_RASTER_EXT_TO_MIME = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
@@ -910,6 +992,10 @@ const UNSUPPORTED_IMAGE_EXTENSIONS = new Set([
 ]);
 
 export class ImagePayloadLimitError extends Error {
+  /**
+   * @param {string} message
+   * @param {any} [details={}]
+   */
   constructor(message, details = {}) {
     super(message);
     this.name = 'ImagePayloadLimitError';
@@ -923,6 +1009,10 @@ export class ImagePayloadLimitError extends Error {
 }
 
 export class ImagePayloadValidationError extends Error {
+  /**
+   * @param {string} message
+   * @param {any} [details={}]
+   */
   constructor(message, details = {}) {
     super(message);
     this.name = 'ImagePayloadValidationError';
@@ -935,10 +1025,16 @@ export class ImagePayloadValidationError extends Error {
   }
 }
 
+/**
+ * @param {number} bytes
+ */
 function formatMegabytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * @param {any} str
+ */
 function utf8ByteLength(str) {
   const s = String(str || '');
   if (typeof Buffer !== 'undefined') {
@@ -950,6 +1046,9 @@ function utf8ByteLength(str) {
   return s.length;
 }
 
+/**
+ * @param {any} rawBase64
+ */
 function base64ToBytes(rawBase64) {
   if (typeof rawBase64 !== 'string' || !rawBase64) return null;
   let normalized = rawBase64.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
@@ -979,6 +1078,9 @@ function base64ToBytes(rawBase64) {
   return null;
 }
 
+/**
+ * @param {any} bytes
+ */
 function bytesToBase64(bytes) {
   if (!bytes || bytes.length === 0) return '';
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -990,13 +1092,16 @@ function bytesToBase64(bytes) {
     const chunkSize = 0x8000;
     for (let i = 0; i < u8.length; i += chunkSize) {
       const sub = u8.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, sub);
+      binary += String.fromCharCode.apply(null, /** @type {any} */ (sub));
     }
     return btoa(binary);
   }
   return '';
 }
 
+/**
+ * @param {any} value
+ */
 function extractCleanExtension(value) {
   if (!value || typeof value !== 'string') return '';
   const trimmed = value.trim().toLowerCase();
@@ -1024,6 +1129,9 @@ export function normalizeSupportedRasterMime(mime) {
   return null;
 }
 
+/**
+ * @param {any} mime
+ */
 function isExplicitlyUnsupportedImageMime(mime) {
   if (!mime || typeof mime !== 'string') return false;
   const clean = mime.split(';')[0].trim().toLowerCase();
@@ -1148,6 +1256,8 @@ export function detectImageMimeFromBytes(bytes) {
  * Resolves a validated supported raster MIME type using actual image bytes first,
  * followed by explicit supported MIME hints and filename/extension hints.
  * Rejects SVG, TIFF, and arbitrary unknown image/* types.
+ * @param {any} [meta={}]
+ * @param {Uint8Array|Buffer|null} [bytes=null]
  */
 export function resolveSupportedImageMime(meta = {}, bytes = null) {
   if (bytes && bytes.length > 0) {
@@ -1205,6 +1315,9 @@ export function resolveSupportedImageMime(meta = {}, bytes = null) {
   return { mimeType: null, unsupportedMime: null };
 }
 
+/**
+ * @param {any} [att={}]
+ */
 function classifyImageCandidate(att = {}) {
   const resolved = resolveSupportedImageMime(att, null);
   if (resolved.unsupportedMime) {
@@ -1223,6 +1336,9 @@ function classifyImageCandidate(att = {}) {
  * Robustly parses either a Data URL (`data:<mime>;...;base64,<payload>`) or raw base64 string,
  * strips any Data URL prefix cleanly without corrupting image bytes, decodes binary bytes,
  * and validates the image MIME type against binary headers and supported raster formats.
+ * @param {any} rawInput
+ * @param {any} [meta={}]
+ * @returns {{ valid: boolean, reason?: string, unsupportedMime?: string, base64?: string, mimeType?: string, byteLength?: number, bytes?: Uint8Array }}
  */
 export function parseEncodedImagePayload(rawInput, meta = {}) {
   if (typeof rawInput !== 'string' || !rawInput.trim()) {
@@ -1307,7 +1423,7 @@ export function parseEncodedImagePayload(rawInput, meta = {}) {
  * is empty, `application/octet-stream`, or inconsistent with actual image bytes.
  * Returns null for empty blobs or unsupported formats (e.g. SVG, TIFF).
  *
- * @param {Blob|File} blob
+ * @param {any} blob
  * @param {string} [mimeType]
  * @returns {Promise<string|null>}
  */
@@ -1354,6 +1470,9 @@ export async function convertBlobToDataUrl(blob, mimeType = '') {
   return null;
 }
 
+/**
+ * @param {any} att
+ */
 function stripTransientFieldsFromAttachment(att) {
   if (!att || typeof att !== 'object') return att;
   const { dataUrl, data, file, blob, ...rest } = att;
@@ -1363,6 +1482,11 @@ function stripTransientFieldsFromAttachment(att) {
   return rest;
 }
 
+/**
+ * @param {any} label
+ * @param {any} actualBytes
+ * @param {any} maxImageBytes
+ */
 function buildOversizedImageError(label, actualBytes, maxImageBytes) {
   return new ImagePayloadLimitError(
     `Image '${label}' (${formatMegabytes(actualBytes)}) exceeds the ${formatMegabytes(maxImageBytes)} per-image limit for AI chat requests. Please resize or compress the image and try again.`,
@@ -1374,6 +1498,11 @@ function buildOversizedImageError(label, actualBytes, maxImageBytes) {
   );
 }
 
+/**
+ * @param {any} imageCount
+ * @param {any} estimatedBytes
+ * @param {any} maxRequestBytes
+ */
 function buildCumulativeBudgetError(imageCount, estimatedBytes, maxRequestBytes) {
   return new ImagePayloadLimitError(
     `The combined payload for ${imageCount} image${imageCount === 1 ? '' : 's'} (${formatMegabytes(estimatedBytes)} encoded with request metadata) exceeds the ${formatMegabytes(maxRequestBytes)} chat request budget. Please use smaller images or start a new conversation.`,
@@ -1395,14 +1524,9 @@ function buildCumulativeBudgetError(imageCount, estimatedBytes, maxRequestBytes)
  *   instead of silently omitting the image.
  * - Does not mutate the caller's attachment objects.
  *
- * @param {Array<Object>} attachments
- * @param {Object} [options={}]
- * @param {string} [options.provider]
- * @param {string|null} [options.model]
- * @param {number} [options.maxImageBytes=MAX_VISION_IMAGE_BYTES]
- * @param {number} [options.maxRequestBytes=MAX_CHAT_REQUEST_BYTES]
- * @param {number} [options.jsonOverheadBytes=JSON_REQUEST_OVERHEAD_RESERVE_BYTES]
- * @returns {Promise<Array<Object>>}
+ * @param {Array<any>} attachments
+ * @param {any} [options={}]
+ * @returns {Promise<Array<any>>}
  */
 export async function hydrateAttachmentsWithImageBytes(attachments, options = {}) {
   if (!Array.isArray(attachments) || attachments.length === 0) {
@@ -1411,7 +1535,7 @@ export async function hydrateAttachmentsWithImageBytes(attachments, options = {}
 
   // Provider-gated hydration: if a target provider is specified and does not consume raw image bytes,
   // skip all File/Blob/IndexedDB reads and return lightweight metadata + OCR/document extraction only.
-  if (options.provider !== undefined && !isVisionCapableProvider(options.provider, options.model)) {
+  if (options.provider !== undefined && !isVisionCapableProvider(options.provider, options.model || undefined)) {
     return attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }));
   }
 
@@ -1464,8 +1588,8 @@ export async function hydrateAttachmentsWithImageBytes(attachments, options = {}
     if (typeof existingEncoded === 'string' && existingEncoded.trim()) {
       const parsed = parseEncodedImagePayload(existingEncoded, att);
       if (parsed.valid) {
-        if (parsed.byteLength > maxImageBytes) {
-          throw buildOversizedImageError(label, parsed.byteLength, maxImageBytes);
+        if ((parsed.byteLength || 0) > maxImageBytes) {
+          throw buildOversizedImageError(label, parsed.byteLength || 0, maxImageBytes);
         }
         resolvedPayload = parsed;
       } else {
@@ -1493,8 +1617,8 @@ export async function hydrateAttachmentsWithImageBytes(attachments, options = {}
             blobType: att.file.type || ''
           });
           if (parsed.valid) {
-            if (parsed.byteLength > maxImageBytes) {
-              throw buildOversizedImageError(label, parsed.byteLength, maxImageBytes);
+            if ((parsed.byteLength || 0) > maxImageBytes) {
+              throw buildOversizedImageError(label, parsed.byteLength || 0, maxImageBytes);
             }
             resolvedPayload = parsed;
           }
@@ -1536,8 +1660,8 @@ export async function hydrateAttachmentsWithImageBytes(attachments, options = {}
               originalName: att.originalName || record?.originalName || ''
             });
             if (parsed.valid) {
-              if (parsed.byteLength > maxImageBytes) {
-                throw buildOversizedImageError(label, parsed.byteLength, maxImageBytes);
+              if ((parsed.byteLength || 0) > maxImageBytes) {
+                throw buildOversizedImageError(label, parsed.byteLength || 0, maxImageBytes);
               }
               resolvedPayload = parsed;
             }
@@ -1618,8 +1742,8 @@ export function sanitizeAttachmentForNetwork(att, options = {}) {
       delete rest.base64;
       return rest;
     }
-    if (parsed.byteLength > maxImageBytes) {
-      throw buildOversizedImageError(label, parsed.byteLength, maxImageBytes);
+    if ((parsed.byteLength || 0) > maxImageBytes) {
+      throw buildOversizedImageError(label, parsed.byteLength || 0, maxImageBytes);
     }
     return {
       ...rest,
@@ -1634,29 +1758,32 @@ export function sanitizeAttachmentForNetwork(att, options = {}) {
   return rest;
 }
 
+/**
+ * @param {any} msg
+ */
 function sanitizeHistoryMessageForNetwork(msg) {
   if (!msg || typeof msg !== 'object') return msg;
   const next = { ...msg };
   if (Array.isArray(next.attachments)) {
-    next.attachments = next.attachments.map((att) => {
+    next.attachments = next.attachments.map((/** @type {any} */ att) => {
       if (!att || typeof att !== 'object') return att;
       const { base64, dataUrl, data, file, blob, previewUrl, ...metaOnly } = att;
       return metaOnly;
     });
   }
   if (Array.isArray(next.referencedAttachments)) {
-    next.referencedAttachments = next.referencedAttachments.map((att) => {
+    next.referencedAttachments = next.referencedAttachments.map((/** @type {any} */ att) => {
       if (!att || typeof att !== 'object') return att;
       const { base64, dataUrl, data, file, blob, previewUrl, ...metaOnly } = att;
       return metaOnly;
     });
   }
   if (Array.isArray(next.alternatives)) {
-    next.alternatives = next.alternatives.map((alt) => {
+    next.alternatives = next.alternatives.map((/** @type {any} */ alt) => {
       if (!alt || typeof alt !== 'object' || !Array.isArray(alt.referencedAttachments)) return alt;
       return {
         ...alt,
-        referencedAttachments: alt.referencedAttachments.map((att) => {
+        referencedAttachments: alt.referencedAttachments.map((/** @type {any} */ att) => {
           if (!att || typeof att !== 'object') return att;
           const { base64, dataUrl, data, file, blob, previewUrl, ...metaOnly } = att;
           return metaOnly;
@@ -1696,7 +1823,7 @@ export function prepareChatRequestBody(payload, options = {}) {
         : true;
 
   const normalizedAttachments = Array.isArray(payload?.attachments)
-    ? payload.attachments.map((att) =>
+    ? payload.attachments.map((/** @type {any} */ att) =>
         sanitizeAttachmentForNetwork(att, { maxImageBytes, includeImageBytes })
       )
     : [];
@@ -1715,7 +1842,7 @@ export function prepareChatRequestBody(payload, options = {}) {
   const totalBytes = utf8ByteLength(jsonBody);
 
   if (totalBytes > maxRequestBytes) {
-    const imageCount = normalizedAttachments.filter((a) => a && a.base64).length;
+    const imageCount = normalizedAttachments.filter((/** @type {any} */ a) => a && a.base64).length;
     throw new ImagePayloadLimitError(
       imageCount > 0
         ? `The complete chat request (${formatMegabytes(totalBytes)} including ${imageCount} encoded image${imageCount === 1 ? '' : 's'} and conversation context) exceeds the ${formatMegabytes(maxRequestBytes)} serverless request limit. Please resize or compress the image or start a new conversation.`
@@ -1754,12 +1881,13 @@ export function buildVisionImageParts({
   maxImageBytes = MAX_VISION_IMAGE_BYTES,
   maxRequestBytes = MAX_CHAT_REQUEST_BYTES
 } = {}) {
+  /** @type {Array<{ mimeType: string, data: string }>} */
   const imageParts = [];
   const seenIds = new Set();
   const seenData = new Set();
   let cumulativeBytes = JSON_REQUEST_OVERHEAD_RESERVE_BYTES;
 
-  const processCandidate = (item) => {
+  const processCandidate = (/** @type {any} */ item) => {
     if (!item || typeof item !== 'object') return;
     const itemId = item.id || item.fileId || null;
     if (itemId && seenIds.has(itemId)) return;
@@ -1831,17 +1959,18 @@ export function buildVisionImageParts({
             : `Image '${label}' contains invalid or corrupted base64 image data.`
         );
       }
-      if (parsed.byteLength > maxImageBytes) {
-        throw buildOversizedImageError(label, parsed.byteLength, maxImageBytes);
+      if ((parsed.byteLength || 0) > maxImageBytes) {
+        throw buildOversizedImageError(label, parsed.byteLength || 0, maxImageBytes);
       }
-      cumulativeBytes += parsed.base64.length + 256;
+      const base64Data = parsed.base64 || '';
+      cumulativeBytes += base64Data.length + 256;
       if (cumulativeBytes > maxRequestBytes) {
         throw buildCumulativeBudgetError(imageParts.length + 1, cumulativeBytes, maxRequestBytes);
       }
       if (itemId) seenIds.add(itemId);
-      if (!seenData.has(parsed.base64)) {
-        seenData.add(parsed.base64);
-        imageParts.push({ mimeType: parsed.mimeType, data: parsed.base64 });
+      if (!seenData.has(base64Data)) {
+        seenData.add(base64Data);
+        imageParts.push({ mimeType: parsed.mimeType || 'image/jpeg', data: base64Data });
       }
       return;
     }
@@ -1934,7 +2063,7 @@ export async function fetchWithAuth(url, options = {}) {
     }
 
     return res;
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (timedOut && err?.name === 'AbortError') {
       const timeoutErr = new DOMException(`Request to ${url} timed out after ${timeoutMs}ms`, 'TimeoutError');
       throw timeoutErr;
@@ -1952,6 +2081,7 @@ export async function fetchWithAuth(url, options = {}) {
  * Retrieves the binary Blob of an attachment from in-memory, IndexedDB, or the backend API.
  * Supports Supabase-backed attachments for authenticated users, guest/local attachments, and offline caching.
  * @param {Object} attachment
+ * @param {string|null} [chatId=null]
  * @returns {Promise<{ success: boolean, blob?: Blob, source?: 'memory' | 'data-url' | 'indexeddb' | 'server', error?: string, status?: number, code?: string }>}
  */
 export async function fetchAttachmentBlob(attachment, chatId = null) {
@@ -2004,7 +2134,7 @@ export async function fetchAttachmentBlob(attachment, chatId = null) {
               expectedExtension: attachment?.extension || '',
               expectedMimeType: attachment?.type || attachment?.mimeType || ''
             });
-            blob = new Blob([decoded.data], {
+            blob = new Blob([toStorageBlobPart(decoded.data)], {
               type: decoded.originalMimeType || attachment?.type || attachment?.mimeType || 'application/octet-stream'
             });
           }
@@ -2072,7 +2202,7 @@ export async function fetchAttachmentBlob(attachment, chatId = null) {
 /**
  * Requests a short-lived pre-signed URL from the backend for Supabase-backed attachments.
  * @param {string|Object} attachmentId - Attachment ID or attachment object
- * @param {string} [chatId=null] - Optional conversation/chat ID
+ * @param {string|null} [chatId=null] - Optional conversation/chat ID
  * @returns {Promise<string|null>}
  */
 export async function getAttachmentSignedUrl(attachmentId, chatId = null) {
@@ -2101,8 +2231,8 @@ export async function getAttachmentSignedUrl(attachmentId, chatId = null) {
 /**
  * Checks whether an attachment is available either in browser IndexedDB or on the backend server.
  * @param {Object} attachment
- * @param {string} [chatId=null]
- * @returns {Promise<{ available: boolean, source?: 'indexeddb' | 'server' | 'memory', reason?: string }>}
+ * @param {string|null} [chatId=null]
+ * @returns {Promise<{ available: boolean, source?: 'indexeddb' | 'server' | 'memory', reason?: string, record?: any }>}
  */
 export async function checkAttachmentStatus(attachment, chatId = null) {
   if (!attachment || !attachment.id) {
@@ -2179,6 +2309,7 @@ export function isFormatPreviewable(extension = '', mimeType = '') {
  * Opens an attachment in a new browser tab for preview if supported,
  * or triggers a direct download if the format is not previewable.
  * @param {Object} attachment
+ * @param {string|null} [chatId=null]
  * @returns {Promise<{ success: boolean, action: 'preview' | 'download' | 'unavailable', error?: string }>}
  */
 export async function openOrPreviewAttachment(attachment, chatId = null) {
@@ -2301,7 +2432,7 @@ export async function openOrPreviewAttachment(attachment, chatId = null) {
 /**
  * Downloads the original attachment file with its exact original filename.
  * @param {Object} attachment
- * @param {string} [chatId=null]
+ * @param {string|null} [chatId=null]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 export async function downloadAttachmentFile(attachment, chatId = null) {
@@ -2418,13 +2549,8 @@ export function isDirectUploadCandidate(file, options = {}) {
  * Uploads a file directly to Supabase Storage using a short-lived signed upload URL.
  * Bypasses Vercel Serverless Functions' 4.5 MB request payload limit.
  *
- * @param {File|Blob} file - The file to upload
- * @param {Object} options
- * @param {string} options.chatId - The conversation ID
- * @param {boolean} [options.isPermanent=false] - Whether file is permanent
- * @param {AbortSignal} [options.signal] - Abort signal for cancellation
- * @param {(percent: number, loaded: number, total: number) => void} [options.onProgress] - Progress callback
- * @param {number} [options.uploadTimeoutMs=300000] - Upload and completion timeout in milliseconds
+ * @param {any} file - The file to upload
+ * @param {any} [options={}]
  * @returns {Promise<{ success: boolean, attachment: Object }>}
  */
 export async function uploadFileDirectToSupabase(file, options = {}) {
@@ -2509,7 +2635,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
   };
 
   // 2. Direct upload to Supabase Storage via XMLHttpRequest for precise progress & cancellation
-  await new Promise((resolve, reject) => {
+  await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     let settled = false;
     let listenersCleaned = false;
@@ -2604,7 +2730,7 @@ export async function uploadFileDirectToSupabase(file, options = {}) {
     // Explicitly never set HTTP Content-Encoding on stored Supabase objects; envelope is self-describing.
     xhr.setRequestHeader('Content-Type', hasStorageCompression ? 'application/octet-stream' : (mimeType || 'application/octet-stream'));
     xhr.send(uploadPayload);
-  });
+  }));
 
   // 3. Authenticated completion call: verifies object in storage, runs extraction, records metadata
   let completeRes;

@@ -120,7 +120,9 @@ import { AlertCircle, X, Check, WifiOff } from 'lucide-react';
 const ShareChatModal = React.lazy(() => import('../components/chat/ShareChatModal.jsx'));
 const AuthScreenModal = React.lazy(() => import('../components/auth/AuthScreen.jsx'));
 
+/** @type {typeof import('../services/webllmService.js') | null} */
 let loadedWebLLMService = null;
+/** @type {Promise<typeof import('../services/webllmService.js')> | null} */
 let webllmServicePromise = null;
 
 async function loadWebLLMService() {
@@ -147,6 +149,14 @@ function stopWebLLMIfLoaded() {
   }
 }
 
+/**
+ * @param {Object} [props]
+ * @param {boolean} [props.isSharedView=false]
+ * @param {string | null} [props.sharedShareId=null]
+ * @param {string | null} [props.rawShareId=null]
+ * @param {boolean} [props.isMalformedShareId=false]
+ * @param {(() => void) | null} [props.onNavigateHome=null]
+ */
 export default function ChatPage({
   isSharedView = false,
   sharedShareId = null,
@@ -219,7 +229,7 @@ export default function ChatPage({
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shareModalChatMeta, setShareModalChatMeta] = useState(null);
   const [shareModalData, setShareModalData] = useState(null);
-  const [chatShareLinks, setChatShareLinks] = useState({});
+  const [chatShareLinks, setChatShareLinks] = useState(/** @type {Record<string, any>} */ ({}));
   const [shareModalError, setShareModalError] = useState(null);
   const [shareErrorNotice, setShareErrorNotice] = useState(null);
   const isSharingChatRef = useRef(false);
@@ -265,36 +275,39 @@ export default function ChatPage({
     loadedWebLLMService ? loadedWebLLMService.getWebLLMState() : { ...INITIAL_WEBLLM_STATE }
   );
   const [appShellState, setAppShellState] = useState(() => getAppShellState());
-  const [webllmGpuCheck, setWebllmGpuCheck] = useState({
-    checking: false,
-    supported: null,
-    message: null
-  });
-  const [providerConfig, setProviderConfig] = useState({
-    status: 'idle',
-    data: null
-  });
+  const [webllmGpuCheck, setWebllmGpuCheck] = useState(
+    /** @type {{ checking: boolean, supported: boolean | null, message: string | null }} */ ({
+      checking: false,
+      supported: null,
+      message: null
+    })
+  );
+  const [providerConfig, setProviderConfig] = useState(
+    /** @type {{ status: string, data: any, fetchedAt?: number | null }} */ ({
+      status: 'idle',
+      data: null
+    })
+  );
   const [uploadQuota, setUploadQuota] = useState(() => getUploadQuotaState());
   const [attachmentProcessingStatus, setAttachmentProcessingStatus] = useState(null);
 
   const isSubmittingRef = useRef(false);
-  const persistedMessageIdsRef = useRef(new Set());
-  const pendingPersistMessagesRef = useRef(new Map());
+  const persistedMessageIdsRef = useRef(/** @type {Set<string>} */ (new Set()));
+  const pendingPersistMessagesRef = useRef(/** @type {Map<string, Record<string, any>>} */ (new Map()));
   const activeChatIdRef = useRef(activeChatId);
   const messagesRef = useRef(messages);
   const userChatsRef = useRef(userChats);
   const fetchRequestIdRef = useRef(0);
-  const skipNextChatLoadRef = useRef(null);
-  const requestControllerRef = useRef(null);
-  if (!requestControllerRef.current) {
-    requestControllerRef.current = createRequestIsolationController();
-  }
+  const skipNextChatLoadRef = useRef(/** @type {string | null} */ (null));
+  const [initialRequestController] = useState(() => createRequestIsolationController());
+  const requestControllerRef = useRef(initialRequestController);
 
   // Keep refs synchronized with React state for synchronous access inside async lifecycles.
   activeChatIdRef.current = activeChatId;
   messagesRef.current = messages;
   userChatsRef.current = userChats;
 
+  /** @param {boolean} loading */
   const setLoadingAndSubmitting = (loading) => {
     setIsLoading(loading);
     isSubmittingRef.current = loading;
@@ -303,11 +316,10 @@ export default function ChatPage({
     }
   };
 
-  const messageOrderMemoRef = useRef(null);
-  if (!messageOrderMemoRef.current) {
-    messageOrderMemoRef.current = createConversationOrderMemo();
-  }
+  const [initialMessageOrderMemo] = useState(() => createConversationOrderMemo());
+  const messageOrderMemoRef = useRef(initialMessageOrderMemo);
 
+  /** @param {Array<Record<string, any>> | ((previous: Array<Record<string, any>>) => Array<Record<string, any>>)} updater */
   const updateMessagesState = (updater) => {
     setMessages((previous) => {
       const next = typeof updater === 'function' ? updater(previous) : updater;
@@ -317,6 +329,10 @@ export default function ChatPage({
     });
   };
 
+  /**
+   * @param {string | null | undefined} chatId
+   * @param {string | null | undefined} assistantMessageId
+   */
   const findExistingAssistantMessage = (chatId, assistantMessageId) => {
     if (!assistantMessageId) return null;
     if (activeChatIdRef.current === chatId) {
@@ -324,9 +340,10 @@ export default function ChatPage({
       if (inVisible) return inVisible;
     }
     const targetChat = userChatsRef.current.find((c) => c.id === chatId);
-    return targetChat?.messages?.find((m) => m.id === assistantMessageId) || null;
+    return targetChat?.messages?.find((/** @type {{ id?: string }} */ m) => m.id === assistantMessageId) || null;
   };
 
+  /** @param {'conversation_switched' | 'provider_switched' | 'model_switched' | 'auth_logged_out' | 'stopped' | 'superseded' | 'unmounted'} [reason='stopped'] */
   const cancelCurrentGeneration = (reason = 'stopped') => {
     setAttachmentProcessingStatus(null);
     return cancelActiveChatRequest(requestControllerRef.current, reason, {
@@ -345,6 +362,7 @@ export default function ChatPage({
     });
   };
 
+  /** @param {any} provider */
   const handleSelectProvider = (provider) => {
     const normalized = normalizeProviderId(provider);
     if (
@@ -362,6 +380,7 @@ export default function ChatPage({
     }
   };
 
+  /** @param {any} nextModelId */
   const handleSelectWebLLMModel = (nextModelId) => {
     if (!nextModelId || !WEBLLM_MODEL_CATALOG[nextModelId] || nextModelId === webllmModelId) {
       return;
@@ -457,11 +476,12 @@ export default function ChatPage({
       return undefined;
     }
     let cancelled = false;
+    /** @type {any} */
     let unsubscribe = null;
     loadWebLLMService()
       .then((mod) => {
         if (cancelled) return;
-        unsubscribe = mod.subscribeWebLLMState((snapshot) => {
+        unsubscribe = mod.subscribeWebLLMState((/** @type {any} */ snapshot) => {
           setWebllmState(snapshot);
         });
       })
@@ -581,7 +601,7 @@ export default function ChatPage({
     let cancelled = false;
     setWebllmGpuCheck((prev) => ({ ...prev, checking: true }));
     loadWebLLMService()
-      .then((mod) => mod.inspectWebLLMReadiness(webllmModelId).then((res) => ({ mod, res })))
+      .then((mod) => mod.inspectWebLLMReadiness(webllmModelId).then((/** @type {any} */ res) => ({ mod, res })))
       .then(({ mod, res }) => {
         if (cancelled) return;
         const isSupported = Boolean(res?.gpuSupport?.supported);
@@ -706,6 +726,7 @@ export default function ChatPage({
     return [];
   };
 
+  /** @param {any} pinnedIds */
   const saveGuestPinnedIds = (pinnedIds) => {
     try {
       if (typeof window !== 'undefined') {
@@ -736,6 +757,7 @@ export default function ChatPage({
     return null;
   };
 
+  /** @param {any} chats */
   const saveGuestChats = (chats) => {
     try {
       if (typeof window !== 'undefined' && Array.isArray(chats)) {
@@ -745,7 +767,7 @@ export default function ChatPage({
           if (!chat || !Array.isArray(chat.messages)) return chat;
           return {
             ...chat,
-            messages: chat.messages.map((msg) => sanitizeMessageForStorage(msg))
+            messages: chat.messages.map((/** @type {any} */ msg) => sanitizeMessageForStorage(msg))
           };
         });
         const serialized = JSON.stringify(sanitizedChats);
@@ -764,7 +786,7 @@ export default function ChatPage({
         setOfflineBannerDismissed(false);
       } else {
         // Clear stale offline Firestore or offline cloud-provider errors upon reconnecting
-        setPersistenceError((prev) =>
+        setPersistenceError((/** @type {any} */ prev) =>
           prev &&
           (prev.toLowerCase().includes('firestore') ||
             prev.toLowerCase().includes('requires an internet connection'))
@@ -799,6 +821,7 @@ export default function ChatPage({
    * Shared offline guard enforced before every user-initiated cloud AI action.
    * Permits local provider ('webllm') offline while blocking cloud
    * providers ('gemini', 'groq', 'openrouter', 'cloudflare') before mutating state.
+   * @param {any} targetProvider
    */
   const guardOfflineProviderAction = (targetProvider) => {
     const guard = evaluateOfflineProviderGuard({
@@ -925,7 +948,7 @@ export default function ChatPage({
 
     if (sample) {
       setMessages(messageOrderMemoRef.current(sample.messages));
-      setActiveMode(sample.mode || 'general');
+      setActiveMode(/** @type {any} */ (sample).mode || 'general');
       setMessagesLoading(false);
       return undefined;
     }
@@ -988,13 +1011,13 @@ export default function ChatPage({
             protectedIds.add(activeAssistantId);
           }
 
-          setMessages((prevMessages) => {
+          setMessages((/** @type {any[]} */ prevMessages) => {
             const hasActive = Boolean(requestControllerRef.current?.hasActiveRequest());
             if (hasActive || protectedIds.size > 0) {
               const seenIds = new Set();
               let didPreserve = false;
 
-              let merged = safeMessages.map((sm) => {
+              let merged = safeMessages.map((/** @type {any} */ sm) => {
                 if (sm?.id) seenIds.add(sm.id);
                 if (!sm?.id || !protectedIds.has(sm.id)) return sm;
                 const localOverride =
@@ -1044,7 +1067,7 @@ export default function ChatPage({
             return safeMessages;
           });
 
-          safeMessages.forEach((message) => {
+          safeMessages.forEach((/** @type {any} */ message) => {
             if (message.id && !protectedIds.has(message.id)) {
               persistedMessageIdsRef.current.add(message.id);
             }
@@ -1110,7 +1133,7 @@ export default function ChatPage({
       setSharedPreviewSubmissionState('idle');
       cancelCurrentGeneration('conversation_switched');
 
-      if (onNavigateHome) {
+      if (typeof onNavigateHome === 'function') {
         onNavigateHome();
       } else if (typeof window !== 'undefined') {
         window.history.pushState(null, '', '/');
@@ -1140,6 +1163,7 @@ export default function ChatPage({
   };
 
   // Switch conversations without allowing old history or active streams to overwrite new messages.
+  /** @param {any} chatId */
   const handleSelectChat = (chatId) => {
     if (chatId === activeChatIdRef.current) return;
 
@@ -1150,7 +1174,7 @@ export default function ChatPage({
       setIsSubmittingFirstSharedMessage(false);
       setFirstSharedMessageSubmissionFailed(false);
       setSharedPreviewSubmissionState('idle');
-      if (onNavigateHome) {
+      if (typeof onNavigateHome === 'function') {
         onNavigateHome();
       } else if (typeof window !== 'undefined') {
         window.history.pushState(null, '', '/');
@@ -1174,6 +1198,11 @@ export default function ChatPage({
   };
 
   // Rename a conversation.
+  /**
+   * @param {any} chatId
+   * @param {any} newTitle
+   * @param {boolean} [isManual=true]
+   */
   const handleRenameChat = async (chatId, newTitle, isManual = true) => {
     const sanitized = (newTitle || '').trim();
     if (!sanitized) return;
@@ -1186,7 +1215,7 @@ export default function ChatPage({
           sanitized,
           isManual
         );
-        setUserChats((previous) =>
+        setUserChats((/** @type {any[]} */ previous) =>
           previous.map((chat) =>
             chat.id === chatId
               ? { ...chat, title: sanitized, ...(isManual ? { hasCustomTitle: true } : {}) }
@@ -1194,7 +1223,7 @@ export default function ChatPage({
           )
         );
       } else {
-        setUserChats((previous) => {
+        setUserChats((/** @type {any[]} */ previous) => {
           const next = previous.map((chat) =>
             chat.id === chatId
               ? { ...chat, title: sanitized, ...(isManual ? { hasCustomTitle: true } : {}) }
@@ -1212,11 +1241,12 @@ export default function ChatPage({
   };
 
   // Delete a conversation.
+  /** @param {any} chatId */
   const handleDeleteChat = async (chatId) => {
     try {
       if (isCloudEnabled && currentUser?.uid) {
         await deleteConversation(currentUser.uid, chatId);
-        setUserChats((previous) =>
+        setUserChats((/** @type {any[]} */ previous) =>
           previous.filter((chat) => chat.id !== chatId)
         );
       } else {
@@ -1224,13 +1254,14 @@ export default function ChatPage({
         void deleteAttachmentsForConversation(chatId).catch(() => {});
         const targetChat = userChats.find((c) => c.id === chatId);
         if (Array.isArray(targetChat?.messages)) {
+          /** @type {string[]} */
           const attIds = [];
-          targetChat.messages.forEach((m) => {
+          targetChat.messages.forEach((/** @type {any} */ m) => {
             if (Array.isArray(m?.attachments)) {
-              m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+              m.attachments.forEach((/** @type {any} */ a) => a?.id && attIds.push(a.id));
             }
             if (Array.isArray(m?.referencedAttachments)) {
-              m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+              m.referencedAttachments.forEach((/** @type {any} */ a) => a?.id && attIds.push(a.id));
             }
           });
           if (attIds.length > 0) {
@@ -1238,7 +1269,7 @@ export default function ChatPage({
           }
         }
 
-        setUserChats((previous) => {
+        setUserChats((/** @type {any[]} */ previous) => {
           const next = previous.filter(
             (chat) => chat.id !== chatId
           );
@@ -1254,7 +1285,7 @@ export default function ChatPage({
 
       if (!isCloudEnabled || !currentUser?.uid) {
         const remainingPins = getGuestPinnedIds().filter(
-          (id) => id !== chatId
+          (/** @type {any} */ id) => id !== chatId
         );
 
         saveGuestPinnedIds(remainingPins);
@@ -1270,6 +1301,7 @@ export default function ChatPage({
   const handleDeleteConversation = handleDeleteChat;
 
   // Pin/unpin conversations, with a maximum of five pinned chats.
+  /** @param {any} chatId */
   const handleTogglePin = async (chatId) => {
     const targetChat = userChats.find(
       (chat) => chat.id === chatId
@@ -1309,7 +1341,7 @@ export default function ChatPage({
               : chat
           )
         );
-      } catch (error) {
+      } catch (/** @type {any} */ error) {
         console.error('Failed to toggle pin in Firestore:', error);
         setPersistenceError(
           error.message ||
@@ -1320,7 +1352,7 @@ export default function ChatPage({
       return;
     }
 
-    setUserChats((previous) => {
+    setUserChats((/** @type {any[]} */ previous) => {
       const next = previous.map((chat) =>
         chat.id === chatId
           ? {
@@ -1341,6 +1373,7 @@ export default function ChatPage({
   };
 
   // Handle mode selection (both on New Chat and in active conversations)
+  /** @param {any} newMode */
   const handleSelectMode = async (newMode) => {
     if (isSharedView) return;
     const modeObj = getChatMode(newMode);
@@ -1359,7 +1392,7 @@ export default function ChatPage({
           console.warn('Could not update conversation mode in Cloud Firestore:', err);
         });
       } else {
-        setUserChats((previous) => {
+        setUserChats((/** @type {any[]} */ previous) => {
           const next = previous.map((chat) =>
             chat.id === currentChatId
               ? {
@@ -1377,6 +1410,11 @@ export default function ChatPage({
   };
 
   // Persist messages without duplicate writes (unless forced update).
+  /**
+   * @param {any} chatId
+   * @param {any} message
+   * @param {boolean} [force=false]
+   */
   const persistMessageSafe = async (chatId, message, force = false) => {
     if (isSharedView) return;
     if (!chatId || !message?.id) return;
@@ -1430,16 +1468,16 @@ export default function ChatPage({
       return;
     }
 
-    setUserChats((previous) => {
+    setUserChats((/** @type {any[]} */ previous) => {
       const next = previous.map((chat) => {
         if (chat.id !== chatId) return chat;
 
         const hasExisting = (chat.messages || []).some(
-          (item) => item.id === normalizedMessage.id
+          (/** @type {any} */ item) => item.id === normalizedMessage.id
         );
 
         const updatedMessages = hasExisting
-          ? (chat.messages || []).map((item) => (item.id === normalizedMessage.id ? normalizedMessage : item))
+          ? (chat.messages || []).map((/** @type {any} */ item) => (item.id === normalizedMessage.id ? normalizedMessage : item))
           : [...(chat.messages || []), normalizedMessage];
 
         return {
@@ -1456,6 +1494,8 @@ export default function ChatPage({
 
   /**
    * Formats raw provider/router errors into actionable user-facing messages.
+   * @param {any} error
+   * @param {any} [context]
    */
   const classifyPromptError = (error, { finalProvider, providerToUse, activeModel, targetText, promptText } = {}) => {
     console.error('Streaming prompt execution error:', error);
@@ -1484,6 +1524,16 @@ export default function ChatPage({
 
   /**
    * Run the AI request and animate its response under strict monotonic request isolation.
+   * @param {any} promptText
+   * @param {any} historyContext
+   * @param {any} targetChatId
+   * @param {any} assistantMessageId
+   * @param {any} [overrideProvider=null]
+   * @param {any[]} [currentAttachments=[]]
+   * @param {any} [multiPartParams={}]
+   * @param {any} [customStartTime=null]
+   * @param {any} [overrideModel=null]
+   * @param {any} [existingRequestId=null]
    */
   const executePrompt = async (
     promptText,
@@ -1531,13 +1581,13 @@ export default function ChatPage({
         if (!Array.isArray(atts) || atts.length === 0) {
           return atts;
         }
-        if (isVisionCapableProvider(provider, model)) {
+        if (isVisionCapableProvider(provider, model || undefined)) {
           try {
             return await hydrateAttachmentsWithImageBytes(atts, {
               provider,
               model
             });
-          } catch (hydrateErr) {
+          } catch (/** @type {any} */ hydrateErr) {
             if (
               hydrateErr?.isPayloadError ||
               hydrateErr?.name === 'ImagePayloadLimitError' ||
@@ -1586,6 +1636,7 @@ export default function ChatPage({
 
   // Handle the permanent import transition of a shared conversation to an authenticated user's account
   // triggered strictly after the recipient's first message and AI response successfully complete and persist
+  /** @param {any} params */
   const handleSharedPreviewImportTransition = async ({
     userMessage,
     assistantMessageId,
@@ -1607,7 +1658,7 @@ export default function ChatPage({
     }
 
     const completedAssistantMsg =
-      messagesRef.current.find((m) => m.id === assistantMessageId) || {
+      messagesRef.current.find((/** @type {any} */ m) => m.id === assistantMessageId) || {
         id: assistantMessageId,
         sender: 'assistant',
         content: promptResult?.resolvedText || '',
@@ -1625,7 +1676,7 @@ export default function ChatPage({
     try {
       setSharedPreviewSubmissionState('importing');
       const importResult = await importSharedConversationToAccount({
-        shareId: sharedShareId,
+        shareId: sharedShareId || '',
         snapshot: sharedSnapshot,
         recipientUser: currentUser,
         recipientUserMessage: userMessage,
@@ -1646,7 +1697,9 @@ export default function ChatPage({
           }
         }
 
-        clearSharedSnapshotSession(sharedShareId);
+        if (sharedShareId) {
+          clearSharedSnapshotSession(sharedShareId);
+        }
         setIsSubmittingFirstSharedMessage(false);
         setSharedPreviewSubmissionState('imported');
 
@@ -1672,6 +1725,10 @@ export default function ChatPage({
   };
 
   // Submit a new message.
+  /**
+   * @param {any[]} [attachments=[]]
+   * @param {string | null} [promptOverride=null]
+   */
   const handleSubmit = async (attachments = [], promptOverride = null) => {
     if (isPublicSharedViewer) return false;
     if (isSharedView && !isAuthenticatedSharedPreview) return false;
@@ -1729,6 +1786,7 @@ export default function ChatPage({
       requestControllerRef.current.isRequestActive(preflightRequestId) &&
       activeChatIdRef.current === initialChatId;
 
+    /** @param {any} errMsg */
     const failPreflightIfActive = (errMsg) => {
       setAttachmentProcessingStatus(null);
       if (!isPreflightActive()) return false;
@@ -1983,11 +2041,12 @@ export default function ChatPage({
                     progressPercent: 0
                   });
                 }
+                /** @type {any} */
                 const directResult = await uploadFileDirectToSupabase(directTarget.file, {
                   chatId: effectiveChatId,
                   signal: uploadController.signal,
                   storageCompression: directTarget.storageCompression,
-                  onProgress: (percent) => {
+                  onProgress: (/** @type {number} */ percent) => {
                     if (isPreflightActive()) {
                       setAttachmentProcessingStatus({
                         phase: 'uploading',
@@ -2007,7 +2066,7 @@ export default function ChatPage({
                 usedDirectUpload = true;
                 clearTimeout(uploadTimeoutId);
                 preflightEntry.signal.removeEventListener('abort', onRequestCancelled);
-              } catch (directErr) {
+              } catch (/** @type {any} */ directErr) {
                 const shouldFallbackToStandardUpload =
                   directErr?.status === 503 ||
                   directErr?.code === 'STORAGE_UNCONFIGURED' ||
@@ -2191,7 +2250,7 @@ export default function ChatPage({
 
               // Persist file blobs into IndexedDB first so React message state never needs large base64/dataUrl strings
               processedAttachments = await Promise.all(
-                rawUploaded.map(async (proc, idx) => {
+                rawUploaded.map(async (/** @type {any} */ proc, /** @type {number} */ idx) => {
                   const orig =
                     filesToUpload[idx] ||
                     filesToUpload.find(
@@ -2236,7 +2295,7 @@ export default function ChatPage({
 
               if (!isPreflightActive()) return false;
             }
-          } catch (uploadErr) {
+          } catch (/** @type {any} */ uploadErr) {
             if (!isPreflightActive()) {
               return false;
             }
@@ -2342,7 +2401,7 @@ export default function ChatPage({
                 }
 
                 processedAttachments = fallbackLocalAttachments;
-              } catch (fallbackErr) {
+              } catch (/** @type {any} */ fallbackErr) {
                 return failPreflightIfActive(
                   `Failed to process attachment: ${fallbackErr?.message || 'Local extraction failed.'}`
                 );
@@ -2416,7 +2475,7 @@ export default function ChatPage({
           const titleSnippet = generateChatTitle(
             trimmed ||
               (processedAttachments.length > 0
-                ? `Files: ${processedAttachments.map((a) => a.name || a.originalName).join(', ')}`
+                ? `Files: ${processedAttachments.map((/** @type {any} */ a) => a.name || a.originalName).join(', ')}`
                 : 'New Conversation')
           );
 
@@ -2452,7 +2511,7 @@ export default function ChatPage({
                 pinnedAt: null,
                 pendingSync: true
               };
-              setUserChats((previous) => [fallbackChat, ...previous]);
+              setUserChats((/** @type {any[]} */ previous) => [fallbackChat, ...previous]);
             }
           } else {
             currentChatId = effectiveChatId;
@@ -2472,7 +2531,7 @@ export default function ChatPage({
               messages: []
             };
 
-            setUserChats((previous) => {
+            setUserChats((/** @type {any[]} */ previous) => {
               const next = [newGuestChat, ...previous];
               saveGuestChats(next);
               return next;
@@ -2484,10 +2543,12 @@ export default function ChatPage({
           activeChatIdRef.current = currentChatId;
           setActiveChatId(currentChatId);
 
-          sessionStorage.setItem(
-            'orvix_active_chat',
-            currentChatId
-          );
+          if (currentChatId) {
+            sessionStorage.setItem(
+              'orvix_active_chat',
+              currentChatId
+            );
+          }
         }
       }
 
@@ -2539,7 +2600,7 @@ export default function ChatPage({
         conversationId: currentChatId,
         chatId: currentChatId,
         attachments: Array.isArray(processedAttachments)
-          ? processedAttachments.map((a) => ({
+          ? processedAttachments.map((/** @type {any} */ a) => ({
               ...a,
               chatId: a?.chatId || a?.conversationId || currentChatId,
               conversationId: a?.conversationId || a?.chatId || currentChatId
@@ -2617,10 +2678,10 @@ export default function ChatPage({
       );
 
       const validHistory = currentMessagesSnapshot.filter(
-        (message) => !message.isError
+        (/** @type {any} */ message) => !message.isError
       );
 
-      updateMessagesState((previous) => [
+      updateMessagesState((/** @type {any[]} */ previous) => [
         ...previous,
         userMessage,
         initialAssistantMessage
@@ -2637,7 +2698,7 @@ export default function ChatPage({
       const promptText =
         trimmed ||
         (processedAttachments.length > 0
-          ? `[User attached ${processedAttachments.length} file${processedAttachments.length > 1 ? 's' : ''}: ${processedAttachments.map((a) => `${a.name || a.originalName} (${a.formattedSize})`).join(', ')}]`
+          ? `[User attached ${processedAttachments.length} file${processedAttachments.length > 1 ? 's' : ''}: ${processedAttachments.map((/** @type {any} */ a) => `${a.name || a.originalName} (${a.formattedSize})`).join(', ')}]`
           : '');
 
       const isFirstConversationTurn = !initialChatId || validHistory.length === 0;
@@ -2663,11 +2724,11 @@ export default function ChatPage({
       // Only refine for the initial turn of a conversation, and only if the user hasn't manually renamed it.
       if (isFirstConversationTurn && currentChatId && !isAuthenticatedSharedPreview) {
         try {
-          const currentChat = userChatsRef.current.find((c) => c.id === currentChatId);
+          const currentChat = userChatsRef.current.find((/** @type {any} */ c) => c.id === currentChatId);
           if (!currentChat?.hasCustomTitle) {
             const aiCompletedText =
               promptResult?.text ||
-              messagesRef.current.find((m) => m.id === assistantMessageId)?.text ||
+              messagesRef.current.find((/** @type {any} */ m) => m.id === assistantMessageId)?.text ||
               '';
             if (aiCompletedText && promptText) {
               const refinedTitle = generateMeaningfulChatTitle(promptText, aiCompletedText);
@@ -2708,16 +2769,17 @@ export default function ChatPage({
     }
   };
 
+  /** @param {any} assistantMessage */
   const getSuccessfulAlternatives = (assistantMessage) => {
     if (!assistantMessage || !Array.isArray(assistantMessage.alternatives)) {
       return [];
     }
     const hasExplicitErrorFlags = assistantMessage.alternatives.some(
-      (alt) => Boolean(alt?.isError || alt?.isInterrupted)
+      (/** @type {any} */ alt) => Boolean(alt?.isError || alt?.isInterrupted)
     );
     const rootHasError = Boolean(assistantMessage.isError || assistantMessage.isInterrupted);
     const activeId = assistantMessage.activeAlternativeId;
-    return assistantMessage.alternatives.filter((alt) => {
+    return assistantMessage.alternatives.filter((/** @type {any} */ alt) => {
       if (!alt) return false;
       if (alt.isError || alt.isInterrupted) return false;
       if (!hasExplicitErrorFlags && rootHasError && alt.id === activeId) return false;
@@ -2726,16 +2788,17 @@ export default function ChatPage({
   };
 
   // Retry a failed AI response in-place using the failed alternative's slot and message identity.
+  /** @param {any} failedMessage */
   const handleRetry = async (failedMessage) => {
     if (isPublicSharedViewer) return;
     stopSpeech();
 
     const currentMessagesSnapshot = messagesRef.current;
-    const failedIdx = currentMessagesSnapshot.findIndex((m) => m.id === failedMessage?.id);
+    const failedIdx = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === failedMessage?.id);
     const latestFailedMessage =
       (failedIdx >= 0 ? currentMessagesSnapshot[failedIdx] : null) || failedMessage;
     const parentUser = latestFailedMessage?.parentMessageId
-      ? currentMessagesSnapshot.find((m) => m.id === latestFailedMessage.parentMessageId)
+      ? currentMessagesSnapshot.find((/** @type {any} */ m) => m.id === latestFailedMessage.parentMessageId)
       : (failedIdx > 0 ? currentMessagesSnapshot[failedIdx - 1] : null);
     const normalizedFailed = latestFailedMessage
       ? normalizeAssistantMessage(latestFailedMessage, parentUser)
@@ -2837,11 +2900,11 @@ export default function ChatPage({
 
     let updatedMessages;
     if (failedIdx >= 0) {
-      updatedMessages = currentMessagesSnapshot.map((m, idx) =>
+      updatedMessages = currentMessagesSnapshot.map((/** @type {any} */ m, /** @type {number} */ idx) =>
         idx === failedIdx ? nextAssistantMessage : m
       );
     } else {
-      const parentIdx = currentMessagesSnapshot.findIndex((m) => m.id === parentMessageId);
+      const parentIdx = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === parentMessageId);
       if (parentIdx >= 0) {
         updatedMessages = [
           ...currentMessagesSnapshot.slice(0, parentIdx + 1),
@@ -2855,12 +2918,12 @@ export default function ChatPage({
 
     updateMessagesState(updatedMessages);
 
-    const parentIdx = parentUser ? currentMessagesSnapshot.findIndex((m) => m.id === parentUser.id) : -1;
+    const parentIdx = parentUser ? currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === parentUser.id) : -1;
     const historySlice = parentIdx >= 0
       ? currentMessagesSnapshot.slice(0, parentIdx)
-      : updatedMessages.filter((m) => m.id !== nextAssistantMessage.id);
+      : updatedMessages.filter((/** @type {any} */ m) => m.id !== nextAssistantMessage.id);
     const validHistory = historySlice.filter(
-      (message) => !message.isError && !message.isInterrupted
+      (/** @type {any} */ message) => !message.isError && !message.isInterrupted
     );
 
     const isRetryContinuation = isContinuationRequest(resolvedFailedPrompt);
@@ -2881,7 +2944,7 @@ export default function ChatPage({
     );
 
     if (isAuthenticatedSharedPreview) {
-      const targetUser = parentUser || messagesRef.current.find((m) => m.id === parentMessageId);
+      const targetUser = parentUser || messagesRef.current.find((/** @type {any} */ m) => m.id === parentMessageId);
       if (targetUser) {
         await handleSharedPreviewImportTransition({
           userMessage: targetUser,
@@ -2894,16 +2957,20 @@ export default function ChatPage({
   };
 
   // User-controlled provider switch & retry inside the failed alternative's slot without creating orphans or shifting unrelated alternatives
+  /**
+   * @param {any} failedMessage
+   * @param {any} newProviderId
+   */
   const handleSwitchProviderAndRetry = async (failedMessage, newProviderId) => {
     if (isPublicSharedViewer) return;
     stopSpeech();
 
     const currentMessagesSnapshot = messagesRef.current;
-    const failedSwitchIdx = currentMessagesSnapshot.findIndex((m) => m.id === failedMessage?.id);
+    const failedSwitchIdx = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === failedMessage?.id);
     const latestFailedMessage =
       (failedSwitchIdx >= 0 ? currentMessagesSnapshot[failedSwitchIdx] : null) || failedMessage;
     const parentSwitchUser = latestFailedMessage?.parentMessageId
-      ? currentMessagesSnapshot.find((m) => m.id === latestFailedMessage.parentMessageId)
+      ? currentMessagesSnapshot.find((/** @type {any} */ m) => m.id === latestFailedMessage.parentMessageId)
       : (failedSwitchIdx > 0 ? currentMessagesSnapshot[failedSwitchIdx - 1] : null);
     const normalizedFailed = latestFailedMessage
       ? normalizeAssistantMessage(latestFailedMessage, parentSwitchUser)
@@ -3002,11 +3069,11 @@ export default function ChatPage({
 
     let updatedMessages;
     if (failedSwitchIdx >= 0) {
-      updatedMessages = currentMessagesSnapshot.map((m, idx) =>
+      updatedMessages = currentMessagesSnapshot.map((/** @type {any} */ m, /** @type {number} */ idx) =>
         idx === failedSwitchIdx ? nextAssistantMessage : m
       );
     } else {
-      const parentIdx = currentMessagesSnapshot.findIndex((m) => m.id === parentMessageId);
+      const parentIdx = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === parentMessageId);
       if (parentIdx >= 0) {
         updatedMessages = [
           ...currentMessagesSnapshot.slice(0, parentIdx + 1),
@@ -3020,12 +3087,12 @@ export default function ChatPage({
 
     updateMessagesState(updatedMessages);
 
-    const parentIdx = parentSwitchUser ? currentMessagesSnapshot.findIndex((m) => m.id === parentSwitchUser.id) : -1;
+    const parentIdx = parentSwitchUser ? currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === parentSwitchUser.id) : -1;
     const historySlice = parentIdx >= 0
       ? currentMessagesSnapshot.slice(0, parentIdx)
-      : updatedMessages.filter((m) => m.id !== nextAssistantMessage.id);
+      : updatedMessages.filter((/** @type {any} */ m) => m.id !== nextAssistantMessage.id);
     const validHistory = historySlice.filter(
-      (message) => !message.isError && !message.isInterrupted
+      (/** @type {any} */ message) => !message.isError && !message.isInterrupted
     );
 
     const isSwitchContinuation = isContinuationRequest(resolvedFailedPrompt);
@@ -3046,7 +3113,7 @@ export default function ChatPage({
     );
 
     if (isAuthenticatedSharedPreview) {
-      const targetUser = parentSwitchUser || messagesRef.current.find((m) => m.id === parentMessageId);
+      const targetUser = parentSwitchUser || messagesRef.current.find((/** @type {any} */ m) => m.id === parentMessageId);
       if (targetUser) {
         await handleSharedPreviewImportTransition({
           userMessage: targetUser,
@@ -3059,12 +3126,14 @@ export default function ChatPage({
   };
 
   // Restore a failed prompt to the input field while preserving any previously successful alternatives.
+  /** @param {any} promptText */
   const handleRestorePrompt = (promptText) => {
     if (isPublicSharedViewer || isLoading || isSubmittingRef.current) return;
     setInputValue(promptText);
 
     const currentChatId = activeChatIdRef.current;
 
+    /** @param {any} message */
     const restoreMessageIfFailed = (message) => {
       const normalized =
         message.sender === 'assistant' ? normalizeAssistantMessage(message) : message;
@@ -3085,15 +3154,15 @@ export default function ChatPage({
       }
 
       const allAlts = Array.isArray(normalized.alternatives) ? normalized.alternatives : [];
-      const validIds = new Set(validAlts.map((a) => a.id));
+      const validIds = new Set(validAlts.map((/** @type {any} */ a) => a.id));
       let targetAlt = null;
 
       if (normalized.activeAlternativeId && validIds.has(normalized.activeAlternativeId)) {
-        targetAlt = validAlts.find((a) => a.id === normalized.activeAlternativeId) || null;
+        targetAlt = validAlts.find((/** @type {any} */ a) => a.id === normalized.activeAlternativeId) || null;
       }
 
       if (!targetAlt) {
-        const failedIdx = allAlts.findIndex((a) => a?.id === normalized.activeAlternativeId);
+        const failedIdx = allAlts.findIndex((/** @type {any} */ a) => a?.id === normalized.activeAlternativeId);
         if (failedIdx >= 0) {
           for (let i = failedIdx - 1; i >= 0; i--) {
             if (validIds.has(allAlts[i]?.id)) {
@@ -3140,10 +3209,10 @@ export default function ChatPage({
 
     const restoredToPersist = (messagesRef.current || [])
       .map(restoreMessageIfFailed)
-      .filter((entry) => entry.keep && entry.restored && entry.message)
-      .map((entry) => entry.message);
+      .filter((/** @type {any} */ entry) => entry.keep && entry.restored && entry.message)
+      .map((/** @type {any} */ entry) => entry.message);
 
-    updateMessagesState((previous) => {
+    updateMessagesState((/** @type {any[]} */ previous) => {
       const next = [];
       for (const message of previous) {
         const res = restoreMessageIfFailed(message);
@@ -3162,6 +3231,7 @@ export default function ChatPage({
   };
 
   // Regenerate the currently active alternative in-place using its provider and model
+  /** @param {any} assistantMessage */
   const handleRegenerate = async (assistantMessage) => {
     if (isSharedView) return;
     stopSpeech();
@@ -3170,13 +3240,13 @@ export default function ChatPage({
 
     const currentChatId = activeChatIdRef.current;
     const currentMessagesSnapshot = messagesRef.current;
-    const msgIndex = currentMessagesSnapshot.findIndex((m) => m.id === assistantMessage.id);
+    const msgIndex = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === assistantMessage.id);
     if (msgIndex === -1) return;
 
     // Find the user prompt preceding this assistant message
     const precedingUserMessage = assistantMessage.parentMessageId
-      ? currentMessagesSnapshot.find((m) => m.id === assistantMessage.parentMessageId)
-      : [...currentMessagesSnapshot.slice(0, msgIndex)].reverse().find((m) => m.sender === 'user');
+      ? currentMessagesSnapshot.find((/** @type {any} */ m) => m.id === assistantMessage.parentMessageId)
+      : [...currentMessagesSnapshot.slice(0, msgIndex)].reverse().find((/** @type {any} */ m) => m.sender === 'user');
 
     if (!precedingUserMessage || (!precedingUserMessage.content && (!precedingUserMessage.attachments || precedingUserMessage.attachments.length === 0))) {
       console.warn('Cannot regenerate: preceding user prompt not found.');
@@ -3186,10 +3256,10 @@ export default function ChatPage({
     const userPromptText =
       precedingUserMessage.content ||
       (Array.isArray(precedingUserMessage.attachments) && precedingUserMessage.attachments.length > 0
-        ? `[User attached ${precedingUserMessage.attachments.length} file: ${precedingUserMessage.attachments.map((a) => a.name || a.originalName).join(', ')}]`
+        ? `[User attached ${precedingUserMessage.attachments.length} file: ${precedingUserMessage.attachments.map((/** @type {any} */ a) => a.name || a.originalName).join(', ')}]`
         : '');
-    const userMsgIndex = currentMessagesSnapshot.findIndex((m) => m.id === precedingUserMessage.id);
-    const validHistory = currentMessagesSnapshot.slice(0, userMsgIndex).filter((m) => !m.isError);
+    const userMsgIndex = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === precedingUserMessage.id);
+    const validHistory = currentMessagesSnapshot.slice(0, userMsgIndex).filter((/** @type {any} */ m) => !m.isError);
 
     // Identify the provider/model of the response currently being viewed
     const latestAssistant = currentMessagesSnapshot[msgIndex] || assistantMessage;
@@ -3237,8 +3307,8 @@ export default function ChatPage({
     });
 
     // Replace only the active alternative in-place while preserving all other alternatives
-    updateMessagesState((previous) =>
-      previous.map((m) => {
+    updateMessagesState((/** @type {any[]} */ previous) =>
+      previous.map((/** @type {any} */ m) => {
         if (m.id !== targetAssistantId) return m;
         return replaceActiveAlternativeForRegeneration(m, {
           provider: providerToUse,
@@ -3264,6 +3334,10 @@ export default function ChatPage({
   };
 
   // Generate an alternative response for an existing assistant message using another provider/model
+  /**
+   * @param {any} assistantMessage
+   * @param {any} targetProvider
+   */
   const handleGenerateAlternative = async (assistantMessage, targetProvider) => {
     if (isSharedView) return;
     stopSpeech();
@@ -3272,12 +3346,12 @@ export default function ChatPage({
 
     const currentChatId = activeChatIdRef.current;
     const currentMessagesSnapshot = messagesRef.current;
-    const msgIndex = currentMessagesSnapshot.findIndex((m) => m.id === assistantMessage.id);
+    const msgIndex = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === assistantMessage.id);
     if (msgIndex === -1) return;
 
     const precedingUserMessage = assistantMessage.parentMessageId
-      ? currentMessagesSnapshot.find((m) => m.id === assistantMessage.parentMessageId)
-      : [...currentMessagesSnapshot.slice(0, msgIndex)].reverse().find((m) => m.sender === 'user');
+      ? currentMessagesSnapshot.find((/** @type {any} */ m) => m.id === assistantMessage.parentMessageId)
+      : [...currentMessagesSnapshot.slice(0, msgIndex)].reverse().find((/** @type {any} */ m) => m.sender === 'user');
 
     if (!precedingUserMessage || (!precedingUserMessage.content && (!precedingUserMessage.attachments || precedingUserMessage.attachments.length === 0))) {
       console.warn('Cannot generate alternative: preceding user prompt not found.');
@@ -3287,10 +3361,10 @@ export default function ChatPage({
     const userPromptText =
       precedingUserMessage.content ||
       (Array.isArray(precedingUserMessage.attachments) && precedingUserMessage.attachments.length > 0
-        ? `[User attached ${precedingUserMessage.attachments.length} file: ${precedingUserMessage.attachments.map((a) => a.name || a.originalName).join(', ')}]`
+        ? `[User attached ${precedingUserMessage.attachments.length} file: ${precedingUserMessage.attachments.map((/** @type {any} */ a) => a.name || a.originalName).join(', ')}]`
         : '');
-    const userMsgIndex = currentMessagesSnapshot.findIndex((m) => m.id === precedingUserMessage.id);
-    const validHistory = currentMessagesSnapshot.slice(0, userMsgIndex).filter((m) => !m.isError);
+    const userMsgIndex = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === precedingUserMessage.id);
+    const validHistory = currentMessagesSnapshot.slice(0, userMsgIndex).filter((/** @type {any} */ m) => !m.isError);
 
     const rawChosenProvider =
       typeof targetProvider === 'object' && targetProvider?.provider
@@ -3376,8 +3450,8 @@ export default function ChatPage({
       referencedAttachments: undefined
     });
 
-    updateMessagesState((previous) =>
-      previous.map((m) => {
+    updateMessagesState((/** @type {any[]} */ previous) =>
+      previous.map((/** @type {any} */ m) => {
         if (m.id !== targetAssistantId) return m;
         const normalized = normalizeAssistantMessage(m, precedingUserMessage);
         const updated = addAlternativeToAssistantMessage(normalized, newAlternative);
@@ -3406,14 +3480,18 @@ export default function ChatPage({
   };
 
   // Switch the active alternative response for an assistant message
+  /**
+   * @param {any} assistantMessageId
+   * @param {any} targetAlternativeId
+   */
   const handleSwitchAlternative = (assistantMessageId, targetAlternativeId) => {
     if (isSharedView) return;
     stopSpeech();
 
     if (isLoading || isSubmittingRef.current) return;
 
-    setMessages((previous) => {
-      const next = previous.map((m) => {
+    setMessages((/** @type {any[]} */ previous) => {
+      const next = previous.map((/** @type {any} */ m) => {
         if (m.id !== assistantMessageId) return m;
         return switchActiveAlternativeInMessage(m, targetAlternativeId);
       });
@@ -3421,7 +3499,7 @@ export default function ChatPage({
       const ordered = messageOrderMemoRef.current(next);
       messagesRef.current = ordered;
 
-      const updatedMsg = ordered.find((m) => m.id === assistantMessageId);
+      const updatedMsg = ordered.find((/** @type {any} */ m) => m.id === assistantMessageId);
       if (updatedMsg && activeChatIdRef.current) {
         void persistMessageSafe(activeChatIdRef.current, updatedMsg, true);
       }
@@ -3441,6 +3519,7 @@ export default function ChatPage({
   };
 
   // Start inline editing mode for a user message
+  /** @param {any} messageId */
   const handleStartEdit = (messageId) => {
     if (isSharedView || isLoading || isSubmittingRef.current) return;
     setEditingMessageId(messageId);
@@ -3452,6 +3531,10 @@ export default function ChatPage({
   };
 
   // Edit and resend an eligible user message with contextual branch truncation
+  /**
+   * @param {any} userMessageId
+   * @param {any} newPromptText
+   */
   const handleEditResend = async (userMessageId, newPromptText) => {
     if (isSharedView) return false;
 
@@ -3464,7 +3547,7 @@ export default function ChatPage({
     const requestStartTime = performance.now();
 
     const currentMessagesSnapshot = messagesRef.current;
-    const userMsgIndex = currentMessagesSnapshot.findIndex((m) => m.id === userMessageId);
+    const userMsgIndex = currentMessagesSnapshot.findIndex((/** @type {any} */ m) => m.id === userMessageId);
     if (userMsgIndex === -1) return false;
 
     const editProvider = selectedProvider;
@@ -3512,7 +3595,7 @@ export default function ChatPage({
             console.warn('Could not create Firestore chat doc for edit, using local fallback:', error);
             currentChatId = `local-${Date.now()}`;
             skipNextChatLoadRef.current = currentChatId;
-            setUserChats((previous) => [
+            setUserChats((/** @type {any[]} */ previous) => [
               {
                 id: currentChatId,
                 title: titleSnippet,
@@ -3537,7 +3620,7 @@ export default function ChatPage({
             pinnedAt: null,
             messages: []
           };
-          setUserChats((previous) => {
+          setUserChats((/** @type {any[]} */ previous) => {
             const next = [newGuestChat, ...previous];
             saveGuestChats(next);
             return next;
@@ -3553,14 +3636,14 @@ export default function ChatPage({
 
       // 1. Context: identify all previous non-error messages strictly before this message
       const earlierMessages = currentMessagesSnapshot.slice(0, userMsgIndex);
-      const validHistory = earlierMessages.filter((m) => !m.isError);
+      const validHistory = earlierMessages.filter((/** @type {any} */ m) => !m.isError);
 
       // 2. Truncation: identify all contradictory later messages to be removed from the thread
       const laterMessages = currentMessagesSnapshot.slice(userMsgIndex + 1);
-      const laterMessageIds = laterMessages.map((m) => m.id).filter(Boolean);
+      const laterMessageIds = laterMessages.map((/** @type {any} */ m) => m.id).filter(Boolean);
 
       // 3. Invalidate persistence cache for truncated message IDs
-      laterMessageIds.forEach((id) => {
+      laterMessageIds.forEach((/** @type {any} */ id) => {
         persistedMessageIdsRef.current.delete(id);
       });
 
@@ -3569,7 +3652,7 @@ export default function ChatPage({
       const updatedUserMessage = {
         ...currentMessagesSnapshot[userMsgIndex],
         attachments: Array.isArray(currentMessagesSnapshot[userMsgIndex]?.attachments)
-          ? currentMessagesSnapshot[userMsgIndex].attachments.map((att) => {
+          ? currentMessagesSnapshot[userMsgIndex].attachments.map((/** @type {any} */ att) => {
               if (!att || typeof att !== 'object') return att;
               const { base64: _b64, dataUrl: _dUrl, data: _rawData, ...cleanAtt } = att;
               if (typeof cleanAtt.previewUrl === 'string' && cleanAtt.previewUrl.startsWith('data:')) {
@@ -3641,7 +3724,7 @@ export default function ChatPage({
             allMessages: currentMessagesSnapshot
           }).catch(() => {});
         }
-        setUserChats((previous) => {
+        setUserChats((/** @type {any[]} */ previous) => {
           const next = previous.map((chat) => {
             if (chat.id !== currentChatId) return chat;
             return {
@@ -3657,7 +3740,7 @@ export default function ChatPage({
 
       // 8. If editing the initial message of the conversation, update provisional title only if no custom title
       if (userMsgIndex === 0) {
-        const currentChat = userChatsRef.current.find((c) => c.id === currentChatId);
+        const currentChat = userChatsRef.current.find((/** @type {any} */ c) => c.id === currentChatId);
         if (!currentChat?.hasCustomTitle) {
           const refreshedTitle = generateChatTitle(trimmed);
           void handleRenameChat(currentChatId, refreshedTitle, false);
@@ -3687,11 +3770,11 @@ export default function ChatPage({
       // Auto-refine title using AI response if first message was edited and user has not manually renamed
       if (userMsgIndex === 0 && currentChatId) {
         try {
-          const currentChat = userChatsRef.current.find((c) => c.id === currentChatId);
+          const currentChat = userChatsRef.current.find((/** @type {any} */ c) => c.id === currentChatId);
           if (!currentChat?.hasCustomTitle) {
             const aiCompletedText =
               editResult?.text ||
-              messagesRef.current.find((m) => m.id === assistantMessageId)?.text ||
+              messagesRef.current.find((/** @type {any} */ m) => m.id === assistantMessageId)?.text ||
               '';
             if (aiCompletedText && trimmed) {
               const refinedTitle = generateMeaningfulChatTitle(trimmed, aiCompletedText);
@@ -3721,7 +3804,7 @@ export default function ChatPage({
 
   // Export handlers for active conversation
   const hasExportableMessages = messages.some(
-    (m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
+    (/** @type {any} */ m) => !m.isError && typeof m.content === 'string' && m.content.trim().length > 0
   );
 
   const handleExportMarkdown = async () => {
@@ -3807,7 +3890,7 @@ export default function ChatPage({
 
   const resolveCurrentShareTarget = () => {
     const latestChatId = activeChatIdRef.current;
-    const latestChatRecord = userChatsRef.current.find((c) => c.id === latestChatId);
+    const latestChatRecord = userChatsRef.current.find((/** @type {any} */ c) => c.id === latestChatId);
     const latestChat = latestChatRecord
       ? {
           ...latestChatRecord,
@@ -3847,7 +3930,7 @@ export default function ChatPage({
     }
 
     const shareableCount = messagesRef.current.filter(
-      (m) => m && typeof m === 'object' && !m.isError && m.sender !== 'error'
+      (/** @type {any} */ m) => m && typeof m === 'object' && !m.isError && m.sender !== 'error'
     ).length;
 
     const existingLink = chatShareLinks[latestChat.id];
@@ -3899,11 +3982,11 @@ export default function ChatPage({
       );
 
       setShareModalData(snapshotResult);
-      setChatShareLinks((prev) => ({
+      setChatShareLinks((/** @type {Record<string, any>} */ prev) => ({
         ...prev,
         [latestChat.id]: snapshotResult
       }));
-    } catch (error) {
+    } catch (/** @type {any} */ error) {
       console.error('Failed to create shared conversation snapshot:', error);
       setShareModalError(
         error?.message || 'Failed to generate share link. Please try again.'
@@ -3914,6 +3997,7 @@ export default function ChatPage({
     }
   };
 
+  /** @param {any} shareIdToRevoke */
   const handleRevokeShareLink = async (shareIdToRevoke) => {
     if (!shareIdToRevoke || isRevokingShare) return;
     setIsRevokingShare(true);
@@ -3922,12 +4006,12 @@ export default function ChatPage({
       const result = await revokeSharedChatSnapshot(shareIdToRevoke, {
         user: currentUser
       });
-      setShareModalData((prev) =>
+      setShareModalData((/** @type {any} */ prev) =>
         prev && prev.shareId === shareIdToRevoke
           ? { ...prev, revoked: true, revokedAtMs: result.revokedAtMs }
           : prev
       );
-      setChatShareLinks((prev) => {
+      setChatShareLinks((/** @type {Record<string, any>} */ prev) => {
         const next = { ...prev };
         for (const [cid, entry] of Object.entries(next)) {
           if (entry && entry.shareId === shareIdToRevoke) {
@@ -3936,7 +4020,7 @@ export default function ChatPage({
         }
         return next;
       });
-    } catch (error) {
+    } catch (/** @type {any} */ error) {
       console.error('Failed to revoke shared link:', error);
       setShareModalError(
         error?.message || 'Failed to revoke share link. Please try again.'

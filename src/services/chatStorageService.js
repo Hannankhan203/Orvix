@@ -58,18 +58,47 @@ const FIRESTORE_OP_TIMEOUT_MS = 4500;
 const MAX_DELETION_RETRIES = 5;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30000;
+/**
+ * @typedef {Object} FirestoreMockInstance
+ * @property {(userId: string, chatId: string) => Promise<unknown>} [deleteConversation]
+ * @property {(userId: string, chatId: string, ids: string[]) => Promise<unknown>} [deleteChatMessages]
+ */
+
+/**
+ * @typedef {import('firebase/firestore').Firestore | FirestoreMockInstance | Record<string, unknown>} FirestoreInstanceOrMock
+ */
+
+/**
+ * @typedef {Object} FirestoreTestOverrides
+ * @property {FirestoreInstanceOrMock | null} [db]
+ * @property {(...args: any[]) => any} [doc]
+ * @property {(...args: any[]) => any} [collection]
+ * @property {(...args: any[]) => any} [getDoc]
+ * @property {(...args: any[]) => any} [setDoc]
+ * @property {(...args: any[]) => any} [updateDoc]
+ * @property {(...args: any[]) => any} [writeBatch]
+ * @property {(...args: any[]) => any} [serverTimestamp]
+ */
+
+/** @type {Map<string, Promise<{ syncedChats: number, syncedMessages: number }>>} */
 const activeSyncPromises = new Map();
+/** @type {Map<string, Promise<void>>} */
 const activeDeletionPromises = new Map();
+/** @type {Map<string, Promise<{ replayed: number, remaining: number }>>} */
 const activeReplayPromises = new Map();
+/** @type {Map<string, Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, offline?: boolean, error?: string }>>} */
 const activeAttachmentDeletionPromises = new Map();
+/** @type {Map<string, Promise<{ replayed: number, remaining: number }>>} */
 const activeAttachmentReplayPromises = new Map();
 
+/** @type {FirestoreInstanceOrMock | null} */
 let testDbOverride = null;
+/** @type {FirestoreTestOverrides | null} */
 let testFirestoreOpsOverride = null;
 
 /**
  * Sets a test Firestore database instance for test verification suites.
- * @param {Object|null} mockDb
+ * @param {FirestoreInstanceOrMock | null} mockDb
  */
 export function setFirestoreInstanceForTesting(mockDb) {
   testDbOverride = mockDb;
@@ -77,7 +106,7 @@ export function setFirestoreInstanceForTesting(mockDb) {
 
 /**
  * Sets optional Firestore operation overrides for unit/integration testing.
- * @param {Object|null} ops
+ * @param {FirestoreTestOverrides | null} ops
  */
 export function setFirestoreOpsForTesting(ops) {
   testFirestoreOpsOverride = ops || null;
@@ -102,31 +131,51 @@ function getFirestoreRuntime() {
   };
 }
 
+/**
+ * @param {string} userId
+ */
 function getUserChatsCacheKey(userId) {
   return `orvix_user_chats_${userId}`;
 }
 
+/**
+ * @param {string} userId
+ * @param {string} chatId
+ */
 function getUserMessagesCacheKey(userId, chatId) {
   return `orvix_user_messages_${userId}_${chatId}`;
 }
 
+/**
+ * @param {string} userId
+ */
 function getUserDeletedChatsKey(userId) {
   return `orvix_user_deleted_chats_${userId}`;
 }
 
+/**
+ * @param {string} userId
+ */
 function getUserPendingMsgDeletionsKey(userId) {
   return `orvix_pending_msg_deletions_${userId}`;
 }
 
+/**
+ * @param {unknown} err
+ * @returns {boolean}
+ */
 function isQuotaExceededError(err) {
   if (!err) return false;
-  const name = String(err.name || '');
-  const msg = String(err.message || '').toLowerCase();
+  const errObj = /** @type {{ name?: unknown, message?: unknown, code?: unknown } | null} */ (
+    typeof err === 'object' ? err : null
+  );
+  const name = String(errObj?.name || '');
+  const msg = String(errObj?.message || '').toLowerCase();
   return (
     name === 'QuotaExceededError' ||
     name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
-    err.code === 22 ||
-    err.code === 1014 ||
+    errObj?.code === 22 ||
+    errObj?.code === 1014 ||
     msg.includes('quota')
   );
 }
@@ -217,6 +266,11 @@ function setLocalStorageItemWithQuotaRecovery(targetKey, serializedValue) {
   }
 }
 
+/**
+ * @param {string} userId
+ * @param {string} chatId
+ * @returns {string[]}
+ */
 export function getPendingMessageDeletionIds(userId, chatId) {
   if (!userId || userId === 'guest' || !chatId || typeof window === 'undefined') return [];
   try {
@@ -231,6 +285,10 @@ export function getPendingMessageDeletionIds(userId, chatId) {
   }
 }
 
+/**
+ * @param {string} userId
+ * @returns {Record<string, string[]>}
+ */
 function getAllPendingMessageDeletions(userId) {
   if (!userId || userId === 'guest' || typeof window === 'undefined') return {};
   try {
@@ -243,9 +301,14 @@ function getAllPendingMessageDeletions(userId) {
   }
 }
 
+/**
+ * @param {string} userId
+ * @param {Record<string, string[]>} mapObj
+ */
 function saveAllPendingMessageDeletions(userId, mapObj) {
   if (!userId || userId === 'guest' || typeof window === 'undefined') return;
   try {
+    /** @type {Record<string, string[]>} */
     const cleaned = {};
     for (const [cid, ids] of Object.entries(mapObj || {})) {
       if (cid && Array.isArray(ids) && ids.length > 0) {
@@ -261,6 +324,11 @@ function saveAllPendingMessageDeletions(userId, mapObj) {
   } catch (_) {}
 }
 
+/**
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {string[]} msgIds
+ */
 function enqueuePendingMessageDeletions(userId, chatId, msgIds) {
   if (!userId || userId === 'guest' || !chatId || !Array.isArray(msgIds) || msgIds.length === 0) return;
   const all = getAllPendingMessageDeletions(userId);
@@ -269,6 +337,11 @@ function enqueuePendingMessageDeletions(userId, chatId, msgIds) {
   saveAllPendingMessageDeletions(userId, all);
 }
 
+/**
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {string[]|null} [msgIds=null]
+ */
 function removePendingMessageDeletions(userId, chatId, msgIds = null) {
   if (!userId || userId === 'guest' || !chatId) return;
   const all = getAllPendingMessageDeletions(userId);
@@ -277,7 +350,7 @@ function removePendingMessageDeletions(userId, chatId, msgIds = null) {
     delete all[chatId];
   } else {
     const dropSet = new Set(msgIds);
-    const remaining = all[chatId].filter((id) => !dropSet.has(id));
+    const remaining = all[chatId].filter((/** @type {any} */ id) => !dropSet.has(id));
     if (remaining.length > 0) {
       all[chatId] = remaining;
     } else {
@@ -287,6 +360,9 @@ function removePendingMessageDeletions(userId, chatId, msgIds = null) {
   saveAllPendingMessageDeletions(userId, all);
 }
 
+/**
+ * @param {number} ms
+ */
 function formatChatDateLabel(ms) {
   if (!ms || !Number.isFinite(ms)) return 'Recently';
   try {
@@ -299,10 +375,17 @@ function formatChatDateLabel(ms) {
   }
 }
 
+/**
+ * @param {Promise<any>} promise
+ * @param {number} [timeoutMs]
+ * @param {string} [label]
+ */
 function withBoundedTimeout(promise, timeoutMs = FIRESTORE_OP_TIMEOUT_MS, label = 'Firestore operation') {
+  /** @type {any} */
   let timer = null;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      /** @type {any} */
       const err = new Error(`${label} timed out after ${timeoutMs}ms`);
       err.code = 'unavailable';
       reject(err);
@@ -314,6 +397,9 @@ function withBoundedTimeout(promise, timeoutMs = FIRESTORE_OP_TIMEOUT_MS, label 
   });
 }
 
+/**
+ * @param {any} err
+ */
 function isOfflineOrNetworkError(err) {
   if (!isBrowserOnline()) return true;
   const code = String(err?.code || '').toLowerCase();
@@ -335,7 +421,7 @@ function isOfflineOrNetworkError(err) {
 /**
  * Reads cached conversation metadata for a signed-in user from localStorage.
  * @param {string} userId
- * @returns {Array}
+ * @returns {Array<any>}
  */
 export function getCachedUserChats(userId) {
   if (!userId || typeof window === 'undefined') return [];
@@ -353,7 +439,7 @@ export function getCachedUserChats(userId) {
 /**
  * Persists conversation metadata list for a signed-in user to localStorage.
  * @param {string} userId
- * @param {Array} chats
+ * @param {Array<any>} chats
  */
 export function saveCachedUserChats(userId, chats) {
   if (!userId || typeof window === 'undefined' || !Array.isArray(chats)) return;
@@ -369,7 +455,7 @@ export function saveCachedUserChats(userId, chats) {
  * Reads cached messages for a specific signed-in user's conversation from localStorage.
  * @param {string} userId
  * @param {string} chatId
- * @returns {Array}
+ * @returns {Array<any>}
  */
 export function getCachedChatMessages(userId, chatId) {
   if (!userId || !chatId || typeof window === 'undefined') return [];
@@ -388,7 +474,7 @@ export function getCachedChatMessages(userId, chatId) {
         restored.referencedAttachments = restored.referencedAttachments.map(restoreAttachmentFromStorage);
       }
       if (Array.isArray(restored.alternatives)) {
-        restored.alternatives = restored.alternatives.map((alt) => {
+        restored.alternatives = restored.alternatives.map((/** @type {any} */ alt) => {
           if (!alt || typeof alt !== 'object') return alt;
           return {
             ...alt,
@@ -409,7 +495,7 @@ export function getCachedChatMessages(userId, chatId) {
  * Persists messages for a specific signed-in user's conversation to localStorage.
  * @param {string} userId
  * @param {string} chatId
- * @param {Array} messages
+ * @param {Array<any>} messages
  */
 export function saveCachedChatMessages(userId, chatId, messages) {
   if (!userId || !chatId || typeof window === 'undefined' || !Array.isArray(messages)) return;
@@ -740,8 +826,9 @@ export async function replayPendingOrphanedAttachmentDeletions(userId, options =
     return { replayed: 0, remaining: 0 };
   }
 
-  if (activeAttachmentReplayPromises.has(userId)) {
-    return activeAttachmentReplayPromises.get(userId);
+  const existingAttachmentReplay = activeAttachmentReplayPromises.get(userId);
+  if (existingAttachmentReplay) {
+    return existingAttachmentReplay;
   }
 
   const replayTask = (async () => {
@@ -791,7 +878,7 @@ export async function replayPendingOrphanedAttachmentDeletions(userId, options =
             status: res.status
           });
         }
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         enqueuePendingOrphanedAttachmentDeletion(userId, entry.chatId, entry.attachmentId, {
           attempts: (entry.attempts || 0) + 1,
           error: err?.message || 'Exception during replay'
@@ -811,6 +898,10 @@ export async function replayPendingOrphanedAttachmentDeletions(userId, options =
   }
 }
 
+/**
+ * @param {string} userId
+ * @param {any} chatPatch
+ */
 export function upsertCachedUserChat(userId, chatPatch) {
   if (!userId || !chatPatch?.id) return [];
   const existing = getCachedUserChats(userId);
@@ -825,6 +916,11 @@ export function upsertCachedUserChat(userId, chatPatch) {
   return getCachedUserChats(userId);
 }
 
+/**
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {any} messageObj
+ */
 function upsertCachedChatMessage(userId, chatId, messageObj) {
   if (!userId || !chatId || !messageObj?.id) return [];
   const existing = getCachedChatMessages(userId, chatId);
@@ -843,6 +939,9 @@ function upsertCachedChatMessage(userId, chatId, messageObj) {
 export const MAX_ATTACHMENT_EXTRACTION_BYTES = 64 * 1024; // 64 KiB ceiling per extracted attachment text
 export const MAX_FIRESTORE_DOCUMENT_BYTES = 900 * 1024; // 900 KiB (921,600 bytes) safe ceiling with 124+ KiB safety margin below Firestore's 1 MiB hard limit
 
+/**
+ * @param {any} extraction
+ */
 export function sanitizeExtractionForStorage(extraction) {
   if (!extraction || typeof extraction !== 'object') return null;
   const { base64, dataUrl, data, previewUrl, file, blob, ...cleanExtraction } = extraction;
@@ -881,6 +980,9 @@ export function sanitizeExtractionForStorage(extraction) {
   return cleanExtraction;
 }
 
+/**
+ * @param {any} att
+ */
 export function serializeAttachmentForStorage(att) {
   if (!att || typeof att !== 'object') return att;
   const resolvedType = att.type || att.mimeType || '';
@@ -893,6 +995,7 @@ export function serializeAttachmentForStorage(att) {
     resolvedStorageProvider = 'supabase';
   }
 
+  /** @type {Record<string, any>} */
   const serialized = {
     id: att.id,
     name: att.name || att.originalName || 'document',
@@ -975,6 +1078,7 @@ export const MAX_FIRESTORE_MESSAGE_BYTES = 100000; // 100 KB limit matching fire
 
 /**
  * Computes exact UTF-8 byte length for message content strings.
+ * @param {string} str
  */
 export function getUtf8ByteLength(str) {
   if (typeof str !== 'string') return 0;
@@ -990,6 +1094,7 @@ export function getUtf8ByteLength(str) {
 /**
  * Enforces the Firestore 100 KB message size limit using UTF-8 byte measurement.
  * If content exceeds the limit, truncates safely and appends an explicit user-visible notice.
+ * @param {string} content
  */
 export function enforceFirestoreMessageSizeLimit(content) {
   if (typeof content !== 'string') return { content: '', truncated: false };
@@ -1023,6 +1128,9 @@ export function enforceFirestoreMessageSizeLimit(content) {
   };
 }
 
+/**
+ * @param {any} msg
+ */
 export function sanitizeMessageForStorage(msg) {
   if (!msg || typeof msg !== 'object') return msg;
   const next = { ...msg };
@@ -1043,7 +1151,7 @@ export function sanitizeMessageForStorage(msg) {
     next.referencedAttachments = next.referencedAttachments.map(serializeAttachmentForStorage);
   }
   if (Array.isArray(next.alternatives)) {
-    next.alternatives = next.alternatives.map((alt) => {
+    next.alternatives = next.alternatives.map((/** @type {any} */ alt) => {
       if (!alt || typeof alt !== 'object') return alt;
       const sanitizedAlt = { ...alt };
       if (typeof sanitizedAlt.content === 'string') {
@@ -1090,6 +1198,10 @@ export function calculateFirestoreDocumentByteSize(value, docPath = '') {
   // Standard chat message doc path (/users/<uid>/chats/<cid>/messages/<mid>) is ~160-200 bytes.
   const pathOverhead = docPath ? getUtf8ByteLength(docPath) + 48 : 200;
 
+  /**
+   * @param {any} val
+   * @returns {number}
+   */
   function measureVal(val) {
     if (val === null || val === undefined) return 1;
     if (typeof val === 'boolean') return 1;
@@ -1155,6 +1267,8 @@ export function calculateDocumentByteSize(docData, docPath = '') {
  * 6. Bounds excessive attachment lists if pathological worst-case payload is encountered.
  *
  * Essential metadata (id, sender, createdAt, modelUsed, activeAlternativeId) is strictly preserved.
+ * @param {any} payload
+ * @param {string|null} [activeAltId=null]
  */
 export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
   if (!payload || typeof payload !== 'object') return payload;
@@ -1168,7 +1282,7 @@ export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
 
   // Pass 1: Prune extraction texts in attachments and referencedAttachments
   if (Array.isArray(pruned.attachments)) {
-    pruned.attachments = pruned.attachments.map((att) => {
+    pruned.attachments = pruned.attachments.map((/** @type {any} */ att) => {
       if (!att || !att.extraction) return att;
       const { text, pages, slides, ...restExtraction } = att.extraction;
       return {
@@ -1186,7 +1300,7 @@ export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
     });
   }
   if (Array.isArray(pruned.referencedAttachments)) {
-    pruned.referencedAttachments = pruned.referencedAttachments.map((att) => {
+    pruned.referencedAttachments = pruned.referencedAttachments.map((/** @type {any} */ att) => {
       if (!att || !att.extraction) return att;
       const { text, pages, slides, ...restExtraction } = att.extraction;
       return {
@@ -1235,7 +1349,7 @@ export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
   // Pass 3: Truncate remaining non-active alternatives' content
   if (Array.isArray(pruned.alternatives)) {
     const activeId = activeAltId || pruned.activeAlternativeId;
-    pruned.alternatives = pruned.alternatives.map((alt) => {
+    pruned.alternatives = pruned.alternatives.map((/** @type {any} */ alt) => {
       if (alt.id === activeId || !alt.content || typeof alt.content !== 'string') {
         return alt;
       }
@@ -1259,14 +1373,14 @@ export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
 
   // Pass 4: Strip extraction completely from attachments if still over
   if (Array.isArray(pruned.attachments)) {
-    pruned.attachments = pruned.attachments.map((att) => {
+    pruned.attachments = pruned.attachments.map((/** @type {any} */ att) => {
       if (!att || !att.extraction) return att;
       const { text, ...minimalExtraction } = att.extraction;
       return { ...att, extraction: minimalExtraction };
     });
   }
   if (Array.isArray(pruned.referencedAttachments)) {
-    pruned.referencedAttachments = pruned.referencedAttachments.map((att) => {
+    pruned.referencedAttachments = pruned.referencedAttachments.map((/** @type {any} */ att) => {
       if (!att || !att.extraction) return att;
       const { text, ...minimalExtraction } = att.extraction;
       return { ...att, extraction: minimalExtraction };
@@ -1286,7 +1400,7 @@ export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
   }
   if (Array.isArray(pruned.alternatives)) {
     const activeId = activeAltId || pruned.activeAlternativeId;
-    pruned.alternatives = pruned.alternatives.map((alt) => {
+    pruned.alternatives = pruned.alternatives.map((/** @type {any} */ alt) => {
       if (alt.id === activeId && typeof alt.content === 'string' && alt.content.length > 10000) {
         const enforced = enforceFirestoreMessageSizeLimit(alt.content);
         return { ...alt, content: enforced.content, wasTruncated: true };
@@ -1311,6 +1425,9 @@ export function enforceFirestoreDocumentSizeLimit(payload, activeAltId = null) {
   return pruned;
 }
 
+/**
+ * @param {any} targetMessage
+ */
 export function buildFirestoreMessagePayload(targetMessage) {
   const rawContent =
     typeof targetMessage.content === 'string' && targetMessage.content.length > 0
@@ -1331,9 +1448,10 @@ export function buildFirestoreMessagePayload(targetMessage) {
     createdAtMs: typeof targetMessage.createdAtMs === 'number' ? targetMessage.createdAtMs : Date.now(),
     activeAlternativeId: targetMessage.activeAlternativeId || null,
     alternatives: Array.isArray(targetMessage.alternatives)
-      ? targetMessage.alternatives.map((alt) => {
+      ? targetMessage.alternatives.map((/** @type {any} */ alt) => {
           const rawAltContent = typeof alt.content === 'string' ? alt.content : '';
           const enforcedAlt = enforceFirestoreMessageSizeLimit(rawAltContent);
+          /** @type {Record<string, any>} */
           const entry = {
             id: alt.id,
             parentMessageId: alt.parentMessageId || targetMessage.parentMessageId || null,
@@ -1435,6 +1553,9 @@ export function generateChatTitle(promptText, maxLength = 36) {
   return truncated + '...';
 }
 
+/**
+ * @param {string} str
+ */
 function cleanTitleText(str) {
   if (!str) return '';
   return str
@@ -1446,6 +1567,7 @@ function cleanTitleText(str) {
     .trim();
 }
 
+/** @type {Record<string, string>} */
 const PRESERVED_ACRONYMS = {
   api: 'API',
   apis: 'APIs',
@@ -1484,6 +1606,9 @@ const PRESERVED_ACRONYMS = {
   beautifulsoup: 'BeautifulSoup'
 };
 
+/**
+ * @param {string} str
+ */
 function toTitleCase(str) {
   const minorWords = new Set([
     'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'in', 'nor', 'of', 'on', 'or', 'so', 'the', 'to', 'up', 'yet', 'with'
@@ -1512,6 +1637,11 @@ function toTitleCase(str) {
     .join(' ');
 }
 
+/**
+ * @param {string} text
+ * @param {number} [minWords]
+ * @param {number} [maxWords]
+ */
 function truncateToWords(text, minWords = 3, maxWords = 6) {
   const words = text
     .replace(/[.,:;!?]+$/g, '')
@@ -1695,7 +1825,7 @@ export function generateLocalChatId(userId = '') {
  * @param {string} [initialTitle='New Conversation']
  * @param {string} [mode='general'] - Active chat mode (general | coding | writing | learning)
  * @param {Object} [extraMetadata={}] - Optional metadata or settings
- * @param {string} [targetChatId=null] - Optional pre-generated chatId to reuse
+ * @param {string|null} [targetChatId=null] - Optional pre-generated chatId to reuse
  * @returns {Promise<string>} The generated or reused chatId
  */
 export async function createChatDocument(
@@ -1775,10 +1905,8 @@ export async function createChatDocument(
 }
 
 /**
- * Updates the active mode of an existing conversation in Firestore (and local cache).
- * @param {string} userId
- * @param {string} chatId
- * @param {string} mode
+ * @param {any} existingChat
+ * @param {any} fieldUpdates
  */
 function buildUpdatedPendingMetaFields(existingChat, fieldUpdates) {
   const baseFields =
@@ -1795,6 +1923,12 @@ function buildUpdatedPendingMetaFields(existingChat, fieldUpdates) {
   };
 }
 
+/**
+ * Updates the active mode of an existing conversation in Firestore (and local cache).
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {string} mode
+ */
 export async function updateChatMode(userId, chatId, mode) {
   if (!userId || !chatId) return;
   const cleanMode = mode || 'general';
@@ -1827,7 +1961,7 @@ export async function updateChatMode(userId, chatId, mode) {
       id: chatId,
       ...buildUpdatedPendingMetaFields(latestChat, { mode: false })
     });
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     const latestChat = getCachedUserChats(userId).find((c) => c.id === chatId);
     upsertCachedUserChat(userId, {
       id: chatId,
@@ -1870,6 +2004,11 @@ export function shouldPersistChatMessage(userId, chatId, message) {
   return false;
 }
 
+/**
+ * @param {string} userId
+ * @param {string} chatId
+ * @param {any} message
+ */
 export async function saveChatMessage(userId, chatId, message) {
   if (!userId || !chatId || !message?.id) {
     return;
@@ -2092,7 +2231,7 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
       const pinnedQuery = query(chatsRef, where('isPinned', '==', true));
       const snapshot = await withBoundedTimeout(getDocs(pinnedQuery), FIRESTORE_OP_TIMEOUT_MS, 'checkPinnedLimit');
 
-      const alreadyPinned = snapshot.docs.some((d) => d.id === chatId);
+      const alreadyPinned = snapshot.docs.some((/** @type {any} */ d) => d.id === chatId);
       if (!alreadyPinned && snapshot.docs.length >= 5) {
         throw new Error('You can pin up to 5 chats. Unpin a chat before pinning another.');
       }
@@ -2158,7 +2297,7 @@ export async function toggleChatPinned(userId, chatId, isPinned) {
  * Never exposes Supabase credentials.
  *
  * @param {string} chatId
- * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, error?: string, deletedCount?: number }>}
+ * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, offline?: boolean, error?: string, deletedCount?: number }>}
  */
 export async function cleanUpSupabaseConversationStorage(chatId) {
   if (!chatId) {
@@ -2235,7 +2374,7 @@ export async function cleanUpSupabaseConversationStorage(chatId) {
       retryable: is5xx,
       error: errMsg
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout');
     return {
       success: false,
@@ -2265,8 +2404,9 @@ export async function replayPendingDeletions(userId, options = {}) {
   }
 
   // Prevent duplicate concurrent replay runs for the same user
-  if (activeReplayPromises.has(userId)) {
-    return activeReplayPromises.get(userId);
+  const existingReplay = activeReplayPromises.get(userId);
+  if (existingReplay) {
+    return existingReplay;
   }
 
   const replayTask = (async () => {
@@ -2310,7 +2450,7 @@ export async function replayPendingDeletions(userId, options = {}) {
         if (!stillQueued) {
           replayedCount++;
         }
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         console.warn(`[Chat Storage] Failed to replay deletion for chat ${chatId}:`, err?.message || err);
       }
     }
@@ -2318,7 +2458,7 @@ export async function replayPendingDeletions(userId, options = {}) {
     // Also replay any pending orphaned attachment deletions for this user
     try {
       await replayPendingOrphanedAttachmentDeletions(userId, options);
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       console.warn('[Chat Storage] Failed to replay orphaned attachment deletions:', err?.message || err);
     }
 
@@ -2352,8 +2492,9 @@ export async function deleteConversation(userId, chatId) {
   }
 
   const opKey = `${userId}:${chatId}`;
-  if (activeDeletionPromises.has(opKey)) {
-    return activeDeletionPromises.get(opKey);
+  const existingDeletion = activeDeletionPromises.get(opKey);
+  if (existingDeletion) {
+    return existingDeletion;
   }
 
   const deletionTask = (async () => {
@@ -2387,13 +2528,14 @@ export async function deleteConversation(userId, chatId) {
     void deleteAttachmentsForConversation(chatId).catch(() => {});
     try {
       const cachedMessages = getCachedChatMessages(userId, chatId);
+      /** @type {string[]} */
       const attIds = [];
       cachedMessages.forEach((m) => {
         if (Array.isArray(m?.attachments)) {
-          m.attachments.forEach((a) => a?.id && attIds.push(a.id));
+          m.attachments.forEach((/** @type {any} */ a) => a?.id && attIds.push(a.id));
         }
         if (Array.isArray(m?.referencedAttachments)) {
-          m.referencedAttachments.forEach((a) => a?.id && attIds.push(a.id));
+          m.referencedAttachments.forEach((/** @type {any} */ a) => a?.id && attIds.push(a.id));
         }
       });
       if (attIds.length > 0) {
@@ -2443,11 +2585,16 @@ export async function deleteConversation(userId, chatId) {
       }
 
       try {
-        if (testDbOverride && typeof testDbOverride.deleteConversation === 'function') {
+        if (
+          testDbOverride &&
+          'deleteConversation' in testDbOverride &&
+          typeof testDbOverride.deleteConversation === 'function'
+        ) {
           await testDbOverride.deleteConversation(userId, chatId);
           firestoreDeleted = true;
         } else {
-          const messagesRef = collection(effectiveDb, 'users', userId, 'chats', chatId, 'messages');
+          const firestoreDb = /** @type {import('firebase/firestore').Firestore} */ (effectiveDb);
+          const messagesRef = collection(firestoreDb, 'users', userId, 'chats', chatId, 'messages');
           const snapshot = await withBoundedTimeout(getDocs(messagesRef), FIRESTORE_OP_TIMEOUT_MS, 'loadMessagesForDelete');
 
           const docs = snapshot.docs;
@@ -2456,7 +2603,7 @@ export async function deleteConversation(userId, chatId) {
           for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
             const chunk = docs.slice(i, i + CHUNK_SIZE);
             const batch = writeBatch(effectiveDb);
-            chunk.forEach((docSnap) => {
+            chunk.forEach((/** @type {any} */ docSnap) => {
               batch.delete(docSnap.ref);
             });
             await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'deleteMessagesBatch');
@@ -2466,7 +2613,7 @@ export async function deleteConversation(userId, chatId) {
           await withBoundedTimeout(deleteDoc(chatDocRef), FIRESTORE_OP_TIMEOUT_MS, 'deleteChatDoc');
           firestoreDeleted = true;
         }
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (isOfflineOrNetworkError(err)) {
           if (!targetLocal?.createdOffline || existingEntry) {
             enqueuePendingDeletion(userId, chatId, {
@@ -2509,8 +2656,8 @@ export async function deleteConversation(userId, chatId) {
  *
  * @param {string} attachmentId - Unique attachment UUID
  * @param {string} chatId - Parent conversation document ID
- * @param {string} [userId=null] - Optional authenticated user UID
- * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, error?: string }>}
+ * @param {string|null} [userId=null] - Optional authenticated user UID
+ * @returns {Promise<{ success: boolean, status?: number, code?: string, retryable?: boolean, offline?: boolean, error?: string }>}
  */
 export async function cleanUpSingleAttachmentStorage(attachmentId, chatId, userId = null) {
   if (!attachmentId) {
@@ -2521,8 +2668,9 @@ export async function cleanUpSingleAttachmentStorage(attachmentId, chatId, userI
   const opKey = `${effectiveUserId || 'anon'}:${chatId || 'no-chat'}:${attachmentId}`;
 
   // Prevent concurrent duplicate deletion attempts for the same attachment
-  if (activeAttachmentDeletionPromises.has(opKey)) {
-    return activeAttachmentDeletionPromises.get(opKey);
+  const existingAttachmentDeletion = activeAttachmentDeletionPromises.get(opKey);
+  if (existingAttachmentDeletion) {
+    return existingAttachmentDeletion;
   }
 
   const deletionTask = (async () => {
@@ -2608,7 +2756,7 @@ export async function cleanUpSingleAttachmentStorage(attachmentId, chatId, userI
       }
 
       return failResult;
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout');
       const networkResult = {
         success: false,
@@ -2692,12 +2840,12 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
   const retainedAttachmentIds = new Set();
   remainingLocal.forEach((m) => {
     if (Array.isArray(m?.attachments)) {
-      m.attachments.forEach((a) => {
+      m.attachments.forEach((/** @type {any} */ a) => {
         if (a?.id) retainedAttachmentIds.add(String(a.id));
       });
     }
     if (Array.isArray(m?.referencedAttachments)) {
-      m.referencedAttachments.forEach((a) => {
+      m.referencedAttachments.forEach((/** @type {any} */ a) => {
         if (a?.id) retainedAttachmentIds.add(String(a.id));
       });
     }
@@ -2708,12 +2856,12 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
   const deletedMessages = allMessages.filter((m) => removeSet.has(m.id));
   deletedMessages.forEach((m) => {
     if (Array.isArray(m?.attachments)) {
-      m.attachments.forEach((a) => {
+      m.attachments.forEach((/** @type {any} */ a) => {
         if (a?.id) candidateAttachmentMap.set(String(a.id), a);
       });
     }
     if (Array.isArray(m?.referencedAttachments)) {
-      m.referencedAttachments.forEach((a) => {
+      m.referencedAttachments.forEach((/** @type {any} */ a) => {
         if (a?.id) candidateAttachmentMap.set(String(a.id), a);
       });
     }
@@ -2750,13 +2898,18 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
   }
 
   try {
-    if (testDbOverride && typeof testDbOverride.deleteChatMessages === 'function') {
+    if (
+      testDbOverride &&
+      'deleteChatMessages' in testDbOverride &&
+      typeof testDbOverride.deleteChatMessages === 'function'
+    ) {
       await testDbOverride.deleteChatMessages(userId, chatId, validIds);
     } else {
+      const firestoreDb = /** @type {import('firebase/firestore').Firestore} */ (effectiveDb);
       const CHUNK_SIZE = 400;
       for (let i = 0; i < validIds.length; i += CHUNK_SIZE) {
         const chunk = validIds.slice(i, i + CHUNK_SIZE);
-        const batch = writeBatch(effectiveDb);
+        const batch = writeBatch(firestoreDb);
         chunk.forEach((msgId) => {
           const msgRef = doc(effectiveDb, 'users', userId, 'chats', chatId, 'messages', msgId);
           batch.delete(msgRef);
@@ -2765,7 +2918,7 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
       }
     }
     removePendingMessageDeletions(userId, chatId, validIds);
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.warn('Could not delete truncated messages in Firestore (queued for retry):', err?.message || err);
   }
 
@@ -2775,6 +2928,8 @@ export async function deleteChatMessages(userId, chatId, messageIds = [], option
 /**
  * Merges cloud conversation metadata with locally cached pending conversations
  * so offline-created or unsynced chats are never overwritten or hidden.
+ * @param {string} userId
+ * @param {Array<any>} cloudChats
  */
 function mergeCloudAndLocalChats(userId, cloudChats) {
   const localChats = getCachedUserChats(userId);
@@ -2844,8 +2999,9 @@ export async function syncOfflineUserChatsToFirestore(userId) {
     return { syncedChats: 0, syncedMessages: 0 };
   }
 
-  if (activeSyncPromises.has(userId)) {
-    return activeSyncPromises.get(userId);
+  const existingSync = activeSyncPromises.get(userId);
+  if (existingSync) {
+    return existingSync;
   }
 
   const syncTask = (async () => {
@@ -2858,7 +3014,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
       // 1. Replay any pending offline deletions (Supabase storage + Firestore)
       try {
         await replayPendingDeletions(userId);
-      } catch (replayErr) {
+      } catch (/** @type {any} */ replayErr) {
         console.warn('Deferred pending deletion replay until next online cycle:', replayErr?.message || replayErr);
       }
 
@@ -2879,7 +3035,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
             await withBoundedTimeout(batch.commit(), FIRESTORE_OP_TIMEOUT_MS, 'syncDeleteMessagesBatch');
           }
           removePendingMessageDeletions(userId, pendingChatId, pendingMsgIds);
-        } catch (delErr) {
+        } catch (/** @type {any} */ delErr) {
           console.warn('Deferred syncing truncated message deletions until next online cycle:', pendingChatId, delErr?.message || delErr);
         }
       }
@@ -2975,7 +3131,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
                 );
                 syncedChats++;
                 metaSyncSucceeded = true;
-              } catch (metaErr) {
+              } catch (/** @type {any} */ metaErr) {
                 metaSyncSucceeded = false;
                 console.warn('Deferred syncing conversation metadata until next online cycle:', localChat.id, metaErr?.message || metaErr);
               }
@@ -2983,7 +3139,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
               metaSyncSucceeded = true;
             }
           }
-        } catch (chatErr) {
+        } catch (/** @type {any} */ chatErr) {
           metaSyncSucceeded = false;
           // If the conversation already existed remotely (and we did not observe !exists()),
           // allow its pending messages to attempt synchronization even if metadata inspection failed.
@@ -3014,7 +3170,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
               pendingSync: false
             });
             syncedMessages++;
-          } catch (msgErr) {
+          } catch (/** @type {any} */ msgErr) {
             allMessagesSynced = false;
             console.warn('Deferred syncing message until next online cycle:', msg?.id, msgErr?.message || msgErr);
           }
@@ -3057,7 +3213,7 @@ export async function syncOfflineUserChatsToFirestore(userId) {
  * Hydrates immediately from local cache and skips WebChannel listeners while offline.
  *
  * @param {string} userId
- * @param {(chats: Array) => void} onUpdate
+ * @param {(chats: Array<any>) => void} onUpdate
  * @param {(err: Error) => void} onError
  * @returns {() => void} Unsubscribe function
  */
@@ -3087,6 +3243,7 @@ export function subscribeToUserChats(userId, onUpdate, onError) {
   return onSnapshot(
     q,
     (snapshot) => {
+      /** @type {Array<any>} */
       const cloudChats = [];
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
@@ -3131,7 +3288,7 @@ export function subscribeToUserChats(userId, onUpdate, onError) {
  *
  * @param {string} userId
  * @param {string} chatId
- * @returns {Promise<Array>}
+ * @returns {Promise<Array<any>>}
  */
 export async function loadConversationMessages(userId, chatId) {
   const localMessages = getCachedChatMessages(userId, chatId);
@@ -3145,9 +3302,10 @@ export async function loadConversationMessages(userId, chatId) {
 
   try {
     const snapshot = await withBoundedTimeout(getDocs(q), FIRESTORE_OP_TIMEOUT_MS, 'loadConversationMessages');
+    /** @type {Array<any>} */
     const cloudMessages = [];
 
-    snapshot.forEach((docSnap) => {
+    snapshot.forEach((/** @type {any} */ docSnap) => {
       const data = docSnap.data();
       cloudMessages.push({
         id: docSnap.id,
@@ -3160,7 +3318,7 @@ export async function loadConversationMessages(userId, chatId) {
         interactionId: data.interactionId || null,
         activeAlternativeId: data.activeAlternativeId || null,
         alternatives: Array.isArray(data.alternatives)
-          ? data.alternatives.map((alt) => ({
+          ? data.alternatives.map((/** @type {any} */ alt) => ({
               ...alt,
               attachments: Array.isArray(alt.attachments) ? alt.attachments.map(restoreAttachmentFromStorage) : [],
               referencedAttachments: Array.isArray(alt.referencedAttachments) ? alt.referencedAttachments.map(restoreAttachmentFromStorage) : []
@@ -3216,7 +3374,7 @@ export async function loadConversationMessages(userId, chatId) {
  *
  * @param {string} userId - Authenticated user UID
  * @param {string} chatId - Chat document ID
- * @param {(messages: Array) => void} onUpdate - Snapshot update callback receiving canonically ordered messages
+ * @param {(messages: Array<any>) => void} onUpdate - Snapshot update callback receiving canonically ordered messages
  * @param {(err: Error) => void} [onError] - Optional error handler callback
  * @returns {() => void} Unsubscribe function
  */
@@ -3246,6 +3404,7 @@ export function subscribeToChatMessages(userId, chatId, onUpdate, onError) {
   return onSnapshot(
     q,
     (snapshot) => {
+      /** @type {Array<any>} */
       const cloudMessages = [];
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
@@ -3260,7 +3419,7 @@ export function subscribeToChatMessages(userId, chatId, onUpdate, onError) {
           interactionId: data.interactionId || null,
           activeAlternativeId: data.activeAlternativeId || null,
           alternatives: Array.isArray(data.alternatives)
-            ? data.alternatives.map((alt) => ({
+            ? data.alternatives.map((/** @type {any} */ alt) => ({
                 ...alt,
                 attachments: Array.isArray(alt.attachments) ? alt.attachments.map(restoreAttachmentFromStorage) : [],
                 referencedAttachments: Array.isArray(alt.referencedAttachments) ? alt.referencedAttachments.map(restoreAttachmentFromStorage) : []

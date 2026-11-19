@@ -321,11 +321,36 @@ export function generateShareId(length = SHARE_ID_LENGTH) {
 }
 
 /**
+ * @typedef {Object} ShareUserCandidate
+ * @property {string} [uid]
+ * @property {boolean} [isAnonymous]
+ * @property {string | null} [email]
+ * @property {() => Promise<string>} [getIdToken]
+ */
+
+/**
+ * @typedef {Object} ShareChatCandidate
+ * @property {string} [id]
+ * @property {string} [title]
+ * @property {string} [mode]
+ * @property {boolean} [isSharedPreview]
+ */
+
+/**
+ * @typedef {Object} ShareEligibilityParams
+ * @property {ShareUserCandidate | null} [user]
+ * @property {ShareChatCandidate | null} [chat]
+ * @property {Array<Record<string, unknown>> | null} [messages]
+ * @property {boolean} [isLoading]
+ * @property {boolean} [isSharedPreview]
+ */
+
+/**
  * Checks whether a user is eligible to create a shared chat link.
  * Requires a signed-in, non-anonymous Firebase user (rejects Guest Mode,
  * anonymous Firebase sessions, and unauthenticated visitors).
  *
- * @param {Object|null} user
+ * @param {ShareUserCandidate | null | undefined} user
  * @returns {boolean}
  */
 export function isEligibleShareUser(user) {
@@ -340,12 +365,7 @@ export function isEligibleShareUser(user) {
 /**
  * Checks whether a specific conversation and user state can currently be shared.
  *
- * @param {Object} [params]
- * @param {Object|null} [params.user]
- * @param {Object|null} [params.chat]
- * @param {Array<any>} [params.messages]
- * @param {boolean} [params.isLoading=false]
- * @param {boolean} [params.isSharedPreview=false]
+ * @param {ShareEligibilityParams} [params]
  * @returns {{ eligible: boolean, reason: string|null }}
  */
 export function evaluateShareEligibility({
@@ -989,12 +1009,15 @@ export function buildValidatedSharedSnapshot({
 
 /**
  * Bounded timeout wrapper for Firestore operations.
- * @param {Promise<any>} promise
+ * @template T
+ * @param {Promise<T>} promise
  * @param {number} [ms=12000]
+ * @returns {Promise<T>}
  */
 function withPublishTimeout(promise, ms = 12000) {
-  /** @type {any} */
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
   let timerId;
+  /** @type {Promise<never>} */
   const timeoutPromise = new Promise((_, reject) => {
     timerId = setTimeout(() => {
       reject(
@@ -1007,7 +1030,9 @@ function withPublishTimeout(promise, ms = 12000) {
   });
 
   return Promise.race([promise, timeoutPromise]).finally(() => {
-    clearTimeout(timerId);
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+    }
   });
 }
 
@@ -1015,9 +1040,9 @@ function withPublishTimeout(promise, ms = 12000) {
  * Publishes the entire active conversation as an immutable shared snapshot
  * at `sharedChats/{shareId}` and returns the generated share metadata.
  *
- * @param {Object} chat - Active chat metadata object (`{ id, title, mode, ... }`)
- * @param {Array<any>} messages - Complete list of messages in the active conversation
- * @param {any} [options]
+ * @param {ShareChatCandidate} chat - Active chat metadata object (`{ id, title, mode, ... }`)
+ * @param {Array<Record<string, any>>} messages - Complete list of messages in the active conversation
+ * @param {Record<string, any>} [options]
  * @returns {Promise<{ shareId: string, shareUrl: string, title: string, mode: string, messageCount: number, byteSize: number, expiresAtMs: number|null, revoked: boolean }>}
  */
 export async function createSharedChatSnapshot(chat, messages, options = {}) {
@@ -1523,7 +1548,7 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null, opti
   }
 
   // Pre-validate and sanitize EVERY individual message in the snapshot
-  const sanitizedMessages = data.messages.map((rawMsg, idx) => {
+  const sanitizedMessages = data.messages.map((/** @type {any} */ rawMsg, /** @type {number} */ idx) => {
     return sanitizeMessageForShare(rawMsg, idx, data.mode);
   });
 

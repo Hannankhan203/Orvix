@@ -83,6 +83,7 @@ const GENERIC_MIME_TYPES = new Set([
   'unknown/unknown'
 ]);
 
+/** @type {Record<string, string>} */
 const EXTENSION_TO_MIME = Object.freeze({
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -95,6 +96,7 @@ const EXTENSION_TO_MIME = Object.freeze({
   '.xlsx': OPENXML_XLSX_MIME
 });
 
+/** @type {Record<string, readonly string[]>} */
 const MIME_TO_EXTENSIONS = Object.freeze({
   'image/png': ['.png'],
   'image/jpeg': ['.jpg', '.jpeg'],
@@ -106,20 +108,72 @@ const MIME_TO_EXTENSIONS = Object.freeze({
   [OPENXML_XLSX_MIME]: ['.xlsx']
 });
 
+/** @type {Record<string, { partPath: string, rootMarker: string }>} */
 const OPENXML_CORE_PARTS = Object.freeze({
   [OPENXML_DOCX_MIME]: { partPath: 'word/document.xml', rootMarker: '<w:document' },
   [OPENXML_PPTX_MIME]: { partPath: 'ppt/presentation.xml', rootMarker: '<p:presentation' },
   [OPENXML_XLSX_MIME]: { partPath: 'xl/workbook.xml', rootMarker: '<workbook' }
 });
 
+/**
+ * @typedef {Object} CancellationContext
+ * @property {AbortSignal} [signal]
+ * @property {number} [deadlineAt]
+ * @property {number} [timeoutMs]
+ */
+
+/**
+ * @typedef {Object} DecodedImageAnalysis
+ * @property {number} width
+ * @property {number} height
+ * @property {boolean} [hasTransparentPixels]
+ * @property {boolean} [isTextOrDiagramLikely]
+ * @property {CanvasImageSource} [source]
+ * @property {() => void} [release]
+ */
+
+/**
+ * @typedef {Object} ImageEncodeOptions
+ * @property {number} targetWidth
+ * @property {number} targetHeight
+ * @property {string} mimeType
+ * @property {number | undefined} [quality]
+ * @property {boolean} [preserveTransparency]
+ */
+
+/**
+ * @typedef {Object} ImageCompressionAdapter
+ * @property {(blob: Blob) => Promise<DecodedImageAnalysis | null>} decodeAndAnalyze
+ * @property {(decoded: DecodedImageAnalysis, opts: ImageEncodeOptions) => Promise<Blob | null>} encode
+ */
+
+/**
+ * @typedef {(bytes: Uint8Array, options?: Record<string, unknown>) => Promise<Uint8Array | ArrayBuffer>} BinaryOptimizerFn
+ */
+
+/**
+ * Converts a Uint8Array view into an ArrayBuffer-backed Uint8Array compatible with `BlobPart`.
+ * @param {Uint8Array} bytes
+ * @returns {Uint8Array<ArrayBuffer>}
+ */
+function toBlobPart(bytes) {
+  if (bytes.buffer instanceof ArrayBuffer) {
+    return /** @type {Uint8Array<ArrayBuffer>} */ (bytes);
+  }
+  return new Uint8Array(bytes);
+}
+
+/** @type {ImageCompressionAdapter | null} */
 let customImageAdapterForTesting = null;
+/** @type {BinaryOptimizerFn | null} */
 let customPngOptimizerForTesting = null;
+/** @type {BinaryOptimizerFn | null} */
 let customGifOptimizerForTesting = null;
 
 /**
  * Allows unit tests running outside a full browser DOM (e.g. Node.js) to inject
  * a deterministic image decode/encode adapter. Never required in browser runtimes.
- * @param {Object|null} adapter
+ * @param {ImageCompressionAdapter | null} adapter
  */
 export function setImageCompressionAdapterForTesting(adapter) {
   customImageAdapterForTesting = adapter || null;
@@ -128,7 +182,7 @@ export function setImageCompressionAdapterForTesting(adapter) {
 /**
  * Allows automated tests to inject or override the lossless PNG optimizer
  * (e.g. to simulate an oxipng failure and verify safe Canvas fallback).
- * @param {((bytes: Uint8Array, options?: Object) => Promise<Uint8Array|ArrayBuffer>)|null} optimizer
+ * @param {BinaryOptimizerFn | null} optimizer
  */
 export function setPngOptimizerForTesting(optimizer) {
   customPngOptimizerForTesting = typeof optimizer === 'function' ? optimizer : null;
@@ -137,20 +191,32 @@ export function setPngOptimizerForTesting(optimizer) {
 /**
  * Allows automated tests to inject or override the lossless GIF optimizer
  * (e.g. to verify validation gates, timeout, or safe original-file fallback).
- * @param {((bytes: Uint8Array, options?: Object) => Promise<Uint8Array|ArrayBuffer>)|null} optimizer
+ * @param {BinaryOptimizerFn | null} optimizer
  */
 export function setGifOptimizerForTesting(optimizer) {
   customGifOptimizerForTesting = typeof optimizer === 'function' ? optimizer : null;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ */
 function readUint16BE(bytes, offset) {
   return ((bytes[offset] << 8) | bytes[offset + 1]) >>> 0;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ */
 function readUint16LE(bytes, offset) {
   return (bytes[offset] | (bytes[offset + 1] << 8)) >>> 0;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ */
 function readUint32BE(bytes, offset) {
   return (
     ((bytes[offset] << 24) |
@@ -161,6 +227,10 @@ function readUint32BE(bytes, offset) {
   );
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ */
 function readUint32LE(bytes, offset) {
   return (
     (bytes[offset] |
@@ -171,6 +241,11 @@ function readUint32LE(bytes, offset) {
   );
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {number} offset
+ * @param {number} length
+ */
 function readAscii(bytes, offset, length) {
   let out = '';
   for (let i = 0; i < length; i++) {
@@ -179,6 +254,10 @@ function readAscii(bytes, offset, length) {
   return out;
 }
 
+/**
+ * @param {unknown} filename
+ * @returns {string}
+ */
 function extractExtension(filename) {
   if (typeof filename !== 'string') return '';
   const trimmed = filename.trim().toLowerCase();
@@ -187,6 +266,10 @@ function extractExtension(filename) {
   return trimmed.slice(lastDot);
 }
 
+/**
+ * @param {unknown} mime
+ * @returns {string}
+ */
 function normalizeMimeType(mime) {
   if (typeof mime !== 'string') return '';
   const clean = mime.split(';')[0].trim().toLowerCase();
@@ -195,11 +278,22 @@ function normalizeMimeType(mime) {
   return clean;
 }
 
+/**
+ * @param {unknown} mime
+ * @returns {boolean}
+ */
 export function isGenericMimeType(mime) {
   const normalized = normalizeMimeType(mime);
   return !normalized || GENERIC_MIME_TYPES.has(normalized);
 }
 
+/**
+ * @param {any} file
+ * @param {boolean} compressed
+ * @param {number} originalSize
+ * @param {number} finalSize
+ * @param {string} reason
+ */
 function buildResult(file, compressed, originalSize, finalSize, reason) {
   return {
     file,
@@ -210,6 +304,11 @@ function buildResult(file, compressed, originalSize, finalSize, reason) {
   };
 }
 
+/**
+ * @param {any} onStage
+ * @param {string} stage
+ * @param {Record<string, any>} [details={}]
+ */
 function emitStage(onStage, stage, details = {}) {
   if (typeof onStage !== 'function') return;
   try {
@@ -223,14 +322,22 @@ function emitStage(onStage, stage, details = {}) {
   }
 }
 
+/**
+ * @param {string} [message]
+ */
 function createAbortError(message = 'Compression aborted') {
+  /** @type {any} */
   const err = new Error(message);
   err.name = 'AbortError';
   err.code = 'ABORT_ERR';
   return err;
 }
 
+/**
+ * @param {number} timeoutMs
+ */
 function createTimeoutError(timeoutMs) {
+  /** @type {any} */
   const err = new Error(`Compression timed out after ${timeoutMs}ms`);
   err.name = 'TimeoutError';
   err.code = 'TIMEOUT_ERR';
@@ -240,7 +347,7 @@ function createTimeoutError(timeoutMs) {
 /**
  * Inspects binary magic bytes to identify true file format.
  * @param {Uint8Array} bytes
- * @returns {'image/png'|'image/jpeg'|'image/webp'|'image/gif'|'application/pdf'|null}
+ * @returns {string|null}
  */
 export function detectFormatFromSignature(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.length < 4) return null;
@@ -316,6 +423,8 @@ export function detectFormatFromSignature(bytes) {
 /**
  * Checks whether binary bytes contain a UTF-16LE ASCII string (used in OLE2 directory streams
  * such as `EncryptedPackage` or `EncryptionInfo` inside encrypted Office documents).
+ * @param {Uint8Array} bytes
+ * @param {string} asciiTarget
  */
 function containsUtf16LeAscii(bytes, asciiTarget) {
   if (!(bytes instanceof Uint8Array) || !asciiTarget) return false;
@@ -340,6 +449,7 @@ function containsUtf16LeAscii(bytes, asciiTarget) {
 /**
  * Detects Microsoft OLE2 Compound Binary encrypted OOXML wrapper (`D0 CF 11 E0 A1 B1 1A E1`)
  * containing `EncryptedPackage` or `EncryptionInfo`.
+ * @param {Uint8Array} bytes
  */
 export function isEncryptedOle2OpenXml(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.length < 512) return false;
@@ -361,8 +471,10 @@ export function isEncryptedOle2OpenXml(bytes) {
 /**
  * Inspects raw ZIP Central Directory headers synchronously to identify OpenXML package type,
  * encryption flags, and digital signature entry names without decompressing payloads.
+ * @param {Uint8Array} bytes
  */
 export function inspectOpenXmlZipContainer(bytes) {
+  /** @type {{ isZip: boolean, openXmlMime: string|null, hasEncryptedEntry: boolean, hasProtectionEntry: boolean, entryNames: string[] }} */
   const result = {
     isZip: false,
     openXmlMime: null,
@@ -640,6 +752,7 @@ export function parseImageHeaderInfo(bytes, mimeType) {
  * @param {Uint8Array} bytes
  */
 export function parseGifMetadata(bytes) {
+  /** @type {{ valid: boolean, width: number, height: number, frameCount: number, frames: Array<any>, loopCount: number|null, hasLoopExtension: boolean, hasAlphaMetadata: boolean, headerVersion: string }} */
   const empty = {
     valid: false,
     width: 0,
@@ -677,11 +790,14 @@ export function parseGifMetadata(bytes) {
     offset += gctSize;
   }
 
+  /** @type {any} */
   let pendingGce = null;
+  /** @type {number|null} */
   let loopCount = null;
   let hasLoopExtension = false;
   let hasTrailer = false;
   let truncated = false;
+  /** @type {Array<any>} */
   const frames = [];
 
   while (offset < bytes.length) {
@@ -977,6 +1093,9 @@ export function analyzeImagePixels(data, width, height) {
 /**
  * Computes safe target dimensions without ever aggressively downscaling or hurting OCR/text.
  * Text, diagrams, screenshots, PNGs, and images under 12MP / 3072px are always kept 1:1.
+ * @param {number} width
+ * @param {number} height
+ * @param {{ isTextOrDiagramLikely?: boolean, mimeType?: string }} [options={}]
  */
 export function computeSafeTargetDimensions(
   width,
@@ -1040,13 +1159,20 @@ function getBrowserImageAdapter() {
   if (!hasCanvas || !hasDecode) return null;
 
   return {
+    /**
+     * @param {Blob} blob
+     * @returns {Promise<DecodedImageAnalysis>}
+     */
     async decodeAndAnalyze(blob) {
+      /** @type {ImageBitmap | null} */
       let bitmap = null;
+      /** @type {string | null} */
       let objectUrl = null;
       try {
+        /** @type {CanvasImageSource} */
         let source;
-        let width;
-        let height;
+        let width = 0;
+        let height = 0;
 
         if (typeof createImageBitmap === 'function') {
           bitmap = await createImageBitmap(blob);
@@ -1054,12 +1180,14 @@ function getBrowserImageAdapter() {
           width = bitmap.width;
           height = bitmap.height;
         } else {
-          objectUrl = URL.createObjectURL(blob);
+          const createdUrl = URL.createObjectURL(blob);
+          objectUrl = createdUrl;
+          /** @type {HTMLImageElement} */
           const img = await new Promise((resolve, reject) => {
             const el = new Image();
             el.onload = () => resolve(el);
             el.onerror = () => reject(new Error('Failed to decode image'));
-            el.src = objectUrl;
+            el.src = createdUrl;
           });
           source = img;
           width = img.naturalWidth || img.width;
@@ -1070,6 +1198,7 @@ function getBrowserImageAdapter() {
           throw new Error('Invalid decoded image dimensions');
         }
 
+        /** @type {OffscreenCanvas | HTMLCanvasElement} */
         const analysisCanvas =
           typeof OffscreenCanvas !== 'undefined'
             ? new OffscreenCanvas(width, height)
@@ -1077,6 +1206,7 @@ function getBrowserImageAdapter() {
         analysisCanvas.width = width;
         analysisCanvas.height = height;
 
+        /** @type {OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null} */
         const ctx = analysisCanvas.getContext('2d', { willReadFrequently: true, alpha: true });
         if (!ctx) {
           throw new Error('2D canvas context unavailable');
@@ -1121,18 +1251,46 @@ function getBrowserImageAdapter() {
       }
     },
 
+    /**
+     * @param {DecodedImageAnalysis} decoded
+     * @param {ImageEncodeOptions} opts
+     * @returns {Promise<Blob>}
+     */
     async encode(decoded, { targetWidth, targetHeight, mimeType, quality }) {
       const useOffscreen =
         typeof OffscreenCanvas !== 'undefined' &&
         typeof OffscreenCanvas.prototype.convertToBlob === 'function';
 
-      const canvas = useOffscreen
-        ? new OffscreenCanvas(targetWidth, targetHeight)
-        : document.createElement('canvas');
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
+      if (!decoded.source) {
+        throw new Error('Decoded image source unavailable for encoding');
+      }
 
-      const ctx = canvas.getContext('2d', { alpha: true });
+      if (useOffscreen) {
+        const offscreenCanvas = new OffscreenCanvas(targetWidth, targetHeight);
+        offscreenCanvas.width = targetWidth;
+        offscreenCanvas.height = targetHeight;
+
+        const ctx = offscreenCanvas.getContext('2d', { alpha: true });
+        if (!ctx) {
+          throw new Error('2D canvas context unavailable for encoding');
+        }
+
+        ctx.clearRect(0, 0, targetWidth, targetHeight);
+        if (targetWidth !== decoded.width || targetHeight !== decoded.height) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+        }
+        ctx.drawImage(decoded.source, 0, 0, targetWidth, targetHeight);
+
+        const opts = mimeType === 'image/png' ? { type: mimeType } : { type: mimeType, quality };
+        return await offscreenCanvas.convertToBlob(opts);
+      }
+
+      const domCanvas = document.createElement('canvas');
+      domCanvas.width = targetWidth;
+      domCanvas.height = targetHeight;
+
+      const ctx = domCanvas.getContext('2d', { alpha: true });
       if (!ctx) {
         throw new Error('2D canvas context unavailable for encoding');
       }
@@ -1144,15 +1302,10 @@ function getBrowserImageAdapter() {
       }
       ctx.drawImage(decoded.source, 0, 0, targetWidth, targetHeight);
 
-      if (useOffscreen) {
-        const opts = mimeType === 'image/png' ? { type: mimeType } : { type: mimeType, quality };
-        return await canvas.convertToBlob(opts);
-      }
-
       return await new Promise((resolve, reject) => {
         try {
-          canvas.toBlob(
-            (outBlob) => {
+          domCanvas.toBlob(
+            (/** @type {Blob | null} */ outBlob) => {
               if (!outBlob) {
                 reject(new Error(`Canvas failed to encode ${mimeType}`));
               } else {
@@ -1173,6 +1326,7 @@ function getBrowserImageAdapter() {
 /**
  * Checks raw PDF bytes across the full document (including incremental updates)
  * for encryption (/Encrypt) or digital signature (/Sig, /ByteRange) indicators.
+ * @param {Uint8Array} bytes
  */
 export function hasRawPdfProtectionMarkers(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.length === 0) return false;
@@ -1199,6 +1353,8 @@ export function hasRawPdfProtectionMarkers(bytes) {
 /**
  * Inspects parsed pdf-lib indirect objects (including decompressed object streams)
  * for digital signature dictionaries, /ByteRange entries, AcroForm SigFlags, or Perms.
+ * @param {any} pdfDoc
+ * @param {any} pdfLibModule
  */
 function hasParsedPdfProtectionMarkers(pdfDoc, pdfLibModule) {
   try {
@@ -1254,9 +1410,14 @@ function hasParsedPdfProtectionMarkers(pdfDoc, pdfLibModule) {
 
 /**
  * Checks whether an error thrown by pdf-lib indicates encryption / password protection.
+ * @param {unknown} err
+ * @returns {boolean}
  */
 function isPdfEncryptionError(err) {
-  const msg = String(err?.message || err || '').toLowerCase();
+  const errObj = /** @type {{ message?: unknown } | null} */ (
+    err && typeof err === 'object' ? err : null
+  );
+  const msg = String(errObj?.message || err || '').toLowerCase();
   return (
     msg.includes('encrypt') ||
     msg.includes('password') ||
@@ -1267,6 +1428,10 @@ function isPdfEncryptionError(err) {
 /**
  * Validates that a PDF buffer has a valid %PDF- header, %%EOF trailer,
  * loadable structure, matching page count, and matching page dimensions.
+ * @param {Uint8Array} bytes
+ * @param {number} expectedPageCount
+ * @param {Array<{ width: number, height: number }>} expectedPageSizes
+ * @param {any} PDFDocument
  */
 async function validateOptimizedPdf(bytes, expectedPageCount, expectedPageSizes, PDFDocument) {
   if (!(bytes instanceof Uint8Array) || bytes.length < 16) {
@@ -1306,6 +1471,8 @@ async function validateOptimizedPdf(bytes, expectedPageCount, expectedPageSizes,
 
 /**
  * Races an async operation against an AbortSignal and a shared deadline.
+ * @param {any} promiseOrFn
+ * @param {any} ctx
  */
 async function runWithCancellation(promiseOrFn, { signal, deadlineAt, timeoutMs }) {
   if (signal?.aborted) {
@@ -1316,7 +1483,9 @@ async function runWithCancellation(promiseOrFn, { signal, deadlineAt, timeoutMs 
     throw createTimeoutError(timeoutMs);
   }
 
+  /** @type {any} */
   let timerId = null;
+  /** @type {any} */
   let onAbort = null;
 
   const guardPromise = new Promise((_, reject) => {
@@ -1346,6 +1515,8 @@ async function runWithCancellation(promiseOrFn, { signal, deadlineAt, timeoutMs 
  * - Treats generic MIME types (`application/octet-stream`, etc.) as non-definitive.
  * - Resolves actual format using filename extension and validated binary signature.
  * - Never trusts extension (or declared MIME) alone when the binary signature conflicts or is missing.
+ * @param {any} file
+ * @param {Uint8Array} inputBytes
  */
 export function resolveInputFormat(file, inputBytes) {
   const ext = extractExtension(file?.name);
@@ -1397,13 +1568,17 @@ export function resolveInputFormat(file, inputBytes) {
 }
 
 /**
+/**
  * Losslessly optimizes PNG bytes using `@jsquash/oxipng` in browser environments
  * (or an injected test optimizer), preserving transparency, dimensions, and color accuracy.
+ * @param {Uint8Array} inputBytes
+ * @param {CancellationContext} ctx
  */
 async function runOxipngOptimization(inputBytes, { signal, deadlineAt, timeoutMs }) {
-  if (customPngOptimizerForTesting) {
+  const customOptimizer = customPngOptimizerForTesting;
+  if (customOptimizer) {
     const out = await runWithCancellation(
-      () => customPngOptimizerForTesting(inputBytes, { level: 2, interlace: false, optimiseAlpha: false }),
+      () => customOptimizer(inputBytes, { level: 2, interlace: false, optimiseAlpha: false }),
       { signal, deadlineAt, timeoutMs }
     );
     return out instanceof Uint8Array ? out : new Uint8Array(out);
@@ -1445,6 +1620,11 @@ async function runOxipngOptimization(inputBytes, { signal, deadlineAt, timeoutMs
  * Verifies in browser DOM/Worker runtimes (when ImageBitmap/Image is available)
  * that an optimized PNG decodes cleanly at exact original dimensions and preserves
  * actual transparency when present.
+ * @param {Uint8Array} inputBytes
+ * @param {Uint8Array} outBytes
+ * @param {{ width: number, height: number, hasAlphaChannel?: boolean, hasAlphaMetadata?: boolean }} inputHeader
+ * @param {{ width: number, height: number, hasAlphaChannel?: boolean, hasAlphaMetadata?: boolean }} outHeader
+ * @param {CancellationContext} ctx
  */
 async function verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHeader, { signal, deadlineAt, timeoutMs }) {
   const canDecodeBitmap = typeof createImageBitmap === 'function';
@@ -1458,26 +1638,31 @@ async function verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHea
     return true;
   }
 
-  const decodeDimensionsAndAlpha = async (bytes, checkAlphaPixels) => {
-    const blob = new Blob([bytes], { type: 'image/png' });
+  const decodeDimensionsAndAlpha = async (/** @type {Uint8Array} */ bytes, /** @type {boolean} */ checkAlphaPixels) => {
+    const blob = new Blob([toBlobPart(bytes)], { type: 'image/png' });
+    /** @type {ImageBitmap | null} */
     let bitmap = null;
+    /** @type {string | null} */
     let objectUrl = null;
     try {
+      /** @type {CanvasImageSource} */
       let source;
-      let width;
-      let height;
+      let width = 0;
+      let height = 0;
       if (canDecodeBitmap) {
         bitmap = await createImageBitmap(blob);
         source = bitmap;
         width = bitmap.width;
         height = bitmap.height;
       } else {
-        objectUrl = URL.createObjectURL(blob);
+        const createdUrl = URL.createObjectURL(blob);
+        objectUrl = createdUrl;
+        /** @type {HTMLImageElement} */
         const img = await new Promise((resolve, reject) => {
           const el = new Image();
           el.onload = () => resolve(el);
           el.onerror = () => reject(new Error('PNG decode failed'));
-          el.src = objectUrl;
+          el.src = createdUrl;
         });
         source = img;
         width = img.naturalWidth || img.width;
@@ -1490,12 +1675,14 @@ async function verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHea
           typeof OffscreenCanvas !== 'undefined' ||
           (typeof document !== 'undefined' && typeof document.createElement === 'function');
         if (hasCanvas) {
+          /** @type {OffscreenCanvas | HTMLCanvasElement} */
           const canvas =
             typeof OffscreenCanvas !== 'undefined'
               ? new OffscreenCanvas(width, height)
               : document.createElement('canvas');
           canvas.width = width;
           canvas.height = height;
+          /** @type {OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null} */
           const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true });
           if (ctx) {
             ctx.clearRect(0, 0, width, height);
@@ -1550,19 +1737,25 @@ async function verifyPngDecodeAndAlpha(inputBytes, outBytes, inputHeader, outHea
  * Losslessly optimizes static or animated GIF bytes using `@fe-daily/gifsicle-wasm-browser`
  * inside a dedicated Web Worker (with immediate AbortSignal & timeout termination),
  * or an injected test optimizer in Node tests.
+ * @param {Uint8Array} inputBytes
+ * @param {CancellationContext} ctx
  */
 async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeoutMs }) {
+  const effectiveTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : SMART_COMPRESSION_DEFAULTS.TIMEOUT_MS;
+  const effectiveDeadlineAt = typeof deadlineAt === 'number' ? deadlineAt : Date.now() + effectiveTimeoutMs;
   const command = ['-O2 --no-warnings input.gif -o /out/output.gif'];
 
-  if (customGifOptimizerForTesting) {
+  const customOptimizer = customGifOptimizerForTesting;
+  if (customOptimizer) {
     const out = await runWithCancellation(
-      () => customGifOptimizerForTesting(inputBytes, { command }),
-      { signal, deadlineAt, timeoutMs }
+      () => customOptimizer(inputBytes, { command }),
+      { signal, deadlineAt: effectiveDeadlineAt, timeoutMs: effectiveTimeoutMs }
     );
     return out instanceof Uint8Array ? out : new Uint8Array(out);
   }
 
   if (typeof Worker === 'undefined') {
+    /** @type {Error & { code?: string }} */
     const envErr = new Error('Web Worker runtime unavailable for WASM GIF optimization');
     envErr.code = 'UNSUPPORTED_ENVIRONMENT';
     throw envErr;
@@ -1576,11 +1769,12 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
   try {
     const workerUrlMod = await runWithCancellation(
       () => import('@fe-daily/gifsicle-wasm-browser/worker?url'),
-      { signal, deadlineAt, timeoutMs }
+      { signal, deadlineAt: effectiveDeadlineAt, timeoutMs: effectiveTimeoutMs }
     );
     workerUrl = workerUrlMod?.default || '';
   } catch (err) {
-    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+    const errName = err && typeof err === 'object' && 'name' in err ? err.name : undefined;
+    if (errName === 'AbortError' || errName === 'TimeoutError') {
       throw err;
     }
   }
@@ -1594,14 +1788,14 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
   if (!workerUrl) {
     const gifsicleMod = await runWithCancellation(() => import('@fe-daily/gifsicle-wasm-browser'), {
       signal,
-      deadlineAt,
-      timeoutMs
+      deadlineAt: effectiveDeadlineAt,
+      timeoutMs: effectiveTimeoutMs
     });
     const run = gifsicleMod?.run || gifsicleMod?.default?.run;
     if (typeof run !== 'function') {
       throw new Error('@fe-daily/gifsicle-wasm-browser run function is unavailable');
     }
-    const remainingMs = Math.max(1, deadlineAt - Date.now());
+    const remainingMs = Math.max(1, effectiveDeadlineAt - Date.now());
     const files = await runWithCancellation(
       () =>
         run({
@@ -1610,7 +1804,7 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
           isStrict: false,
           timeoutMs: remainingMs
         }),
-      { signal, deadlineAt, timeoutMs }
+      { signal, deadlineAt: effectiveDeadlineAt, timeoutMs: effectiveTimeoutMs }
     );
     const outFile = Array.isArray(files) ? files[0] : null;
     if (!outFile || typeof outFile.arrayBuffer !== 'function') {
@@ -1618,21 +1812,24 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
     }
     const outBuf = await runWithCancellation(() => outFile.arrayBuffer(), {
       signal,
-      deadlineAt,
-      timeoutMs
+      deadlineAt: effectiveDeadlineAt,
+      timeoutMs: effectiveTimeoutMs
     });
     return new Uint8Array(outBuf);
   }
 
-  const remainingMs = deadlineAt - Date.now();
+  const remainingMs = effectiveDeadlineAt - Date.now();
   if (remainingMs <= 0) {
-    throw createTimeoutError(timeoutMs);
+    throw createTimeoutError(effectiveTimeoutMs);
   }
 
   return await new Promise((resolve, reject) => {
     let settled = false;
+    /** @type {ReturnType<typeof setTimeout> | null} */
     let timerId = null;
+    /** @type {(() => void) | null} */
     let onAbort = null;
+    /** @type {Worker | null} */
     let worker = null;
 
     const cleanup = () => {
@@ -1652,7 +1849,7 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
       }
     };
 
-    const fail = (err) => {
+    const fail = (/** @type {unknown} */ err) => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -1667,7 +1864,7 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
     }
 
     timerId = setTimeout(() => {
-      fail(createTimeoutError(timeoutMs));
+      fail(createTimeoutError(effectiveTimeoutMs));
     }, remainingMs);
 
     if (signal) {
@@ -1675,7 +1872,7 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
       signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    worker.onmessage = (event) => {
+    worker.onmessage = (/** @type {MessageEvent<{ success?: boolean, error?: string, files?: Array<{ name?: string, file?: Uint8Array }> }>} */ event) => {
       if (settled) return;
       const payload = event?.data;
       if (!payload?.success || !Array.isArray(payload.files) || payload.files.length === 0) {
@@ -1695,7 +1892,7 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
       resolve(new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)));
     };
 
-    worker.onerror = (event) => {
+    worker.onerror = (/** @type {ErrorEvent} */ event) => {
       fail(event?.error || new Error(event?.message || 'gifsicle worker error'));
     };
 
@@ -1718,6 +1915,11 @@ async function runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeout
 /**
  * Verifies decoded GIF dimensions, transparency parity, and multi-frame WebCodecs integrity
  * in browser environments without failing when ImageDecoder is absent (e.g., iOS 15 Safari).
+ * @param {Uint8Array} inputBytes
+ * @param {Uint8Array} outBytes
+ * @param {{ width: number, height: number, frameCount: number, hasTransparency?: boolean, hasAlphaMetadata?: boolean, hasLoopExtension?: boolean, loopCount?: number | null }} inputMeta
+ * @param {{ width: number, height: number, frameCount: number, hasTransparency?: boolean, hasAlphaMetadata?: boolean, hasLoopExtension?: boolean, loopCount?: number | null }} outMeta
+ * @param {CancellationContext} ctx
  */
 async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signal, deadlineAt, timeoutMs }) {
   const canDecodeBitmap = typeof createImageBitmap === 'function';
@@ -1727,26 +1929,31 @@ async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signa
     typeof URL.createObjectURL === 'function';
 
   if (canDecodeBitmap || canUseImage) {
-    const decodeFirstFrame = async (bytes, checkAlphaPixels) => {
-      const blob = new Blob([bytes], { type: 'image/gif' });
+    const decodeFirstFrame = async (/** @type {Uint8Array} */ bytes, /** @type {boolean} */ checkAlphaPixels) => {
+      const blob = new Blob([toBlobPart(bytes)], { type: 'image/gif' });
+      /** @type {ImageBitmap | null} */
       let bitmap = null;
+      /** @type {string | null} */
       let objectUrl = null;
       try {
+        /** @type {CanvasImageSource} */
         let source;
-        let width;
-        let height;
+        let width = 0;
+        let height = 0;
         if (canDecodeBitmap) {
           bitmap = await createImageBitmap(blob);
           source = bitmap;
           width = bitmap.width;
           height = bitmap.height;
         } else {
-          objectUrl = URL.createObjectURL(blob);
+          const createdUrl = URL.createObjectURL(blob);
+          objectUrl = createdUrl;
+          /** @type {HTMLImageElement} */
           const img = await new Promise((resolve, reject) => {
             const el = new Image();
             el.onload = () => resolve(el);
             el.onerror = () => reject(new Error('GIF decode failed'));
-            el.src = objectUrl;
+            el.src = createdUrl;
           });
           source = img;
           width = img.naturalWidth || img.width;
@@ -1759,12 +1966,14 @@ async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signa
             typeof OffscreenCanvas !== 'undefined' ||
             (typeof document !== 'undefined' && typeof document.createElement === 'function');
           if (hasCanvas) {
+            /** @type {OffscreenCanvas | HTMLCanvasElement} */
             const canvas =
               typeof OffscreenCanvas !== 'undefined'
                 ? new OffscreenCanvas(width, height)
                 : document.createElement('canvas');
             canvas.width = width;
             canvas.height = height;
+            /** @type {OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null} */
             const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true });
             if (ctx) {
               ctx.clearRect(0, 0, width, height);
@@ -1812,23 +2021,25 @@ async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signa
   }
 
   // If browser exposes WebCodecs ImageDecoder, verify full track metadata and frame decodability
-  if (typeof ImageDecoder === 'function' && typeof ImageDecoder.isTypeSupported === 'function') {
+  const WinImageDecoder = /** @type {any} */ (globalThis).ImageDecoder;
+  if (typeof WinImageDecoder === 'function' && typeof WinImageDecoder.isTypeSupported === 'function') {
     let supported = false;
     try {
-      supported = await runWithCancellation(() => ImageDecoder.isTypeSupported('image/gif'), {
+      supported = await runWithCancellation(() => WinImageDecoder.isTypeSupported('image/gif'), {
         signal,
         deadlineAt,
         timeoutMs
       });
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
       supported = false;
     }
 
     if (supported) {
+      /** @type {any} */
       let outDecoder = null;
       try {
-        outDecoder = new ImageDecoder({ data: outBytes, type: 'image/gif' });
+        outDecoder = new WinImageDecoder({ data: outBytes, type: 'image/gif' });
         await runWithCancellation(() => outDecoder.tracks.ready, { signal, deadlineAt, timeoutMs });
         const track = outDecoder.tracks.selectedTrack;
         if (track && track.frameCount !== inputMeta.frameCount) {
@@ -1861,7 +2072,7 @@ async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signa
             return false;
           }
         }
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
         return false;
       } finally {
@@ -1878,6 +2089,10 @@ async function verifyGifDecode(inputBytes, outBytes, inputMeta, outMeta, { signa
 /**
  * Validates that a candidate optimized GIF strictly preserves dimensions, frame count/order,
  * frame delays, animation loop count, transparency, valid disposal methods, and decodability.
+ * @param {Uint8Array} inputBytes
+ * @param {Uint8Array} outBytes
+ * @param {any} inputMeta
+ * @param {any} ctx
  */
 async function validateOptimizedGif(inputBytes, outBytes, inputMeta, ctx) {
   if (!(outBytes instanceof Uint8Array) || outBytes.byteLength === 0) {
@@ -1942,6 +2157,10 @@ async function validateOptimizedGif(inputBytes, outBytes, inputMeta, ctx) {
  * preserving frame count, frame order, frame delays, loop count, transparency,
  * dimensions, and visual content, and returning the untouched original File on any
  * error, timeout, cancellation, validation failure, or < 10% byte savings.
+ * @param {File} file
+ * @param {Uint8Array} inputBytes
+ * @param {any} _options
+ * @param {any} ctx
  */
 async function optimizeGifFile(file, inputBytes, _options, ctx) {
   const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
@@ -1972,7 +2191,7 @@ async function optimizeGifFile(file, inputBytes, _options, ctx) {
   let outBytes;
   try {
     outBytes = await runGifsicleOptimization(inputBytes, { signal, deadlineAt, timeoutMs });
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || signal?.aborted) {
       throw err;
     }
@@ -2017,7 +2236,7 @@ async function optimizeGifFile(file, inputBytes, _options, ctx) {
     return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.INSUFFICIENT_SAVINGS);
   }
 
-  const compressedFile = new File([outBytes], file.name, {
+  const compressedFile = new File([/** @type {any} */ (outBytes)], file.name, {
     type: 'image/gif',
     lastModified: file.lastModified
   });
@@ -2043,6 +2262,11 @@ async function optimizeGifFile(file, inputBytes, _options, ctx) {
  * - For PNGs (in real browser/runtime without a mock adapter): uses `@jsquash/oxipng` lossless
  *   optimization first, keeping Canvas only as a safe fallback if oxipng fails or produces invalid output.
  * - For JPEG/WebP (and Canvas fallback): uses browser-native Canvas decode/encode.
+ * @param {File} file
+ * @param {Uint8Array} inputBytes
+ * @param {string} mimeType
+ * @param {any} options
+ * @param {any} ctx
  */
 async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
   const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
@@ -2095,7 +2319,7 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
       });
 
       const outHeader =
-        outBytes instanceof Uint8Array ? parseImageHeaderInfo(outBytes, 'image/png') : { valid: false };
+        outBytes instanceof Uint8Array ? parseImageHeaderInfo(outBytes, 'image/png') : { valid: false, width: 0, height: 0 };
       const isValidStructure =
         outBytes instanceof Uint8Array &&
         outBytes.byteLength > 0 &&
@@ -2134,7 +2358,7 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
           );
         }
 
-        const compressedFile = new File([outBytes], file.name, {
+        const compressedFile = new File([/** @type {any} */ (outBytes)], file.name, {
           type: 'image/png',
           lastModified: file.lastModified
         });
@@ -2154,7 +2378,7 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
           COMPRESSION_REASONS.COMPRESSED
         );
       }
-    } catch (oxipngErr) {
+    } catch (/** @type {any} */ oxipngErr) {
       if (oxipngErr?.name === 'AbortError' || oxipngErr?.name === 'TimeoutError' || signal?.aborted) {
         throw oxipngErr;
       }
@@ -2183,12 +2407,13 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
     });
   }
 
+  /** @type {DecodedImageAnalysis | null} */
   let decoded = null;
   try {
     const sourceBlob =
       file.type === mimeType
         ? file
-        : new Blob([inputBytes], { type: mimeType });
+        : new Blob([toBlobPart(inputBytes)], { type: mimeType });
     decoded = await runWithCancellation(() => adapter.decodeAndAnalyze(sourceBlob), {
       signal,
       deadlineAt,
@@ -2225,15 +2450,17 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
           : SMART_COMPRESSION_DEFAULTS.WEBP_PHOTO_QUALITY
         : undefined;
 
+    const activeDecoded = decoded;
+    /** @type {Blob | null} */
     const encodedBlob = await runWithCancellation(
       () =>
-        adapter.encode(decoded, {
+        adapter.encode(activeDecoded, {
           targetWidth,
           targetHeight,
           mimeType,
           quality,
           preserveTransparency: Boolean(
-            decoded.hasTransparentPixels || inputHeader.hasAlphaMetadata
+            activeDecoded.hasTransparentPixels || inputHeader.hasAlphaMetadata
           )
         }),
       { signal, deadlineAt, timeoutMs }
@@ -2291,7 +2518,7 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
       return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.VALIDATION_FAILED);
     }
 
-    const compressedFile = new File([outBytes], file.name, {
+    const compressedFile = new File([/** @type {any} */ (outBytes)], file.name, {
       type: mimeType,
       lastModified: file.lastModified
     });
@@ -2321,6 +2548,10 @@ async function optimizeImageFile(file, inputBytes, mimeType, options, ctx) {
  * Losslessly optimizes a PDF File via `pdf-lib` structural object-stream compaction.
  * Never rasterizes pages or modifies text, fonts, layout, or selectable content.
  * Protects encrypted and digitally signed PDFs (/Sig, /ByteRange) by skipping untouched.
+ * @param {File} file
+ * @param {Uint8Array} inputBytes
+ * @param {any} options
+ * @param {any} ctx
  */
 async function optimizePdfFile(file, inputBytes, options, ctx) {
   const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
@@ -2353,7 +2584,7 @@ async function optimizePdfFile(file, inputBytes, options, ctx) {
       () => PDFDocument.load(inputBytes, { updateMetadata: false, ignoreEncryption: false }),
       { signal, deadlineAt, timeoutMs }
     );
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
       throw err;
     }
@@ -2383,7 +2614,7 @@ async function optimizePdfFile(file, inputBytes, options, ctx) {
     );
   }
 
-  const originalPageSizes = pdfDoc.getPages().map((page) => page.getSize());
+  const originalPageSizes = pdfDoc.getPages().map((/** @type {any} */ page) => page.getSize());
 
   const optimizedBytes = await runWithCancellation(
     () =>
@@ -2430,7 +2661,7 @@ async function optimizePdfFile(file, inputBytes, options, ctx) {
     return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.VALIDATION_FAILED);
   }
 
-  const compressedFile = new File([optimizedBytes], file.name, {
+  const compressedFile = new File([/** @type {any} */ (optimizedBytes)], file.name, {
     type: SUPPORTED_PDF_MIME_TYPE,
     lastModified: file.lastModified
   });
@@ -2464,13 +2695,17 @@ const OPENXML_PRESERVE_ASSET_EXTENSIONS = new Set([
 /**
  * Checks whether an already-loaded JSZip OpenXML package contains digital signatures,
  * encryption streams, IRM/DRM streams, or password/enforcement protection markers.
+ * @param {any} zip
+ * @param {string} mimeType
+ * @param {any} rawZipInfo
+ * @param {any} ctx
  */
 async function detectOpenXmlProtection(zip, mimeType, rawZipInfo, { signal, deadlineAt, timeoutMs }) {
   if (rawZipInfo?.hasEncryptedEntry || rawZipInfo?.hasProtectionEntry) {
     return true;
   }
 
-  const entries = Object.values(zip.files || {}).filter((e) => e && !e.dir);
+  const entries = Object.values(zip.files || {}).filter((/** @type {any} */ e) => e && !e.dir);
   for (const entry of entries) {
     const lower = entry.name.toLowerCase();
     if (
@@ -2487,7 +2722,7 @@ async function detectOpenXmlProtection(zip, mimeType, rawZipInfo, { signal, dead
     }
   }
 
-  const readTextEntry = async (pathName) => {
+  const readTextEntry = async (/** @type {string} */ pathName) => {
     const foundKey = Object.keys(zip.files).find(
       (k) => !zip.files[k].dir && k.toLowerCase() === pathName.toLowerCase()
     );
@@ -2548,6 +2783,10 @@ async function detectOpenXmlProtection(zip, mimeType, rawZipInfo, { signal, dead
   return false;
 }
 
+/**
+ * @param {any} a
+ * @param {any} b
+ */
 function bytesEqualExact(a, b) {
   if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array) || a.length !== b.length) {
     return false;
@@ -2566,6 +2805,12 @@ function bytesEqualExact(a, b) {
  * - Every unmodified part (XML, rels, worksheets, formulas, slides, notes, macros, GIFs, SVGs, EMFs, WMFs)
  *   decompresses with 100% byte-for-byte parity
  * - Every optimized embedded raster image decompresses with valid binary signature
+ * @param {any} JSZip
+ * @param {Uint8Array} outBytes
+ * @param {string} mimeType
+ * @param {Map<string, Uint8Array>} originalEntriesMap
+ * @param {Map<string, string>} optimizedMediaSignatures
+ * @param {any} ctx
  */
 async function validateOptimizedOpenXml(
   JSZip,
@@ -2589,7 +2834,7 @@ async function validateOptimizedOpenXml(
       deadlineAt,
       timeoutMs
     });
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
     return false;
   }
@@ -2605,7 +2850,7 @@ async function validateOptimizedOpenXml(
     }
   }
 
-  const findCaseInsensitive = (targetPath) => {
+  const findCaseInsensitive = (/** @type {string} */ targetPath) => {
     const lower = targetPath.toLowerCase();
     return verifyFileKeys.find((k) => k.toLowerCase() === lower) || '';
   };
@@ -2631,7 +2876,7 @@ async function validateOptimizedOpenXml(
         deadlineAt,
         timeoutMs
       });
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
       return false;
     }
@@ -2830,6 +3075,7 @@ export function optimizeWebpMetadataLossless(bytes) {
 /**
  * Inspects an EXIF APP1 payload (`Exif\0\0...`) and confirms whether stripping it
  * cannot alter pixel orientation (Orientation tag `0x0112` absent or `1`).
+ * @param {Uint8Array} payload
  */
 function isExifPayloadSafeToStrip(payload) {
   if (!(payload instanceof Uint8Array) || payload.length < 16) return false;
@@ -2841,8 +3087,8 @@ function isExifPayloadSafeToStrip(payload) {
   const le = endian === 'II' ? true : endian === 'MM' ? false : null;
   if (le === null) return false;
 
-  const u16 = (off) => (le ? readUint16LE(payload, off) : readUint16BE(payload, off));
-  const u32 = (off) => (le ? readUint32LE(payload, off) : readUint32BE(payload, off));
+  const u16 = (/** @type {number} */ off) => (le ? readUint16LE(payload, off) : readUint16BE(payload, off));
+  const u32 = (/** @type {number} */ off) => (le ? readUint32LE(payload, off) : readUint32BE(payload, off));
 
   if (u16(tiffStart + 2) !== 0x002a) return false;
   const ifd0Rel = u32(tiffStart + 4);
@@ -3207,6 +3453,9 @@ export function measureDecodedImageQuality(origRgba, candRgba, width, height) {
 /**
  * Decodes image bytes into full-resolution RGBA pixel data in browser DOM/Worker runtimes.
  * Returns null if DOM/Canvas decoding APIs are unavailable (e.g., plain Node.js).
+ * @param {Uint8Array} bytes
+ * @param {string} mimeType
+ * @param {CancellationContext} ctx
  */
 async function decodeImageBytesToRgba(bytes, mimeType, { signal, deadlineAt, timeoutMs }) {
   const hasCanvas =
@@ -3224,25 +3473,30 @@ async function decodeImageBytesToRgba(bytes, mimeType, { signal, deadlineAt, tim
 
   return await runWithCancellation(
     async () => {
-      const blob = new Blob([bytes], { type: mimeType });
+      const blob = new Blob([toBlobPart(bytes)], { type: mimeType });
+      /** @type {ImageBitmap | null} */
       let bitmap = null;
+      /** @type {string | null} */
       let objectUrl = null;
       try {
+        /** @type {CanvasImageSource} */
         let source;
-        let width;
-        let height;
+        let width = 0;
+        let height = 0;
         if (canBitmap) {
           bitmap = await createImageBitmap(blob);
           source = bitmap;
           width = bitmap.width;
           height = bitmap.height;
         } else {
-          objectUrl = URL.createObjectURL(blob);
+          const createdUrl = URL.createObjectURL(blob);
+          objectUrl = createdUrl;
+          /** @type {HTMLImageElement} */
           const img = await new Promise((resolve, reject) => {
             const el = new Image();
             el.onload = () => resolve(el);
             el.onerror = () => reject(new Error(`Failed to decode ${mimeType}`));
-            el.src = objectUrl;
+            el.src = createdUrl;
           });
           source = img;
           width = img.naturalWidth || img.width;
@@ -3253,12 +3507,14 @@ async function decodeImageBytesToRgba(bytes, mimeType, { signal, deadlineAt, tim
           throw new Error('Decoded image has zero dimensions');
         }
 
+        /** @type {OffscreenCanvas | HTMLCanvasElement} */
         const canvas =
           typeof OffscreenCanvas !== 'undefined'
             ? new OffscreenCanvas(width, height)
             : document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
+        /** @type {OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null} */
         const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: true });
         if (!ctx) throw new Error('2D canvas context unavailable');
         ctx.clearRect(0, 0, width, height);
@@ -3282,25 +3538,31 @@ async function decodeImageBytesToRgba(bytes, mimeType, { signal, deadlineAt, tim
 
 /**
  * Re-encodes an image 1:1 via browser Canvas at an explicit quality without downscaling.
+ * @param {Uint8Array} bytes
+ * @param {string} mimeType
+ * @param {number | undefined} quality
+ * @param {CancellationContext} ctx
  */
 async function encodeCanvasImageExact(bytes, mimeType, quality, { signal, deadlineAt, timeoutMs }) {
   const adapter = getBrowserImageAdapter();
   if (!adapter) return null;
+  /** @type {DecodedImageAnalysis | null} */
   let decoded = null;
   try {
     decoded = await runWithCancellation(
-      () => adapter.decodeAndAnalyze(new Blob([bytes], { type: mimeType })),
+      () => adapter.decodeAndAnalyze(new Blob([toBlobPart(bytes)], { type: mimeType })),
       { signal, deadlineAt, timeoutMs }
     );
     if (!decoded || !decoded.width || !decoded.height) return null;
+    const activeDecoded = decoded;
     const outBlob = await runWithCancellation(
       () =>
-        adapter.encode(decoded, {
-          targetWidth: decoded.width,
-          targetHeight: decoded.height,
+        adapter.encode(activeDecoded, {
+          targetWidth: activeDecoded.width,
+          targetHeight: activeDecoded.height,
           mimeType,
           quality,
-          preserveTransparency: Boolean(decoded.hasTransparentPixels)
+          preserveTransparency: Boolean(activeDecoded.hasTransparentPixels)
         }),
       { signal, deadlineAt, timeoutMs }
     );
@@ -3328,6 +3590,10 @@ const OPENXML_QUALITY_THRESHOLDS = Object.freeze({
   EMBEDDED_WEBP_QUALITY: 0.93
 });
 
+/**
+ * @param {any} metrics
+ * @param {string} mimeType
+ */
 function passesOpenXmlLossyQualityGate(metrics, mimeType) {
   if (!metrics?.valid) return false;
   const maxChanAllowed =
@@ -3353,6 +3619,11 @@ function passesOpenXmlLossyQualityGate(metrics, mimeType) {
  * - For opaque continuous-tone photos where lossless stripping alone does not save >= 10%, allows high-quality
  *   re-encoding ONLY when decoded RGBA comparisons prove imperceptible difference (PSNR >= 41 dB, SSIM >= 0.985,
  *   edge sharpness >= 95%, alpha unchanged). Otherwise retains the exact original embedded image.
+ * @param {Uint8Array} origMediaBytes
+ * @param {string} expectedMediaMime
+ * @param {string} baseName
+ * @param {any} options
+ * @param {any} ctx
  */
 export async function optimizeEmbeddedOpenXmlMedia(
   origMediaBytes,
@@ -3376,7 +3647,7 @@ export async function optimizeEmbeddedOpenXmlMedia(
     let outBytes;
     try {
       outBytes = await runOxipngOptimization(origMediaBytes, { signal, deadlineAt, timeoutMs });
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || signal?.aborted) {
         throw err;
       }
@@ -3520,7 +3791,7 @@ export async function optimizeEmbeddedOpenXmlMedia(
         deadlineAt,
         timeoutMs
       });
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || signal?.aborted) {
         throw err;
       }
@@ -3582,6 +3853,12 @@ export async function optimizeEmbeddedOpenXmlMedia(
  * Losslessly recompresses OpenXML (DOCX, PPTX, XLSX) ZIP containers via JSZip DEFLATE level 9,
  * optionally optimizing eligible embedded PNG/JPEG/WebP media when safe while leaving GIFs,
  * SVG/EMF/WMF vectors, XML, relationships, formulas, slides, notes, and macros untouched.
+ * @param {any} file
+ * @param {any} inputBytes
+ * @param {any} mimeType
+ * @param {any} formatInfo
+ * @param {any} options
+ * @param {any} ctx
  */
 async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, options, ctx) {
   const { signal, deadlineAt, timeoutMs, onStage, minSavingsRatio } = ctx;
@@ -3617,6 +3894,7 @@ async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, optio
     return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.PROTECTED_PACKAGE);
   }
 
+  /** @type {any} */
   const jszipModule = await runWithCancellation(() => import('jszip'), {
     signal,
     deadlineAt,
@@ -3633,6 +3911,7 @@ async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, optio
     );
   }
 
+  /** @type {any} */
   let zip;
   try {
     zip = await runWithCancellation(() => JSZip.loadAsync(inputBytes), {
@@ -3640,7 +3919,7 @@ async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, optio
       deadlineAt,
       timeoutMs
     });
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
     emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
       fileName: file.name,
@@ -3701,7 +3980,7 @@ async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, optio
       });
       originalEntriesMap.set(entryPath, bytes);
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
     emitStage(onStage, COMPRESSION_STAGES.SKIPPED, {
       fileName: file.name,
@@ -3839,7 +4118,7 @@ async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, optio
     return buildResult(file, false, file.size, file.size, COMPRESSION_REASONS.VALIDATION_FAILED);
   }
 
-  const compressedFile = new File([outBytes], file.name, {
+  const compressedFile = new File([/** @type {any} */ (outBytes)], file.name, {
     type: mimeType,
     lastModified: file.lastModified
   });
@@ -3864,14 +4143,8 @@ async function optimizeOpenXmlFile(file, inputBytes, mimeType, formatInfo, optio
  * Safely optimizes a File (supported image or PDF) while enforcing strict quality,
  * validation, >= 10% savings, AbortSignal, and fail-safe fallback guarantees.
  *
- * @param {File} file
+ * @param {any} file
  * @param {Object} [options={}]
- * @param {AbortSignal} [options.signal]
- * @param {(info: { stage: string, timestamp: number, [key: string]: any }) => void} [options.onStage]
- * @param {number} [options.timeoutMs=20000]
- * @param {number} [options.minImageBytes=81920]
- * @param {number} [options.minPdfBytes=65536]
- * @param {number} [options.minSavingsRatio=0.10]
  * @returns {Promise<{ file: File, compressed: boolean, originalSize: number, finalSize: number, reason: string }>}
  */
 export async function compressFile(file, options = {}) {
@@ -4058,7 +4331,7 @@ export async function compressFile(file, options = {}) {
       originalSize,
       COMPRESSION_REASONS.UNSUPPORTED_FORMAT
     );
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError' || signal?.aborted) {
       emitStage(onStage, COMPRESSION_STAGES.ABORTED, {
         fileName: file.name,

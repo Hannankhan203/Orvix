@@ -34,37 +34,109 @@ import {
 } from './providerModelSanitizer.js';
 
 /**
- * @param {any} target
- * @param {any} [source={}]
+ * @typedef {Object} AlternativeRecoveryFields
+ * @property {boolean} [isError]
+ * @property {boolean} [isStopped]
+ * @property {boolean} [isInterrupted]
+ * @property {boolean} [isStreaming]
+ * @property {string} [failedPrompt]
+ * @property {string} [failedProvider]
+ * @property {boolean} [canSwitchProvider]
+ * @property {string} [errorCode]
+ * @property {string | number | null} [status]
+ * @property {number | null} [httpStatus]
+ * @property {string[]} [suggestedProviders]
+ */
+
+/**
+ * @typedef {Object} ResponseAlternative
+ * @property {string} id
+ * @property {string | null} parentMessageId
+ * @property {string | null} interactionId
+ * @property {'assistant'} sender
+ * @property {string} content
+ * @property {string} provider
+ * @property {string | null} modelUsed
+ * @property {number | null} responseTimeMs
+ * @property {string} timestamp
+ * @property {number} createdAt
+ * @property {number} createdAtMs
+ * @property {Array<Record<string, unknown>>} referencedAttachments
+ * @property {boolean} isError
+ * @property {boolean} isStopped
+ * @property {boolean} isInterrupted
+ * @property {string} [failedPrompt]
+ * @property {string} [failedProvider]
+ * @property {boolean} [canSwitchProvider]
+ * @property {string} [errorCode]
+ * @property {string | number | null} [status]
+ * @property {number | null} [httpStatus]
+ * @property {string[]} [suggestedProviders]
+ */
+
+/**
+ * @typedef {Object} CreateAlternativeParams
+ * @property {string | null} [id]
+ * @property {string | null} [parentMessageId]
+ * @property {string | null} [interactionId]
+ * @property {string} [content]
+ * @property {string} [provider]
+ * @property {string | null} [modelUsed]
+ * @property {number | null} [responseTimeMs]
+ * @property {string} [timestamp]
+ * @property {number | null} [createdAt]
+ * @property {number | null} [createdAtMs]
+ * @property {Array<Record<string, unknown>>} [referencedAttachments]
+ * @property {boolean} [isError]
+ * @property {boolean} [isStopped]
+ * @property {boolean} [isInterrupted]
+ * @property {boolean} [isStreaming]
+ * @property {string} [failedPrompt]
+ * @property {string} [failedProvider]
+ * @property {boolean} [canSwitchProvider]
+ * @property {string} [errorCode]
+ * @property {string | number | null} [status]
+ * @property {number | null} [httpStatus]
+ * @property {string[]} [suggestedProviders]
+ */
+
+/**
+ * @template {Record<string, unknown>} T
+ * @param {T} target
+ * @param {AlternativeRecoveryFields} [source={}]
+ * @returns {T & AlternativeRecoveryFields}
  */
 function assignOptionalRecoveryFields(target, source = {}) {
-  if (!source || typeof source !== 'object') return target;
+  /** @type {T & AlternativeRecoveryFields} */
+  const out = target;
+  if (!source || typeof source !== 'object') return out;
   if (typeof source.failedPrompt === 'string' && source.failedPrompt.length > 0) {
-    target.failedPrompt = source.failedPrompt;
+    out.failedPrompt = source.failedPrompt;
   }
   if (typeof source.failedProvider === 'string' && source.failedProvider.length > 0) {
-    target.failedProvider = source.failedProvider;
+    out.failedProvider = source.failedProvider;
   }
   if (typeof source.canSwitchProvider === 'boolean') {
-    target.canSwitchProvider = source.canSwitchProvider;
+    out.canSwitchProvider = source.canSwitchProvider;
   }
   if (typeof source.errorCode === 'string' && source.errorCode.length > 0) {
-    target.errorCode = source.errorCode;
+    out.errorCode = source.errorCode;
   }
   if (source.status !== undefined && source.status !== null) {
-    target.status = source.status;
+    out.status = source.status;
   }
   if (source.httpStatus !== undefined && source.httpStatus !== null) {
-    target.httpStatus = source.httpStatus;
+    out.httpStatus = source.httpStatus;
   }
   if (Array.isArray(source.suggestedProviders) && source.suggestedProviders.length > 0) {
-    target.suggestedProviders = source.suggestedProviders;
+    out.suggestedProviders = source.suggestedProviders;
   }
-  return target;
+  return out;
 }
 
 /**
- * @param {any} [alt={}]
+ * @param {AlternativeRecoveryFields} [alt={}]
+ * @returns {AlternativeRecoveryFields}
  */
 function projectAlternativeRecoveryFields(alt = {}) {
   return {
@@ -83,8 +155,8 @@ function projectAlternativeRecoveryFields(alt = {}) {
 
 /**
  * Creates a well-formed Response Alternative record.
- * @param {any} [params={}]
- * @returns {any} Clean ResponseAlternative object
+ * @param {CreateAlternativeParams} [params={}]
+ * @returns {ResponseAlternative} Clean ResponseAlternative object
  */
 export function createAlternativeRecord({
   id = null,
@@ -112,6 +184,7 @@ export function createAlternativeRecord({
   const chosenProvider = provider || 'gemini';
   const cleanModel = sanitizeStoredDisplayModel(chosenProvider, modelUsed);
   const resolvedCreated = typeof createdAt === 'number' && !isNaN(createdAt) ? createdAt : Date.now();
+  /** @type {ResponseAlternative} */
   const record = {
     id: id || generateAlternativeId(chosenProvider),
     parentMessageId: parentMessageId || null,
@@ -141,8 +214,8 @@ export function createAlternativeRecord({
 }
 
 /**
- * @param {any} alternatives
- * @param {any} activeAlternativeId
+ * @param {Array<Partial<ResponseAlternative>> | null | undefined} alternatives
+ * @param {string | null | undefined} activeAlternativeId
  * @returns {boolean}
  */
 function hasActiveAlternativeRecord(alternatives, activeAlternativeId) {
@@ -159,14 +232,23 @@ function hasActiveAlternativeRecord(alternatives, activeAlternativeId) {
 }
 
 /**
- * @param {any} message
+ * @param {{
+ *   alternatives?: Array<Partial<ResponseAlternative>>,
+ *   activeAlternativeId?: string | null,
+ *   isError?: boolean,
+ *   isStopped?: boolean,
+ *   isInterrupted?: boolean,
+ *   failedPrompt?: string,
+ *   failedProvider?: string,
+ *   errorCode?: string
+ * } | null | undefined} message
  * @returns {boolean}
  */
 function activeAlternativeRequiresProjection(message) {
   if (!message || !Array.isArray(message.alternatives) || !message.activeAlternativeId) {
     return false;
   }
-  const activeAlt = message.alternatives.find((/** @type {any} */ a) => a && a.id === message.activeAlternativeId);
+  const activeAlt = message.alternatives.find((a) => a && a.id === message.activeAlternativeId);
   if (!activeAlt) return false;
   if (
     Boolean(message.isError) !== Boolean(activeAlt.isError) ||
@@ -234,12 +316,12 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
       ? baseMessage.createdAtMs
       : createdAt;
 
-  /** @type {any[]} */
+  /** @type {ResponseAlternative[]} */
   let alternatives = [];
 
   if (Array.isArray(baseMessage.alternatives) && baseMessage.alternatives.length > 0) {
     // Message already has alternatives array; ensure each alternative is well-formed
-    alternatives = message.alternatives.map((/** @type {any} */ alt) =>
+    alternatives = message.alternatives.map((/** @type {Partial<ResponseAlternative>} */ alt) =>
       createAlternativeRecord({
         id: alt.id,
         parentMessageId: alt.parentMessageId || parentMessageId,
@@ -684,9 +766,11 @@ export function ensureConversationAlternatives(messages = []) {
       }
 
       ensureUserLookups();
+      const idMap = /** @type {Map<any, any> | null} */ (userById);
+      const interactionMap = /** @type {Map<any, any> | null} */ (userByInteractionId);
       const linkedUser =
-        (msg.parentMessageId && userById?.get(msg.parentMessageId)) ||
-        (msg.interactionId && userByInteractionId?.get(msg.interactionId)) ||
+        (msg.parentMessageId && idMap?.get(msg.parentMessageId)) ||
+        (msg.interactionId && interactionMap?.get(msg.interactionId)) ||
         lastUserMessage;
       const normalized = normalizeAssistantMessage(msg, linkedUser);
       if (normalized !== msg) {
