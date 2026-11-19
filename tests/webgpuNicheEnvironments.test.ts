@@ -1,12 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 import {
   checkWebGPUSupport,
   evaluateWebGPUWarmupSuitability,
   DEFAULT_WEBLLM_MODEL_ID,
+  FALLBACK_F32_WEBLLM_MODEL_ID,
   SMOLLM2_360M_WEBLLM_MODEL_ID,
   normalizeWebLLMError,
+  inspectWebLLMReadiness,
+  getWebLLMState,
   ensureWebLLMEngine,
   destroyWebLLMEngine,
   streamWebLLMMessage,
@@ -16,6 +21,7 @@ import {
   setWebLLMDownloadConfigForTesting,
   resetWebLLMRuntimeForTesting
 } from '../src/services/webllmService.js';
+import BrowserAIStatusBar from '../src/components/chat/BrowserAIStatusBar.jsx';
 import { streamAIMessage } from '../src/services/aiRouter.js';
 import {
   getChunksForConversation,
@@ -477,4 +483,166 @@ test('MED-01 WebLLM model download and loading reliability: OOM and VRAM constra
   assert.match(normalized.message, /device ran out of GPU memory/i);
   assert.match(normalized.message, /SmolLM2 360M/i);
 });
+
+test('ORVIX-LOW-01 BrowserAIStatusBar: clearly indicates FP32 fallback across downloading, loading, ready, generating, and offline states', () => {
+  const noop = () => {};
+
+  const downloadingHtml = renderToStaticMarkup(
+    React.createElement(BrowserAIStatusBar, {
+      visible: true,
+      isSelectedProvider: true,
+      selectedModelId: DEFAULT_WEBLLM_MODEL_ID,
+      gpuCheck: { checking: false, supported: true, message: null },
+      webllmState: {
+        status: 'downloading',
+        modelId: DEFAULT_WEBLLM_MODEL_ID,
+        loadedModelId: null,
+        hasShaderF16: false,
+        progressPercent: 42,
+        progressText: 'Fetching param cache[2/4]',
+        isCached: false
+      },
+      onSelectModel: noop,
+      onLoadModel: noop,
+      onCancelLoad: noop,
+      onUnloadModel: noop,
+      onSelectProvider: noop
+    })
+  );
+  assert.match(downloadingHtml, /Downloading \(FP32 Fallback\)/);
+  assert.match(downloadingHtml, /Qwen 2\.5 1\.5B \(FP32\)/);
+  assert.match(downloadingHtml, /FP32 fallback from Qwen 2\.5 1\.5B/);
+
+  const generatingHtml = renderToStaticMarkup(
+    React.createElement(BrowserAIStatusBar, {
+      visible: true,
+      isSelectedProvider: true,
+      selectedModelId: DEFAULT_WEBLLM_MODEL_ID,
+      gpuCheck: { checking: false, supported: true, message: null },
+      webllmState: {
+        status: 'generating',
+        modelId: FALLBACK_F32_WEBLLM_MODEL_ID,
+        loadedModelId: FALLBACK_F32_WEBLLM_MODEL_ID,
+        hasShaderF16: false,
+        isCached: true
+      },
+      onSelectModel: noop,
+      onLoadModel: noop,
+      onCancelLoad: noop,
+      onUnloadModel: noop,
+      onSelectProvider: noop
+    })
+  );
+  assert.match(generatingHtml, /Generating • FP32 Fallback/);
+  assert.match(generatingHtml, /FP32 fallback \(Qwen 2\.5 1\.5B \(FP32\)\)/);
+
+  const readyHtml = renderToStaticMarkup(
+    React.createElement(BrowserAIStatusBar, {
+      visible: true,
+      isSelectedProvider: true,
+      selectedModelId: DEFAULT_WEBLLM_MODEL_ID,
+      gpuCheck: { checking: false, supported: true, message: null },
+      webllmState: {
+        status: 'ready',
+        modelId: FALLBACK_F32_WEBLLM_MODEL_ID,
+        loadedModelId: FALLBACK_F32_WEBLLM_MODEL_ID,
+        hasShaderF16: false,
+        isCached: true
+      },
+      onSelectModel: noop,
+      onLoadModel: noop,
+      onCancelLoad: noop,
+      onUnloadModel: noop,
+      onSelectProvider: noop
+    })
+  );
+  assert.match(readyHtml, /Ready • FP32 Fallback/);
+  assert.match(readyHtml, /Switched from Qwen 2\.5 1\.5B to FP32 fallback/);
+
+  const offlineCachedHtml = renderToStaticMarkup(
+    React.createElement(BrowserAIStatusBar, {
+      visible: true,
+      isSelectedProvider: true,
+      selectedModelId: DEFAULT_WEBLLM_MODEL_ID,
+      isOffline: true,
+      gpuCheck: { checking: false, supported: true, message: null },
+      webllmState: {
+        status: 'idle',
+        modelId: FALLBACK_F32_WEBLLM_MODEL_ID,
+        loadedModelId: null,
+        hasShaderF16: false,
+        isCached: true
+      },
+      onSelectModel: noop,
+      onLoadModel: noop,
+      onCancelLoad: noop,
+      onUnloadModel: noop,
+      onSelectProvider: noop
+    })
+  );
+  assert.match(offlineCachedHtml, /Offline Cached • FP32 Fallback/);
+  assert.match(offlineCachedHtml, /Using FP32 compatibility fallback/);
+});
+
+test('ORVIX-LOW-01 BrowserAIStatusBar: preserves one-click fallback model and cloud provider controls on error and unsupported WebGPU', async () => {
+  const noop = () => {};
+
+  const gpuUnsupportedHtml = renderToStaticMarkup(
+    React.createElement(BrowserAIStatusBar, {
+      visible: true,
+      isSelectedProvider: true,
+      selectedModelId: DEFAULT_WEBLLM_MODEL_ID,
+      gpuCheck: { checking: false, supported: false, message: 'WebGPU adapter unavailable.' },
+      webllmState: {
+        status: 'idle',
+        modelId: DEFAULT_WEBLLM_MODEL_ID,
+        loadedModelId: null,
+        suggestedProvider: null
+      },
+      onSelectModel: noop,
+      onLoadModel: noop,
+      onSelectProvider: noop
+    })
+  );
+  assert.match(gpuUnsupportedHtml, /Unavailable • Cloud Fallback/);
+  assert.match(gpuUnsupportedHtml, /Switch to Cloud AI/);
+
+  const errorHtml = renderToStaticMarkup(
+    React.createElement(BrowserAIStatusBar, {
+      visible: true,
+      isSelectedProvider: true,
+      selectedModelId: DEFAULT_WEBLLM_MODEL_ID,
+      gpuCheck: { checking: false, supported: true, message: null },
+      webllmState: {
+        status: 'error',
+        modelId: DEFAULT_WEBLLM_MODEL_ID,
+        loadedModelId: null,
+        error: 'GPU out of memory',
+        suggestedFallbackModelId: SMOLLM2_360M_WEBLLM_MODEL_ID,
+        suggestedProvider: 'gemini'
+      },
+      onSelectModel: noop,
+      onLoadModel: noop,
+      onSelectProvider: noop
+    })
+  );
+  assert.match(errorHtml, /Try SmolLM2 360M/);
+  assert.match(errorHtml, /Switch to Cloud AI/);
+  assert.match(errorHtml, /Retry/);
+
+  // Verify inspectWebLLMReadiness exposes suggestedProvider on unsupported WebGPU
+  resetWebLLMRuntimeForTesting();
+  const restoreNav = setGlobalProp('navigator', { deviceMemory: 8 });
+  const restoreWindow = setGlobalProp('window', { isSecureContext: true });
+  try {
+    await inspectWebLLMReadiness(DEFAULT_WEBLLM_MODEL_ID);
+    const st = getWebLLMState();
+    assert.equal(st.suggestedProvider, 'gemini');
+  } finally {
+    restoreNav();
+    restoreWindow();
+    resetWebLLMRuntimeForTesting();
+  }
+});
+
 

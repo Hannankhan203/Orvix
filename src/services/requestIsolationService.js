@@ -442,7 +442,7 @@ export function cancelActiveChatRequest(controller, reason, callbacks) {
  * @param {(chatId: string | null, assistantMessageId: string) => any} [params.findExistingAssistantMessage]
  * @param {(attachments: any[], ctx: { provider: string, model: string | null, signal: AbortSignal }) => Promise<any[]>} [params.prepareAttachments]
  * @param {(ctx: { signal: AbortSignal, isRequestActive: () => boolean, attachments: any[], onStart: (info?: any) => void, onChunk: (chunkText: string, accumulated: string) => void }) => Promise<any>} params.streamRequest
- * @param {(error: any, ctx: { finalProvider: string, providerToUse: string, activeModel: string | null, targetText: string, promptText: string }) => { friendlyMsg: string, effectiveProvider: string, canSwitchProvider: boolean }} params.classifyError
+ * @param {(error: any, ctx: { finalProvider: string, providerToUse: string, activeModel: string | null, targetText: string, promptText: string }) => { friendlyMsg: string, effectiveProvider: string, canSwitchProvider: boolean, [key: string]: any }} params.classifyError
  */
 export async function runIsolatedPromptStream({
   controller,
@@ -495,6 +495,7 @@ export async function runIsolatedPromptStream({
 
   const requestStartTime =
     typeof customStartTime === 'number' && customStartTime > 0 ? customStartTime : nowFn();
+  /** @type {number | null} */
   let measuredResponseTimeMs = null;
 
   let targetText = '';
@@ -507,7 +508,7 @@ export async function runIsolatedPromptStream({
   let isCancelled = false;
   let isFinalized = false;
 
-  /** @type {(() => void) | null} */
+  /** @type {((value?: any) => void) | null} */
   let resolveDrainWait = null;
 
   const cancelCurrentAnimation = () => {
@@ -526,11 +527,11 @@ export async function runIsolatedPromptStream({
   controller.setAnimationCanceller(requestId, cancelCurrentAnimation);
 
   const finalizeAssistantMessage = async (
-    contentToSave,
-    modelToUse,
-    providerToFinalize,
+    /** @type {string} */ contentToSave,
+    /** @type {string | null} */ modelToUse,
+    /** @type {string} */ providerToFinalize,
     isStopped = false,
-    responseTime = null
+    /** @type {number | null} */ responseTime = null
   ) => {
     if (isCancelled || isFinalized || !controller.isRequestActive(requestId)) {
       if (resolveDrainWait) {
@@ -908,7 +909,7 @@ export async function runIsolatedPromptStream({
     }
 
     return { status: 'completed', requestId, text: targetText };
-  } catch (error) {
+  } catch (/** @type {any} */ error) {
     isStreamDone = true;
     cancelCurrentAnimation();
 

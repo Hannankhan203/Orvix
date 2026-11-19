@@ -4,6 +4,7 @@ import { useOptionalSettings } from './SettingsContext.jsx';
 
 const SpeechContext = createContext(null);
 
+/** @param {any} rate */
 function clampSpeechRate(rate) {
   const num = parseFloat(rate);
   if (Number.isNaN(num)) return 1;
@@ -29,6 +30,7 @@ export function useSpeech() {
   return context;
 }
 
+/** @param {{ children?: any }} props */
 export function SpeechProvider({ children }) {
   const settingsCtx = useOptionalSettings();
   const hasSettingsProvider = Boolean(settingsCtx);
@@ -49,6 +51,7 @@ export function SpeechProvider({ children }) {
 
   // Saved reading positions per AI response:
   // { [messageId: string]: { chunkIndex: number, charOffset: number, cleanedText: string } }
+  /** @type {[Record<string, any>, React.Dispatch<React.SetStateAction<Record<string, any>>>]} */
   const [readingPositions, setReadingPositions] = useState({});
 
   // Speech rate: 0.75, 1 (normal), 1.25, 1.5, 2
@@ -59,7 +62,7 @@ export function SpeechProvider({ children }) {
     if (typeof window !== 'undefined') {
       try {
         const stored = localStorage.getItem('orvix_speech_rate');
-        const num = parseFloat(stored);
+        const num = parseFloat(stored || '');
         if (num >= 0.5 && num <= 2.5) return num;
       } catch (_) {}
     }
@@ -89,6 +92,7 @@ export function SpeechProvider({ children }) {
   const selectedVoiceURIRef = useRef(selectedVoiceURI);
   const voicesRef = useRef(voices);
   const currentSessionIdRef = useRef(0);
+  /** @type {React.MutableRefObject<string[]>} */
   const chunksRef = useRef([]);
   const currentChunkIndexRef = useRef(0);
   const currentCharIndexRef = useRef(0);
@@ -104,20 +108,20 @@ export function SpeechProvider({ children }) {
   const pendingSpeakTimerRef = useRef(null);
 
   // Synchronously update ref and state
-  const setSpeakingStateSync = useCallback((state) => {
+  const setSpeakingStateSync = useCallback((/** @type {string} */ state) => {
     speakingStateRef.current = state;
     setSpeakingState(state);
   }, []);
 
-  const setCurrentMessageIdSync = useCallback((id) => {
+  const setCurrentMessageIdSync = useCallback((/** @type {string|null} */ id) => {
     currentMessageIdRef.current = id;
     setCurrentMessageId(id);
   }, []);
 
   // Update a reading position for a specific message
-  const updateReadingPosition = useCallback((messageId, pos) => {
+  const updateReadingPosition = useCallback((/** @type {string} */ messageId, /** @type {any} */ pos) => {
     if (!messageId || messageId === 'settings-preview') return;
-    setReadingPositions((prev) => {
+    setReadingPositions((/** @type {Record<string, any>} */ prev) => {
       const next = {
         ...prev,
         [messageId]: pos
@@ -133,9 +137,9 @@ export function SpeechProvider({ children }) {
   }, []);
 
   // Remove saved reading position for a specific message
-  const removeReadingPosition = useCallback((messageId) => {
+  const removeReadingPosition = useCallback((/** @type {string} */ messageId) => {
     if (!messageId) return;
-    setReadingPositions((prev) => {
+    setReadingPositions((/** @type {Record<string, any>} */ prev) => {
       if (!prev[messageId]) return prev;
       const next = { ...prev };
       delete next[messageId];
@@ -145,14 +149,14 @@ export function SpeechProvider({ children }) {
   }, []);
 
   // Check if a message has a saved non-zero reading position
-  const hasSavedPosition = useCallback((messageId) => {
+  const hasSavedPosition = useCallback((/** @type {string} */ messageId) => {
     if (!messageId) return false;
     const pos = readingPositionsRef.current[messageId] || readingPositions[messageId];
     if (!pos) return false;
     return pos.chunkIndex > 0 || pos.charOffset > 0;
   }, [readingPositions]);
 
-  const setSpeechRate = useCallback((rate) => {
+  const setSpeechRate = useCallback((/** @type {any} */ rate) => {
     const clamped = clampSpeechRate(rate);
     speechRateRef.current = clamped;
     setSpeechRateState(clamped);
@@ -163,7 +167,7 @@ export function SpeechProvider({ children }) {
     }
   }, []);
 
-  const setSelectedVoiceURI = useCallback((uri) => {
+  const setSelectedVoiceURI = useCallback((/** @type {any} */ uri) => {
     const cleanUri = typeof uri === 'string' ? uri : '';
     selectedVoiceURIRef.current = cleanUri;
     setSelectedVoiceURIState(cleanUri);
@@ -320,7 +324,7 @@ export function SpeechProvider({ children }) {
    * @param {number} [initialOffset=0] - Character offset within this chunk to start speaking from
    */
   const speakChunk = useCallback(
-    (index, sessionId, initialOffset = 0) => {
+    (/** @type {number} */ index, /** @type {number} */ sessionId, initialOffset = 0) => {
       if (!isSupported) return;
 
       // Invalidate if user switched speech session or paused/stopped
@@ -498,11 +502,11 @@ export function SpeechProvider({ children }) {
    * and applied to speech refs before speaking a chunk.
    */
   const speakAfterSettingsReady = useCallback(
-    (chunkIdx, sessionId, charOff = 0) => {
+    (/** @type {number} */ chunkIdx, /** @type {number} */ sessionId, charOff = 0) => {
       const sc = settingsCtxRef.current;
       if (sc?.hasPendingSettingsLoad?.()) {
         void Promise.resolve(sc.ensureSettingsLoaded())
-          .then((latestSettings) => {
+          .then((/** @type {any} */ latestSettings) => {
             if (sessionId !== currentSessionIdRef.current) return;
             if (speakingStateRef.current !== 'speaking') return;
             if (latestSettings) {
@@ -629,7 +633,7 @@ export function SpeechProvider({ children }) {
    *
    * @param {string} messageId - Message to reset
    */
-  const resetMessageSpeech = useCallback((messageId) => {
+  const resetMessageSpeech = useCallback((/** @type {string} */ messageId) => {
     if (!messageId) return;
 
     if (currentMessageIdRef.current === messageId) {
@@ -660,7 +664,7 @@ export function SpeechProvider({ children }) {
    * @param {boolean} [fromStart=false] - If true, clears any saved position and reads from the beginning
    */
   const playMessage = useCallback(
-    (messageId, rawMarkdown, fromStart = false) => {
+    (/** @type {string} */ messageId, /** @type {string} */ rawMarkdown, fromStart = false) => {
       if (!isSupported) {
         setSpeechError('Text-to-speech is not supported by your browser.');
         setSpeakingStateSync('error');
@@ -758,7 +762,7 @@ export function SpeechProvider({ children }) {
    * Toggle Play / Pause / Resume for a given message.
    */
   const toggleSpeech = useCallback(
-    (messageId, rawMarkdown) => {
+    (/** @type {string} */ messageId, /** @type {string} */ rawMarkdown) => {
       if (currentMessageIdRef.current === messageId) {
         if (speakingStateRef.current === 'speaking') {
           pauseSpeech();

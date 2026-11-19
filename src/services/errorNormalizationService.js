@@ -315,21 +315,7 @@ export function isAbortLike(error, signal = null) {
  * data sanitization, and local privacy guarantees.
  *
  * @param {any} rawError
- * @param {Object} [context={}]
- * @param {string} [context.provider]
- * @param {string} [context.model]
- * @param {number} [context.httpStatus]
- * @param {string | number} [context.requestId]
- * @param {string} [context.partialText]
- * @param {boolean} [context.partial]
- * @param {AbortSignal} [context.signal]
- * @param {string} [context.promptText]
- * @param {boolean} [context.retryable]
- * @param {boolean} [context.canFallback]
- * @param {Array<string>} [context.suggestedProviders]
- * @param {boolean} [context.isTimeout]
- * @param {string} [context.finishReason]
- * @param {number} [context.retryAfterSeconds]
+ * @param {any} [context={}]
  * @returns {CanonicalAIError}
  */
 export function normalizeAIError(rawError, context = {}) {
@@ -451,7 +437,9 @@ export function normalizeAIError(rawError, context = {}) {
   // DETERMINISTIC CLASSIFICATION PRECEDENCE
   // =========================================================================
 
+  /** @type {string} */
   let code = STANDARD_ERROR_CODES.UPSTREAM_SERVICE_ERROR;
+  /** @type {string} */
   let category = ERROR_CATEGORIES.UPSTREAM_API_AND_MODEL;
   let userMessage = cleanMsg;
   let retryable = false;

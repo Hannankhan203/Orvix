@@ -37,6 +37,7 @@ function readStoredGuestSession() {
   }
 }
 
+/** @param {any} guestUser */
 function writeStoredGuestSession(guestUser) {
   const serialized = JSON.stringify(guestUser);
   try {
@@ -79,6 +80,7 @@ export function useAuth() {
  * AuthProvider Component
  * Manages authenticated user state, Firestore user profile persistence,
  * username validation/editing, and guest demo sessions.
+ * @param {{ children?: any, authDeps?: any }} props
  */
 export function AuthProvider({ children, authDeps = null }) {
   const [currentUser, setCurrentUser] = useState(null);
@@ -108,6 +110,7 @@ export function AuthProvider({ children, authDeps = null }) {
   const isConfigured = depsRef.current.isFirebaseConfigured();
 
   // Load Firestore profile for an authenticated Firebase user (hydrating local cache first)
+  /** @param {any} user */
   const loadProfileForUser = async (user) => {
     if (!user || user.isAnonymous) {
       return null;
@@ -210,7 +213,7 @@ export function AuthProvider({ children, authDeps = null }) {
           depsRef.current.isBrowserOnline() ? 4500 : 1200
         );
 
-    const unsubscribe = depsRef.current.onAuthChange((user) => {
+    const unsubscribe = depsRef.current.onAuthChange((/** @type {any} */ user) => {
       if (!isEffectActive) return;
       if (fallbackTimer) {
         clearTimeout(fallbackTimer);
@@ -257,7 +260,7 @@ export function AuthProvider({ children, authDeps = null }) {
 
   /**
    * Enter guest / demo mode without requiring Firebase credentials
-   * @param {string} [preferredName] - Optional preferred name for guest exploration
+   * @param {string|null} [preferredName] - Optional preferred name for guest exploration
    */
   const continueAsGuest = (preferredName = null) => {
     const cleanName =
@@ -331,7 +334,7 @@ export function AuthProvider({ children, authDeps = null }) {
 
       return user;
     } catch (err) {
-      const formatted = formatAuthError(err);
+      const formatted = formatAuthError(/** @type {any} */ (err));
       if (isMountedRef.current) {
         setError(formatted);
       }
@@ -367,7 +370,7 @@ export function AuthProvider({ children, authDeps = null }) {
       await loadProfileForUser(user);
       return user;
     } catch (err) {
-      const formatted = formatAuthError(err);
+      const formatted = formatAuthError(/** @type {any} */ (err));
       if (isMountedRef.current) {
         setError(formatted);
       }
@@ -430,7 +433,7 @@ export function AuthProvider({ children, authDeps = null }) {
         });
 
         // Update local displayName representation
-        setCurrentUser((prev) => (prev ? { ...prev, displayName: sanitized } : prev));
+        setCurrentUser((/** @type {any} */ prev) => (prev ? { ...prev, displayName: sanitized } : prev));
       }
     } catch (err) {
       console.error('Failed to update username:', err);
@@ -464,7 +467,7 @@ export function AuthProvider({ children, authDeps = null }) {
         setUserProfile(null);
       }
     } catch (err) {
-      const formatted = formatAuthError(err);
+      const formatted = formatAuthError(/** @type {any} */ (err));
       if (isMountedRef.current) {
         setError(formatted);
       }

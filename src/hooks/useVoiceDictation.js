@@ -195,6 +195,7 @@ export function getInitialLanguage() {
  * Common technical acronyms that should be formatted cleanly when spoken.
  * NOTE: As per project guidelines, no arbitrary word-replacement dictionaries are used.
  */
+/** @type {Array<[RegExp, any]>} */
 const COMMON_TECH_ACRONYMS = [
   [/\b(?:or\s*vix|our\s*vix|or\s*fix)\s*['’]s\b/gi, "Orvix's"],
   [/\borvix\s*['’]s\b/gi, "Orvix's"],
@@ -214,21 +215,21 @@ const COMMON_TECH_ACRONYMS = [
   [/\breact\b/gi, 'React'],
   [/\bangular\b/gi, 'Angular'],
   [/\bhannan\b/gi, 'Hannan'],
-  [/\b(?:a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'APIs' : 'API')],
+  [/\b(?:a\s*p\s*i)s?\b/gi, (/** @type {string} */ m) => (/s$/i.test(m) ? 'APIs' : 'API')],
   [/\b(?:j\s*s\s*o\s*n)\b/gi, 'JSON'],
   [/\b(?:h\s*t\s*m\s*l)\b/gi, 'HTML'],
   [/\b(?:c\s*s\s*s)\b/gi, 'CSS'],
-  [/\b(?:u\s*r\s*l)s?\b/gi, (m) => (/s$/i.test(m) ? 'URLs' : 'URL')],
+  [/\b(?:u\s*r\s*l)s?\b/gi, (/** @type {string} */ m) => (/s$/i.test(m) ? 'URLs' : 'URL')],
   [/\b(?:s\s*q\s*l)\b/gi, 'SQL'],
   [/\b(?:no\s*s\s*q\s*l)\b/gi, 'NoSQL'],
   [/\b(?:graph\s*q\s*l)\b/gi, 'GraphQL'],
-  [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')],
+  [/\b(?:rest\s*a\s*p\s*i)s?\b/gi, (/** @type {string} */ m) => (/s$/i.test(m) ? 'REST APIs' : 'REST API')],
   [/\b(?:async\s+await|async\s*\/\s*await|(?:sync|sink)\s+await)\b/gi, 'async/await'],
   [/\b(?:pedrandom|ped\s+random|pelindrome|palindrom)\b/gi, 'palindrome'],
   [/\bvar\s*,\s*constant\s*,\s*let\b/gi, 'var, const, let'],
   [/\bvar\s+constant\s+let\b/gi, 'var, const, let'],
-  [/\barray\s+methods?\b/gi, (m) => (/s$/i.test(m) ? 'array methods' : 'array method')],
-  [/\barrow\s+functions?\b/gi, (m) => (/s$/i.test(m) ? 'arrow functions' : 'arrow function')]
+  [/\barray\s+methods?\b/gi, (/** @type {string} */ m) => (/s$/i.test(m) ? 'array methods' : 'array method')],
+  [/\barrow\s+functions?\b/gi, (/** @type {string} */ m) => (/s$/i.test(m) ? 'arrow functions' : 'arrow function')]
 ];
 
 /**
@@ -304,6 +305,7 @@ export function formatSpeechTranscript(rawText, langCode = 'en-US', precedingTex
 
   // Protect technical filenames, extensions, and dot notation from sentence-splitting
   const technicalIdentifiers = /\b([a-zA-Z0-9_-]+)\.(md|ts|js|jsx|tsx|json|html|css|py|txt|csv|pdf|png|jpg|svg|xml|yaml|yml|env|lock|random|log)\b/gi;
+  /** @type {string[]} */
   const techPlaceholders = [];
   text = text.replace(technicalIdentifiers, (m) => {
     techPlaceholders.push(m);
@@ -683,9 +685,13 @@ export function reconcileFallbackTranscript({
  * - Clean teardown preventing duplicate recognition instances or memory leaks.
  *
  * @param {Object} options
- * @param {string} options.inputValue - Current text in the composer
+ * @param {string} [options.inputValue] - Current text in the composer
  * @param {(text: string) => void} options.onInputChange - Callback to update composer text
- * @returns {Object} Dictation states, controls, and audio metrics
+ * @param {boolean} [options.disabled]
+ * @param {boolean} [options.enableWebSocketStreaming]
+ * @param {string} [options.webSocketUrl]
+ * @param {string} [options.authToken]
+ * @returns {any} Dictation states, controls, and audio metrics
  */
 export function useVoiceDictation({
   inputValue = '',
@@ -807,19 +813,19 @@ export function useVoiceDictation({
   const [lastDiagnostic, setLastDiagnostic] = useState(getLastDictationDiagnostic);
   const [isDiagnosticsEnabledState, setIsDiagnosticsEnabledState] = useState(isDictationDiagnosticsEnabled);
 
-  const setDiagnosticsEnabled = useCallback((enabled) => {
+  const setDiagnosticsEnabled = useCallback((/** @type {any} */ enabled) => {
     setDictationDiagnosticsEnabled(enabled);
     setIsDiagnosticsEnabledState(Boolean(enabled));
   }, []);
 
   // Synchronous state updater to avoid React re-render closure lag in event handlers
-  const updateRecordingState = useCallback((newState) => {
+  const updateRecordingState = useCallback((/** @type {any} */ newState) => {
     recordingStateRef.current = newState;
     setRecordingState(newState);
   }, []);
 
   // Helper to record an emitted dictation value, ensuring synchronous ref tracking and bounded history
-  const recordEmission = useCallback((val) => {
+  const recordEmission = useCallback((/** @type {any} */ val) => {
     lastEmittedValueRef.current = val;
     inputValueRef.current = val;
     if (val && typeof val === 'string' && val.trim()) {
@@ -932,7 +938,7 @@ export function useVoiceDictation({
     // 3. Stop all audio tracks on the shared MediaStream
     if (mediaStreamRef.current) {
       try {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current.getTracks().forEach((/** @type {any} */ track) => track.stop());
       } catch (_) {}
       mediaStreamRef.current = null;
     }
@@ -977,7 +983,7 @@ export function useVoiceDictation({
     // Stop stale tracks before requesting new stream
     if (mediaStreamRef.current) {
       try {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current.getTracks().forEach((/** @type {any} */ track) => track.stop());
       } catch (_) {}
       mediaStreamRef.current = null;
     }
@@ -1031,7 +1037,7 @@ export function useVoiceDictation({
   }, [stopAudioResources, updateRecordingState]);
 
   // Connects Web Audio analyser to the shared MediaStream for non-blocking reactive visualizer
-  const attachAudioAnalyser = useCallback((stream) => {
+  const attachAudioAnalyser = useCallback((/** @type {any} */ stream) => {
     if (typeof window === 'undefined' || !stream) return;
 
     try {
@@ -1097,7 +1103,7 @@ export function useVoiceDictation({
 
   // Starts or continues audio buffering using MediaRecorder on the shared MediaStream (Phase 5.2 & 5.4).
   // Cross-browser resilience: falls back gracefully if preferred MIME type is rejected.
-  const startMediaRecorder = useCallback((stream) => {
+  const startMediaRecorder = useCallback((/** @type {any} */ stream) => {
     if (typeof window === 'undefined' || !window.MediaRecorder || !stream) return;
 
     // If recorder is already recording or paused on this stream, maintain continuous session
@@ -1430,7 +1436,7 @@ export function useVoiceDictation({
           // Audio detected but no alternative met confidence threshold; keep listening
         };
 
-        recognition.onresult = (event) => {
+        recognition.onresult = (/** @type {any} */ event) => {
           if (instanceCounterRef.current !== currentInstanceId) return;
           if (isCancelledRef.current) return;
           consecutiveErrorsRef.current = 0;
@@ -1505,7 +1511,7 @@ export function useVoiceDictation({
           setInterimTranscript(currentInterim);
         };
 
-        recognition.onerror = (event) => {
+        recognition.onerror = (/** @type {any} */ event) => {
           if (instanceCounterRef.current !== currentInstanceId) return;
           isStartingRef.current = false;
           const errorType = event?.error;
@@ -1868,7 +1874,7 @@ export function useVoiceDictation({
           const client = new VoiceStreamClient({
             url: webSocketUrlRef.current,
             language: selectedLanguageRef.current,
-            onInterim: (rawInterim, _segmentIndex, msgLanguage) => {
+            onInterim: (/** @type {any} */ rawInterim, /** @type {any} */ _segmentIndex, /** @type {any} */ msgLanguage) => {
               if (isCancelledRef.current) return;
               const clean = (rawInterim || '').trim();
               if (!clean) return;
@@ -1888,7 +1894,7 @@ export function useVoiceDictation({
                 onInputChangeRef.current(combined);
               }
             },
-            onFinal: (rawFinal, _segmentIndex, msgLanguage) => {
+            onFinal: (/** @type {any} */ rawFinal, /** @type {any} */ _segmentIndex, /** @type {any} */ msgLanguage) => {
               if (isCancelledRef.current) return;
               const clean = (rawFinal || '').trim();
               if (!clean) return;
@@ -1911,7 +1917,7 @@ export function useVoiceDictation({
                 onInputChangeRef.current(combined);
               }
             },
-            onConfig: (configData) => {
+            onConfig: (/** @type {any} */ configData) => {
               const confirmedLang = typeof configData?.language === 'string' ? configData.language : '';
               if (!confirmedLang) return;
               backendLanguageRef.current = confirmedLang;
@@ -1933,13 +1939,13 @@ export function useVoiceDictation({
                 }
               }
             },
-            onStateChange: (nextWsState) => {
+            onStateChange: (/** @type {any} */ nextWsState) => {
               if (nextWsState === 'closed' && isWebSocketActiveRef.current && !isStoppingRef.current && !isCancelledRef.current) {
                 backendLanguageRef.current = null;
                 pendingLanguageRef.current = null;
               }
             },
-            onError: (wsErr) => {
+            onError: (/** @type {any} */ wsErr) => {
               console.warn('[Dictation] WebSocket streaming error:', wsErr);
               if (wsErr?.code === 'INVALID_LANGUAGE' || wsErr?.code === 'INVALID_CONFIG') {
                 pendingLanguageRef.current = null;
@@ -2068,7 +2074,7 @@ export function useVoiceDictation({
       // Release hardware audio tracks if backgrounded or interrupted by OS
       if (releaseHardware && mediaStreamRef.current) {
         try {
-          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+          mediaStreamRef.current.getTracks().forEach((/** @type {any} */ track) => track.stop());
         } catch (_) {}
         mediaStreamRef.current = null;
       }
@@ -2150,7 +2156,7 @@ export function useVoiceDictation({
         let stream = mediaStreamRef.current;
         const isStreamLive =
           stream?.active &&
-          stream.getAudioTracks().some((t) => t.readyState === 'live' && !t.muted);
+          stream.getAudioTracks().some((/** @type {any} */ t) => t.readyState === 'live' && !t.muted);
 
         if (!isStreamLive) {
           try {
@@ -2165,7 +2171,7 @@ export function useVoiceDictation({
 
         // Restore / re-enable microphone tracks if they were disabled
         if (stream) {
-          stream.getAudioTracks().forEach((track) => {
+          stream.getAudioTracks().forEach((/** @type {any} */ track) => {
             if (!track.enabled) {
               track.enabled = true;
             }
@@ -2246,7 +2252,7 @@ export function useVoiceDictation({
         if (
           mediaRecorderRef.current &&
           mediaRecorderRef.current.state === 'recording' &&
-          recordingStateRef.current !== 'listening'
+          /** @type {string} */ (recordingStateRef.current) !== 'listening'
         ) {
           updateRecordingState('listening');
         }
@@ -2347,6 +2353,7 @@ export function useVoiceDictation({
         const rec = recognitionRef.current;
         await new Promise((resolve) => {
           let resolved = false;
+          /** @type {any} */
           let timeoutId = null;
 
           const finishShutdown = (isTimeout = false) => {
@@ -2358,7 +2365,7 @@ export function useVoiceDictation({
                 console.warn('[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
                 recognitionEndedNormallyRef.current = false;
               }
-              resolve();
+              resolve(undefined);
             }
           };
 
@@ -2383,6 +2390,7 @@ export function useVoiceDictation({
       if (recorder && recorder.state !== 'inactive') {
         await new Promise((resolve) => {
           let resolved = false;
+          /** @type {any} */
           let timer = null;
 
           const onRecorderFinish = () => {
@@ -2393,7 +2401,7 @@ export function useVoiceDictation({
                 recorder.removeEventListener('stop', onRecorderFinish);
                 recorder.removeEventListener('error', onRecorderFinish);
               } catch (_) {}
-              resolve();
+              resolve(undefined);
             }
           };
 
@@ -2500,6 +2508,7 @@ export function useVoiceDictation({
         }
 
         try {
+          /** @type {any} */
           const providerRes = await transcribeAudioBlob({
             audioBlob,
             transcript: cleanSpeech,
@@ -2554,7 +2563,7 @@ export function useVoiceDictation({
               });
             }
           }
-        } catch (fErr) {
+        } catch (/** @type {any} */ fErr) {
           console.warn('[Dictation] Recorded audio transcription notice:', fErr);
           const failureReason = fErr?.message || 'provider_request_failed';
 
@@ -2882,7 +2891,7 @@ export function useVoiceDictation({
           message: `Enhanced with ${result.model === 'whisper-large-v3-turbo' ? 'Whisper Large v3' : result.model}`
         });
       }
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       if (transcriptionSessionCounterRef.current !== currentSessionId) return;
       if (err?.name === 'AbortError') return;
 
@@ -2931,7 +2940,7 @@ export function useVoiceDictation({
 
   // Configurable language setter with instant live session sync (WebSocket config + Web Speech fallback)
   const setSelectedLanguage = useCallback(
-    (code) => {
+    (/** @type {any} */ code) => {
       if (disabledRef.current) return;
       if (typeof code !== 'string') return;
       const cleanCode = code.trim();

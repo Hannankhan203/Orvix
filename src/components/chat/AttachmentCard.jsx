@@ -100,6 +100,8 @@ function getFormatBadgeClass(ext = '') {
 
 /**
  * Formats byte size safely if not pre-formatted
+ * @param {any} size
+ * @param {any} formattedSize
  */
 function formatSize(size, formattedSize) {
   if (formattedSize) return formattedSize;
@@ -114,7 +116,7 @@ function formatSize(size, formattedSize) {
  * Displays an uploaded file with filename, type, size, and provides in-browser preview / download.
  *
  * @param {Object} props
- * @param {Object} props.attachment - Attachment metadata object
+ * @param {any} props.attachment - Attachment metadata object
  * @param {boolean} [props.compact=false] - Compact mode for assistant reference headers
  * @param {boolean} [props.showActions=true] - Whether to show hover action buttons
  * @param {string} [props.className='']
@@ -170,7 +172,7 @@ export default function AttachmentCard({
   const IconComponent = getFormatIcon(ext);
   const formatBadgeClass = getFormatBadgeClass(ext);
 
-  const handleCardClick = async (e) => {
+  const handleCardClick = async (/** @type {any} */ e) => {
     // If a sub-button was clicked, let its handler handle it
     if (e.target.closest('.attachment-action-btn')) {
       return;
@@ -205,7 +207,7 @@ export default function AttachmentCard({
     }
   };
 
-  const handlePreview = (e) => {
+  const handlePreview = (/** @type {any} */ e) => {
     e.stopPropagation();
     if (isUnavailable) {
       setNoticeMessage('This attachment has expired.');
@@ -214,7 +216,7 @@ export default function AttachmentCard({
     setPreviewOpen(true);
   };
 
-  const handleDownload = async (e) => {
+  const handleDownload = async (/** @type {any} */ e) => {
     e.stopPropagation();
     if (loading) return;
 

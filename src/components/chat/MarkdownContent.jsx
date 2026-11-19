@@ -23,6 +23,8 @@ export { splitMarkdownIntoStreamingBlocks, usesReferenceOrFootnoteDefs };
 
 /**
  * Recursively extracts plain text from React nodes or arrays of tokens
+ * @param {any} node
+ * @returns {string}
  */
 export function extractNodeText(node) {
   if (typeof node === 'string') return node;
@@ -34,12 +36,15 @@ export function extractNodeText(node) {
 }
 
 const BASE_REMARK_PLUGINS = [remarkGfm];
+/** @type {any[]} */
 const EMPTY_REHYPE_PLUGINS = [];
 const UNESCAPED_DOLLAR_RE = /(?:^|[^\\])(?:\\\\)*\$/;
 const POTENTIAL_MATH_RE = /(?:\$|\\\(|\\\[)/;
 const MARKDOWN_COMPONENTS_CACHE = new Map();
 
+/** @type {any} */
 let cachedMathPlugins = null;
+/** @type {Promise<any>|null} */
 let mathPluginsPromise = null;
 
 function loadMathMarkdownPlugins() {
@@ -63,6 +68,11 @@ function loadMathMarkdownPlugins() {
   return mathPluginsPromise;
 }
 
+/**
+ * @param {string} text
+ * @param {number} startIdx
+ * @param {number} tickLen
+ */
 function findClosingInlineCode(text, startIdx, tickLen) {
   let i = startIdx;
   while (i < text.length) {
@@ -79,6 +89,12 @@ function findClosingInlineCode(text, startIdx, tickLen) {
   return -1;
 }
 
+/**
+ * @param {string} text
+ * @param {number} startIdx
+ * @param {string} closeSeq
+ * @param {boolean} [stopOnDoubleNewline=false]
+ */
 function findClosingDelimiter(text, startIdx, closeSeq, stopOnDoubleNewline = false) {
   let i = startIdx;
   while (i < text.length) {
@@ -100,6 +116,10 @@ function findClosingDelimiter(text, startIdx, closeSeq, stopOnDoubleNewline = fa
   return -1;
 }
 
+/**
+ * @param {string} text
+ * @param {number} startIdx
+ */
 function findNextSingleDollarInParagraph(text, startIdx) {
   let i = startIdx;
   while (i < text.length) {
@@ -131,6 +151,10 @@ function findNextSingleDollarInParagraph(text, startIdx) {
   return -1;
 }
 
+/**
+ * @param {string} text
+ * @param {number} dollarIdx
+ */
 function isCurrencyDollar(text, dollarIdx) {
   const afterDollar = text.slice(dollarIdx + 1);
   const numMatch = afterDollar.match(
@@ -174,6 +198,8 @@ function isCurrencyDollar(text, dollarIdx) {
  * Normalizes LaTeX delimiters (\(...\) and \[...\]) and single-line standalone $$...$$
  * for remark-math while leaving fenced code blocks, inline code, incomplete streaming
  * delimiters, and ordinary currency amounts ($5, $10, $19.99, $5M) untouched.
+ * @param {any} markdown
+ * @param {{ isStreaming?: boolean }} [options]
  */
 export function preprocessMathMarkdown(markdown, { isStreaming = false } = {}) {
   if (!markdown || typeof markdown !== 'string') return '';
@@ -430,19 +456,22 @@ export function detectCalloutType(text = '') {
 /**
  * Creates custom components configuration for ReactMarkdown
  * Enforces sanitization, accessible tables, and developer-friendly code highlighting
+ * @param {boolean} [isStreaming=false]
+ * @param {string} [effectiveMode='general']
+ * @returns {any}
  */
 export function createMarkdownComponents(isStreaming = false, effectiveMode = 'general') {
   return {
     // Pass-through wrapper for pre so inner code block receives isBlock flag
-    pre: ({ node, children, ...props }) => {
+    pre: (/** @type {any} */ { node, children, ...props }) => {
       if (React.isValidElement(children)) {
-        return React.cloneElement(children, { isBlock: true });
+        return React.cloneElement(/** @type {any} */ (children), { isBlock: true });
       }
       return <pre {...props}>{children}</pre>;
     },
 
     // Fenced code block or inline code
-    code: ({ node, className, children, isBlock, ...props }) => {
+    code: (/** @type {any} */ { node, className, children, isBlock, ...props }) => {
       const match = /language-([\w-]+)/.exec(className || '');
       const codeString = extractNodeText(children);
       const isFenced = Boolean(isBlock) || Boolean(match) || (typeof codeString === 'string' && codeString.includes('\n'));
@@ -467,14 +496,14 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
     },
 
     // Safe external links (prevents javascript: URLs and opens external links safely)
-    a: ({ node, href, children, ...props }) => {
+    a: (/** @type {any} */ { node, href, children, ...props }) => {
       const isSafeHref = href && /^(https?:\/\/|mailto:)/i.test(href);
       return (
         <a
           href={isSafeHref ? href : '#'}
           target={isSafeHref ? '_blank' : undefined}
           rel={isSafeHref ? 'noopener noreferrer' : undefined}
-          onClick={!isSafeHref ? (e) => e.preventDefault() : undefined}
+          onClick={!isSafeHref ? (/** @type {any} */ e) => e.preventDefault() : undefined}
           className="markdown-link"
           {...props}
         >
@@ -484,7 +513,7 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
     },
 
     // Responsive scrollable tables with keyboard accessibility
-    table: ({ node, children, ...props }) => (
+    table: (/** @type {any} */ { node, children, ...props }) => (
       <div
         className={`table-responsive-wrapper ${effectiveMode === 'writing' ? 'writing-table-wrapper' : ''} ${effectiveMode === 'coding' ? 'coding-table-wrapper' : ''}`}
         tabIndex={0}
@@ -496,14 +525,14 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         </table>
       </div>
     ),
-    thead: ({ node, children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
-    tbody: ({ node, children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
-    tr: ({ node, children, ...props }) => <tr className="markdown-tr" {...props}>{children}</tr>,
-    th: ({ node, children, ...props }) => <th className="markdown-th" {...props}>{children}</th>,
-    td: ({ node, children, ...props }) => <td className="markdown-td" {...props}>{children}</td>,
+    thead: (/** @type {any} */ { node, children, ...props }) => <thead className="markdown-thead" {...props}>{children}</thead>,
+    tbody: (/** @type {any} */ { node, children, ...props }) => <tbody className="markdown-tbody" {...props}>{children}</tbody>,
+    tr: (/** @type {any} */ { node, children, ...props }) => <tr className="markdown-tr" {...props}>{children}</tr>,
+    th: (/** @type {any} */ { node, children, ...props }) => <th className="markdown-th" {...props}>{children}</th>,
+    td: (/** @type {any} */ { node, children, ...props }) => <td className="markdown-td" {...props}>{children}</td>,
 
     // Semantic headings establishing visual hierarchy
-    h1: ({ node, children, ...props }) => (
+    h1: (/** @type {any} */ { node, children, ...props }) => (
       <h1
         className={`markdown-h1 ${effectiveMode === 'learning' ? 'educational-topic-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h1' : ''} ${effectiveMode === 'coding' ? 'coding-h1' : ''}`}
         {...props}
@@ -511,7 +540,7 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         {children}
       </h1>
     ),
-    h2: ({ node, children, ...props }) => (
+    h2: (/** @type {any} */ { node, children, ...props }) => (
       <h2
         className={`markdown-h2 ${effectiveMode === 'learning' ? 'educational-concept-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h2' : ''} ${effectiveMode === 'coding' ? 'coding-h2' : ''}`}
         {...props}
@@ -519,7 +548,7 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         {children}
       </h2>
     ),
-    h3: ({ node, children, ...props }) => (
+    h3: (/** @type {any} */ { node, children, ...props }) => (
       <h3
         className={`markdown-h3 ${effectiveMode === 'learning' ? 'educational-subconcept-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h3' : ''} ${effectiveMode === 'coding' ? 'coding-h3' : ''}`}
         {...props}
@@ -527,7 +556,7 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         {children}
       </h3>
     ),
-    h4: ({ node, children, ...props }) => (
+    h4: (/** @type {any} */ { node, children, ...props }) => (
       <h4
         className={`markdown-h4 ${effectiveMode === 'learning' ? 'educational-step-heading' : ''} ${effectiveMode === 'writing' ? 'writing-h4' : ''} ${effectiveMode === 'coding' ? 'coding-h4' : ''}`}
         {...props}
@@ -535,19 +564,19 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         {children}
       </h4>
     ),
-    h5: ({ node, children, ...props }) => (
+    h5: (/** @type {any} */ { node, children, ...props }) => (
       <h5 className={`markdown-h5 ${effectiveMode === 'writing' ? 'writing-h5' : ''} ${effectiveMode === 'coding' ? 'coding-h5' : ''}`} {...props}>
         {children}
       </h5>
     ),
-    h6: ({ node, children, ...props }) => (
+    h6: (/** @type {any} */ { node, children, ...props }) => (
       <h6 className={`markdown-h6 ${effectiveMode === 'writing' ? 'writing-h6' : ''} ${effectiveMode === 'coding' ? 'coding-h6' : ''}`} {...props}>
         {children}
       </h6>
     ),
 
     // Text formatting with Learning Mode Educational Callout recognition
-    p: ({ node, children, ...props }) => {
+    p: (/** @type {any} */ { node, children, ...props }) => {
       const isInsideCallout = React.useContext(CalloutContext);
 
       if (effectiveMode === 'learning') {
@@ -607,13 +636,13 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
 
       return <p className="markdown-p" {...props}>{children}</p>;
     },
-    strong: ({ node, children, ...props }) => <strong className="markdown-strong" {...props}>{children}</strong>,
-    b: ({ node, children, ...props }) => <b className="markdown-strong" {...props}>{children}</b>,
-    em: ({ node, children, ...props }) => <em className="markdown-em" {...props}>{children}</em>,
-    i: ({ node, children, ...props }) => <i className="markdown-em" {...props}>{children}</i>,
-    del: ({ node, children, ...props }) => <del className="markdown-del" {...props}>{children}</del>,
-    s: ({ node, children, ...props }) => <s className="markdown-del" {...props}>{children}</s>,
-    blockquote: ({ node, children, ...props }) => {
+    strong: (/** @type {any} */ { node, children, ...props }) => <strong className="markdown-strong" {...props}>{children}</strong>,
+    b: (/** @type {any} */ { node, children, ...props }) => <b className="markdown-strong" {...props}>{children}</b>,
+    em: (/** @type {any} */ { node, children, ...props }) => <em className="markdown-em" {...props}>{children}</em>,
+    i: (/** @type {any} */ { node, children, ...props }) => <i className="markdown-em" {...props}>{children}</i>,
+    del: (/** @type {any} */ { node, children, ...props }) => <del className="markdown-del" {...props}>{children}</del>,
+    s: (/** @type {any} */ { node, children, ...props }) => <s className="markdown-del" {...props}>{children}</s>,
+    blockquote: (/** @type {any} */ { node, children, ...props }) => {
       if (effectiveMode === 'learning') {
         const textContent = extractNodeText(children);
         const callout = detectCalloutType(textContent);
@@ -643,17 +672,17 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         </blockquote>
       );
     },
-    ul: ({ node, children, ...props }) => (
+    ul: (/** @type {any} */ { node, children, ...props }) => (
       <ul className={`markdown-ul ${effectiveMode === 'writing' ? 'writing-ul' : ''}`} {...props}>
         {children}
       </ul>
     ),
-    ol: ({ node, children, start, ...props }) => (
+    ol: (/** @type {any} */ { node, children, start, ...props }) => (
       <ol className={`markdown-ol ${effectiveMode === 'writing' ? 'writing-ol' : ''}`} start={start} {...props}>
         {children}
       </ol>
     ),
-    li: ({ node, children, checked, ...props }) => {
+    li: (/** @type {any} */ { node, children, checked, ...props }) => {
       if (typeof checked === 'boolean') {
         return (
           <li className="markdown-li markdown-task-item" {...props}>
@@ -675,7 +704,7 @@ export function createMarkdownComponents(isStreaming = false, effectiveMode = 'g
         </li>
       );
     },
-    hr: ({ node, ...props }) => (
+    hr: (/** @type {any} */ { node, ...props }) => (
       <hr className={`markdown-divider ${effectiveMode === 'writing' ? 'writing-divider' : ''}`} {...props} />
     )
   };
@@ -696,12 +725,14 @@ function getCachedMarkdownComponents(isStreaming = false, effectiveMode = 'gener
  * Completed prefix blocks during streaming retain stable props so React skips
  * both preprocessMathMarkdown() and ReactMarkdown AST reparsing on every new token.
  */
-const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
-  rawBlock,
-  isStreaming = false,
-  effectiveMode = 'general',
-  mathPlugins = null
-}) {
+const MemoizedMarkdownBlock = React.memo(
+  /** @param {any} props */
+  function MemoizedMarkdownBlock({
+    rawBlock,
+    isStreaming = false,
+    effectiveMode = 'general',
+    mathPlugins = null
+  }) {
   const processedContent = useMemo(
     () => preprocessMathMarkdown(rawBlock, { isStreaming }),
     [rawBlock, isStreaming]
@@ -731,6 +762,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
  * MarkdownContent Component
  * Renders sanitized Markdown with incremental block-level memoization during streaming
  * while preserving code highlighting, tables, math, callouts, and reference links.
+ * @param {any} props
  */
 function MarkdownContent({ content = '', isStreaming = false, effectiveMode = 'general' }) {
   const text = typeof content === 'string' ? content : '';

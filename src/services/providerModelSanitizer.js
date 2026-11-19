@@ -262,7 +262,7 @@ export function isSupportedProvider(provider) {
  */
 export function getProviderDisplayName(provider) {
   const norm = normalizeProviderId(provider);
-  return PROVIDER_DISPLAY_NAMES[norm] || provider || 'AI Provider';
+  return /** @type {Record<string, string>} */ (PROVIDER_DISPLAY_NAMES)[norm] || provider || 'AI Provider';
 }
 
 /**
@@ -310,7 +310,7 @@ export function isDisplayOnlyModelLabel(model) {
  * Rejects cross-provider model leakage (e.g., `@cf/...` sent to Gemini,
  * `Qwen2.5-...-MLC` sent to OpenRouter, `gemini-2.5-flash` sent to Cloudflare).
  *
- * @param {string} provider
+ * @param {string|null|undefined} provider
  * @param {string} candidateModel
  * @returns {{ compatible: boolean, normalizedModel: string|null, reason?: string }}
  */
@@ -756,6 +756,7 @@ export function getProviderConfigAvailability(provider, providerConfig) {
     return { state: 'demo', configured: true, isDemo: true };
   }
 
+  /** @type {Record<string, any>} */
   const keyMap = {
     gemini: data.geminiConfigured,
     groq: data.groqConfigured,
@@ -778,16 +779,16 @@ export function getProviderConfigAvailability(provider, providerConfig) {
  * Filters candidate fallback providers so error cards prefer configured providers when `/api/config`
  * has loaded, while gracefully keeping candidates when config state is `'unknown'`.
  *
- * @param {Array<string>} candidates
+ * @param {Array<any>} candidates
  * @param {string} failedProvider
  * @param {{ status?: string, data?: Object|null }|null|undefined} providerConfig
- * @returns {Array<string>}
+ * @returns {Array<any>}
  */
 export function filterAvailableFallbackProviders(candidates, failedProvider, providerConfig) {
   const failedNorm = normalizeProviderId(failedProvider);
   const list = Array.isArray(candidates) ? candidates : CLOUD_PROVIDER_IDS;
 
-  return list.filter((cand) => {
+  return list.filter((/** @type {any} */ cand) => {
     const rawId = typeof cand === 'string' ? cand : cand?.id;
     if (!rawId) return false;
     const norm = normalizeProviderId(rawId);
@@ -853,7 +854,7 @@ export function resolveModelForProviderSwitch(toProvider, currentModel, fromProv
   const normTo = normalizeProviderId(toProvider);
   if (!normTo) return null;
 
-  const defaultModel = PROVIDER_DEFAULT_MODELS[normTo] || null;
+  const defaultModel = /** @type {Record<string, string>} */ (PROVIDER_DEFAULT_MODELS)[normTo] || null;
   if (!currentModel || typeof currentModel !== 'string' || !currentModel.trim()) {
     return defaultModel;
   }

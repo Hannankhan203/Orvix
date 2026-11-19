@@ -17,6 +17,8 @@ const DocumentPreviewModal = React.lazy(() => import('./DocumentPreviewModal.jsx
 
 /**
  * Formats byte size safely for display
+ * @param {any} size
+ * @param {any} formattedSize
  */
 function formatSize(size, formattedSize) {
   if (formattedSize) return formattedSize;
@@ -34,7 +36,7 @@ function formatSize(size, formattedSize) {
  * it displays an informative fallback with direct open and download options.
  *
  * @param {Object} props
- * @param {Object} props.attachment - Attachment object with metadata (id, name, type, size, extraction, etc.)
+ * @param {any} props.attachment - Attachment object with metadata (id, name, type, size, extraction, etc.)
  * @param {string} [props.className=''] - Additional CSS classes
  */
 export default function ImageAttachmentCard({ attachment, className = '' }) {
@@ -61,6 +63,7 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
       return;
     }
     let active = true;
+    /** @type {string|null} */
     let createdBlobUrl = null;
 
     async function resolveSource() {
@@ -162,14 +165,14 @@ export default function ImageAttachmentCard({ attachment, className = '' }) {
   const isHeic = ext === 'HEIC' || ext === 'HEIF';
   const sizeText = formatSize(attachment.size, attachment.formattedSize);
 
-  const handleCardClick = (e) => {
+  const handleCardClick = (/** @type {any} */ e) => {
     if (e.target.closest('.image-card-action-btn')) {
       return;
     }
     setPreviewOpen(true);
   };
 
-  const handleDownload = async (e) => {
+  const handleDownload = async (/** @type {any} */ e) => {
     e.stopPropagation();
     if (downloading) return;
     setDownloading(true);

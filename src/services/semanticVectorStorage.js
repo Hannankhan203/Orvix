@@ -11,6 +11,7 @@ const VECTOR_DB_NAME = 'orvix_vector_db';
 const VECTOR_DB_VERSION = 1;
 const VECTOR_STORE_NAME = 'vector_chunks';
 
+/** @type {Promise<any>|null} */
 let vectorDbPromise = null;
 
 // Headless in-memory fallback store for Node.js tests / environments without IndexedDB
@@ -37,9 +38,11 @@ export function getVectorDB() {
 
   if (vectorDbPromise) return vectorDbPromise;
 
+  /** @type {Promise<any>|null} */
   let currentPromise = null;
   currentPromise = new Promise((resolve) => {
     let settled = false;
+    /** @type {any} */
     let blockedTimer = null;
 
     const clearBlockedTimer = () => {
@@ -49,7 +52,7 @@ export function getVectorDB() {
       }
     };
 
-    const failOpen = (reason) => {
+    const failOpen = (/** @type {any} */ reason) => {
       if (settled) return;
       settled = true;
       clearBlockedTimer();
@@ -65,7 +68,7 @@ export function getVectorDB() {
     try {
       const request = idb.open(VECTOR_DB_NAME, VECTOR_DB_VERSION);
 
-      request.onupgradeneeded = (event) => {
+      request.onupgradeneeded = (/** @type {any} */ event) => {
         const db = event.target.result;
         if (!db.objectStoreNames.contains(VECTOR_STORE_NAME)) {
           const store = db.createObjectStore(VECTOR_STORE_NAME, { keyPath: 'id' });
@@ -82,7 +85,7 @@ export function getVectorDB() {
         }, VECTOR_DB_BLOCKED_TIMEOUT_MS);
       };
 
-      request.onsuccess = (event) => {
+      request.onsuccess = (/** @type {any} */ event) => {
         const db = event.target.result;
         clearBlockedTimer();
         if (settled) {
@@ -122,6 +125,10 @@ export function getVectorDB() {
   return vectorDbPromise;
 }
 
+/**
+ * @param {any} chunk
+ * @param {any} [options={}]
+ */
 function matchesChunkScope(chunk, options = {}) {
   if (!chunk || typeof chunk !== 'object') return false;
   if (options?.conversationId !== undefined && options?.conversationId !== null) {
@@ -142,8 +149,8 @@ function matchesChunkScope(chunk, options = {}) {
  * Updates in-memory fallback simultaneously for high-reliability retrieval.
  *
  * @param {string} docId - Target document identifier
- * @param {Array<Object>} chunks - Chunks with embeddings
- * @param {string} [conversationId] - Associated conversation identifier
+ * @param {Array<any>} chunks - Chunks with embeddings
+ * @param {string|null} [conversationId] - Associated conversation identifier
  * @param {Object} [options] - Optional storage metadata
  * @returns {Promise<boolean>}
  */
@@ -174,7 +181,7 @@ export async function storeDocumentChunks(docId, chunks = [], conversationId = n
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (val) => {
+      const finish = (/** @type {any} */ val) => {
         if (!resolved) {
           resolved = true;
           resolve(val);
@@ -231,7 +238,7 @@ export async function getChunksForDocuments(docIds = [], options = {}) {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (res) => {
+      const finish = (/** @type {any[]} */ res) => {
         if (!resolved) {
           resolved = true;
           resolve(res.filter((c) => matchesChunkScope(c, options)));
@@ -242,6 +249,7 @@ export async function getChunksForDocuments(docIds = [], options = {}) {
         const tx = db.transaction([VECTOR_STORE_NAME], 'readonly');
         const store = tx.objectStore(VECTOR_STORE_NAME);
         const index = store.index('docId');
+        /** @type {any[]} */
         const collected = [];
         let pending = targetIds.size;
 
@@ -253,7 +261,7 @@ export async function getChunksForDocuments(docIds = [], options = {}) {
         for (const docId of targetIds) {
           const req = typeof index.getAll === 'function' ? index.getAll(docId) : null;
           if (req) {
-            req.onsuccess = (e) => {
+            req.onsuccess = (/** @type {any} */ e) => {
               if (Array.isArray(e.target.result)) {
                 collected.push(...e.target.result);
               }
@@ -268,7 +276,7 @@ export async function getChunksForDocuments(docIds = [], options = {}) {
             // Cursor fallback
             const cursorReq = index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(docId) : undefined);
             if (cursorReq) {
-              cursorReq.onsuccess = (e) => {
+              cursorReq.onsuccess = (/** @type {any} */ e) => {
                 const cursor = e.target.result;
                 if (cursor) {
                   if (cursor.value?.docId === docId) collected.push(cursor.value);
@@ -292,7 +300,7 @@ export async function getChunksForDocuments(docIds = [], options = {}) {
         tx.oncomplete = () => finish(collected);
         tx.onerror = () => finish(collected.length > 0 ? collected : filterMemory());
         tx.onabort = () => finish(collected.length > 0 ? collected : filterMemory());
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
@@ -331,7 +339,7 @@ export async function getChunksForConversation(conversationId, options = {}) {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (res) => {
+      const finish = (/** @type {any[]} */ res) => {
         if (!resolved) {
           resolved = true;
           resolve(res.filter((c) => matchesChunkScope(c, scope)));
@@ -352,16 +360,17 @@ export async function getChunksForConversation(conversationId, options = {}) {
             finish(filterMemory());
             return;
           }
-          req.onsuccess = (e) => finish(e.target.result || []);
+          req.onsuccess = (/** @type {any} */ e) => finish(e.target.result || []);
           req.onerror = () => finish(filterMemory());
         } else {
+          /** @type {any[]} */
           const collected = [];
           const cursorReq = index.openCursor(typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.only(conversationId) : undefined);
           if (!cursorReq) {
             finish(filterMemory());
             return;
           }
-          cursorReq.onsuccess = (e) => {
+          cursorReq.onsuccess = (/** @type {any} */ e) => {
             const cursor = e.target.result;
             if (cursor) {
               if (cursor.value?.conversationId === conversationId) collected.push(cursor.value);
@@ -376,7 +385,7 @@ export async function getChunksForConversation(conversationId, options = {}) {
           };
           cursorReq.onerror = () => finish(collected);
         }
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
@@ -405,7 +414,7 @@ export async function getAllIndexedChunks(options = {}) {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (res) => {
+      const finish = (/** @type {any[]} */ res) => {
         if (!resolved) {
           resolved = true;
           resolve(res.filter((c) => matchesChunkScope(c, options)));
@@ -422,9 +431,9 @@ export async function getAllIndexedChunks(options = {}) {
           finish(filterMemory());
           return;
         }
-        req.onsuccess = (e) => finish(e.target.result || []);
+        req.onsuccess = (/** @type {any} */ e) => finish(e.target.result || []);
         req.onerror = () => finish(filterMemory());
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
@@ -461,7 +470,7 @@ export async function deleteChunksForDocument(docId, options = {}) {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (c) => {
+      const finish = (/** @type {number} */ c) => {
         if (!resolved) {
           resolved = true;
           resolve(c);
@@ -483,7 +492,7 @@ export async function deleteChunksForDocument(docId, options = {}) {
           finish(memCount);
           return;
         }
-        cursorReq.onsuccess = (e) => {
+        cursorReq.onsuccess = (/** @type {any} */ e) => {
           const cursor = e.target.result;
           if (cursor) {
             if (matchesChunkScope(cursor.value, options)) {
@@ -500,7 +509,7 @@ export async function deleteChunksForDocument(docId, options = {}) {
           }
         };
         cursorReq.onerror = () => finish(memCount);
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
@@ -550,7 +559,7 @@ export async function deleteChunksForConversation(conversationId) {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (c) => {
+      const finish = (/** @type {number} */ c) => {
         if (!resolved) {
           resolved = true;
           resolve(c);
@@ -572,7 +581,7 @@ export async function deleteChunksForConversation(conversationId) {
           finish(memCount);
           return;
         }
-        cursorReq.onsuccess = (e) => {
+        cursorReq.onsuccess = (/** @type {any} */ e) => {
           const cursor = e.target.result;
           if (cursor) {
             cursor.delete();
@@ -587,7 +596,7 @@ export async function deleteChunksForConversation(conversationId) {
           }
         };
         cursorReq.onerror = () => finish(memCount);
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }
@@ -612,7 +621,7 @@ export async function clearAllChunks() {
 
     return new Promise((resolve) => {
       let resolved = false;
-      const finish = (val) => {
+      const finish = (/** @type {boolean} */ val) => {
         if (!resolved) {
           resolved = true;
           resolve(val);
@@ -626,7 +635,7 @@ export async function clearAllChunks() {
         tx.oncomplete = () => finish(true);
         tx.onerror = () => finish(false);
         tx.onabort = () => finish(false);
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (err?.name === 'InvalidStateError') {
           vectorDbPromise = null;
         }

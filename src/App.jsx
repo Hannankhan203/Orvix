@@ -8,10 +8,12 @@ import { getShareRouteDetails } from './utils/shareRouteUtils.js';
 
 const SettingsModal = lazy(() => import('./components/settings/SettingsModal.jsx'));
 const AuthScreen = lazy(() => import('./components/auth/AuthScreen.jsx'));
+/** @type {any} */
 const ChatPage = lazy(() => import('./pages/ChatPage.jsx'));
 
 /**
  * Global navigation helper to change URL and notify router listeners
+ * @param {string} url
  */
 export function navigateTo(url) {
   if (typeof window === 'undefined') return;
@@ -47,6 +49,7 @@ function AuthLoadingSplash() {
  */
 function AppContent() {
   const { currentUser, initialLoading } = useAuth();
+  /** @type {[any, React.Dispatch<React.SetStateAction<any>>]} */
   const [routeInfo, setRouteInfo] = useState(() =>
     typeof window !== 'undefined'
       ? getShareRouteDetails(window.location.pathname)
@@ -56,7 +59,7 @@ function AppContent() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const handleLocationChange = (e) => {
+    const handleLocationChange = (/** @type {any} */ e) => {
       setRouteInfo(getShareRouteDetails(window.location.pathname));
       // Reset scroll on programmatic navigation; preserve browser back/forward history scroll state
       if (!e || e.state === undefined || e.type === 'pushstate') {

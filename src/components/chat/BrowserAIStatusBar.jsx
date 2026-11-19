@@ -25,6 +25,19 @@ import {
  * Clean, non-blocking status and progress bar for Browser AI (WebLLM).
  * Surfaces real compatibility checks, shard download progress, WebGPU compilation,
  * ready state, model tier selection (Qwen 2.5 1.5B Standard, SmolLM2 360M Compact, SmolLM2 135M Ultra Lightweight), and errors.
+ *
+ * @param {Object} props
+ * @param {boolean} [props.visible=false]
+ * @param {boolean} [props.isSelectedProvider=false]
+ * @param {any} [props.webllmState]
+ * @param {any} [props.gpuCheck]
+ * @param {string} [props.selectedModelId=DEFAULT_WEBLLM_MODEL_ID]
+ * @param {(modelId: string) => void} [props.onSelectModel]
+ * @param {() => void} [props.onLoadModel]
+ * @param {() => void} [props.onCancelLoad]
+ * @param {() => void} [props.onUnloadModel]
+ * @param {(providerId: string) => void} [props.onSelectProvider]
+ * @param {boolean} [props.isOffline=false]
  */
 export default function BrowserAIStatusBar({
   visible = false,
@@ -36,6 +49,7 @@ export default function BrowserAIStatusBar({
   onLoadModel,
   onCancelLoad,
   onUnloadModel,
+  onSelectProvider,
   isOffline = false
 }) {
   const modelOptions = useMemo(() => getSupportedWebLLMModels(), []);
@@ -55,8 +69,14 @@ export default function BrowserAIStatusBar({
 
   const selectedCatalog =
     WEBLLM_MODEL_CATALOG[selectedModelId] || WEBLLM_MODEL_CATALOG[DEFAULT_WEBLLM_MODEL_ID];
+  const isF32CompatibilityFallback = Boolean(
+    selectedCatalog?.f32FallbackModelId &&
+      (webllmState?.hasShaderF16 === false ||
+        webllmState?.loadedModelId === selectedCatalog.f32FallbackModelId ||
+        stateModelId === selectedCatalog.f32FallbackModelId)
+  );
   const effectiveSpecCatalog =
-    webllmState?.hasShaderF16 === false && selectedCatalog?.f32FallbackModelId
+    isF32CompatibilityFallback && selectedCatalog?.f32FallbackModelId
       ? WEBLLM_MODEL_CATALOG[selectedCatalog.f32FallbackModelId] || selectedCatalog
       : selectedCatalog;
   const vramEstimateLabel =
@@ -69,13 +89,20 @@ export default function BrowserAIStatusBar({
   const isLoadedInGpu = Boolean(loadedModelId && (status === 'ready' || status === 'generating'));
   const activeCatalog =
     (loadedModelId && WEBLLM_MODEL_CATALOG[loadedModelId]) ||
-    WEBLLM_MODEL_CATALOG[stateModelId] ||
-    selectedCatalog;
+    (isF32CompatibilityFallback
+      ? effectiveSpecCatalog
+      : WEBLLM_MODEL_CATALOG[stateModelId] || selectedCatalog);
 
   const loadedMatchesSelected =
     isLoadedInGpu &&
     (loadedModelId === selectedModelId ||
       selectedCatalog?.f32FallbackModelId === loadedModelId);
+  const isLoadedF32Fallback = Boolean(
+    isLoadedInGpu &&
+      loadedModelId &&
+      selectedCatalog?.f32FallbackModelId === loadedModelId &&
+      loadedModelId !== selectedModelId
+  );
 
   const isChecking = status === 'checking' || Boolean(gpuCheck?.checking && status === 'idle');
   const isDownloading = status === 'downloading';
@@ -86,18 +113,39 @@ export default function BrowserAIStatusBar({
   const isCached = Boolean(webllmState?.isCached);
   const isUncachedOffline = isOffline && !isCached && !loadedMatchesSelected;
 
+  const suggestedFallbackModelId =
+    webllmState?.suggestedFallbackModelId ||
+    (status === 'error' &&
+    selectedCatalog.id !== SMOLLM2_135M_WEBLLM_MODEL_ID &&
+    selectedCatalog.id !== SMOLLM2_360M_WEBLLM_MODEL_ID
+      ? SMOLLM2_360M_WEBLLM_MODEL_ID
+      : null);
+  const suggestedFallbackCatalog =
+    suggestedFallbackModelId && WEBLLM_MODEL_CATALOG[suggestedFallbackModelId]
+      ? WEBLLM_MODEL_CATALOG[suggestedFallbackModelId]
+      : null;
+  const suggestedProviderId =
+    webllmState?.suggestedProvider || (isGpuUnsupported ? 'gemini' : null);
+
   let tone = 'neutral';
+  /** @type {{ label: string, variant: string } | null} */
   let statusBadge = null;
   let headline = `${effectiveSpecCatalog.shortLabel} — Browser AI`;
   let detail = '';
 
   if (isGpuUnsupported) {
     tone = 'error';
-    statusBadge = { label: 'Unavailable', variant: 'error' };
+    statusBadge = {
+      label:
+        !isOffline && suggestedProviderId && onSelectProvider
+          ? 'Unavailable • Cloud Fallback'
+          : 'Unavailable',
+      variant: 'error'
+    };
     headline = 'WebGPU unavailable on this browser or device';
     detail =
       gpuCheck?.message ||
-      'Use Chrome 113+, Edge 113+, or Safari 18+ with hardware acceleration enabled, or switch providers.';
+      'Use Chrome 113+, Edge 113+, or Safari 18+ with hardware acceleration enabled, or switch to Cloud AI.';
   } else if (isChecking) {
     tone = 'active';
     statusBadge = { label: 'Checking GPU', variant: 'active' };
@@ -105,19 +153,35 @@ export default function BrowserAIStatusBar({
     detail = 'Verifying graphics adapter support on your device.';
   } else if (isDownloading) {
     tone = 'active';
-    statusBadge = { label: 'Downloading', variant: 'active' };
+    statusBadge = {
+      label: isF32CompatibilityFallback ? 'Downloading (FP32 Fallback)' : 'Downloading',
+      variant: 'active'
+    };
     headline = `Downloading ${activeCatalog.shortLabel} to browser cache`;
-    detail =
-      rawProgressText ||
-      `Downloading model weights (~${activeCatalog.estimatedDownloadMB} MB) directly to your browser...`;
+    detail = isF32CompatibilityFallback
+      ? rawProgressText
+        ? `FP32 fallback from ${selectedCatalog.shortLabel} — ${rawProgressText}`
+        : `Switched from ${selectedCatalog.shortLabel} to FP32 fallback (${activeCatalog.shortLabel}) because this GPU lacks shader-f16. Downloading ~${activeCatalog.estimatedDownloadMB} MB...`
+      : rawProgressText ||
+        `Downloading model weights (~${activeCatalog.estimatedDownloadMB} MB) directly to your browser...`;
   } else if (isInitializingGpu) {
     tone = 'active';
-    statusBadge = { label: 'Loading GPU', variant: 'active' };
+    statusBadge = {
+      label: isF32CompatibilityFallback ? 'Loading GPU (FP32 Fallback)' : 'Loading GPU',
+      variant: 'active'
+    };
     headline = `Initializing ${activeCatalog.shortLabel} in GPU memory`;
-    detail = rawProgressText || 'Compiling WebGPU shaders and loading cached weights...';
+    detail = isF32CompatibilityFallback
+      ? rawProgressText
+        ? `FP32 fallback from ${selectedCatalog.shortLabel} — ${rawProgressText}`
+        : `Switched from ${selectedCatalog.shortLabel} to FP32 fallback (${activeCatalog.shortLabel}) because this GPU lacks shader-f16. Compiling WebGPU shaders...`
+      : rawProgressText || 'Compiling WebGPU shaders and loading cached weights...';
   } else if (status === 'error') {
     tone = 'error';
-    statusBadge = { label: 'Error', variant: 'error' };
+    statusBadge = {
+      label: isF32CompatibilityFallback ? 'Error • FP32 Fallback' : 'Error',
+      variant: 'error'
+    };
     headline = `${activeCatalog.shortLabel} failed to load`;
     detail =
       errorMessage ||
@@ -129,12 +193,26 @@ export default function BrowserAIStatusBar({
   } else if (loadedMatchesSelected) {
     tone = 'ready';
     statusBadge = {
-      label: isGenerating ? 'Generating' : isOffline ? 'Offline Ready' : 'Ready',
+      label: isGenerating
+        ? isLoadedF32Fallback
+          ? 'Generating • FP32 Fallback'
+          : 'Generating'
+        : isLoadedF32Fallback
+        ? isOffline
+          ? 'Offline Ready • FP32 Fallback'
+          : 'Ready • FP32 Fallback'
+        : isOffline
+        ? 'Offline Ready'
+        : 'Ready',
       variant: isGenerating ? 'active' : 'ready'
     };
     headline = `${activeCatalog.shortLabel} — Ready on device`;
     detail = isGenerating
-      ? 'Generating response locally via WebGPU (no server or API calls).'
+      ? isLoadedF32Fallback
+        ? `Generating response locally via WebGPU using FP32 fallback (${activeCatalog.shortLabel}) switched from ${selectedCatalog.shortLabel} because this GPU lacks shader-f16.`
+        : 'Generating response locally via WebGPU (no server or API calls).'
+      : isLoadedF32Fallback
+      ? `Switched from ${selectedCatalog.shortLabel} to FP32 fallback (${activeCatalog.shortLabel}) because this GPU lacks shader-f16. Running locally via WebGPU.`
       : 'Running locally in your browser via WebGPU. Cached for repeat use.';
   } else if (isLoadedInGpu && !loadedMatchesSelected) {
     tone = isUncachedOffline ? 'warning' : 'neutral';
@@ -147,19 +225,44 @@ export default function BrowserAIStatusBar({
     detail = `${activeCatalog.shortLabel} is currently loaded in GPU memory. Click "${isCached ? 'Load Model' : 'Download & Load'}" or send a message to switch.`;
   } else if (isUncachedOffline) {
     tone = 'warning';
-    statusBadge = { label: 'Offline • Not Cached', variant: 'warning' };
+    statusBadge = {
+      label: isF32CompatibilityFallback
+        ? 'Offline • FP32 Fallback Not Cached'
+        : 'Offline • Not Cached',
+      variant: 'warning'
+    };
     headline = `${effectiveSpecCatalog.shortLabel} — Browser AI`;
-    detail = `Offline — Initial download (~${effectiveSpecCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`;
+    detail = isF32CompatibilityFallback
+      ? `Offline — Using FP32 compatibility fallback (${effectiveSpecCatalog.shortLabel}) because this GPU lacks shader-f16. Initial download (~${effectiveSpecCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`
+      : `Offline — Initial download (~${effectiveSpecCatalog.estimatedDownloadMB} MB) requires an internet connection before offline use.`;
   } else {
     tone = isCached ? 'ready' : 'neutral';
     statusBadge = isCached
-      ? { label: isOffline ? 'Offline Cached' : 'Cached', variant: 'ready' }
-      : { label: 'Not Downloaded', variant: 'neutral' };
+      ? {
+          label: isF32CompatibilityFallback
+            ? isOffline
+              ? 'Offline Cached • FP32 Fallback'
+              : 'Cached • FP32 Fallback'
+            : isOffline
+            ? 'Offline Cached'
+            : 'Cached',
+          variant: 'ready'
+        }
+      : {
+          label: isF32CompatibilityFallback ? 'FP32 Fallback • Not Downloaded' : 'Not Downloaded',
+          variant: 'neutral'
+        };
     headline = `${effectiveSpecCatalog.shortLabel} — Browser AI`;
     detail = isOffline
-      ? 'Offline — Model is cached locally. Click Load Model or send a message to run on your device via WebGPU.'
+      ? isF32CompatibilityFallback
+        ? `Offline — Using FP32 compatibility fallback (${effectiveSpecCatalog.shortLabel}) because this GPU lacks shader-f16. Cached locally — click Load Model or send a message to run on your device via WebGPU.`
+        : 'Offline — Model is cached locally. Click Load Model or send a message to run on your device via WebGPU.'
       : isCached
-      ? 'Model weights are cached in your browser. Click Load Model or send a message to initialize WebGPU.'
+      ? isF32CompatibilityFallback
+        ? `Using FP32 compatibility fallback (${effectiveSpecCatalog.shortLabel}) because this GPU lacks shader-f16. Cached locally — click Load Model or send a message to initialize WebGPU.`
+        : 'Model weights are cached in your browser. Click Load Model or send a message to initialize WebGPU.'
+      : isF32CompatibilityFallback
+      ? `Using FP32 compatibility fallback (${effectiveSpecCatalog.shortLabel}) because this GPU lacks shader-f16. Runs locally via WebGPU (no API key${vramEstimateLabel ? `, ${vramEstimateLabel}` : ''}). First use downloads ~${effectiveSpecCatalog.estimatedDownloadMB} MB.`
       : `Runs locally via WebGPU (no API key${vramEstimateLabel ? `, ${vramEstimateLabel}` : ''}). First use downloads and caches ~${effectiveSpecCatalog.estimatedDownloadMB} MB on your device.`;
   }
 
@@ -254,6 +357,30 @@ export default function BrowserAIStatusBar({
             >
               <X size={12} />
               <span>Cancel</span>
+            </button>
+          )}
+
+          {!isBusy && !isGpuUnsupported && status === 'error' && suggestedFallbackCatalog && onSelectModel && (
+            <button
+              type="button"
+              className="browser-ai-action-btn secondary"
+              onClick={() => onSelectModel(suggestedFallbackCatalog.id)}
+              title={`Switch to lighter fallback model (${suggestedFallbackCatalog.shortLabel})`}
+            >
+              <Cpu size={12} />
+              <span>Try {suggestedFallbackCatalog.shortLabel}</span>
+            </button>
+          )}
+
+          {!isBusy && (status === 'error' || isGpuUnsupported) && suggestedProviderId && !isOffline && onSelectProvider && (
+            <button
+              type="button"
+              className="browser-ai-action-btn secondary"
+              onClick={() => onSelectProvider(suggestedProviderId)}
+              title="Switch to cloud fallback provider"
+            >
+              <Sparkles size={12} />
+              <span>Switch to Cloud AI</span>
             </button>
           )}
 

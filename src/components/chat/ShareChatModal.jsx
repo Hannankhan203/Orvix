@@ -28,6 +28,7 @@ const EXPIRATION_OPTIONS = [
   { value: '30d', label: '30 days' },
 ];
 
+/** @param {any} expiresAtMs */
 function formatExpirationLabel(expiresAtMs) {
   if (!expiresAtMs || !Number.isFinite(expiresAtMs)) {
     return 'Never expires';
@@ -53,8 +54,8 @@ function formatExpirationLabel(expiresAtMs) {
  * @param {Object} props
  * @param {boolean} props.isOpen
  * @param {() => void} props.onClose
- * @param {Object|null} props.shareData - `{ shareId, shareUrl, title, mode, messageCount, expiresAtMs, revoked }`
- * @param {Object|null} [props.chatMeta] - `{ id, title, messageCount }`
+ * @param {any} props.shareData - `{ shareId, shareUrl, title, mode, messageCount, expiresAtMs, revoked }`
+ * @param {any} [props.chatMeta] - `{ id, title, messageCount }`
  * @param {(expirationPreset: string) => Promise<void>|void} [props.onCreateShare]
  * @param {(shareId: string) => Promise<void>|void} [props.onRevokeShare]
  * @param {boolean} [props.isCreatingShare=false]
@@ -103,7 +104,7 @@ export default function ShareChatModal({
       return;
     }
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         if (confirmingRevoke && !isRevokingShare) {
@@ -189,7 +190,7 @@ export default function ShareChatModal({
     setStatusMessage('Share link revoked. Anyone visiting the old link can no longer access it.');
   };
 
-  const handleBackdropClick = (e) => {
+  const handleBackdropClick = (/** @type {any} */ e) => {
     if (e.target === e.currentTarget && !isCreatingShare && !isRevokingShare) {
       onClose?.();
     }
@@ -361,7 +362,7 @@ export default function ShareChatModal({
 
               <div className="share-chat-expiry-status">
                 <Clock size={13} aria-hidden="true" />
-                <span>{formatExpirationLabel(shareData.expiresAtMs)}</span>
+                <span>{formatExpirationLabel(shareData?.expiresAtMs)}</span>
               </div>
 
               <div className="share-chat-actions-grid">

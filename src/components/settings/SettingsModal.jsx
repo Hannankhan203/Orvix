@@ -72,7 +72,7 @@ export default function SettingsModal() {
       return;
     }
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         if (confirmReset) {
           setConfirmReset(false);
@@ -95,13 +95,13 @@ export default function SettingsModal() {
     }
   }, [isSettingsModalOpen]);
 
-  const handleVoiceChange = (e) => {
+  const handleVoiceChange = (/** @type {any} */ e) => {
     const uri = e.target.value;
     setSelectedVoiceURI(uri);
     void updateSettings({ speechVoiceURI: uri }).catch(() => {});
   };
 
-  const handleSpeechRateChange = (rate) => {
+  const handleSpeechRateChange = (/** @type {number} */ rate) => {
     setSpeechRate(rate);
     void updateSettings({ speechRate: rate }).catch(() => {});
   };
@@ -117,15 +117,15 @@ export default function SettingsModal() {
     }
   };
 
-  const handleThemeChange = (newTheme) => {
+  const handleThemeChange = (/** @type {string} */ newTheme) => {
     updateSettings({ theme: newTheme });
   };
 
-  const handleResponseLengthChange = (length) => {
+  const handleResponseLengthChange = (/** @type {string} */ length) => {
     updateSettings({ responseLength: length });
   };
 
-  const handleDefaultModeChange = (mode) => {
+  const handleDefaultModeChange = (/** @type {string} */ mode) => {
     updateSettings({ defaultMode: mode });
   };
 
@@ -525,7 +525,7 @@ export default function SettingsModal() {
                       aria-label="Synthesizer voice selection"
                     >
                       <option value="">System Default Voice</option>
-                      {voices.map((v) => (
+                      {voices.map((/** @type {any} */ v) => (
                         <option key={v.voiceURI} value={v.voiceURI}>
                           {v.name} ({v.lang}){v.default ? ' — System Default' : ''}
                         </option>

@@ -4,6 +4,7 @@ import { tokenizeCode } from '../../utils/syntaxHighlighter.js';
 
 /**
  * Normalized language mappings and friendly display names
+ * @type {Record<string, { id: string, label: string }>}
  */
 const LANGUAGE_META = {
   javascript: { id: 'javascript', label: 'JavaScript' },
@@ -78,6 +79,7 @@ const LANGUAGE_META = {
 
 /**
  * Resolves a language identifier and display label
+ * @param {any} rawLang
  */
 function resolveLanguage(rawLang) {
   if (!rawLang || !rawLang.trim()) {
@@ -100,11 +102,12 @@ function resolveLanguage(rawLang) {
 
 /**
  * Safely renders tokens to React nodes with exact whitespace and formatting preservation
+ * @param {any[]} tokens
  */
 function renderHighlightedTokens(tokens) {
   if (!tokens || !tokens.length) return null;
 
-  return tokens.map((token, index) => {
+  return tokens.map((/** @type {any} */ token, /** @type {number} */ index) => {
     if (token.type === 'plain') {
       return token.content;
     }
@@ -283,7 +286,7 @@ function CodeBlock({
       {/* Code Block Body with Line Numbers Gutter and Sticky Pinning */}
       <div
         className="code-content-wrapper"
-        style={{ '--line-digits': lineDigits }}
+        style={/** @type {any} */ ({ '--line-digits': lineDigits })}
       >
         {showLineNumbers && (
           <div

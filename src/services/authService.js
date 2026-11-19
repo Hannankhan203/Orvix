@@ -108,6 +108,7 @@ export function onAuthChange(callback) {
   return onAuthStateChanged(auth, callback);
 }
 
+/** @type {import('firebase/auth').Auth | null} */
 let testAuthOverride = null;
 
 /**
@@ -134,7 +135,7 @@ export async function getIdToken(forceRefresh = false) {
     if (typeof effectiveAuth.currentUser.getIdToken === 'function') {
       return await effectiveAuth.currentUser.getIdToken(forceRefresh);
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.warn('[Auth Service] Failed to retrieve Firebase ID token:', err?.message || err);
   }
   return null;
@@ -157,7 +158,8 @@ export function getAuthUserId() {
  * @returns {Promise<Record<string, string>>}
  */
 export async function getAuthHeaders(headers = {}, forceRefresh = false) {
-  const resolved = { ...(headers instanceof Headers ? Object.fromEntries(headers.entries()) : headers) };
+  /** @type {Record<string, string>} */
+  const resolved = { ...(headers instanceof Headers ? Object.fromEntries(headers.entries()) : /** @type {Record<string, string>} */ (headers)) };
   const token = await getIdToken(forceRefresh);
   if (token) {
     resolved['Authorization'] = `Bearer ${token}`;

@@ -35,9 +35,12 @@ const MIN_VALID_TRAINEDDATA_BYTES = 100 * 1024; // >100KB sanity check (eng.trai
 export const LOCAL_OCR_INIT_ERROR_MESSAGE =
   'Offline image text extraction is unavailable because the local OCR engine could not be initialized.';
 
+/** @type {any} */
 let workerInstance = null;
+/** @type {any} */
 let initializingPromise = null;
 let ocrQueue = Promise.resolve();
+/** @type {any} */
 let activeWorkerErrorReject = null;
 
 /**
@@ -201,12 +204,14 @@ export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {
   const assets = resolveLocalTesseractAssets();
 
   initializingPromise = (async () => {
+    /** @type {any} */
     let timeoutId = null;
+    /** @type {any} */
     let candidateWorker = null;
 
     try {
       const workerErrorPromise = new Promise((_, reject) => {
-        activeWorkerErrorReject = (rawErr) => {
+        activeWorkerErrorReject = (/** @type {any} */ rawErr) => {
           const initErr = new Error(LOCAL_OCR_INIT_ERROR_MESSAGE);
           initErr.code = 'LOCAL_OCR_INIT_FAILED';
           initErr.cause = rawErr?.message || String(rawErr || 'Worker reported an error during initialization');
@@ -220,7 +225,7 @@ export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {
         langPath: assets.langPath,
         gzip: assets.gzip,
         cacheMethod: 'none',
-        errorHandler: (err) => {
+        errorHandler: (/** @type {any} */ err) => {
           console.warn('[Image OCR Worker Error]', err?.message || err);
           if (typeof activeWorkerErrorReject === 'function') {
             const rejectFn = activeWorkerErrorReject;
@@ -255,7 +260,7 @@ export async function getWorker(timeoutMs = OCR_WORKER_TIMEOUT_MS) {
       const worker = await Promise.race([workerPromise, workerErrorPromise, timeoutPromise]);
       workerInstance = worker;
       return workerInstance;
-    } catch (workerErr) {
+    } catch (/** @type {any} */ workerErr) {
       console.warn('[Image OCR Worker Init Error]:', workerErr?.cause || workerErr?.message || workerErr);
       if (candidateWorker) {
         try {
@@ -556,7 +561,7 @@ export function detectReadableText(text, confidence = 0) {
  * Checks whether an error from Gemini Vision indicates offline / unreachable network / timeout
  * so we break immediately and fall through to local Tesseract OCR without retrying extra cloud models.
  */
-function isNetworkOrOfflineVisionError(err) {
+function isNetworkOrOfflineVisionError(/** @type {any} */ err) {
   const errMsg = String(err?.message || err || '').toLowerCase();
   const causeMsg = String(err?.cause?.message || '').toLowerCase();
   const combined = `${errMsg} ${causeMsg}`;
@@ -647,6 +652,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
     const base64Data = imageBuffer.toString('base64');
     const cleanMime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
 
+    /** @type {Record<string, string>} */
     const langNames = {
       eng: 'English',
       spa: 'Spanish (Español)',
@@ -713,7 +719,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
           hasText,
           text: normalized
         };
-      } catch (err) {
+      } catch (/** @type {any} */ err) {
         if (timer) clearTimeout(timer);
         try {
           abortController.abort();
@@ -726,7 +732,7 @@ export async function extractImageTextWithGeminiVision(imageBuffer, mimeType = '
       }
     }
     return null;
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.warn('[Gemini Vision Extraction Error]:', err?.message || err);
     return null;
   }
@@ -803,7 +809,7 @@ export async function extractImageText(
     try {
       imageBuffer = await fs.promises.readFile(diskPath);
       imageSize = imageBuffer.length;
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       return {
         fileId,
         filename: displayFilename,
@@ -954,7 +960,7 @@ export async function extractImageText(
           };
         }
       }
-    } catch (visionErr) {
+    } catch (/** @type {any} */ visionErr) {
       console.warn('[Gemini Vision Priority Error, falling back to local Tesseract OCR]:', visionErr?.message || visionErr);
     }
   }
@@ -970,7 +976,7 @@ export async function extractImageText(
           const worker = await getWorker(OCR_WORKER_TIMEOUT_MS);
 
           const recognizeErrorPromise = new Promise((_, reject) => {
-            activeWorkerErrorReject = (rawErr) => {
+            activeWorkerErrorReject = (/** @type {any} */ rawErr) => {
               reject(new Error(rawErr?.message || String(rawErr || 'Local OCR worker recognition error')));
             };
           });
@@ -1048,7 +1054,7 @@ export async function extractImageText(
             message: 'No readable text detected in this image.',
             extractedAt: nowIso
           });
-        } catch (ocrErr) {
+        } catch (/** @type {any} */ ocrErr) {
           if (timeoutId) clearTimeout(timeoutId);
           activeWorkerErrorReject = null;
           await discardOcrWorker();

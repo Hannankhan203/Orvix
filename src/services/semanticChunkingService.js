@@ -139,7 +139,8 @@ export function splitTextIntoSemanticWindows(text, options = {}) {
  *
  * @param {Object} doc - Document object from documentExtractor / browserDocumentExtractor
  * @param {Object} [options]
- * @param {string} [options.conversationId]
+ * @param {string|null} [options.conversationId]
+ * @param {string|null} [options.userId]
  * @param {number} [options.targetSize=700]
  * @param {number} [options.overlap=140]
  * @returns {Array<Object>} Array of Chunk records

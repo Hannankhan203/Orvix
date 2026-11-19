@@ -163,7 +163,7 @@ export async function loadSettings(userId = null) {
   // 2. For registered users with Firebase active and online, attempt cloud retrieval
   if (isRegisteredUser && isFirebaseConfigured() && db && isBrowserOnline()) {
     try {
-      const settingsRef = doc(db, 'users', userId, 'settings', 'preferences');
+      const settingsRef = doc(db, 'users', /** @type {string} */ (userId), 'settings', 'preferences');
       const snap = await getDoc(settingsRef);
 
       if (snap.exists()) {
@@ -217,7 +217,7 @@ export async function saveSettings(userId = null, partialSettings, currentSettin
   // 2. Persist to Firestore for registered users if configured and online
   if (isRegisteredUser && isFirebaseConfigured() && db && isBrowserOnline()) {
     try {
-      const settingsRef = doc(db, 'users', userId, 'settings', 'preferences');
+      const settingsRef = doc(db, 'users', /** @type {string} */ (userId), 'settings', 'preferences');
       await setDoc(
         settingsRef,
         {

@@ -11,8 +11,9 @@ import { isBrowserOnline, subscribeToNetworkStatus } from '../../config/firebase
  * AuthScreen Component
  * Authentication view providing Email/Password signup with required Username,
  * existing user login, and guest demo mode.
+ * @param {{ onClose?: () => void }} [props]
  */
-export default function AuthScreen({ onClose }) {
+export default function AuthScreen({ onClose } = {}) {
   const { currentUser, login, signup, actionLoading, error, clearError, isConfigured, continueAsGuest } = useAuth();
   const isAlreadyGuest = Boolean(
     currentUser && (currentUser.isAnonymous || String(currentUser.uid || '').startsWith('guest-'))
@@ -52,7 +53,7 @@ export default function AuthScreen({ onClose }) {
 
   useEffect(() => {
     if (!onClose) return;
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         clearError();
@@ -64,13 +65,13 @@ export default function AuthScreen({ onClose }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, clearError]);
 
-  const switchMode = (newMode) => {
+  const switchMode = (/** @type {string} */ newMode) => {
     setMode(newMode);
     clearError();
     setLocalValidation('');
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (/** @type {any} */ e) => {
     e.preventDefault();
     setLocalValidation('');
     clearError();

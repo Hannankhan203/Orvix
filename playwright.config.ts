@@ -37,7 +37,7 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: `PORT=${PORT} NODE_ENV=development ORVIX_ENABLE_DEMO_MODE=true npx tsx server.ts`,
+    command: `PORT=${PORT} NODE_ENV=development ORVIX_ENABLE_DEMO_MODE=true bun run dev`,
     url: `${BASE_URL}/api/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

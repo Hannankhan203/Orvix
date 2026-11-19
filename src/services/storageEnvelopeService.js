@@ -73,6 +73,11 @@ for (const spec of FORMAT_SPECS) {
 export const TRANSPARENT_COMPRESSION_EXTENSIONS = Array.from(SPEC_BY_EXT.keys());
 
 export class StorageEnvelopeError extends Error {
+  /**
+   * @param {string} message
+   * @param {string} [code='INVALID_STORAGE_ENVELOPE']
+   * @param {any} [details={}]
+   */
   constructor(message, code = 'INVALID_STORAGE_ENVELOPE', details = {}) {
     super(message);
     this.name = 'StorageEnvelopeError';
@@ -94,6 +99,9 @@ const CRC32_TABLE = (() => {
   return table;
 })();
 
+/**
+ * @param {Uint8Array} bytes
+ */
 export function computeCrc32(bytes) {
   let crc = 0xffffffff;
   for (let i = 0; i < bytes.length; i++) {
@@ -114,10 +122,17 @@ const SHA256_K = new Uint32Array([
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ]);
 
+/**
+ * @param {number} x
+ * @param {number} n
+ */
 function rotr32(x, n) {
   return ((x >>> n) | (x << (32 - n))) >>> 0;
 }
 
+/**
+ * @param {Uint8Array} data
+ */
 export function computeSha256Sync(data) {
   const len = data.length;
   const bitLenHi = Math.floor((len * 8) / 0x100000000) >>> 0;
@@ -204,13 +219,16 @@ export function computeSha256Sync(data) {
   return out;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 export async function computeSha256(bytes) {
   try {
     if (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle?.digest) {
       const slice = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
         ? bytes
         : new Uint8Array(bytes);
-      const digest = await globalThis.crypto.subtle.digest('SHA-256', slice);
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', /** @type {BufferSource} */ (slice));
       return new Uint8Array(digest);
     }
   } catch (_) {
@@ -219,6 +237,9 @@ export async function computeSha256(bytes) {
   return computeSha256Sync(bytes);
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 export function bytesToHex(bytes) {
   let hex = '';
   for (let i = 0; i < bytes.length; i++) {
@@ -227,6 +248,9 @@ export function bytesToHex(bytes) {
   return hex;
 }
 
+/**
+ * @param {string} str
+ */
 function encodeAscii(str) {
   const bytes = new Uint8Array(str.length);
   for (let i = 0; i < str.length; i++) {
@@ -235,6 +259,9 @@ function encodeAscii(str) {
   return bytes;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 function decodeAscii(bytes) {
   let str = '';
   for (let i = 0; i < bytes.length; i++) {
@@ -243,6 +270,9 @@ function decodeAscii(bytes) {
   return str;
 }
 
+/**
+ * @param {any} input
+ */
 function toUint8Array(input) {
   if (input instanceof Uint8Array) {
     return input;
@@ -304,6 +334,9 @@ function resolveTargetSpec(mimeType = '', extension = '', fileName = '') {
   return { spec: null, dotExt };
 }
 
+/**
+ * @param {any} fileOrDescriptor
+ */
 export function isTransparentStorageCompressionSupported(fileOrDescriptor) {
   if (!fileOrDescriptor) return false;
   const mime = typeof fileOrDescriptor === 'string'
@@ -322,6 +355,9 @@ export function getCanonicalMimeForExtension(extension = '') {
   return SPEC_BY_EXT.get(dotExt)?.canonicalMime || null;
 }
 
+/**
+ * @param {any} input
+ */
 export function isOrvixStorageEnvelope(input) {
   try {
     const bytes = input instanceof Uint8Array
@@ -343,6 +379,9 @@ export function isOrvixStorageEnvelope(input) {
   }
 }
 
+/**
+ * @param {any} input
+ */
 export function parseOrvixEnvelopeHeader(input) {
   const bytes = toUint8Array(input);
   if (bytes.length < FIXED_HEADER_BYTES) {
@@ -455,7 +494,12 @@ function yieldEventLoop() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+/**
+ * @param {Uint8Array} rawBytes
+ * @param {any} signal
+ */
 function runStreamingGzipSync(rawBytes, signal) {
+  /** @type {Uint8Array[]} */
   const compressedChunks = [];
   let totalCompressed = 0;
 
@@ -483,7 +527,12 @@ function runStreamingGzipSync(rawBytes, signal) {
   return out;
 }
 
+/**
+ * @param {Uint8Array} rawBytes
+ * @param {any} signal
+ */
 async function runStreamingGzipAsync(rawBytes, signal) {
+  /** @type {Uint8Array[]} */
   const compressedChunks = [];
   let totalCompressed = 0;
 
@@ -518,6 +567,9 @@ async function runStreamingGzipAsync(rawBytes, signal) {
   return out;
 }
 
+/**
+ * @param {any} params
+ */
 function buildEnvelopeBytes({ spec, originalSize, crc32, sha256Bytes, gzipBytes }) {
   const mimeBytes = encodeAscii(spec.canonicalMime);
   const totalBytes = FIXED_HEADER_BYTES + mimeBytes.length + gzipBytes.length;
@@ -547,6 +599,8 @@ function buildEnvelopeBytes({ spec, originalSize, crc32, sha256Bytes, gzipBytes 
  * Decodes and strictly validates an Orvix storage envelope synchronously using bounded streaming gzip.
  * Rejects decompression bombs, truncated streams, trailing corrupt bytes, version/format/MIME mismatches,
  * size mismatches, CRC-32 mismatches, and SHA-256 mismatches.
+ * @param {any} input
+ * @param {any} [options={}]
  */
 export function decodeOrvixStorageEnvelopeSync(input, options = {}) {
   const {
@@ -615,6 +669,7 @@ export function decodeOrvixStorageEnvelopeSync(input, options = {}) {
   }
 
   const hardCap = Math.min(header.originalSize, maxOriginalBytes);
+  /** @type {Uint8Array[]} */
   const decompressedChunks = [];
   let totalOut = 0;
   let sawFinal = false;
@@ -643,7 +698,7 @@ export function decodeOrvixStorageEnvelopeSync(input, options = {}) {
       const isFinal = end === payload.length;
       gunzip.push(payload.subarray(offset, end), isFinal);
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err instanceof StorageEnvelopeError) {
       throw err;
     }
@@ -714,6 +769,10 @@ export function decodeOrvixStorageEnvelopeSync(input, options = {}) {
   };
 }
 
+/**
+ * @param {any} input
+ * @param {any} [options={}]
+ */
 export async function decodeOrvixStorageEnvelope(input, options = {}) {
   return decodeOrvixStorageEnvelopeSync(input, options);
 }
@@ -721,6 +780,9 @@ export async function decodeOrvixStorageEnvelope(input, options = {}) {
 /**
  * Encodes a raw buffer into an Orvix storage envelope if and only if
  * total encoded bytes decrease by >= 10% compared to original size.
+ * @param {any} input
+ * @param {any} [metadata={}]
+ * @param {any} [options={}]
  */
 export async function encodeOrvixStorageEnvelope(input, metadata = {}, options = {}) {
   const rawBytes = toUint8Array(input);
@@ -846,6 +908,9 @@ export async function encodeOrvixStorageEnvelope(input, metadata = {}, options =
 
 /**
  * Synchronous variant useful for deterministic server/unit tests.
+ * @param {any} input
+ * @param {any} [metadata={}]
+ * @param {any} [options={}]
  */
 export function encodeOrvixStorageEnvelopeSync(input, metadata = {}, options = {}) {
   const rawBytes = toUint8Array(input);
@@ -918,6 +983,8 @@ export function encodeOrvixStorageEnvelopeSync(input, metadata = {}, options = {
 /**
  * Compresses an eligible browser File/Blob into a separate transport envelope File
  * while ALWAYS preserving the original File untouched.
+ * @param {any} file
+ * @param {any} [options={}]
  */
 export async function compressFileForTransparentStorage(file, options = {}) {
   const { signal, maxOriginalBytes = DEFAULT_MAX_ORIGINAL_BYTES } = options;
@@ -1040,6 +1107,7 @@ export async function compressFileForTransparentStorage(file, options = {}) {
     };
   }
 
+  /** @type {any} */
   let encodedFile = null;
   const targetName = file.name || `attachment${dotExt}`;
   if (typeof File === 'function') {

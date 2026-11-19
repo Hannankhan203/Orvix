@@ -40,6 +40,7 @@ import { filterAvailableFallbackProviders } from '../../services/providerModelSa
  * ChatMessage Component
  * Visually distinct user and AI messages with Markdown & Code rendering,
  * error handling, and assistant message controls: Copy, Regenerate, Speech, and Alternatives.
+ * @param {any} props
  */
 function ChatMessage({
   message,
@@ -156,7 +157,7 @@ function ChatMessage({
       providerConfig
     );
     if (Array.isArray(message?.suggestedProviders) && message.suggestedProviders.length > 0) {
-      const suggestedSet = new Set(message.suggestedProviders.map((id) => String(id).toLowerCase()));
+      const suggestedSet = new Set(message.suggestedProviders.map((/** @type {any} */ id) => String(id).toLowerCase()));
       const matchingSuggested = filtered.filter((p) => suggestedSet.has(p.id));
       if (matchingSuggested.length > 0) {
         return matchingSuggested;
@@ -328,7 +329,7 @@ function ChatMessage({
                 {(() => {
                   const allAtts = Array.isArray(message.attachments) ? message.attachments : [];
                   const imageAtts = allAtts.filter(isImageAttachment);
-                  const docAtts = allAtts.filter((a) => !isImageAttachment(a));
+                  const docAtts = allAtts.filter((/** @type {any} */ a) => !isImageAttachment(a));
 
                   return (
                     <>
@@ -338,7 +339,7 @@ function ChatMessage({
                           role="group"
                           aria-label="Attached images"
                         >
-                          {imageAtts.map((att, idx) => (
+                          {imageAtts.map((/** @type {any} */ att, /** @type {number} */ idx) => (
                             <ImageAttachmentCard
                               key={att.id || idx}
                               attachment={{
@@ -352,7 +353,7 @@ function ChatMessage({
                       )}
                       {docAtts.length > 0 && (
                         <div className="message-attachments-list" role="region" aria-label="Attached documents">
-                          {docAtts.map((att, idx) => (
+                          {docAtts.map((/** @type {any} */ att, /** @type {number} */ idx) => (
                             <AttachmentCard
                               key={att.id || idx}
                               attachment={{
@@ -381,7 +382,7 @@ function ChatMessage({
                     <span>Referenced file{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
                   </div>
                   <div className="referenced-attachments-list">
-                    {message.referencedAttachments.map((att, idx) => (
+                    {message.referencedAttachments.map((/** @type {any} */ att, /** @type {number} */ idx) => (
                       <AttachmentCard
                         key={att.id || idx}
                         attachment={{

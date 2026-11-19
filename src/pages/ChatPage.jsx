@@ -4098,6 +4098,7 @@ export default function ChatPage({
         onStartEdit={handleStartEdit}
         onCancelEdit={handleCancelEdit}
         selectedProvider={selectedProvider}
+        onSelectProvider={handleSelectProvider}
         enterToSend={settings?.enterToSend ?? true}
         showTimestamps={settings?.showTimestamps ?? true}
         activeMode={activeMode}

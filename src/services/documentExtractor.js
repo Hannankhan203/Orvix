@@ -273,7 +273,7 @@ async function ocrScannedPdfPages(buffer, totalPages, initialPages = [], options
 
     try {
       proxy = await getDocumentProxy(uint8Array);
-    } catch (proxyErr) {
+    } catch (/** @type {any} */ proxyErr) {
       return {
         status: 'ocr_failed',
         success: false,
@@ -290,6 +290,7 @@ async function ocrScannedPdfPages(buffer, totalPages, initialPages = [], options
 
     const docPages = totalPages || proxy.numPages || 1;
     const maxPagesToProcess = Math.min(docPages, options.maxPages || MAX_SCANNED_PDF_PAGES_TO_OCR);
+    /** @type {any[]} */
     const updatedPages = initialPages.length >= docPages
       ? initialPages.map((p) => ({ ...p, text: '', charCount: 0 }))
       : Array.from({ length: docPages }, (_, i) => ({ pageNumber: i + 1, text: '', charCount: 0 }));
@@ -305,7 +306,7 @@ async function ocrScannedPdfPages(buffer, totalPages, initialPages = [], options
       let pageImages = [];
       try {
         pageImages = await extractImages(proxy, pageNum);
-      } catch (imgErr) {
+      } catch (/** @type {any} */ imgErr) {
         console.warn(`[Scanned PDF OCR] Could not extract images from page ${pageNum}:`, imgErr?.message || imgErr);
         continue;
       }
@@ -356,7 +357,7 @@ async function ocrScannedPdfPages(buffer, totalPages, initialPages = [], options
           } else if (ocrResult?.status === 'error') {
             lastOcrError = ocrResult.error || ocrResult.message;
           }
-        } catch (ocrErr) {
+        } catch (/** @type {any} */ ocrErr) {
           console.warn(`[Scanned PDF OCR] Error OCRing page ${pageNum} image ${imgIdx + 1}:`, ocrErr?.message || ocrErr);
           lastOcrError = ocrErr?.message || String(ocrErr);
         }
@@ -533,7 +534,7 @@ async function extractPdfDocument(buffer, options = {}) {
     // 2. Insufficient native text or scanned watermark: PDF is scanned or image-only!
     // Attempt OCR on pages using unpdf raster image extraction and imageOcrService
     return await ocrScannedPdfPages(buffer, totalPages, pages, options);
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     const msg = String(err?.message || err || '').toLowerCase();
     if (msg.includes('password') || msg.includes('encrypted') || msg.includes('passwordexception')) {
       return {
@@ -642,7 +643,7 @@ export function convertMammothHtmlToMarkdown(html) {
   // 4. Blockquotes
   res = res.replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
     const lines = content.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, '$1\n').replace(/<[^>]+>/g, ' ').trim().split('\n');
-    return '\n\n' + lines.map((l) => '> ' + l.trim()).join('\n') + '\n\n';
+    return '\n\n' + lines.map((/** @type {any} */ l) => '> ' + l.trim()).join('\n') + '\n\n';
   });
 
   // 5. Code & Pre
@@ -774,7 +775,7 @@ async function extractDocxDocument(buffer) {
     let zip;
     try {
       zip = await JSZip.loadAsync(buffer);
-    } catch (zipErr) {
+    } catch (/** @type {any} */ zipErr) {
       return {
         status: 'corrupted',
         success: false,
@@ -806,7 +807,7 @@ async function extractDocxDocument(buffer) {
     // 3. Secondary fallback: convert to Markdown directly
     if (!markdown) {
       try {
-        const result = await mammoth.convertToMarkdown({ buffer });
+        const result = await /** @type {any} */ (mammoth).convertToMarkdown({ buffer });
         markdown = (result?.value || '').trim();
       } catch (_) {}
     }
@@ -820,6 +821,7 @@ async function extractDocxDocument(buffer) {
     }
 
     // 5. Inspect docx package via existing JSZip instance for DrawingML / VML text boxes that Mammoth does not capture
+    /** @type {string[]} */
     let textBoxes = [];
     try {
       const docXmlFiles = Object.keys(zip.files).filter((fname) =>
@@ -863,7 +865,7 @@ async function extractDocxDocument(buffer) {
       sections,
       sectionCount: sections.length
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -1174,7 +1176,7 @@ async function extractPptxDocument(buffer) {
       slides,
       text: fullText
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -1303,7 +1305,7 @@ function extractJsonDocument(buffer) {
       success: true,
       text: formatted
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -1372,11 +1374,12 @@ function extractXmlDocument(buffer) {
 /**
  * Primary dispatch function to extract readable text and structure from uploaded documents.
  *
- * @param {string} filePath Full path to the file on disk
+ * @param {any} filePathOrBuffer Full path to the file on disk or Buffer
  * @param {string} originalName User's original file name
  * @param {string} ext File extension in lowercase (e.g. '.pdf')
  * @param {string} mimeType Client MIME type
  * @param {string} fileId System-generated UUID
+ * @param {any} [options={}]
  * @returns {Promise<Object>}
  */
 export async function extractDocumentContent(
@@ -1407,7 +1410,7 @@ export async function extractDocumentContent(
     try {
       fileStats = await fs.promises.stat(filePath);
       fileSizeBytes = fileStats.size;
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       return {
         fileId,
         filename: displayFilename,
@@ -1445,7 +1448,7 @@ export async function extractDocumentContent(
 
     try {
       buffer = await fs.promises.readFile(filePath);
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       return {
         fileId,
         filename: displayFilename,
@@ -1500,6 +1503,7 @@ export async function extractDocumentContent(
     };
   }
 
+  /** @type {any} */
   let partialResult = {};
 
   try {
@@ -1558,7 +1562,7 @@ export async function extractDocumentContent(
         };
         break;
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     partialResult = {
       status: 'error',
       success: false,

@@ -21,11 +21,12 @@ self.onmessage = async (event) => {
       text: res?.text
     });
   } catch (err) {
+    const anyErr = /** @type {any} */ (err);
     self.postMessage({
       id,
       ok: false,
-      errorName: err?.name ? String(err.name) : 'Error',
-      errorMessage: err?.message ? String(err.message) : String(err || 'PDF extraction error')
+      errorName: anyErr?.name ? String(anyErr.name) : 'Error',
+      errorMessage: anyErr?.message ? String(anyErr.message) : String(anyErr || 'PDF extraction error')
     });
   }
 };

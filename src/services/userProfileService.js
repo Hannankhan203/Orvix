@@ -8,10 +8,16 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { updateProfile } from 'firebase/auth';
 import { db, auth, isFirebaseConfigured, isBrowserOnline } from '../config/firebaseConfig.js';
 
+/**
+ * @param {string|null|undefined} userId
+ */
 function getProfileCacheKey(userId) {
   return `orvix_user_profile_${userId}`;
 }
 
+/**
+ * @param {string|null|undefined} userId
+ */
 export function getCachedUserProfile(userId) {
   if (!userId || typeof window === 'undefined') return null;
   try {
@@ -24,6 +30,10 @@ export function getCachedUserProfile(userId) {
   }
 }
 
+/**
+ * @param {string|null|undefined} userId
+ * @param {any} profile
+ */
 function saveCachedUserProfile(userId, profile) {
   if (!userId || !profile || typeof window === 'undefined') return;
   try {
@@ -97,6 +107,7 @@ export async function getUserProfile(userId) {
 
   try {
     const profileRef = doc(db, 'users', userId);
+    /** @type {any} */
     let timer = null;
     const snap = await Promise.race([
       getDoc(profileRef),
@@ -117,7 +128,7 @@ export async function getUserProfile(userId) {
       saveCachedUserProfile(userId, profile);
       return profile;
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.warn('Could not retrieve user profile from Firestore, using local cache if available:', err?.message || err);
   }
 
@@ -190,7 +201,7 @@ export async function saveUserProfile(userId, { username, email = '' }) {
         updatedAt: serverTimestamp()
       });
     }
-  } catch (firestoreErr) {
+  } catch (/** @type {any} */ firestoreErr) {
     console.error('Failed to save profile to Firestore:', firestoreErr);
     throw new Error(
       `Failed to save username to cloud storage: ${firestoreErr?.message || firestoreErr}`

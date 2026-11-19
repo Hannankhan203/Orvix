@@ -8,6 +8,7 @@
 
 /**
  * Escapes raw HTML characters to prevent XSS or malformed tags
+ * @param {any} str
  */
 export function escapeHtml(str) {
   if (typeof str !== 'string') return '';
@@ -22,6 +23,7 @@ export function escapeHtml(str) {
 /**
  * Splits a Markdown table row into trimmed cell strings,
  * respecting escaped pipes (\|).
+ * @param {any} rowStr
  */
 export function splitRowIntoCells(rowStr) {
   if (!rowStr || typeof rowStr !== 'string') return [];
@@ -46,6 +48,7 @@ export function splitRowIntoCells(rowStr) {
 
 /**
  * Determines if a row is a Markdown table delimiter row (e.g. | --- | :---: | ---: |)
+ * @param {any} rowStr
  */
 export function isDelimiterRow(rowStr) {
   if (!rowStr || !rowStr.includes('-') || !rowStr.includes('|')) return false;
@@ -58,6 +61,7 @@ export function isDelimiterRow(rowStr) {
 
 /**
  * Extracts column text alignment rules from a delimiter row
+ * @param {any} delimiterRowStr
  */
 export function getColumnAlignments(delimiterRowStr) {
   const cells = splitRowIntoCells(delimiterRowStr);
@@ -73,6 +77,7 @@ export function getColumnAlignments(delimiterRowStr) {
 
 /**
  * Cleans markdown formatting characters from header text for plain-text labeling
+ * @param {any} header
  */
 function cleanHeaderLabel(header) {
   if (!header) return '';
@@ -89,6 +94,8 @@ function cleanHeaderLabel(header) {
  * • Header1: Value1
  *   Header2: Value2
  *   Header3: Value3
+ * @param {string[]} headers
+ * @param {string[][]} rows
  */
 export function formatTableAsPlainText(headers, rows) {
   const cleanHeaders = (headers || []).map((h, i) => cleanHeaderLabel(h) || `Field ${i + 1}`);
@@ -126,6 +133,7 @@ export function formatTableAsPlainText(headers, rows) {
 const ALLOWED_CLIPBOARD_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 const UNSAFE_URL_CHAR_REGEX = /[\u0000-\u0020\u007F-\u009F\u200B-\u200D\uFEFF\\]/;
 
+/** @param {any} value */
 function decodeHtmlEntitiesOnce(value) {
   return String(value)
     .replace(/&amp;/g, '&')
@@ -135,6 +143,7 @@ function decodeHtmlEntitiesOnce(value) {
     .replace(/&#39;/g, "'");
 }
 
+/** @param {any} escapedUrl */
 function normalizeAndValidateClipboardLinkUrl(escapedUrl) {
   if (typeof escapedUrl !== 'string') return null;
 
@@ -183,6 +192,8 @@ function normalizeAndValidateClipboardLinkUrl(escapedUrl) {
 /**
  * Linear-time Markdown link replacer `[label](url)` that preserves balanced nested
  * parentheses inside URLs (e.g. Wikipedia links or `javascript:alert(1)`).
+ * @param {string} input
+ * @param {(label: string, rawUrl: string) => string} renderLink
  */
 function replaceMarkdownLinks(input, renderLink) {
   let result = '';
@@ -245,6 +256,7 @@ function replaceMarkdownLinks(input, renderLink) {
 
 /**
  * Converts inline markdown (bold, italic, code, links) to safe HTML
+ * @param {any} text
  */
 export function inlineMarkdownToHtml(text) {
   if (!text) return '';
@@ -278,6 +290,9 @@ export function inlineMarkdownToHtml(text) {
 /**
  * Formats parsed table data into a clean, fully-styled HTML table
  * for rich-text destinations (Google Docs, Word, Outlook, Slack).
+ * @param {string[]} headers
+ * @param {string[][]} rows
+ * @param {string[]} [alignments=[]]
  */
 export function formatTableAsHtml(headers, rows, alignments = []) {
   const tableStyle = 'border-collapse: collapse; width: 100%; margin: 12px 0; font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #1e293b;';
@@ -308,6 +323,7 @@ export function formatTableAsHtml(headers, rows, alignments = []) {
 
 /**
  * Detects whether markdown content contains any Markdown table blocks
+ * @param {any} markdown
  */
 export function hasMarkdownTable(markdown) {
   if (!markdown || typeof markdown !== 'string') return false;
@@ -337,6 +353,7 @@ export function formatMessageForClipboard(markdown) {
   const normalized = markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   // Step 1: Protect fenced code blocks cleanly
+  /** @type {Array<{ lang: string, code: string }>} */
   const codeBlocks = [];
   const protectedText = normalized.replace(/```([a-zA-Z0-9_ -]*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const token = `\u0000FENCED_CODE_${codeBlocks.length}\u0000`;
@@ -406,11 +423,14 @@ export function formatMessageForClipboard(markdown) {
 /**
  * Builds a styled, complete HTML fragment from markdown content
  * for rich-text clipboard destinations.
+ * @param {string} protectedText
+ * @param {Array<{ lang: string, code: string }>} codeBlocks
  */
 function buildFullHtmlDocument(protectedText, codeBlocks) {
   const lines = protectedText.split('\n');
   const htmlParts = [];
   let inList = false;
+  /** @type {'ul' | 'ol' | null} */
   let listType = null; // 'ul' | 'ol'
 
   const closeListIfOpen = () => {

@@ -91,6 +91,7 @@ export const DEFAULT_PROVIDER = AI_PROVIDERS.GEMINI;
 
 /**
  * Cached `/api/config` availability snapshot (boolean-only, never stores secrets).
+ * @type {{ status: any, data: Object|null, fetchedAt: number|null }}
  */
 let cachedProviderConfigState = {
   status: 'idle',
@@ -98,6 +99,7 @@ let cachedProviderConfigState = {
   fetchedAt: null
 };
 
+/** @type {Promise<any>|null} */
 let inflightConfigPromise = null;
 
 /**
@@ -142,6 +144,7 @@ export async function fetchProviderConfig({ signal, forceRefresh = false, timeou
 
   const runFetch = async () => {
     const controller = new AbortController();
+    /** @type {any} */
     let timer = null;
     const onCallerAbort = () => {
       try {
@@ -261,6 +264,9 @@ export function isProviderConfigured(provider, configStateOverride = null) {
 /**
  * Parses raw error representations into clean, structured error objects while honoring
  * explicit server metadata (`status`, `retryable: false`, `canFallback`, `suggestedProviders`).
+ * @param {any} rawError
+ * @param {any} [statusCode=500]
+ * @param {any} [providerHint=null]
  */
 export function parseRouterError(rawError, statusCode = 500, providerHint = null) {
   const isObjectInput = rawError !== null && typeof rawError === 'object';
@@ -559,6 +565,9 @@ export function parseRouterError(rawError, statusCode = 500, providerHint = null
   return err;
 }
 
+/**
+ * @param {any} [cause=null]
+ */
 function createRouterAbortError(cause = null) {
   if (cause && cause.name === 'AbortError') {
     return cause;
@@ -572,6 +581,9 @@ function createRouterAbortError(cause = null) {
  * Prepares attachment payloads for automatic stream continuation so document/OCR extraction
  * metadata and Gemini vision bytes are preserved across Part 1 -> Part 2 boundaries without
  * duplicating payloads inside `history` or exceeding size limits.
+ * @param {any} attachments
+ * @param {any} targetProvider
+ * @param {any} targetModel
  */
 async function prepareAttachmentsForContinuation(attachments, targetProvider, targetModel) {
   if (!Array.isArray(attachments) || attachments.length === 0) {
@@ -591,31 +603,7 @@ async function prepareAttachmentsForContinuation(attachments, targetProvider, ta
 /**
  * Streams chat responses from the selected AI provider progressively.
  *
- * @param {Object} params
- * @param {string} [params.provider='gemini']
- * @param {string|null} [params.model=null]
- * @param {string} [params.mode='general']
- * @param {string} params.prompt
- * @param {Array} [params.history=[]]
- * @param {string|null} [params.username=null]
- * @param {Object|null} [params.preferences=null]
- * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
- * @param {(info: { modelUsed: string, provider: string, isDemo?: boolean }) => void} [params.onStart]
- * @param {AbortSignal} [params.signal]
- * @param {() => boolean} [params.isRequestActive]
- * @param {string|null} [params.conversationId=null]
- * @param {Array} [params.attachments=[]]
- * @param {boolean} [params.isContinuation=false]
- * @param {number} [params.partNumber=1]
- * @param {string|null} [params.originalPrompt=null]
- * @param {string|null} [params.previousContentSummary=null]
- * @param {string} [params.chatEndpoint='/api/chat']
- * @param {boolean} [params.stream=true]
- * @param {boolean} [params.autoFallback=false]
- * @param {number} [params.retryBaseDelayMs=600]
- * @param {number} [params.headersTimeoutMs=0]
- * @param {number} [params.firstByteTimeoutMs=0]
- * @param {number} [params.streamInactivityTimeoutMs=90000]
+ * @param {any} [params={}]
  * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean }>}
  */
 export async function streamAIMessage(params = {}) {
@@ -706,11 +694,11 @@ export async function streamAIMessage(params = {}) {
       attachments: Array.isArray(attachments)
         ? attachments.map((att) => sanitizeAttachmentForNetwork(att, { includeImageBytes: false }))
         : [],
-      onStart: (info) => {
+      onStart: (/** @type {any} */ info) => {
         if (!isActive()) return;
         onStart?.(info);
       },
-      onChunk: (chunkText, acc) => {
+      onChunk: (/** @type {any} */ chunkText, /** @type {any} */ acc) => {
         if (!isActive()) return;
         onChunk?.(chunkText, acc);
       },
@@ -748,6 +736,7 @@ export async function streamAIMessage(params = {}) {
         previousContentSummary: previousContentSummary || null
       });
 
+      /** @type {any} */
       let fetchTimer = null;
       const fetchController = new AbortController();
       const onCallerAbortForFetch = () => {
@@ -875,6 +864,7 @@ export async function streamAIMessage(params = {}) {
         const decoder = new TextDecoder();
         let buffer = '';
         let accumulatedText = '';
+        /** @type {any} */
         let modelUsed = null;
         let finalProvider = normalizedProvider;
         let isDemoResponse = false;
@@ -898,7 +888,7 @@ export async function streamAIMessage(params = {}) {
           signal.addEventListener('abort', onSignalAbort, { once: true });
         }
 
-        const handleSSELine = (line) => {
+        const handleSSELine = (/** @type {string} */ line) => {
           if (!isActive()) {
             throw createRouterAbortError();
           }
@@ -986,7 +976,7 @@ export async function streamAIMessage(params = {}) {
               streamErr.provider = data.provider || normalizedProvider;
               throw streamErr;
             }
-          } catch (jsonErr) {
+          } catch (/** @type {any} */ jsonErr) {
             if (jsonErr?.name === 'AbortError') {
               throw jsonErr;
             }
@@ -1030,6 +1020,7 @@ export async function streamAIMessage(params = {}) {
             return reader.read();
           }
 
+          /** @type {any} */
           let readTimer = null;
           const timeoutStage = !receivedFirstContentChunk && Number(firstByteTimeoutMs) > 0
             ? 'first_byte_timeout'
@@ -1174,12 +1165,12 @@ export async function streamAIMessage(params = {}) {
                 username,
                 preferences,
                 stream: shouldStream,
-                onChunk: (chunkText) => {
+                onChunk: (/** @type {string} */ chunkText) => {
                   if (!isActive()) return;
                   accumulatedText += chunkText;
                   onChunk?.(chunkText, accumulatedText);
                 },
-                onStart: (info) => {
+                onStart: (/** @type {any} */ info) => {
                   if (!isActive()) return;
                   if (info?.modelUsed) modelUsed = info.modelUsed;
                 },
@@ -1197,7 +1188,7 @@ export async function streamAIMessage(params = {}) {
                 firstByteTimeoutMs,
                 streamInactivityTimeoutMs
               });
-            } catch (contErr) {
+            } catch (/** @type {any} */ contErr) {
               if (!isActive() || contErr?.name === 'AbortError') {
                 throw createRouterAbortError(contErr);
               }
@@ -1252,6 +1243,7 @@ export async function streamAIMessage(params = {}) {
         }
       } else {
         // Non-streaming JSON response
+        /** @type {any} */
         let jsonTimer = null;
         const jsonReadPromise = res.json();
         const data =
@@ -1295,13 +1287,13 @@ export async function streamAIMessage(params = {}) {
           modelUsed:
             data.modelUsed ||
             sanitizedModel ||
-            PROVIDER_DEFAULT_MODELS[normalizedProvider] ||
+            /** @type {Record<string, string>} */ (PROVIDER_DEFAULT_MODELS)[normalizedProvider] ||
             'AI Model',
           provider: data.provider || normalizedProvider,
           ...(data.isDemo ? { isDemo: true } : {})
         };
       }
-    } catch (apiErr) {
+    } catch (/** @type {any} */ apiErr) {
       if (!isActive() || apiErr?.name === 'AbortError') {
         throw createRouterAbortError(apiErr);
       }
@@ -1366,7 +1358,7 @@ export async function streamAIMessage(params = {}) {
  * Common entry point for sending chat messages to the selected AI provider.
  * Maintained for interface compatibility; internally streams or resolves the full response.
  *
- * @param {Object} params
+ * @param {any} params
  * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean }>}
  */
 export async function sendAIMessage(params) {
@@ -1393,10 +1385,7 @@ export { resolveModelForProviderSwitch, getDeterministicFallbackChain };
  * - MAY fallback on transient 500, 502, 503, 504, timeout, network failure, or retry-exhausted provider outages.
  *
  * @param {any} error
- * @param {Object} [options={}]
- * @param {AbortSignal} [options.signal=null]
- * @param {() => boolean} [options.isRequestActive=null]
- * @param {boolean} [options.hasPartialOutput=false]
+ * @param {any} [options={}]
  * @returns {boolean}
  */
 export function isFallbackEligible(error, { signal = null, isRequestActive = null, hasPartialOutput = false } = {}) {
@@ -1472,7 +1461,7 @@ export function isFallbackEligible(error, { signal = null, isRequestActive = nul
  * Creates a sanitized, structured fallback diagnostic record without exposing
  * API keys, authorization tokens, raw prompts, or sensitive attachment contents.
  *
- * @param {Object} data
+ * @param {any} data
  * @returns {Object}
  */
 export function createFallbackDiagnostic({
@@ -1526,21 +1515,7 @@ export function logFallbackDiagnostic(diag) {
  *      - Otherwise -> record diagnostic, switch model cleanly via resolveModelForProviderSwitch,
  *        and attempt fallback provider.
  *
- * @param {Object} params
- * @param {string} [params.provider='gemini']
- * @param {string|null} [params.model=null]
- * @param {string} [params.mode='general']
- * @param {string} params.prompt
- * @param {Array} [params.history=[]]
- * @param {Array} [params.attachments=[]]
- * @param {AbortSignal} [params.signal]
- * @param {() => boolean} [params.isRequestActive]
- * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
- * @param {({ modelUsed: string, provider: string, isDemo?: boolean }) => void} [params.onStart]
- * @param {(diagnostic: Object) => void} [params.onFallback]
- * @param {Array<string>} [params.fallbackChain]
- * @param {number} [params.maxFallbackProviders=3]
- * @param {string} [params.requestId]
+ * @param {any} [params={}]
  * @returns {Promise<{ text: string, modelUsed: string, provider: string, isDemo?: boolean, attemptedProviders: string[], fallbackHistory: Array<Object> }>}
  */
 export async function streamAIMessageWithFallback(params = {}) {
@@ -1584,14 +1559,14 @@ export async function streamAIMessageWithFallback(params = {}) {
         provider: currentProvider,
         model: effectiveModel,
         autoFallback: false,
-        onStart: (info) => {
+        onStart: (/** @type {any} */ info) => {
           params.onStart?.({
             ...info,
             provider: currentProvider,
-            modelUsed: info?.modelUsed || effectiveModel || PROVIDER_DEFAULT_MODELS[currentProvider]
+            modelUsed: info?.modelUsed || effectiveModel || /** @type {Record<string, string>} */ (PROVIDER_DEFAULT_MODELS)[currentProvider]
           });
         },
-        onChunk: (chunkText, currentAcc) => {
+        onChunk: (/** @type {any} */ chunkText, /** @type {any} */ currentAcc) => {
           providerEmittedChunks = true;
           accumulatedText = currentAcc;
           params.onChunk?.(chunkText, currentAcc);
@@ -1604,7 +1579,7 @@ export async function streamAIMessageWithFallback(params = {}) {
         attemptedProviders: [...attemptedProviders],
         fallbackHistory: [...fallbackHistory]
       };
-    } catch (rawErr) {
+    } catch (/** @type {any} */ rawErr) {
       if (
         params.signal?.aborted ||
         (typeof params.isRequestActive === 'function' && !params.isRequestActive()) ||
@@ -1659,7 +1634,7 @@ export async function streamAIMessageWithFallback(params = {}) {
       if (Array.isArray(params.fallbackChain) && params.fallbackChain.length > 0) {
         candidates = params.fallbackChain
           .map(normalizeProviderId)
-          .filter((p) => p && !visitedProviders.has(p) && isProviderCapableOfTask(p, { requiresVision, hasImageAttachments }));
+          .filter((/** @type {string} */ p) => p && !visitedProviders.has(p) && isProviderCapableOfTask(p, { requiresVision, hasImageAttachments }));
       } else {
         candidates = getDeterministicFallbackChain(currentProvider, {
           providerConfig: params.providerConfig || getCachedProviderConfig(),
@@ -1668,7 +1643,7 @@ export async function streamAIMessageWithFallback(params = {}) {
         });
       }
 
-      const nextProvider = candidates.find((p) => !visitedProviders.has(p));
+      const nextProvider = candidates.find((/** @type {string} */ p) => !visitedProviders.has(p));
 
       // No eligible fallback provider remaining or depth reached
       if (!nextProvider || attemptedProviders.length >= maxFallbackDepth) {

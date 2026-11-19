@@ -119,11 +119,11 @@ const NON_INDEXABLE_STATUSES = new Set([
 const docLockTails = new Map();
 const activeIndexingEntries = new Set();
 
-function normalizeScopeId(val) {
+function normalizeScopeId(/** @type {any} */ val) {
   return typeof val === 'string' && val.trim() ? val.trim() : null;
 }
 
-function normalizeDocumentForIndexing(rawDoc) {
+function normalizeDocumentForIndexing(/** @type {any} */ rawDoc) {
   if (!rawDoc || typeof rawDoc !== 'object') return null;
   if (rawDoc.extraction && typeof rawDoc.extraction === 'object') {
     const ext = rawDoc.extraction;
@@ -148,7 +148,7 @@ function normalizeDocumentForIndexing(rawDoc) {
  * Checks whether a document has a valid ID, did not fail extraction,
  * and contains non-empty indexable text, pages, slides, or sections.
  *
- * @param {Object} rawDoc
+ * @param {any} rawDoc
  * @returns {boolean}
  */
 export function isDocumentIndexable(rawDoc) {
@@ -162,11 +162,11 @@ export function isDocumentIndexable(rawDoc) {
 
   const hasPages =
     Array.isArray(doc.pages) &&
-    doc.pages.some((p) => typeof p?.text === 'string' && p.text.trim().length > 0);
+    doc.pages.some((/** @type {any} */ p) => typeof p?.text === 'string' && p.text.trim().length > 0);
   const hasSlides =
     Array.isArray(doc.slides) &&
     doc.slides.some(
-      (s) =>
+      (/** @type {any} */ s) =>
         (typeof s?.text === 'string' && s.text.trim().length > 0) ||
         (typeof s?.notes === 'string' && s.notes.trim().length > 0) ||
         (typeof s?.title === 'string' && s.title.trim().length > 0)
@@ -174,7 +174,7 @@ export function isDocumentIndexable(rawDoc) {
   const hasSections =
     Array.isArray(doc.sections) &&
     doc.sections.some(
-      (sec) =>
+      (/** @type {any} */ sec) =>
         (typeof sec?.content === 'string' && sec.content.trim().length > 0) ||
         (typeof sec?.heading === 'string' && sec.heading.trim().length > 0)
     );
@@ -184,7 +184,7 @@ export function isDocumentIndexable(rawDoc) {
   return hasPages || hasSlides || hasSections || hasRawText;
 }
 
-function computeDocContentHash(doc) {
+function computeDocContentHash(/** @type {any} */ doc) {
   const parts = [
     doc.originalName || doc.filename || doc.name || '',
     (doc.format || '').toUpperCase()
@@ -208,7 +208,7 @@ function computeDocContentHash(doc) {
   return `${(hash >>> 0).toString(16)}_${serialized.length}`;
 }
 
-function isValidStoredChunk(chunk) {
+function isValidStoredChunk(/** @type {any} */ chunk) {
   if (!chunk || typeof chunk !== 'object') return false;
   if (typeof chunk.text !== 'string' || !chunk.text.trim()) return false;
   if (!chunk.embedding || typeof chunk.embedding.length !== 'number' || chunk.embedding.length === 0) {
@@ -217,7 +217,7 @@ function isValidStoredChunk(chunk) {
   return true;
 }
 
-function areChunksCompleteForDoc(existingChunks, doc, expectedHash = null) {
+function areChunksCompleteForDoc(/** @type {any} */ existingChunks, /** @type {any} */ doc, /** @type {any} */ expectedHash = null) {
   if (!Array.isArray(existingChunks) || existingChunks.length === 0) return false;
   for (const chunk of existingChunks) {
     if (!isValidStoredChunk(chunk)) return false;
@@ -232,7 +232,7 @@ function areChunksCompleteForDoc(existingChunks, doc, expectedHash = null) {
   return true;
 }
 
-function withDocLock(lockKey, taskFn) {
+function withDocLock(/** @type {any} */ lockKey, /** @type {any} */ taskFn) {
   const prev = docLockTails.get(lockKey) || Promise.resolve();
   const run = prev.catch(() => {}).then(taskFn);
   const settledTail = run.then(
@@ -251,6 +251,9 @@ function withDocLock(lockKey, taskFn) {
   return run;
 }
 
+/**
+ * @param {any} params
+ */
 async function waitForPendingIndexing({ docIds = [], conversationId = null }) {
   if (activeIndexingEntries.size === 0) return;
   const docIdSet = new Set(docIds.filter(Boolean));
@@ -274,13 +277,9 @@ async function waitForPendingIndexing({ docIds = [], conversationId = null }) {
  * Chunks the document according to its format (pages/slides/sections/windows),
  * generates unit-normalized embeddings, and stores them in IndexedDB.
  *
- * @param {Object} rawDoc - Document object from documentExtractor / browserDocumentExtractor
- * @param {string} [conversationId] - Associated conversation ID
- * @param {Object} [options]
- * @param {boolean} [options.replaceExisting=true] - Delete prior chunks for this doc first
- * @param {boolean} [options.forceReindex=false] - Force re-indexing even if unchanged
- * @param {string|null} [options.userId] - Optional owner user ID for isolation
- * @param {(progress: number) => void} [options.onProgress]
+ * @param {any} rawDoc - Document object from documentExtractor / browserDocumentExtractor
+ * @param {string|null} [conversationId] - Associated conversation ID
+ * @param {any} [options]
  * @returns {Promise<{ docId: string|null, chunkCount: number, success: boolean }>}
  */
 export async function indexDocument(rawDoc, conversationId = null, options = {}) {
@@ -353,7 +352,7 @@ export async function indexDocument(rawDoc, conversationId = null, options = {})
         await deleteChunksForDocument(docId, deleteScope);
       }
 
-      const stored = await storeDocumentChunks(docId, enrichedChunks, effectiveConversationId, {
+      const stored = await storeDocumentChunks(docId, enrichedChunks, effectiveConversationId || undefined, {
         userId: storedUserId,
         contentHash
       });
@@ -387,8 +386,8 @@ export async function indexDocument(rawDoc, conversationId = null, options = {})
  * Indexes multiple documents in batch.
  *
  * @param {Array<Object>} docs
- * @param {string} [conversationId]
- * @param {Object} [options]
+ * @param {string|null} [conversationId]
+ * @param {any} [options]
  * @returns {Promise<Array<{ docId: string|null, chunkCount: number, success: boolean }>>}
  */
 export async function indexDocuments(docs = [], conversationId = null, options = {}) {
@@ -406,28 +405,8 @@ export async function indexDocuments(docs = [], conversationId = null, options =
  * Supports cross-document search, filtering by document IDs or conversation ID,
  * and multi-document attribution.
  *
- * @param {Object} params
- * @param {string} params.query - User question or query text
- * @param {Array<string>} [params.docIds] - Target document IDs to search within
- * @param {string} [params.conversationId] - Target conversation ID to search within
- * @param {string|null} [params.userId] - Optional user ID for strict cross-user isolation
- * @param {Array<Object>} [params.inMemoryDocs] - Fallback documents to index on-the-fly if missing/partial in store
- * @param {number} [params.topK=5] - Maximum number of top chunks to return
- * @param {number} [params.minScore=0.15] - Minimum cosine similarity threshold
- * @param {boolean} [params.ensureMultiDocDiversity=true] - Balance top chunks across multiple docs
- * @returns {Promise<Array<{
- *   chunkId: string,
- *   docId: string,
- *   docName: string,
- *   format: string,
- *   score: number,
- *   text: string,
- *   pageNumber?: number,
- *   slideNumber?: number,
- *   slideTitle?: string,
- *   sectionHeading?: string,
- *   sourceType: string
- * }>>}
+ * @param {any} params
+ * @returns {Promise<Array<any>>}
  */
 export async function searchSemanticChunks({
   query,

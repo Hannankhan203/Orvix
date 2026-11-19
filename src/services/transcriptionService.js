@@ -65,7 +65,9 @@ export function createMinimalWavBlob() {
  *   duration: number,
  *   model: string,
  *   provider: string,
- *   highAccuracy: boolean
+ *   highAccuracy: boolean,
+ *   status?: number,
+ *   latencyMs?: number
  * }>}
  */
 export async function transcribeAudioBlob({
@@ -87,7 +89,7 @@ export async function transcribeAudioBlob({
   const buildFormData = () => {
     const formData = new FormData();
 
-    if (hasAudioBlob) {
+    if (hasAudioBlob && audioBlob) {
       const mimeType = (audioBlob.type || 'audio/webm').toLowerCase();
       let ext = 'webm';
       if (mimeType.includes('mp4') || mimeType.includes('m4a')) ext = 'm4a';
@@ -153,7 +155,8 @@ export async function transcribeAudioBlob({
   let response;
   try {
     let authHeaders = await getAuthHeaders();
-    const requestInit = (hdrs) => {
+    const requestInit = (/** @type {any} */ hdrs) => {
+      /** @type {RequestInit} */
       const init = {
         method: 'POST',
         body: buildFormData(),
@@ -177,7 +180,7 @@ export async function transcribeAudioBlob({
         }
       } catch (_) {}
     }
-  } catch (fetchErr) {
+  } catch (/** @type {any} */ fetchErr) {
     if (timedOut || fetchErr?.name === 'TimeoutError') {
       const err = new Error('Transcription request timed out. Retained live speech transcript.');
       err.code = 'TRANSCRIPTION_TIMEOUT';

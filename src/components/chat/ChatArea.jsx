@@ -11,7 +11,8 @@ import {
   Loader2,
   Paperclip,
   ChevronDown,
-  Check
+  Check,
+  Play
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen.jsx';
 import MessageList from './MessageList.jsx';
@@ -46,6 +47,7 @@ export { getProviderFootnote };
  * ChatArea Component
  * Coordinates the scrollable message stream / welcome state,
  * error retries, and the fixed bottom message composer with professional voice dictation.
+ * @param {any} props
  */
 export default function ChatArea({
   activeChatId = null,
@@ -70,6 +72,7 @@ export default function ChatArea({
   onStartEdit,
   onCancelEdit,
   selectedProvider = 'gemini',
+  onSelectProvider,
   enterToSend = true,
   showTimestamps = true,
   activeMode = 'general',
@@ -179,6 +182,8 @@ export default function ChatArea({
   /**
    * Unified attachment processor shared by upload button, clipboard paste, and drag & drop.
    * Enforces 1-attachment limit, 25MB size restriction, format whitelist, and image preview generation.
+   * @param {any} rawFile
+   * @param {{ isPaste?: boolean, isDrop?: boolean }} [options]
    */
   const processAttachment = (rawFile, { isPaste = false, isDrop = false } = {}) => {
     if (isComposerBlockedRef.current || isComposerDisabled || isReadOnly || isSharedView) return;
@@ -281,7 +286,7 @@ export default function ChatArea({
     }
   };
 
-  const handleFileChange = (e) => {
+  const handleFileChange = (/** @type {any} */ e) => {
     if (isComposerBlockedRef.current || isComposerDisabled || isReadOnly || isSharedView) {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -310,7 +315,7 @@ export default function ChatArea({
     processAttachment(files[0], { isPaste: false, isDrop: false });
   };
 
-  const handlePaste = (e) => {
+  const handlePaste = (/** @type {any} */ e) => {
     if (
       isComposerBlockedRef.current ||
       isComposerElementUnavailable(textareaRef.current)
@@ -378,7 +383,7 @@ export default function ChatArea({
     }
   }, [isComposerBlocked, isReadOnly, isSharedView]);
 
-  const handleDragEnter = (e) => {
+  const handleDragEnter = (/** @type {any} */ e) => {
     if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView || !isFileDragEvent(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -386,7 +391,7 @@ export default function ChatArea({
     setIsDraggingOver(true);
   };
 
-  const handleDragOver = (e) => {
+  const handleDragOver = (/** @type {any} */ e) => {
     if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView || !isFileDragEvent(e)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -398,7 +403,7 @@ export default function ChatArea({
     }
   };
 
-  const handleDragLeave = (e) => {
+  const handleDragLeave = (/** @type {any} */ e) => {
     if (!isFileDragEvent(e)) return;
     if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView) {
       dragDepthRef.current = 0;
@@ -414,7 +419,7 @@ export default function ChatArea({
     }
   };
 
-  const handleDrop = (e) => {
+  const handleDrop = (/** @type {any} */ e) => {
     if (!isFileDragEvent(e)) return;
     if (isComposerBlockedRef.current || isComposerBlocked || isReadOnly || isSharedView) {
       e.preventDefault();
@@ -470,12 +475,12 @@ export default function ChatArea({
   };
 
   useEffect(() => {
-    const handleWindowDragOver = (e) => {
+    const handleWindowDragOver = (/** @type {any} */ e) => {
       if (isFileDragEvent(e)) {
         e.preventDefault();
       }
     };
-    const handleWindowDrop = (e) => {
+    const handleWindowDrop = (/** @type {any} */ e) => {
       if (isFileDragEvent(e)) {
         e.preventDefault();
       }
@@ -488,11 +493,11 @@ export default function ChatArea({
     };
   }, []);
 
-  const handleRemoveAttachment = (idToRemove) => {
+  const handleRemoveAttachment = (/** @type {any} */ idToRemove) => {
     setAttachmentNotice(null);
-    setPreviewingComposerAttachment((prev) => (prev?.id === idToRemove ? null : prev));
-    setAttachments((prev) => {
-      const removed = prev.find((att) => att.id === idToRemove);
+    setPreviewingComposerAttachment((/** @type {any} */ prev) => (prev?.id === idToRemove ? null : prev));
+    setAttachments((/** @type {any[]} */ prev) => {
+      const removed = prev.find((/** @type {any} */ att) => att.id === idToRemove);
       if (removed?.previewUrl) {
         try {
           URL.revokeObjectURL(removed.previewUrl);
@@ -527,7 +532,7 @@ export default function ChatArea({
 
   useEffect(() => {
     if (!suggestedRefinement) return;
-    const handleRefinementEsc = (e) => {
+    const handleRefinementEsc = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         setSuggestedRefinement(null);
@@ -564,17 +569,17 @@ export default function ChatArea({
     onShareChat
   };
 
-  const stableOnRetry = useCallback((...args) => messageCallbacksRef.current.onRetry?.(...args), []);
-  const stableOnSwitchProvider = useCallback((...args) => messageCallbacksRef.current.onSwitchProvider?.(...args), []);
-  const stableOnRestorePrompt = useCallback((...args) => messageCallbacksRef.current.onRestorePrompt?.(...args), []);
-  const stableOnRegenerate = useCallback((...args) => messageCallbacksRef.current.onRegenerate?.(...args), []);
-  const stableOnGenerateAlternative = useCallback((...args) => messageCallbacksRef.current.onGenerateAlternative?.(...args), []);
-  const stableOnSwitchAlternative = useCallback((...args) => messageCallbacksRef.current.onSwitchAlternative?.(...args), []);
-  const stableOnStopGenerating = useCallback((...args) => messageCallbacksRef.current.onStopGenerating?.(...args), []);
-  const stableOnStartEdit = useCallback((...args) => messageCallbacksRef.current.onStartEdit?.(...args), []);
-  const stableOnCancelEdit = useCallback((...args) => messageCallbacksRef.current.onCancelEdit?.(...args), []);
-  const stableOnEditResend = useCallback((...args) => messageCallbacksRef.current.onEditResend?.(...args), []);
-  const stableOnShareChat = useCallback((...args) => messageCallbacksRef.current.onShareChat?.(...args), []);
+  const stableOnRetry = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onRetry?.(...args), []);
+  const stableOnSwitchProvider = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onSwitchProvider?.(...args), []);
+  const stableOnRestorePrompt = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onRestorePrompt?.(...args), []);
+  const stableOnRegenerate = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onRegenerate?.(...args), []);
+  const stableOnGenerateAlternative = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onGenerateAlternative?.(...args), []);
+  const stableOnSwitchAlternative = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onSwitchAlternative?.(...args), []);
+  const stableOnStopGenerating = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onStopGenerating?.(...args), []);
+  const stableOnStartEdit = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onStartEdit?.(...args), []);
+  const stableOnCancelEdit = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onCancelEdit?.(...args), []);
+  const stableOnEditResend = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onEditResend?.(...args), []);
+  const stableOnShareChat = useCallback((/** @type {any[]} */ ...args) => messageCallbacksRef.current.onShareChat?.(...args), []);
 
   const messagesLengthRef = useRef(messages.length);
   messagesLengthRef.current = messages.length;
@@ -809,7 +814,7 @@ export default function ChatArea({
   });
 
   const activeLang =
-    supportedLanguages.find((l) => l.code === selectedLanguage) || supportedLanguages[0];
+    supportedLanguages.find((/** @type {any} */ l) => l.code === selectedLanguage) || supportedLanguages[0];
 
   const [srAnnouncement, setSrAnnouncement] = useState('');
 
@@ -868,7 +873,7 @@ export default function ChatArea({
     setLangMenuOpen((prev) => !prev);
   };
 
-  const handleSelectLanguage = (langCode) => {
+  const handleSelectLanguage = (/** @type {any} */ langCode) => {
     if (isComposerBlockedRef.current || isPublicSharedViewer || isReadOnly || isSharedView) return;
     setSelectedLanguage(langCode);
     setLangMenuOpen(false);
@@ -924,12 +929,12 @@ export default function ChatArea({
 
   useEffect(() => {
     if (!langMenuOpen) return;
-    const handleClickOutside = (e) => {
+    const handleClickOutside = (/** @type {any} */ e) => {
       if (langMenuRef.current && !langMenuRef.current.contains(e.target)) {
         setLangMenuOpen(false);
       }
     };
-    const handleEscape = (e) => {
+    const handleEscape = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         setLangMenuOpen(false);
@@ -989,7 +994,7 @@ export default function ChatArea({
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const handleGlobalKeyDown = (e) => {
+    const handleGlobalKeyDown = (/** @type {any} */ e) => {
       if (e.defaultPrevented) return;
       if (isComposerBlockedRef.current) return;
       const textareaEl = textareaRef.current;
@@ -999,7 +1004,7 @@ export default function ChatArea({
       if (!e.key || e.key.length !== 1 || e.key === ' ') return;
       if (e.isComposing || e.keyCode === 229) return;
 
-      const activeEl = document.activeElement;
+      const activeEl = /** @type {HTMLElement|null} */ (document.activeElement);
       if (activeEl) {
         const tagName = activeEl.tagName?.toLowerCase();
         if (
@@ -1072,7 +1077,7 @@ export default function ChatArea({
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [isComposerBlocked]);
 
-  const submitComposerMessage = async (textToSend) => {
+  const submitComposerMessage = async (/** @type {any} */ textToSend) => {
     if (
       isComposerBlockedRef.current ||
       isComposerElementUnavailable(textareaRef.current) ||
@@ -1097,7 +1102,7 @@ export default function ChatArea({
     }
   };
 
-  const handleKeyDown = async (e) => {
+  const handleKeyDown = async (/** @type {any} */ e) => {
     if (isComposerDisabled) return;
 
     if (e.key === 'Escape' && langMenuOpen) {
@@ -1150,7 +1155,7 @@ export default function ChatArea({
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (/** @type {any} */ e) => {
     e.preventDefault();
     if (
       isComposerBlockedRef.current ||
@@ -1663,6 +1668,7 @@ Transcript:
             onLoadModel={onLoadWebLLMModel}
             onCancelLoad={onCancelWebLLMLoad}
             onUnloadModel={onUnloadWebLLMModel}
+            onSelectProvider={onSelectProvider}
             isOffline={isOffline}
           />
 
@@ -1843,7 +1849,7 @@ Transcript:
                     {!isPreLangDisabled && langMenuOpen && (
                       <div className="dictation-lang-dropdown" role="menu" aria-label="Dictation recognition language">
                         <div className="lang-dropdown-header">Dictation Language</div>
-                        {supportedLanguages.map((lang) => (
+                        {supportedLanguages.map((/** @type {any} */ lang) => (
                           <button
                             key={lang.code}
                             type="button"

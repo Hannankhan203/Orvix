@@ -73,6 +73,7 @@ export function getErrorTitle(content = '', providerId = '', errorCode = '') {
 /**
  * MessageErrorBox Component
  * Handles rendering the error notification box, referenced attachments, and retry/switch actions.
+ * @param {any} props
  */
 export default function MessageErrorBox({
   message,
@@ -121,7 +122,7 @@ export default function MessageErrorBox({
             <span>Referenced file{message.referencedAttachments.length > 1 ? 's' : ''}:</span>
           </div>
           <div className="referenced-attachments-list">
-            {message.referencedAttachments.map((att, idx) => (
+            {message.referencedAttachments.map((/** @type {any} */ att, /** @type {number} */ idx) => (
               <AttachmentCard key={att.id || idx} attachment={att} compact={true} />
             ))}
           </div>
@@ -159,7 +160,7 @@ export default function MessageErrorBox({
         {onSwitchProvider &&
           message.canSwitchProvider !== false &&
           currentProviderId !== 'webllm' &&
-          fallbackProviders.map((p) => (
+          fallbackProviders.map((/** @type {any} */ p) => (
             <Button
               key={p.id}
               variant="secondary"

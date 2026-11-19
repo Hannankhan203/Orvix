@@ -44,8 +44,12 @@ registerProcessor('pcm-audio-processor', PcmAudioProcessor);
 `;
 
 export class VoiceStreamClient {
+  /**
+   * @param {any} [options={}]
+   */
   constructor(options = {}) {
     this.options = options;
+    /** @type {WebSocket | null} */
     this.ws = null;
     this.audioContext = null;
     this.workletNode = null;
@@ -57,11 +61,20 @@ export class VoiceStreamClient {
     this.isGuest = false;
     this.authToken = '';
     this.language = options.language || 'en-US';
+    /** @type {string | null} */
     this.pendingLanguage = null;
     this.accumulatedTranscript = '';
+    /** @type {any} */
     this.stopResolve = null;
+    /** @type {any} */
     this.stopReject = null;
+    /** @type {any} */
+    this.startResolve = null;
+    /** @type {any} */
+    this.startReject = null;
+    /** @type {any} */
     this.stopTimer = null;
+    /** @type {any} */
     this.connectTimer = null;
 
     // Callbacks
@@ -73,6 +86,9 @@ export class VoiceStreamClient {
     this.onConfig = options.onConfig || (() => {});
   }
 
+  /**
+   * @param {any} newState
+   */
   setState(newState) {
     this.state = newState;
     this.onStateChange(newState);
@@ -80,8 +96,9 @@ export class VoiceStreamClient {
 
   /**
    * Resolves the WebSocket endpoint URL based on window location and options.
+   * @param {any} [_token]
    */
-  resolveWebSocketUrl() {
+  resolveWebSocketUrl(_token) {
     let url = this.options.url;
     if (!url) {
       const loc = window.location;
@@ -405,6 +422,7 @@ export class VoiceStreamClient {
 
   /**
    * Transmits a binary PCM buffer to the backend over WebSocket.
+   * @param {any} arrayBuffer
    */
   sendPcmChunk(arrayBuffer) {
     if (this.state !== 'listening') return;
@@ -417,6 +435,8 @@ export class VoiceStreamClient {
 
   /**
    * Starts a voice recording and streaming session.
+   * @param {any} params
+   * @returns {Promise<void>}
    */
   async start({ stream, language = 'en-US', prompt = '', token = '' }) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -437,7 +457,7 @@ export class VoiceStreamClient {
           this.startResolve = null;
           this.startReject = null;
           this.setState('listening');
-          resolve();
+          resolve(undefined);
         }
       }, 4000);
 
@@ -446,27 +466,29 @@ export class VoiceStreamClient {
 
       this.startResolve = () => {
         clearTimeout(timeoutTimer);
-        origResolve();
+        origResolve(undefined);
       };
-      this.startReject = (err) => {
+      this.startReject = (/** @type {any} */ err) => {
         clearTimeout(timeoutTimer);
         origReject(err);
       };
 
       try {
         this.pendingLanguage = null;
-        this.ws.send(
-          JSON.stringify({
-            type: 'start',
-            format: {
-              sampleRate,
-              channels: 1,
-              bitDepth: 16
-            },
-            language,
-            prompt
-          })
-        );
+        if (this.ws) {
+          this.ws.send(
+            JSON.stringify({
+              type: 'start',
+              format: {
+                sampleRate,
+                channels: 1,
+                bitDepth: 16
+              },
+              language,
+              prompt
+            })
+          );
+        }
       } catch (err) {
         clearTimeout(timeoutTimer);
         this.startResolve = null;
@@ -501,6 +523,7 @@ export class VoiceStreamClient {
       return false;
     }
 
+    /** @type {any} */
     const payload = { type: 'config' };
 
     if (language !== undefined) {
@@ -524,7 +547,9 @@ export class VoiceStreamClient {
     }
 
     try {
-      this.ws.send(JSON.stringify(payload));
+      if (this.ws) {
+        this.ws.send(JSON.stringify(payload));
+      }
       if ('language' in payload) {
         this.pendingLanguage = payload.language;
       }
@@ -587,7 +612,8 @@ export class VoiceStreamClient {
       this.workletNode.port.postMessage({ command: 'pause' });
     }
 
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    const activeWs = this.ws;
+    if (!activeWs || activeWs.readyState !== WebSocket.OPEN) {
       this.teardownAudio();
       return this.accumulatedTranscript;
     }
@@ -606,7 +632,7 @@ export class VoiceStreamClient {
       }, 4500);
 
       try {
-        this.ws.send(JSON.stringify({ type: 'stop' }));
+        activeWs.send(JSON.stringify({ type: 'stop' }));
       } catch (_) {
         if (this.stopResolve) {
           clearTimeout(this.stopTimer);

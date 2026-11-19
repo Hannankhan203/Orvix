@@ -42,6 +42,7 @@ export const TOKEN_TYPES = {
 };
 
 // Language rules definitions
+/** @type {Record<string, Array<{ type: string, regex: RegExp, tokenize?: (str: string) => Array<{ type: string, content: string }> }>>} */
 const GRAMMARS = {
   javascript: [
     { type: TOKEN_TYPES.COMMENT, regex: /\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/y },
@@ -150,7 +151,7 @@ const GRAMMARS = {
     {
       type: TOKEN_TYPES.STRING,
       regex: /"(?:\\.|[^"\\])*(?:"|$)/y,
-      tokenize: (str) => {
+      tokenize: (/** @type {string} */ str) => {
         const varRegex = /\$[a-zA-Z_0-9]+|\$\{[^}]+\}|\$\d+|\$\?|\$\*|\$@/g;
         const subTokens = [];
         let lastIndex = 0;
@@ -388,8 +389,9 @@ export function tokenizeCode(code = '', language = '') {
       const match = regex.exec(code);
 
       if (match && match.index === index) {
-        if (typeof rules[r].tokenize === 'function') {
-          const sub = rules[r].tokenize(match[0]);
+        const tokenizeFn = rules[r].tokenize;
+        if (typeof tokenizeFn === 'function') {
+          const sub = tokenizeFn(match[0]);
           tokens.push(...sub);
         } else {
           tokens.push({

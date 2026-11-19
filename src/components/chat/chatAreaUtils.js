@@ -2,6 +2,7 @@ import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
 import { PROVIDER_DEFAULT_MODELS } from '../../services/providerModelSanitizer.js';
 import { WEBLLM_MODEL_CATALOG, DEFAULT_WEBLLM_MODEL_ID } from '../../config/webllmModels.js';
 
+/** @param {any} modelId */
 export function formatGeminiModelDisplayName(modelId) {
   if (typeof modelId !== 'string' || !modelId.trim()) return '';
   return modelId
@@ -33,6 +34,10 @@ export function getGeminiFootnote() {
   return `Orvix is powered by Google Gemini (${modelLabel}). Client integration — verify important facts independently.`;
 }
 
+/**
+ * @param {any} providerId
+ * @param {string} [webllmModelId=DEFAULT_WEBLLM_MODEL_ID]
+ */
 export function getProviderFootnote(providerId, webllmModelId = DEFAULT_WEBLLM_MODEL_ID) {
   if (providerId === 'webllm') {
     const modelLabel =
@@ -102,6 +107,7 @@ export const SUPPORTED_EXTENSIONS = new Set([
 ]);
 
 // Helper to determine the standard extension from MIME type
+/** @param {any} mimeType */
 export function getExtensionFromMime(mimeType) {
   if (!mimeType) return null;
   const mime = mimeType.toLowerCase();
@@ -128,6 +134,7 @@ export function getExtensionFromMime(mimeType) {
 }
 
 // Helper to resolve a sensible filename for clipboard pasted files where browser doesn't provide one
+/** @param {any} rawFile */
 export function resolvePastedFileName(rawFile) {
   const mimeType = (rawFile.type || '').toLowerCase();
   const rawName = (rawFile.name || '').trim();
@@ -154,6 +161,7 @@ export function resolvePastedFileName(rawFile) {
 }
 
 // Helper to detect if a drag event involves external files (and not dragged text/elements)
+/** @param {any} e */
 export function isFileDragEvent(e) {
   if (!e.dataTransfer || !e.dataTransfer.types) return false;
   const types = e.dataTransfer.types;
@@ -165,6 +173,7 @@ export function isFileDragEvent(e) {
   return false;
 }
 
+/** @param {any} bytes */
 export function formatFileSize(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -177,6 +186,7 @@ export function formatFileSize(bytes) {
  * Checks live DOM state to determine whether a composer input element is disabled,
  * read-only, disconnected, or aria-disabled so programmatic/global shortcuts
  * cannot bypass its non-editable state.
+ * @param {any} el
  */
 export function isComposerElementUnavailable(el) {
   if (!el) return true;

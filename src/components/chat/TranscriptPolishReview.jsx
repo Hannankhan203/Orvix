@@ -6,6 +6,7 @@ import Button from '../ui/Button.jsx';
  * TranscriptPolishReview Component
  * Displays the optional AI transcript refinement offer banner and the side-by-side
  * review/comparison card for accepting or rejecting polished speech text.
+ * @param {any} props
  */
 export default function TranscriptPolishReview({
   lastSessionTranscript,

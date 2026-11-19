@@ -3,16 +3,17 @@ import React from 'react';
 /**
  * Reusable Button component
  * @param {Object} props
- * @param {React.ReactNode} props.children
+ * @param {React.ReactNode} [props.children]
  * @param {'primary' | 'secondary' | 'ghost' | 'outline' | 'danger'} [props.variant='secondary']
  * @param {'sm' | 'md' | 'lg' | 'icon' | 'icon-round'} [props.size='md']
  * @param {string} [props.className='']
  * @param {React.ReactNode} [props.icon]
- * @param {() => void} [props.onClick]
+ * @param {(e?: any) => void} [props.onClick]
  * @param {boolean} [props.disabled=false]
  * @param {'button' | 'submit' | 'reset'} [props.type='button']
  * @param {string} [props.title]
  * @param {string} [props.ariaLabel]
+ * @param {boolean} [props.autoFocus]
  */
 export default function Button({
   children,

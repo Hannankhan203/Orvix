@@ -248,6 +248,8 @@ export function parseDelimitedText(rawText, delimiter) {
 
 /**
  * Extracts plain text, log, and markdown documents
+ * @param {any} text
+ * @param {any} ext
  */
 function extractPlainTextDocument(text, ext) {
   let cleanText = text || '';
@@ -279,6 +281,8 @@ function extractPlainTextDocument(text, ext) {
 
 /**
  * Extracts and formats delimited text (CSV / TSV)
+ * @param {any} text
+ * @param {any} ext
  */
 function extractDelimitedDocument(text, ext) {
   let cleanText = text || '';
@@ -311,6 +315,7 @@ function extractDelimitedDocument(text, ext) {
 
 /**
  * Extracts and formats JSON documents
+ * @param {any} text
  */
 function extractJsonDocument(text) {
   let cleanText = text || '';
@@ -349,7 +354,7 @@ function extractJsonDocument(text) {
       success: true,
       text: fullContent
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -361,6 +366,7 @@ function extractJsonDocument(text) {
 
 /**
  * Extracts XML documents with entity decoding and readable block structure
+ * @param {any} text
  */
 function extractXmlDocument(text) {
   let cleanText = text || '';
@@ -408,7 +414,7 @@ function extractXmlDocument(text) {
       success: true,
       text: `\`\`\`xml\n${cleanText.slice(0, 100_000)}\n\`\`\`\n\n### Extracted Text Content\n${bodyText}`
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -474,7 +480,7 @@ async function runPdfTextExtraction(arrayBuffer) {
         const bytesCopy = new Uint8Array(arrayBuffer).slice();
         worker.postMessage({ id: requestId, buffer: bytesCopy }, [bytesCopy.buffer]);
       });
-    } catch (workerErr) {
+    } catch (/** @type {any} */ workerErr) {
       // Only fall back to direct unpdf import for worker launch/infra errors;
       // preserve encrypted/corrupted PDF parse errors as-is.
       const msg = String(workerErr?.message || workerErr || '').toLowerCase();
@@ -552,7 +558,7 @@ async function extractPdfDocument(arrayBuffer) {
       text: fullAggregatedText,
       isScanned: false
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     const msg = String(err?.message || err || '').toLowerCase();
     if (msg.includes('password') || msg.includes('encrypted') || msg.includes('passwordexception')) {
       return {
@@ -661,7 +667,7 @@ export function convertMammothHtmlToMarkdown(html) {
   // 4. Blockquotes
   res = res.replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
     const lines = content.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, '$1\n').replace(/<[^>]+>/g, ' ').trim().split('\n');
-    return '\n\n' + lines.map((l) => '> ' + l.trim()).join('\n') + '\n\n';
+    return '\n\n' + lines.map((/** @type {string} */ l) => '> ' + l.trim()).join('\n') + '\n\n';
   });
 
   // 5. Code & Pre
@@ -795,7 +801,7 @@ async function extractDocxDocument(arrayBuffer) {
     let zip;
     try {
       zip = await JSZip.loadAsync(arrayBuffer);
-    } catch (zipErr) {
+    } catch (/** @type {any} */ zipErr) {
       return {
         status: 'corrupted',
         success: false,
@@ -814,6 +820,7 @@ async function extractDocxDocument(arrayBuffer) {
     }
 
     const mammothModule = await import('mammoth');
+    /** @type {any} */
     const mammoth = mammothModule.default || mammothModule;
 
     let markdown = '';
@@ -851,6 +858,7 @@ async function extractDocxDocument(arrayBuffer) {
     }
 
     // 5. Inspect docx package via existing JSZip instance for DrawingML / VML text boxes that Mammoth does not capture
+    /** @type {string[]} */
     let textBoxes = [];
     try {
       const docXmlFiles = Object.keys(zip.files).filter((fname) =>
@@ -892,7 +900,7 @@ async function extractDocxDocument(arrayBuffer) {
       sections,
       sectionCount: sections.length
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -1206,7 +1214,7 @@ async function extractPptxDocument(arrayBuffer) {
       slides,
       text: fullText
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -1273,8 +1281,8 @@ export function isBrowserExtractable(extension = '', mimeType = '') {
  * Reads a browser File or Blob, parses its contents client-side, and returns
  * a normalized DocumentExtractionResult structure compatible with documentContextService.js.
  *
- * @param {File|Blob} file - The file or blob to extract
- * @param {Object} [metadata={}] - Optional metadata overrides (name, originalName, id, fileId)
+ * @param {any} file - The file or blob to extract
+ * @param {any} [metadata={}] - Optional metadata overrides (name, originalName, id, fileId)
  * @returns {Promise<Object>} DocumentExtractionResult
  */
 export async function extractBrowserDocument(file, metadata = {}) {
@@ -1396,6 +1404,7 @@ export async function extractBrowserDocument(file, metadata = {}) {
     };
   }
 
+  /** @type {any} */
   let partialResult = {};
 
   try {
@@ -1485,7 +1494,7 @@ export async function extractBrowserDocument(file, metadata = {}) {
         break;
       }
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     partialResult = {
       status: 'error',
       success: false,

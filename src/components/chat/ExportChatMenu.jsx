@@ -156,7 +156,7 @@ export default function ExportChatMenu({
   useEffect(() => {
     if (!isOpen) return;
 
-    const handleClickOutside = (e) => {
+    const handleClickOutside = (/** @type {any} */ e) => {
       if (
         menuRef.current &&
         !menuRef.current.contains(e.target) &&
@@ -166,7 +166,7 @@ export default function ExportChatMenu({
       }
     };
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         setIsOpen(false);
@@ -176,12 +176,12 @@ export default function ExportChatMenu({
       }
 
       if (!popoverRef.current) return;
-      const items = Array.from(
+      const items = /** @type {HTMLElement[]} */ (Array.from(
         popoverRef.current.querySelectorAll('.export-dropdown-item:not(:disabled)')
-      );
+      ));
       if (items.length === 0) return;
 
-      const currentIdx = items.indexOf(document.activeElement);
+      const currentIdx = items.indexOf(/** @type {HTMLElement} */ (document.activeElement));
 
       if (e.key === 'ArrowDown') {
         e.preventDefault();

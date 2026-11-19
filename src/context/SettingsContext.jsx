@@ -23,10 +23,11 @@ export function useOptionalSettings() {
   return useContext(SettingsContext);
 }
 
+/** @param {string|null|undefined} uid */
 function readCachedSettingsSync(uid) {
   try {
     if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
-      const key = getSettingsStorageKey(uid);
+      const key = getSettingsStorageKey(uid || null);
       const cached = localStorage.getItem(key);
       if (cached) {
         const parsed = JSON.parse(cached);
@@ -39,6 +40,7 @@ function readCachedSettingsSync(uid) {
   return { ...DEFAULT_SETTINGS };
 }
 
+/** @param {{ children?: any, settingsDeps?: any }} props */
 export function SettingsProvider({ children, settingsDeps = null }) {
   const { currentUser } = useAuth();
   const userId = currentUser?.uid || null;
@@ -74,6 +76,7 @@ export function SettingsProvider({ children, settingsDeps = null }) {
   const isMountedRef = useRef(true);
   const mutationSeqRef = useRef(0);
   const pendingLoadRef = useRef(null);
+  /** @type {React.MutableRefObject<Promise<any>>} */
   const saveQueueRef = useRef(Promise.resolve());
   const pendingSaveCountRef = useRef(0);
 
@@ -96,7 +99,7 @@ export function SettingsProvider({ children, settingsDeps = null }) {
   }, []);
 
   // Apply theme attributes to <html> root element
-  const applyThemeToDOM = useCallback((themeName) => {
+  const applyThemeToDOM = useCallback((/** @type {string} */ themeName) => {
     if (typeof document === 'undefined') return;
     const root = document.documentElement;
 
@@ -138,8 +141,8 @@ export function SettingsProvider({ children, settingsDeps = null }) {
       return;
     }
 
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleMediaChange = (e) => {
+    const mediaQuery = /** @type {any} */ (window.matchMedia('(prefers-color-scheme: dark)'));
+    const handleMediaChange = (/** @type {any} */ e) => {
       const newTheme = e.matches ? 'dark' : 'light';
       setEffectiveTheme(newTheme);
       applyThemeToDOM(newTheme);
@@ -177,7 +180,9 @@ export function SettingsProvider({ children, settingsDeps = null }) {
 
     setIsSettingsLoading(true);
 
-    const loadPromise = (async () => {
+    /** @type {Promise<any>|null} */
+    let loadPromise = null;
+    loadPromise = (async () => {
       try {
         const loaded = sanitizeSettings(await depsRef.current.loadSettings(targetUserId));
         if (
@@ -223,7 +228,7 @@ export function SettingsProvider({ children, settingsDeps = null }) {
     };
   }, [userId, applyThemeToDOM]);
 
-  const showFeedback = useCallback((type) => {
+  const showFeedback = useCallback((/** @type {string|null} */ type) => {
     if (feedbackTimerRef.current) {
       clearTimeout(feedbackTimerRef.current);
     }
@@ -262,7 +267,7 @@ export function SettingsProvider({ children, settingsDeps = null }) {
    * or out-of-order overwrites, and notifies feedback.
    */
   const updateSettings = useCallback(
-    (partial) => {
+    (/** @type {any} */ partial) => {
       const targetUserId = activeUserIdRef.current;
       const prevSnapshot = settingsRef.current;
       const nextSettings = sanitizeSettings({

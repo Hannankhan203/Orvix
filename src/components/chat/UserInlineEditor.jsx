@@ -6,6 +6,7 @@ import Button from '../ui/Button.jsx';
  * UserInlineEditor Component
  * Handles inline editing of user messages with keyboard shortcuts (Enter to save, Esc to cancel)
  * and automatic textarea height adjustment.
+ * @param {any} props
  */
 export default function UserInlineEditor({
   messageId,
@@ -43,7 +44,7 @@ export default function UserInlineEditor({
     }
   }, []);
 
-  const handleDraftChange = (e) => {
+  const handleDraftChange = (/** @type {any} */ e) => {
     setDraftContent(e.target.value);
     if (editInputRef.current) {
       editInputRef.current.style.height = 'auto';
@@ -80,7 +81,7 @@ export default function UserInlineEditor({
     }
   };
 
-  const handleEditKeyDown = (e) => {
+  const handleEditKeyDown = (/** @type {any} */ e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
       handleCancelEdit();

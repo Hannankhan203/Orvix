@@ -218,7 +218,10 @@ export const INITIAL_WEBLLM_STATE = Object.freeze({
   timeElapsed: 0,
   isCached: false,
   hasShaderF16: null,
-  error: null
+  error: null,
+  errorCode: null,
+  suggestedFallbackModelId: null,
+  suggestedProvider: null
 });
 
 /**
@@ -260,6 +263,7 @@ export class WebLLMError extends Error {
  * Returns the catalog of verified Browser AI models.
  *
  * @param {{ includeF32Variants?: boolean, includeAllTiers?: boolean }} [options]
+ * @returns {Readonly<WebLLMModelEntry>[]}
  */
 export function getSupportedWebLLMModels(options = {}) {
   const { includeF32Variants = false, includeAllTiers = false } = options;
@@ -268,6 +272,7 @@ export function getSupportedWebLLMModels(options = {}) {
     return includeF32Variants ? all : all.filter((entry) => !entry.tier.endsWith('-f32'));
   }
 
+  /** @type {Readonly<WebLLMModelEntry>[]} */
   const primaryModels = [
     WEBLLM_MODEL_CATALOG[SMOLLM2_135M_WEBLLM_MODEL_ID],
     WEBLLM_MODEL_CATALOG[SMOLLM2_360M_WEBLLM_MODEL_ID],
@@ -276,11 +281,16 @@ export function getSupportedWebLLMModels(options = {}) {
   ].filter(Boolean);
 
   if (includeF32Variants) {
-    const f32s = primaryModels
-      .map((m) => m.f32FallbackModelId && WEBLLM_MODEL_CATALOG[m.f32FallbackModelId])
-      .filter(Boolean);
+    /** @type {Readonly<WebLLMModelEntry>[]} */
+    const f32s = [];
+    for (const m of primaryModels) {
+      if (m.f32FallbackModelId && WEBLLM_MODEL_CATALOG[m.f32FallbackModelId]) {
+        f32s.push(WEBLLM_MODEL_CATALOG[m.f32FallbackModelId]);
+      }
+    }
     return [...primaryModels, ...f32s];
   }
 
   return primaryModels;
 }
+

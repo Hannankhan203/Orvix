@@ -14,7 +14,9 @@ import { getAuthHeaders, getAuthUserId } from './authService.js';
 
 export const DEFAULT_DAILY_UPLOAD_LIMIT = 5;
 
+/** @type {(() => Date) | null} */
 let customClientDateHook = null;
+/** @type {typeof fetch | null} */
 let customFetchHook = null;
 
 /**
@@ -274,8 +276,20 @@ export function isEligibleQuotaUserId(userId) {
   return true;
 }
 
+/**
+ * @param {string | null | undefined} [userId=null]
+ * @returns {{
+ *   userId: string | null,
+ *   remaining: number | null,
+ *   limit: number,
+ *   resetAt: string | null,
+ *   utcDay: string | null,
+ *   status: 'unauthenticated' | 'idle' | 'loading' | 'ready' | 'unavailable',
+ *   lastUpdatedAt: number | null
+ * }}
+ */
 function createInitialQuotaState(userId = null) {
-  const cleanUid = isEligibleQuotaUserId(userId) ? userId.trim() : null;
+  const cleanUid = isEligibleQuotaUserId(userId) && userId ? userId.trim() : null;
   return {
     userId: cleanUid,
     remaining: null,
@@ -389,7 +403,7 @@ export function subscribeUploadQuotaState(listener) {
  * @param {{ autoFetch?: boolean }} [options]
  */
 export function syncUploadQuotaUserAccount(userId, options = { autoFetch: true }) {
-  const cleanUid = isEligibleQuotaUserId(userId) ? userId.trim() : null;
+  const cleanUid = isEligibleQuotaUserId(userId) && userId ? userId.trim() : null;
 
   if (!cleanUid) {
     activeFetchSequence++;
@@ -440,7 +454,7 @@ export function updateUploadQuotaFromResponse(
 ) {
   const activeUid =
     expectedUserId !== undefined
-      ? (isEligibleQuotaUserId(expectedUserId) ? expectedUserId.trim() : null)
+      ? (isEligibleQuotaUserId(expectedUserId) && expectedUserId ? expectedUserId.trim() : null)
       : (currentQuotaState.userId || getAuthUserId());
 
   if (!isEligibleQuotaUserId(activeUid)) {
@@ -515,13 +529,13 @@ export function updateUploadQuotaFromResponse(
  * Fetches the authenticated user's current daily upload quota from `GET /api/upload/quota`
  * without consuming or reserving an upload slot.
  *
- * @param {{ userId?: string | null, endpoint?: string, headersOverride?: Record<string, string>, getTokenFn?: () => Promise<string | null> }} [options]
+ * @param {{ userId?: string | null, endpoint?: string, headersOverride?: Record<string, string>, getTokenFn?: () => Promise<string | null>, _retriedStalePktDay?: boolean }} [options]
  * @returns {Promise<ReturnType<typeof getUploadQuotaState>>}
  */
 export async function fetchAuthenticatedUploadQuota(options = {}) {
   const targetUid =
     options.userId !== undefined
-      ? (isEligibleQuotaUserId(options.userId) ? options.userId.trim() : null)
+      ? (isEligibleQuotaUserId(options.userId) && options.userId ? options.userId.trim() : null)
       : (currentQuotaState.userId || getAuthUserId());
 
   if (!isEligibleQuotaUserId(targetUid)) {

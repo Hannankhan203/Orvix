@@ -11,6 +11,7 @@ import { findMatchingAlternative } from '../../services/alternativeResponseServi
  * AlternativeResponseNav Component
  * Handles switching between multiple alternative assistant responses (< 1 of 3 >)
  * and the "Regenerate with another AI Model" dropdown menu with full keyboard navigation.
+ * @param {any} props
  */
 export default function AlternativeResponseNav({
   message,
@@ -30,11 +31,11 @@ export default function AlternativeResponseNav({
   useEffect(() => {
     if (!showAltMenu) return;
 
-    const focusMenuItem = (index) => {
+    const focusMenuItem = (/** @type {number} */ index) => {
       if (!altMenuRef.current) return;
-      const items = Array.from(
+      const items = /** @type {HTMLElement[]} */ (Array.from(
         altMenuRef.current.querySelectorAll('.alternative-provider-option:not(:disabled)')
-      );
+      ));
       if (items.length === 0) return;
       const bounded = ((index % items.length) + items.length) % items.length;
       items[bounded].focus();
@@ -44,16 +45,16 @@ export default function AlternativeResponseNav({
       focusMenuItem(0);
     });
 
-    const handleClickOutside = (e) => {
+    const handleClickOutside = (/** @type {any} */ e) => {
       if (altMenuRef.current && !altMenuRef.current.contains(e.target)) {
         setShowAltMenu(false);
       }
     };
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         setShowAltMenu(false);
-        const triggerBtn = altMenuRef.current?.querySelector('.alternative-trigger-btn');
+        const triggerBtn = /** @type {HTMLElement|null|undefined} */ (altMenuRef.current?.querySelector('.alternative-trigger-btn'));
         triggerBtn?.focus();
         return;
       }
@@ -179,7 +180,7 @@ export default function AlternativeResponseNav({
               </div>
               <div className="alternative-provider-list">
                 {selectableModels.length > 0 ? (
-                  selectableModels.map((provider) => {
+                  selectableModels.map((/** @type {any} */ provider) => {
                     const isCurrent =
                       normalizeProviderId(provider.id) === normalizeProviderId(currentProviderId);
                     const existingAlt = findMatchingAlternative(message, provider.id);

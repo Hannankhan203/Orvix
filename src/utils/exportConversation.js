@@ -68,6 +68,7 @@ export function markdownToPlainText(markdown) {
   text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   // 2. Protect fenced code blocks cleanly with distinct tokens (no underscores)
+  /** @type {Array<{ lang: string, code: string }>} */
   const codeBlocks = [];
   text = text.replace(/```([a-zA-Z0-9_ -]*)\r?\n([\s\S]*?)```/g, (_, lang, code) => {
     const placeholder = `§§CB${codeBlocks.length}§§`;
@@ -76,6 +77,7 @@ export function markdownToPlainText(markdown) {
   });
 
   // 3. Protect inline code (no underscores)
+  /** @type {string[]} */
   const inlineCodes = [];
   text = text.replace(/`([^`\n]+)`/g, (_, code) => {
     const placeholder = `§§IC${inlineCodes.length}§§`;
@@ -135,7 +137,7 @@ export function markdownToPlainText(markdown) {
  * @param {Array<Object>} messages - Array of message objects in chronological order
  * @param {Object} [options]
  * @param {string} [options.exportedAt] - Formatted timestamp
- * @param {string} [options.username] - Optional active username
+ * @param {string|null} [options.username] - Optional active username
  * @returns {string} Formatted markdown text
  */
 export function formatConversationMarkdown(title, messages = [], options = {}) {
@@ -203,7 +205,7 @@ export function formatConversationMarkdown(title, messages = [], options = {}) {
  * @param {Array<Object>} messages - Array of message objects in chronological order
  * @param {Object} [options]
  * @param {string} [options.exportedAt] - Formatted timestamp
- * @param {string} [options.username] - Optional active username
+ * @param {string|null} [options.username] - Optional active username
  * @returns {string} Formatted plain text
  */
 export function formatConversationPlainText(title, messages = [], options = {}) {
@@ -305,7 +307,7 @@ export function downloadClientFile(content, filename, mimeType) {
  * @param {Object} params
  * @param {string} params.title - Conversation title
  * @param {Array<Object>} params.messages - Conversation messages
- * @param {string} [params.username] - Optional username
+ * @param {string|null} [params.username] - Optional username
  * @returns {{ success: boolean, filename?: string, messageCount?: number, error?: string }}
  */
 export function exportAsMarkdown({ title, messages = [], username = null }) {
@@ -336,7 +338,7 @@ export function exportAsMarkdown({ title, messages = [], username = null }) {
     console.error('Failed to export conversation as Markdown:', err);
     return {
       success: false,
-      error: err?.message || 'Failed to generate Markdown file for download.'
+      error: /** @type {any} */ (err)?.message || 'Failed to generate Markdown file for download.'
     };
   }
 }
@@ -347,7 +349,7 @@ export function exportAsMarkdown({ title, messages = [], username = null }) {
  * @param {Object} params
  * @param {string} params.title - Conversation title
  * @param {Array<Object>} params.messages - Conversation messages
- * @param {string} [params.username] - Optional username
+ * @param {string|null} [params.username] - Optional username
  * @returns {{ success: boolean, filename?: string, messageCount?: number, error?: string }}
  */
 export function exportAsPlainText({ title, messages = [], username = null }) {
@@ -378,7 +380,7 @@ export function exportAsPlainText({ title, messages = [], username = null }) {
     console.error('Failed to export conversation as Plain Text:', err);
     return {
       success: false,
-      error: err?.message || 'Failed to generate Plain Text file for download.'
+      error: /** @type {any} */ (err)?.message || 'Failed to generate Plain Text file for download.'
     };
   }
 }

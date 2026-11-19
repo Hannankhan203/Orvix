@@ -108,6 +108,7 @@ const DOCUMENT_MIME_SET = new Set([
   'application/vnd.oasis.opendocument.spreadsheet'
 ]);
 
+/** @type {Record<string, string>} */
 const MIME_TO_FORMAT_LABEL = {
   'application/pdf': 'PDF',
   'application/msword': 'DOC',
@@ -143,14 +144,14 @@ const MIME_TO_FORMAT_LABEL = {
   'image/svg+xml': 'SVG'
 };
 
-function normalizeDocMime(doc) {
+function normalizeDocMime(/** @type {any} */ doc) {
   return String(doc?.mimeType || doc?.type || '')
     .split(';')[0]
     .trim()
     .toLowerCase();
 }
 
-function extractDocExtension(doc) {
+function extractDocExtension(/** @type {any} */ doc) {
   const explicitExt = typeof doc?.extension === 'string' ? doc.extension.trim().toLowerCase() : '';
   if (explicitExt) {
     return explicitExt.startsWith('.') ? explicitExt : `.${explicitExt}`;
@@ -165,7 +166,7 @@ function extractDocExtension(doc) {
   return rawName.slice(dotIdx);
 }
 
-function isKnownDocumentMime(mime) {
+function isKnownDocumentMime(/** @type {any} */ mime) {
   if (!mime) return false;
   return mime.startsWith('text/') || DOCUMENT_MIME_SET.has(mime);
 }
@@ -459,7 +460,7 @@ export function isVisionCapableProvider(provider, model) {
  * safe chunking for large files, and clean demarcations between multiple files.
  * @param {string} prompt
  * @param {Array<Object>} docs
- * @param {Object|string} [options={}]
+ * @param {any} [options={}]
  * @returns {any}
  */
 export function prepareDocumentContext(prompt, docs, options = {}) {
@@ -608,8 +609,8 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
       const wordCount = doc.totalWords || countWordsInString(doc.text);
       const lines = (doc.text || '')
         .split('\n')
-        .map((l) => l.trimEnd())
-        .filter((l) => l.trim().length > 0);
+        .map((/** @type {any} */ l) => l.trimEnd())
+        .filter((/** @type {any} */ l) => l.trim().length > 0);
       const lineCount = doc.lineCount || lines.length;
 
       let sectionHighlight = '';
@@ -749,8 +750,8 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
           ? doc.pages
           : (doc.text ? [{ pageNumber: 1, text: doc.text }] : []);
         const totalPages = doc.pageCount || pagesList.length || 1;
-        const validPages = requestedPages.filter((p) => p >= 1 && p <= totalPages);
-        const outOfBoundsPages = requestedPages.filter((p) => p < 1 || p > totalPages);
+        const validPages = requestedPages.filter((/** @type {any} */ p) => p >= 1 && p <= totalPages);
+        const outOfBoundsPages = requestedPages.filter((/** @type {any} */ p) => p < 1 || p > totalPages);
 
         if (validPages.length === 0) {
           const outOfBoundsMsg = `The uploaded PDF '${docName}' contains ${totalPages} page${totalPages === 1 ? '' : 's'}. Requested page ${requestedPages.join(', ')} does not exist in this document.`;
@@ -801,8 +802,8 @@ export function prepareDocumentContext(prompt, docs, options = {}) {
 
       if ((format === 'PPTX' || format === 'PPT') && Array.isArray(doc.slides) && doc.slides.length > 0) {
         const totalSlides = doc.slideCount || doc.slides.length;
-        const validSlides = requestedSlides.filter((s) => s >= 1 && s <= totalSlides);
-        const outOfBoundsSlides = requestedSlides.filter((s) => s < 1 || s > totalSlides);
+        const validSlides = requestedSlides.filter((/** @type {any} */ s) => s >= 1 && s <= totalSlides);
+        const outOfBoundsSlides = requestedSlides.filter((/** @type {any} */ s) => s < 1 || s > totalSlides);
 
         if (validSlides.length === 0) {
           const outOfBoundsMsg = `The presentation '${docName}' contains ${totalSlides} slide${totalSlides === 1 ? '' : 's'}. Requested slide ${requestedSlides.join(', ')} does not exist in this presentation.`;
@@ -1049,7 +1050,7 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
 
   // Dedicated Multi-Image Handling in Simulated / Demo Mode (Requirements 2, 3, 4, 5, 8)
   if (targetedDocs.length > 1 && targetedDocs.every(isImageAttachment)) {
-    const docSections = targetedDocs.map((doc, idx) => {
+    const docSections = targetedDocs.map((/** @type {any} */ doc, /** @type {any} */ idx) => {
       const name = doc.originalName || doc.filename || `Image_${idx + 1}`;
       const fmt = (doc.format || 'IMAGE').toUpperCase();
       const hasTxt = Boolean(doc.hasText || (doc.text && doc.text.trim().length > 0));
@@ -1067,7 +1068,7 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
 
       const lines = (doc.text || '')
         .split('\n')
-        .map((l) => l.trim())
+        .map((/** @type {any} */ l) => l.trim())
         .filter(Boolean);
       const textSnippet = doc.text.trim();
       const charCount = doc.totalCharacters || doc.text.length;
@@ -1076,12 +1077,12 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
       let contentSection = '';
       if (scope === 'top_section') {
         const topSlice = lines.slice(0, Math.min(5, Math.ceil(lines.length / 2)));
-        contentSection = `**Top Section Lines:**\n${topSlice.map((l) => `> ${l}`).join('\n')}`;
+        contentSection = `**Top Section Lines:**\n${topSlice.map((/** @type {any} */ l) => `> ${l}`).join('\n')}`;
       } else if (scope === 'bottom_section') {
         const botSlice = lines.slice(-Math.min(5, Math.ceil(lines.length / 2)));
-        contentSection = `**Bottom Section Lines:**\n${botSlice.map((l) => `> ${l}`).join('\n')}`;
+        contentSection = `**Bottom Section Lines:**\n${botSlice.map((/** @type {any} */ l) => `> ${l}`).join('\n')}`;
       } else {
-        contentSection = `**Extracted OCR Text:**\n${lines.map((l) => `> ${l}`).join('\n')}\n\n**Key Points:**\n${formatExcerptIntoBullets(textSnippet)}`;
+        contentSection = `**Extracted OCR Text:**\n${lines.map((/** @type {any} */ l) => `> ${l}`).join('\n')}\n\n**Key Points:**\n${formatExcerptIntoBullets(textSnippet)}`;
       }
 
       return `### Image ${idx + 1}: "${name}"
@@ -1090,7 +1091,7 @@ export function generateSimulatedDocumentResponse(prompt, preparedContext) {
 ${contentSection}`;
     });
 
-    const fileList = targetedDocs.map((d) => `\`${d.originalName || d.filename}\``).join(', ');
+    const fileList = targetedDocs.map((/** @type {any} */ d) => `\`${d.originalName || d.filename}\``).join(', ');
     return `### Multi-Image Analysis (${targetedDocs.length} Images Attached)
 
 The following information was extracted from the attached images (${fileList}):
@@ -1126,7 +1127,7 @@ Based on the text extracted across all ${targetedDocs.length} attached images, e
 
     const lines = (primaryDoc.text || '')
       .split('\n')
-      .map((l) => l.trim())
+      .map((/** @type {any} */ l) => l.trim())
       .filter(Boolean);
     const textSnippet = primaryDoc.text.trim();
     const wordCount = primaryDoc.totalWords || countWordsInString(primaryDoc.text);
@@ -1140,7 +1141,7 @@ Based on the text extracted across all ${targetedDocs.length} attached images, e
 
 **Source Filename:** \`${docName}\`
 **Extracted Top Section Text:**
-${topLines.map((l) => `> ${l}`).join('\n')}
+${topLines.map((/** @type {any} */ l) => `> ${l}`).join('\n')}
 
 #### Explanation of Top Section:
 The top section of **${docName}** contains ${topLines.length} line${topLines.length === 1 ? '' : 's'} of text as extracted above.`;
@@ -1154,7 +1155,7 @@ The top section of **${docName}** contains ${topLines.length} line${topLines.len
 
 **Source Filename:** \`${docName}\`
 **Extracted Bottom Section Text:**
-${botLines.map((l) => `> ${l}`).join('\n')}
+${botLines.map((/** @type {any} */ l) => `> ${l}`).join('\n')}
 
 #### Explanation of Bottom Section:
 The bottom portion of **${docName}** concludes with the ${botLines.length} line${botLines.length === 1 ? '' : 's'} displayed above.`;
@@ -1176,7 +1177,7 @@ The text in **${docName}** comprises ${lines.length} readable line${lines.length
     // D. "What does this image say?" / "Explain this image" / "Explain the information in this image"
     let multiDocNote = '';
     if (targetedDocs.length > 1) {
-      const additionalDocs = targetedDocs.slice(1).map((d) => `\`${d.originalName || d.filename}\``).join(', ');
+      const additionalDocs = targetedDocs.slice(1).map((/** @type {any} */ d) => `\`${d.originalName || d.filename}\``).join(', ');
       multiDocNote = `\n\n*(Note: ${targetedDocs.length} images are attached to this conversation. Additional images: ${additionalDocs}).*`;
     }
 
@@ -1185,7 +1186,7 @@ The text in **${docName}** comprises ${lines.length} readable line${lines.length
 **Source Filename:** \`${docName}\` (${format} Format • ${charCount.toLocaleString()} Characters • ~${wordCount.toLocaleString()} Words)
 
 #### Extracted Text Content:
-${lines.map((l) => `> ${l}`).join('\n')}
+${lines.map((/** @type {any} */ l) => `> ${l}`).join('\n')}
 
 #### Explanation of Image Information:
 Based on the text extracted from **${docName}**:
@@ -1198,7 +1199,7 @@ ${formatExcerptIntoBullets(textSnippet)}${multiDocNote}`;
     const pNum = intent.targetPages?.[0] || 1;
 
     if (format === 'PDF' && primaryDoc.pages) {
-      const pageObj = primaryDoc.pages.find((p) => p.pageNumber === pNum);
+      const pageObj = primaryDoc.pages.find((/** @type {any} */ p) => p.pageNumber === pNum);
       if (!pageObj || !pageObj.text) {
         return `### Analysis of Page ${pNum} (${docName})\n\nPage ${pNum} of this document appears to be empty or contains no readable text characters.`;
       }
@@ -1225,9 +1226,9 @@ ${formatExcerptIntoBullets(textSnippet)}
     const maxPage = Math.max(...pages);
 
     if (format === 'PDF' && primaryDoc.pages) {
-      const relevantPages = primaryDoc.pages.filter((p) => pages.includes(p.pageNumber));
+      const relevantPages = primaryDoc.pages.filter((/** @type {any} */ p) => pages.includes(p.pageNumber));
       const breakdown = relevantPages
-        .map((p) => `• **Page ${p.pageNumber}:** ${p.text ? p.text.replace(/\s+/g, ' ').slice(0, 180) + '...' : '[Blank / No text]'}`)
+        .map((/** @type {any} */ p) => `• **Page ${p.pageNumber}:** ${p.text ? p.text.replace(/\s+/g, ' ').slice(0, 180) + '...' : '[Blank / No text]'}`)
         .join('\n');
 
       return `### Analysis of Pages ${minPage} to ${maxPage} (${docName})
@@ -1248,7 +1249,7 @@ These pages develop the topic consecutively across pages ${minPage} through ${ma
     const sNum = intent.targetSlides?.[0] || 1;
 
     if ((format === 'PPTX' || format === 'PPT') && primaryDoc.slides) {
-      const slideObj = primaryDoc.slides.find((s) => s.slideNumber === sNum);
+      const slideObj = primaryDoc.slides.find((/** @type {any} */ s) => s.slideNumber === sNum);
       if (!slideObj) {
         return `Slide ${sNum} was not found in **${docName}**.`;
       }
@@ -1277,10 +1278,10 @@ These pages develop the topic consecutively across pages ${minPage} through ${ma
     const maxSlide = Math.max(...slides);
 
     if ((format === 'PPTX' || format === 'PPT') && primaryDoc.slides) {
-      const relevantSlides = primaryDoc.slides.filter((s) => slides.includes(s.slideNumber));
+      const relevantSlides = primaryDoc.slides.filter((/** @type {any} */ s) => slides.includes(s.slideNumber));
       const breakdown = relevantSlides
         .map(
-          (s) =>
+          (/** @type {any} */ s) =>
             `• **Slide ${s.slideNumber}${s.title ? ` (${s.title})` : ''}:** ${
               s.text ? s.text.replace(/\s+/g, ' ').slice(0, 160) + '...' : '[No text / Visual only]'
             }`
@@ -1308,17 +1309,17 @@ You can ask to explore any individual slide or speaker notes in detail (e.g., "E
   if (primaryDoc.sections && primaryDoc.sections.length > 0) {
     const topSections = primaryDoc.sections.slice(0, 6);
     summaryBody = topSections
-      .map((s) => `• **${s.heading}:** ${s.content.replace(/\s+/g, ' ').slice(0, 150)}...`)
+      .map((/** @type {any} */ s) => `• **${s.heading}:** ${s.content.replace(/\s+/g, ' ').slice(0, 150)}...`)
       .join('\n');
   } else if (primaryDoc.pages && primaryDoc.pages.length > 0) {
     const sampled = primaryDoc.pages.slice(0, 5);
     summaryBody = sampled
-      .map((p) => `• **Page ${p.pageNumber}:** ${p.text ? p.text.replace(/\s+/g, ' ').slice(0, 140) + '...' : '[Blank]'}`)
+      .map((/** @type {any} */ p) => `• **Page ${p.pageNumber}:** ${p.text ? p.text.replace(/\s+/g, ' ').slice(0, 140) + '...' : '[Blank]'}`)
       .join('\n');
   } else if (primaryDoc.slides && primaryDoc.slides.length > 0) {
     const sampled = primaryDoc.slides.slice(0, 5);
     summaryBody = sampled
-      .map((s) => `• **Slide ${s.slideNumber}${s.title ? ` (${s.title})` : ''}:** ${s.text ? s.text.replace(/\s+/g, ' ').slice(0, 140) + '...' : '[Visuals]'}`)
+      .map((/** @type {any} */ s) => `• **Slide ${s.slideNumber}${s.title ? ` (${s.title})` : ''}:** ${s.text ? s.text.replace(/\s+/g, ' ').slice(0, 140) + '...' : '[Visuals]'}`)
       .join('\n');
   } else {
     summaryBody = `> "${primaryDoc.summaryText || primaryDoc.text.slice(0, 300)}..."`;
@@ -1337,24 +1338,24 @@ ${primaryDoc.pageCount ? `• *"Explain page 1"* or *"Summarize pages 1 to 3"*\n
 • *"Explain this whole file in simple terms"*`;
 }
 
-function countWordsInString(str) {
+function countWordsInString(/** @type {any} */ str) {
   if (!str) return 0;
   const matches = str.trim().match(/\S+/g);
   return matches ? matches.length : 0;
 }
 
-function formatExcerptIntoBullets(text) {
+function formatExcerptIntoBullets(/** @type {any} */ text) {
   if (!text) return '• No text content.';
   const lines = text
     .split('\n')
-    .map((l) => l.trim())
+    .map((/** @type {any} */ l) => l.trim())
     .filter(Boolean);
 
   if (lines.length <= 4) {
-    return lines.map((l) => `• ${l}`).join('\n');
+    return lines.map((/** @type {any} */ l) => `• ${l}`).join('\n');
   }
 
-  return lines.slice(0, 6).map((l) => `• ${l}`).join('\n');
+  return lines.slice(0, 6).map((/** @type {any} */ l) => `• ${l}`).join('\n');
 }
 
 /* ==========================================================================
@@ -1363,6 +1364,7 @@ function formatExcerptIntoBullets(text) {
    message schema, and prompt conventions without silent truncation.
    ========================================================================== */
 
+/** @type {Record<string, any>} */
 export const PROVIDER_PROFILES = {
   gemini: {
     id: 'gemini',
@@ -1553,7 +1555,7 @@ INSTRUCTIONS FOR DOCUMENT & IMAGE-BASED ANSWERS:
  * Reusable across Groq, OpenRouter, and Cloudflare Workers AI.
  * @param {Object} params
  * @param {string} [params.systemInstruction]
- * @param {Array} [params.history=[]]
+ * @param {Array<any>} [params.history=[]]
  * @param {string} params.prompt
  * @param {number} [params.maxContextMessages=12]
  * @returns {Array<{ role: string, content: string }>}

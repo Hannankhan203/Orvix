@@ -14,6 +14,10 @@ export const SENSITIVE_STRING_PATTERNS = [
   { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replacement: '[FILTERED_EMAIL]' }
 ];
 
+/**
+ * @param {any} str
+ * @returns {any}
+ */
 export function sanitizeString(str) {
   if (typeof str !== 'string') return str;
   let out = str;
@@ -23,11 +27,17 @@ export function sanitizeString(str) {
   return out;
 }
 
+/**
+ * @param {any} data
+ * @param {number} [depth=0]
+ * @returns {any}
+ */
 export function scrubSensitiveData(data, depth = 0) {
   if (depth > 6 || !data) return data;
   if (typeof data === 'string') return sanitizeString(data);
   if (typeof data !== 'object') return data;
-  if (Array.isArray(data)) return data.map((item) => scrubSensitiveData(item, depth + 1));
+  if (Array.isArray(data)) return data.map((/** @type {any} */ item) => scrubSensitiveData(item, depth + 1));
+  /** @type {Record<string, any>} */
   const result = {};
   for (const [k, v] of Object.entries(data)) {
     if (SENSITIVE_KEY_REGEX.test(k)) {
@@ -53,7 +63,7 @@ export function initFrontendSentry() {
   }
 
   try {
-    Sentry.init({
+    Sentry.init(/** @type {any} */ ({
       dsn: dsn.trim(),
       environment:
         (typeof import.meta !== 'undefined' && import.meta.env
@@ -64,7 +74,7 @@ export function initFrontendSentry() {
       integrations: [
         Sentry.browserTracingIntegration()
       ],
-      beforeSend(event) {
+      beforeSend(/** @type {any} */ event) {
         try {
           if (event.request) {
             if (event.request.headers) {
@@ -101,7 +111,7 @@ export function initFrontendSentry() {
           }
 
           if (event.breadcrumbs) {
-            event.breadcrumbs = event.breadcrumbs.map((b) => ({
+            event.breadcrumbs = event.breadcrumbs.map((/** @type {any} */ b) => ({
               ...b,
               message: b.message ? sanitizeString(b.message) : b.message,
               data: b.data ? scrubSensitiveData(b.data) : b.data
@@ -114,7 +124,7 @@ export function initFrontendSentry() {
         } catch (_) {}
         return event;
       },
-      beforeBreadcrumb(breadcrumb) {
+      beforeBreadcrumb(/** @type {any} */ breadcrumb) {
         if (breadcrumb.category === 'http' || breadcrumb.category === 'fetch' || breadcrumb.category === 'xhr') {
           if (breadcrumb.data?.url && typeof breadcrumb.data.url === 'string') {
             breadcrumb.data.url = sanitizeString(breadcrumb.data.url);
@@ -130,7 +140,7 @@ export function initFrontendSentry() {
         }
         return breadcrumb;
       }
-    });
+    }));
     frontendSentryInitialized = true;
   } catch (err) {
     frontendSentryInitialized = false;
@@ -138,6 +148,10 @@ export function initFrontendSentry() {
   }
 }
 
+/**
+ * @param {any} err
+ * @param {any} [context]
+ */
 export function captureFrontendError(err, context) {
   if (!frontendSentryInitialized) return;
   try {
@@ -145,6 +159,9 @@ export function captureFrontendError(err, context) {
   } catch (_) {}
 }
 
+/**
+ * @param {any} props
+ */
 export function SentryFallback({ error, resetError }) {
   return React.createElement(
     'div',
@@ -187,16 +204,23 @@ export function SentryFallback({ error, resetError }) {
   );
 }
 
+/** @extends {Component<any, any>} */
 export class SentryErrorBoundary extends Component {
+  /** @param {any} props */
   constructor(props) {
     super(props);
     this.state = { hasError: false, error: null };
   }
 
+  /** @param {any} error */
   static getDerivedStateFromError(error) {
     return { hasError: true, error };
   }
 
+  /**
+   * @param {any} error
+   * @param {any} errorInfo
+   */
   componentDidCatch(error, errorInfo) {
     if (frontendSentryInitialized) {
       try {

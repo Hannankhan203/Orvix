@@ -7,16 +7,12 @@ import { MessageSquare, Pencil, Trash2, Check, X, Pin, Code, PenTool, BookOpen, 
  * inline renaming, safe deletion confirmation, and pinning.
  *
  * @param {Object} props
- * @param {Object} props.chat
- * @param {string} props.chat.id
- * @param {string} props.chat.title
- * @param {string} props.chat.timestamp
- * @param {boolean} [props.chat.isPinned]
+ * @param {any} props.chat
  * @param {boolean} props.isActive
  * @param {() => void} props.onSelect
- * @param {(newTitle: string) => Promise<void>} props.onRename
- * @param {() => Promise<void>} props.onDelete
- * @param {() => Promise<void>} [props.onTogglePin]
+ * @param {((newTitle: string) => Promise<void>)|null} [props.onRename]
+ * @param {(() => Promise<void>)|null} [props.onDelete]
+ * @param {(() => Promise<void>)|null} [props.onTogglePin]
  */
 export default function SidebarChatItem({
   chat,
@@ -46,19 +42,19 @@ export default function SidebarChatItem({
     }
   }, [isEditing]);
 
-  const handleStartRename = (e) => {
+  const handleStartRename = (/** @type {any} */ e) => {
     e.stopPropagation();
     setIsEditing(true);
     setIsConfirmingDelete(false);
   };
 
-  const handleCancelRename = (e) => {
+  const handleCancelRename = (/** @type {any} */ e = null) => {
     if (e) e.stopPropagation();
     setIsEditing(false);
     setEditTitle(chat.title);
   };
 
-  const handleSaveRename = async (e) => {
+  const handleSaveRename = async (/** @type {any} */ e = null) => {
     if (e) e.stopPropagation();
     const sanitized = editTitle.trim();
     if (!sanitized || sanitized === chat.title) {
@@ -79,7 +75,7 @@ export default function SidebarChatItem({
     }
   };
 
-  const handleKeyDown = (e) => {
+  const handleKeyDown = (/** @type {any} */ e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       handleSaveRename();
@@ -89,18 +85,18 @@ export default function SidebarChatItem({
     }
   };
 
-  const handleStartDelete = (e) => {
+  const handleStartDelete = (/** @type {any} */ e) => {
     e.stopPropagation();
     setIsConfirmingDelete(true);
     setIsEditing(false);
   };
 
-  const handleCancelDelete = (e) => {
+  const handleCancelDelete = (/** @type {any} */ e = null) => {
     if (e) e.stopPropagation();
     setIsConfirmingDelete(false);
   };
 
-  const handleConfirmDelete = async (e) => {
+  const handleConfirmDelete = async (/** @type {any} */ e = null) => {
     if (e) e.stopPropagation();
     setIsBusy(true);
     try {
@@ -234,7 +230,7 @@ export default function SidebarChatItem({
         <div className="chat-item-info">
           <div className="flex items-center gap-1.5 min-w-0">
             {chat.isPinned && (
-              <Pin size={12} className="text-amber-400 rotate-45 flex-shrink-0 fill-current" title="Pinned chat" aria-label="Pinned chat" />
+              <Pin size={12} className="text-amber-400 rotate-45 flex-shrink-0 fill-current" aria-label="Pinned chat" />
             )}
             <span className="chat-item-title">{chat.title}</span>
           </div>

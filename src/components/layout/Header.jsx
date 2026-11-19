@@ -35,6 +35,11 @@ import { DEFAULT_WEBLLM_MODEL_ID } from '../../config/webllmModels.js';
  * @param {() => void} [props.onExportMarkdown]
  * @param {() => void} [props.onExportText]
  * @param {boolean} [props.hasExportableMessages=false]
+ * @param {any} [props.providerConfig=null]
+ * @param {string} [props.selectedModelId=DEFAULT_WEBLLM_MODEL_ID]
+ * @param {boolean} [props.isSharedView=false]
+ * @param {boolean} [props.isImported=false]
+ * @param {() => void} [props.onSignInClick]
  */
 export default function Header({
   sidebarOpen,
@@ -76,7 +81,7 @@ export default function Header({
       return;
     }
 
-    const handleClickOutside = (e) => {
+    const handleClickOutside = (/** @type {any} */ e) => {
       if (accountMenuRef.current && !accountMenuRef.current.contains(e.target)) {
         setAccountMenuOpen(false);
         setIsEditingUsername(false);
@@ -84,7 +89,7 @@ export default function Header({
       }
     };
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         if (isEditingUsername) {
           e.preventDefault();
@@ -124,13 +129,13 @@ export default function Header({
     setEditError('');
   };
 
-  const handleSaveUsername = async (e) => {
+  const handleSaveUsername = async (/** @type {any} */ e) => {
     e.preventDefault();
     setEditError('');
 
     const validation = validateUsername(editUsernameInput);
     if (!validation.isValid) {
-      setEditError(validation.error);
+      setEditError(validation.error || '');
       return;
     }
 
@@ -139,7 +144,7 @@ export default function Header({
       await updateUsername(validation.sanitized);
       setIsEditingUsername(false);
     } catch (err) {
-      setEditError(err?.message || 'Failed to update username.');
+      setEditError(/** @type {any} */ (err)?.message || 'Failed to update username.');
     } finally {
       setIsSavingUsername(false);
     }

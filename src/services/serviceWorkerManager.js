@@ -17,6 +17,7 @@ let isAppShellCached = (() => {
   }
 })();
 
+/** @type {((reloadPage?: boolean) => Promise<void>) | null} */
 let updateSWFunction = null;
 let swInitialized = false;
 const appShellListeners = new Set();
@@ -117,7 +118,7 @@ export function initServiceWorker() {
         console.warn('[Orvix PWA] Service worker registration error:', error?.message || error);
       }
     });
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     console.warn('[Orvix PWA] Failed to initialize registerSW:', err?.message || err);
   }
 }

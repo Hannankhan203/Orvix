@@ -26,9 +26,14 @@ const CP1252_HIGH_MAP = [
   0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x009d, 0x017e, 0x0178
 ];
 
+/** @type {TextDecoder|null} */
 let cachedCp1252Decoder = null;
+/** @type {TextDecoder|null} */
 let cachedUtf16LeDecoder = null;
 
+/**
+ * @param {any} input
+ */
 function toUint8Array(input) {
   if (!input) return new Uint8Array(0);
   if (input instanceof Uint8Array) return input;
@@ -39,6 +44,9 @@ function toUint8Array(input) {
   return new Uint8Array(0);
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 function hasOle2Signature(bytes) {
   if (!bytes || bytes.length < 8) return false;
   for (let i = 0; i < 8; i++) {
@@ -47,6 +55,9 @@ function hasOle2Signature(bytes) {
   return true;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 function hasZipSignature(bytes) {
   return Boolean(
     bytes &&
@@ -57,6 +68,9 @@ function hasZipSignature(bytes) {
   );
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 function hasRawBiffBofSignature(bytes) {
   if (!bytes || bytes.length < 8) return false;
   // Legacy standalone BIFF2/3/4/5/8 BOF: record ID low byte 0x09, high byte 0x00|0x02|0x04|0x08
@@ -66,6 +80,9 @@ function hasRawBiffBofSignature(bytes) {
   );
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 function decodeCp1252(bytes) {
   if (!bytes || bytes.length === 0) return '';
   if (typeof TextDecoder !== 'undefined') {
@@ -91,6 +108,9 @@ function decodeCp1252(bytes) {
   return chunks.join('');
 }
 
+/**
+ * @param {Uint8Array} bytes
+ */
 function decodeUtf16Le(bytes) {
   if (!bytes || bytes.length < 2) return '';
   const evenLen = bytes.length - (bytes.length % 2);
@@ -117,6 +137,9 @@ function decodeUtf16Le(bytes) {
   return chunks.join('');
 }
 
+/**
+ * @param {any[][]} rows
+ */
 function buildMarkdownTable(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return '';
   const maxCols = Math.max(...rows.map((r) => r.length), 0);
@@ -154,6 +177,9 @@ function buildMarkdownTable(rows) {
   return [headerLine, dividerLine, ...rowLines].join('\n');
 }
 
+/**
+ * @param {string} ref
+ */
 function parseCellAddress(ref) {
   const match = /^([A-Z]+)(\d+)$/.exec(ref);
   if (!match) return null;
@@ -167,6 +193,9 @@ function parseCellAddress(ref) {
   return { r: rowNum - 1, c: colIdx - 1 };
 }
 
+/**
+ * @param {any} cell
+ */
 function formatSpreadsheetCellValue(cell) {
   if (!cell || typeof cell !== 'object') return '';
   if (typeof cell.w === 'string' && cell.w.trim().length > 0) {
@@ -195,6 +224,9 @@ function formatSpreadsheetCellValue(cell) {
   return '';
 }
 
+/**
+ * @param {Uint8Array} streamBytes
+ */
 function biffStreamHasFilePass(streamBytes) {
   if (!streamBytes || streamBytes.length < 4) return false;
   const view = new DataView(streamBytes.buffer, streamBytes.byteOffset, streamBytes.byteLength);
@@ -220,6 +252,9 @@ function biffStreamHasFilePass(streamBytes) {
   return false;
 }
 
+/**
+ * @param {any} entry
+ */
 function getCfbEntryBytes(entry) {
   if (!entry || !entry.content) return new Uint8Array(0);
   if (entry.content instanceof Uint8Array) return entry.content;
@@ -227,6 +262,10 @@ function getCfbEntryBytes(entry) {
   return toUint8Array(entry.content);
 }
 
+/**
+ * @param {any} cfbDoc
+ * @param {string} targetName
+ */
 function findCfbEntryCaseInsensitive(cfbDoc, targetName) {
   if (!cfbDoc || !Array.isArray(cfbDoc.FileIndex)) return null;
   const lower = targetName.toLowerCase();
@@ -243,7 +282,7 @@ function findCfbEntryCaseInsensitive(cfbDoc, targetName) {
  * Extracts readable worksheets, worksheet names, Markdown tables, and section metadata
  * from .xlsx (OpenXML) and .xls (BIFF5/BIFF8 OLE2) spreadsheets.
  *
- * @param {Uint8Array|ArrayBuffer|Buffer} inputBytes
+ * @param {any} inputBytes
  * @param {string} ext - '.xlsx' or '.xls'
  * @returns {Promise<Object>}
  */
@@ -272,6 +311,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
 
   try {
     const cfbModule = await import('cfb');
+    /** @type {any} */
     const CFB = cfbModule.default || cfbModule;
 
     // 1. Validate container signature and detect encrypted files BEFORE calling XLSX.read
@@ -280,7 +320,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
       let cfbDoc;
       try {
         cfbDoc = CFB.read(bytes, { type: 'array' });
-      } catch (cfbErr) {
+      } catch (/** @type {any} */ cfbErr) {
         return {
           status: 'corrupted',
           success: false,
@@ -346,7 +386,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
       let zip;
       try {
         zip = await JSZip.loadAsync(bytes);
-      } catch (zipErr) {
+      } catch (/** @type {any} */ zipErr) {
         return {
           status: 'corrupted',
           success: false,
@@ -368,7 +408,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
 
       let declaredUncompressedTotal = 0;
       for (const entry of Object.values(zip.files)) {
-        const uSize = entry?._data?.uncompressedSize;
+        const uSize = (/** @type {any} */ (entry))?._data?.uncompressedSize;
         if (typeof uSize === 'number' && Number.isFinite(uSize) && uSize > 0) {
           declaredUncompressedTotal += uSize;
         }
@@ -403,6 +443,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
 
     // 2. Parse workbook using SheetJS (@e965/xlsx)
     const xlsxModule = await import('@e965/xlsx');
+    /** @type {any} */
     const XLSX = xlsxModule.default || xlsxModule;
 
     let workbook;
@@ -413,7 +454,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
         cellNF: true,
         cellText: true
       });
-    } catch (parseErr) {
+    } catch (/** @type {any} */ parseErr) {
       const msg = String(parseErr?.message || parseErr || '').toLowerCase();
       if (msg.includes('password') || msg.includes('encrypt') || msg.includes('filepass')) {
         return {
@@ -576,7 +617,7 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
       isTruncated: truncationNotes.length > 0,
       warning: truncationNotes.length > 0 ? truncationNotes.join(' ') : undefined
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     const msg = String(err?.message || err || '');
     const lower = msg.toLowerCase();
     if (lower.includes('password') || lower.includes('encrypt') || lower.includes('filepass')) {
@@ -596,7 +637,11 @@ export async function extractSpreadsheetDocument(inputBytes, ext) {
   }
 }
 
+/**
+ * @param {string} raw
+ */
 function cleanWordFieldCodes(raw) {
+  /** @type {Array<{ inResult: boolean, rawFallback: string }>} */
   const stack = [];
   let out = '';
 
@@ -641,6 +686,9 @@ function cleanWordFieldCodes(raw) {
   return out;
 }
 
+/**
+ * @param {string} rawText
+ */
 function formatWordBinaryTextStream(rawText) {
   if (!rawText) return '';
   const withoutFields = cleanWordFieldCodes(rawText);
@@ -649,7 +697,9 @@ function formatWordBinaryTextStream(rawText) {
   const normalized = withoutFields.replace(/\r\n/g, '\r').replace(/\x0b/g, '\n');
   const rawParagraphs = normalized.split(/[\r\x0c]/);
 
+  /** @type {string[]} */
   const outputBlocks = [];
+  /** @type {string[][]} */
   let pendingTableRows = [];
 
   const flushTable = () => {
@@ -704,6 +754,9 @@ function formatWordBinaryTextStream(rawText) {
   return outputBlocks.join('\n\n').trim();
 }
 
+/**
+ * @param {string} text
+ */
 function buildDocSectionsFromParagraphs(text) {
   if (!text) return [];
   const blocks = text.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
@@ -711,6 +764,7 @@ function buildDocSectionsFromParagraphs(text) {
 
   const sections = [];
   let currentHeading = 'Document Body';
+  /** @type {string[]} */
   let currentParts = [];
 
   for (const rawBlock of blocks) {
@@ -793,7 +847,7 @@ function buildDocSectionsFromParagraphs(text) {
  * Extracts readable paragraphs, tables, footnotes/textboxes, and sections
  * from legacy binary Word (.doc) OLE2 MS-DOC documents.
  *
- * @param {Uint8Array|ArrayBuffer|Buffer} inputBytes
+ * @param {any} inputBytes
  * @returns {Promise<Object>}
  */
 export async function extractLegacyDocDocument(inputBytes) {
@@ -837,12 +891,13 @@ export async function extractLegacyDocDocument(inputBytes) {
 
   try {
     const cfbModule = await import('cfb');
+    /** @type {any} */
     const CFB = cfbModule.default || cfbModule;
 
     let cfbDoc;
     try {
       cfbDoc = CFB.read(bytes, { type: 'array' });
-    } catch (cfbErr) {
+    } catch (/** @type {any} */ cfbErr) {
       return {
         status: 'corrupted',
         success: false,
@@ -1129,7 +1184,7 @@ export async function extractLegacyDocDocument(inputBytes) {
       sections,
       sectionCount: sections.length
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,
@@ -1156,6 +1211,9 @@ const PPT_RT_CURRENT_USER_ATOM = 4086;
 const PPT_RT_PERSIST_DIRECTORY_ATOM = 6002;
 const PPT_RT_CRYPT_SESSION_10_CONTAINER = 12052; // 0x2F14
 
+/**
+ * @param {string} raw
+ */
 function cleanPptString(raw) {
   if (!raw) return '';
   return raw
@@ -1170,6 +1228,11 @@ function cleanPptString(raw) {
     .trim();
 }
 
+/**
+ * @param {DataView} view
+ * @param {number} offset
+ * @param {number} maxEnd
+ */
 function readPptRecordHeader(view, offset, maxEnd) {
   if (offset + 8 > maxEnd) return null;
   const verAndInst = view.getUint16(offset, true);
@@ -1192,6 +1255,14 @@ function readPptRecordHeader(view, offset, maxEnd) {
   };
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {DataView} view
+ * @param {number} start
+ * @param {number} end
+ * @param {(hdr: any, depth: number) => void} onRecord
+ * @param {number} [depth=0]
+ */
 function walkPptRecords(bytes, view, start, end, onRecord, depth = 0) {
   if (depth > MAX_PPT_RECORD_DEPTH) return;
   let pos = start;
@@ -1208,8 +1279,14 @@ function walkPptRecords(bytes, view, start, end, onRecord, depth = 0) {
   }
 }
 
+/**
+ * @param {Uint8Array} pptStream
+ * @param {DataView} pptView
+ * @param {Uint8Array|null} currentUserStream
+ */
 function parsePptPersistMap(pptStream, pptView, currentUserStream) {
   const persistMap = new Map();
+  /** @type {number|null} */
   let docPersistIdRef = null;
   let hasEncryptedSession = false;
 
@@ -1289,8 +1366,16 @@ function parsePptPersistMap(pptStream, pptView, currentUserStream) {
   return { persistMap, docPersistIdRef, hasEncryptedSession };
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {DataView} view
+ * @param {number} start
+ * @param {number} end
+ */
 function extractTextAtomsFromContainer(bytes, view, start, end) {
+  /** @type {Array<{ textType: any, text: string }>} */
   const texts = [];
+  /** @type {any} */
   let currentTextType = null;
 
   walkPptRecords(bytes, view, start, end, (rec) => {
@@ -1316,9 +1401,17 @@ function extractTextAtomsFromContainer(bytes, view, start, end) {
   return texts;
 }
 
+/**
+ * @param {Uint8Array} bytes
+ * @param {DataView} view
+ * @param {any} containerHdr
+ */
 function extractSlideListEntries(bytes, view, containerHdr) {
+  /** @type {any[]} */
   const entries = [];
+  /** @type {any} */
   let activeEntry = null;
+  /** @type {any} */
   let activeTextType = null;
   let pos = containerHdr.payloadStart;
   let count = 0;
@@ -1362,7 +1455,7 @@ function extractSlideListEntries(bytes, view, containerHdr) {
  * Extracts readable slide-by-slide text, slide titles, textboxes, and speaker notes
  * from legacy binary PowerPoint (.ppt) OLE2 MS-PPT presentations.
  *
- * @param {Uint8Array|ArrayBuffer|Buffer} inputBytes
+ * @param {any} inputBytes
  * @returns {Promise<Object>}
  */
 export async function extractLegacyPptDocument(inputBytes) {
@@ -1408,12 +1501,13 @@ export async function extractLegacyPptDocument(inputBytes) {
 
   try {
     const cfbModule = await import('cfb');
+    /** @type {any} */
     const CFB = cfbModule.default || cfbModule;
 
     let cfbDoc;
     try {
       cfbDoc = CFB.read(bytes, { type: 'array' });
-    } catch (cfbErr) {
+    } catch (/** @type {any} */ cfbErr) {
       return {
         status: 'corrupted',
         success: false,
@@ -1540,6 +1634,7 @@ export async function extractLegacyPptDocument(inputBytes) {
     // Map NotesContainers by referenced slideId
     const notesBySlideId = new Map();
     for (const notesHdr of allNotesHdrs) {
+      /** @type {number | null} */
       let refSlideId = null;
       walkPptRecords(pptStream, pptView, notesHdr.payloadStart, notesHdr.payloadEnd, (rec) => {
         if (rec.recType === PPT_RT_NOTES_ATOM && rec.recLen >= 8 && refSlideId === null) {
@@ -1562,7 +1657,9 @@ export async function extractLegacyPptDocument(inputBytes) {
     }
 
     // Collect SlideListWithText entries from active DocumentContainer
+    /** @type {any[]} */
     let slideListEntries = [];
+    /** @type {any[]} */
     let notesListEntries = [];
 
     if (activeDocHdr) {
@@ -1585,7 +1682,7 @@ export async function extractLegacyPptDocument(inputBytes) {
     }
 
     // Helper to resolve SlideContainer texts by persistIdRef
-    const readSlideContainerTextsByOffset = (slideOffset) => {
+    const readSlideContainerTextsByOffset = (/** @type {number} */ slideOffset) => {
       const hdr = readPptRecordHeader(pptView, slideOffset, pptStream.length);
       if (!hdr || hdr.recType !== PPT_RT_SLIDE) return [];
       return extractTextAtomsFromContainer(pptStream, pptView, hdr.payloadStart, hdr.payloadEnd);
@@ -1633,7 +1730,7 @@ export async function extractLegacyPptDocument(inputBytes) {
 
         let notesText = notesBySlideId.get(entry.slideId);
         if (!notesText && notesListEntries[i]?.texts?.length > 0) {
-          notesText = notesListEntries[i].texts.map((t) => t.text).join('\n').trim();
+          notesText = notesListEntries[i].texts.map((/** @type {any} */ t) => t.text).join('\n').trim();
         }
 
         slides.push({
@@ -1727,7 +1824,7 @@ export async function extractLegacyPptDocument(inputBytes) {
       slides,
       text: fullText
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     return {
       status: 'corrupted',
       success: false,

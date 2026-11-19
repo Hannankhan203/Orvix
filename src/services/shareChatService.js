@@ -66,6 +66,7 @@ const URL_SAFE_ALPHABET =
 
 export const MIN_SHARE_TTL_MS = 60 * 1000; // 1 minute
 export const MAX_SHARE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 365 days
+/** @type {Record<string, number|null>} */
 export const SHARE_EXPIRATION_PRESETS = Object.freeze({
   never: null,
   '1h': 60 * 60 * 1000,
@@ -263,6 +264,10 @@ export function isShareSnapshotExpired(data, nowMs = Date.now()) {
  * Custom error class for Share Chat validation and publication failures.
  */
 export class ShareChatError extends Error {
+  /**
+   * @param {string} message
+   * @param {string} [code='SHARE_CHAT_ERROR']
+   */
   constructor(message, code = 'SHARE_CHAT_ERROR') {
     super(message);
     this.name = 'ShareChatError';
@@ -335,10 +340,10 @@ export function isEligibleShareUser(user) {
 /**
  * Checks whether a specific conversation and user state can currently be shared.
  *
- * @param {Object} params
- * @param {Object|null} params.user
- * @param {Object|null} params.chat
- * @param {Array} params.messages
+ * @param {Object} [params]
+ * @param {Object|null} [params.user]
+ * @param {Object|null} [params.chat]
+ * @param {Array<any>} [params.messages]
  * @param {boolean} [params.isLoading=false]
  * @param {boolean} [params.isSharedPreview=false]
  * @returns {{ eligible: boolean, reason: string|null }}
@@ -475,6 +480,7 @@ function sanitizeAttachmentExtraction(extraction) {
     return null;
   }
 
+  /** @type {any} */
   const clean = {};
 
   if (typeof extraction.status === 'string') {
@@ -549,6 +555,7 @@ export function sanitizeAttachmentForShare(att, index = 0) {
     (typeof att.filename === 'string' && att.filename.trim()) ||
     'Attachment';
 
+  /** @type {any} */
   const clean = {
     id: rawId.slice(0, 128),
     name: rawName.slice(0, 255),
@@ -756,6 +763,7 @@ export function sanitizeMessageForShare(msg, index = 0, fallbackMode = 'general'
       ? Date.parse(clientTimestamp)
       : null;
 
+  /** @type {any} */
   const sanitizedMessage = {
     id: rawId,
     sender,
@@ -846,7 +854,7 @@ export function calculateSnapshotByteSize(snapshotPayload) {
  * @param {Object} params
  * @param {string} params.shareId
  * @param {Object} params.chat
- * @param {Array} params.messages
+ * @param {Array<any>} params.messages
  * @param {string|null} [params.expirationPreset]
  * @param {number|string|null} [params.expiresInSeconds]
  * @param {number|string|Date|Object|null} [params.expiresAt]
@@ -981,8 +989,11 @@ export function buildValidatedSharedSnapshot({
 
 /**
  * Bounded timeout wrapper for Firestore operations.
+ * @param {Promise<any>} promise
+ * @param {number} [ms=12000]
  */
 function withPublishTimeout(promise, ms = 12000) {
+  /** @type {any} */
   let timerId;
   const timeoutPromise = new Promise((_, reject) => {
     timerId = setTimeout(() => {
@@ -1005,15 +1016,8 @@ function withPublishTimeout(promise, ms = 12000) {
  * at `sharedChats/{shareId}` and returns the generated share metadata.
  *
  * @param {Object} chat - Active chat metadata object (`{ id, title, mode, ... }`)
- * @param {Array} messages - Complete list of messages in the active conversation
- * @param {Object} [options]
- * @param {Object} [options.user] - Current authenticated user (defaults to `auth.currentUser`)
- * @param {Function} [options.fetchImpl] - Optional `fetch` override for testing
- * @param {string} [options.baseUrl] - Optional base URL override
- * @param {boolean} [options.isSharedPreview=false] - Whether currently viewing a temporary shared preview
- * @param {string|null} [options.expirationPreset] - Expiration preset (`never`, `1h`, `24h`, `7d`, `30d`)
- * @param {number|string|null} [options.expiresInSeconds] - Optional TTL in seconds
- * @param {number|string|Date|null} [options.expiresAt] - Optional explicit expiration timestamp
+ * @param {Array<any>} messages - Complete list of messages in the active conversation
+ * @param {any} [options]
  * @returns {Promise<{ shareId: string, shareUrl: string, title: string, mode: string, messageCount: number, byteSize: number, expiresAtMs: number|null, revoked: boolean }>}
  */
 export async function createSharedChatSnapshot(chat, messages, options = {}) {
@@ -1088,6 +1092,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       ? await effectiveUser.getIdToken()
       : null;
 
+    /** @type {Record<string, string>} */
     const headers = {
       'Content-Type': 'application/json',
     };
@@ -1095,6 +1100,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
+    /** @type {any} */
     const requestBody = {
       shareId,
       chat,
@@ -1120,6 +1126,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
     );
 
     if (!res.ok) {
+      /** @type {any} */
       let errData = {};
       try {
         errData = await res.json();
@@ -1130,6 +1137,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
       );
     }
 
+    /** @type {any} */
     let responseData = {};
     try {
       responseData = await res.json();
@@ -1151,7 +1159,7 @@ export async function createSharedChatSnapshot(chat, messages, options = {}) {
           : resolvedExpiration.expiresAtMs,
       revoked: false,
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err instanceof ShareChatError) {
       throw err;
     }
@@ -1215,6 +1223,7 @@ export async function revokeSharedChatSnapshot(shareId, options = {}) {
       ? await effectiveUser.getIdToken()
       : null;
 
+  /** @type {Record<string, string>} */
   const headers = {
     'Content-Type': 'application/json',
   };
@@ -1239,6 +1248,7 @@ export async function revokeSharedChatSnapshot(shareId, options = {}) {
     );
   }
 
+  /** @type {any} */
   let body = {};
   try {
     body = await res.json();
@@ -1357,7 +1367,7 @@ export async function triggerNativeShare({ shareUrl, title = 'Shared Chat' }) {
       url: shareUrl,
     });
     return { shared: true };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err?.name === 'AbortError') {
       return { shared: false, cancelled: true };
     }
@@ -1445,9 +1455,10 @@ export function clearSharedSnapshotSession(shareId) {
  * - Every single message is validated against allowed sender, keys, content length, and structure
  * - Rejects malformed snapshots safely without modifying or creating chat history
  *
- * @param {Object} data - Raw document data from Firestore or session cache
- * @param {string} [expectedShareId=null] - The requested shareId
- * @returns {Object} Clean, validated, and canonically ordered snapshot
+ * @param {any} data - Raw document data from Firestore or session cache
+ * @param {string|null} [expectedShareId=null] - The requested shareId
+ * @param {any} [options={}]
+ * @returns {any} Clean, validated, and canonically ordered snapshot
  */
 export function validateSharedSnapshotPayload(data, expectedShareId = null, options = {}) {
   const targetShareId = expectedShareId || data?.id;
@@ -1547,6 +1558,9 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null, opti
  * Fetches a shared conversation snapshot through the server `/api/share/:shareId` endpoint.
  * Used as a diagnostic fallback when Firestore denies direct reads (revoked/expired)
  * or when Firebase client SDK is unconfigured in browser contexts.
+ * @param {string} shareId
+ * @param {any} fetchFn
+ * @param {number} [timeoutMs=10000]
  */
 async function fetchSharedSnapshotViaServerApi(shareId, fetchFn, timeoutMs = 10000) {
   const res = await withPublishTimeout(
@@ -1557,6 +1571,7 @@ async function fetchSharedSnapshotViaServerApi(shareId, fetchFn, timeoutMs = 100
     timeoutMs
   );
 
+  /** @type {any} */
   let body = {};
   try {
     body = await res.json();
@@ -1654,7 +1669,7 @@ export async function loadSharedChatSnapshot(shareId, options = {}) {
   try {
     const docRef = docFn(targetDb, 'sharedChats', shareId);
     docSnap = await withPublishTimeout(getDocFn(docRef), options.timeoutMs || 10000);
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (err instanceof ShareChatError) {
       throw err;
     }
@@ -1743,11 +1758,8 @@ export function isAuthenticatedSharedPreview({ isShareRoute = false, user = null
  *     canRegenerate, canGenerateAlternative, canShare, canEditUserMessage disabled;
  *     isHistoryCreated: false.
  *
- * @param {Object} params
- * @param {boolean} [params.isShareRoute=false]
- * @param {Object|null} [params.user=null]
- * @param {boolean} [params.hasSentFirstMessage=false]
- * @returns {Object} Deterministic permission flags
+ * @param {any} [params]
+ * @returns {any} Deterministic permission flags
  */
 export function getSharedPreviewActionPermissions({
   isShareRoute = false,
@@ -1993,14 +2005,16 @@ export function generateImportedId(prefix = 'imp') {
  * - alternative response information & activeAlternativeId (remapped to new alternative ID)
  * - attachment metadata (sanitized plain metadata only, strictly zero raw blobs, files, or paths)
  *
- * @param {Array} originalMessages
- * @returns {{ remappedMessages: Array, messageIdMap: Map<string, string>, interactionIdMap: Map<string, string>, lastMessageId: string|null }}
+ * @param {Array<any>} originalMessages
+ * @returns {{ remappedMessages: Array<any>, messages: Array<any>, messageIdMap: Map<string, string>, mapping: Map<string, string>, interactionIdMap: Map<string, string>, lastMessageId: string|null }}
  */
 export function remapSharedSnapshotMessages(originalMessages) {
   if (!Array.isArray(originalMessages) || originalMessages.length === 0) {
     return {
       remappedMessages: [],
+      messages: [],
       messageIdMap: new Map(),
+      mapping: new Map(),
       interactionIdMap: new Map(),
       lastMessageId: null,
     };
@@ -2022,7 +2036,7 @@ export function remapSharedSnapshotMessages(originalMessages) {
     }
 
     if (Array.isArray(msg.alternatives)) {
-      msg.alternatives.forEach((alt, altIdx) => {
+      msg.alternatives.forEach((/** @type {any} */ alt, /** @type {number} */ altIdx) => {
         if (alt && alt.id && !alternativeIdMap.has(alt.id)) {
           alternativeIdMap.set(alt.id, generateImportedId(`alt_imp_${altIdx}`));
         }
@@ -2057,7 +2071,7 @@ export function remapSharedSnapshotMessages(originalMessages) {
 
     let remappedAlternatives = null;
     if (Array.isArray(msg.alternatives)) {
-      remappedAlternatives = msg.alternatives.map((alt, altIdx) => {
+      remappedAlternatives = msg.alternatives.map((/** @type {any} */ alt, /** @type {number} */ altIdx) => {
         const altOldId = alt?.id || `alt_${altIdx}`;
         const altNewId = alternativeIdMap.get(altOldId) || generateImportedId('alt');
         const altParentId =
@@ -2079,7 +2093,7 @@ export function remapSharedSnapshotMessages(originalMessages) {
           timestamp: alt?.timestamp || '',
           referencedAttachments: Array.isArray(alt?.referencedAttachments)
             ? alt.referencedAttachments
-                .map((a, i) => sanitizeAttachmentForShare(a, i))
+                .map((/** @type {any} */ a, /** @type {number} */ i) => sanitizeAttachmentForShare(a, i))
                 .filter(Boolean)
             : [],
           isError: Boolean(alt?.isError),
@@ -2090,13 +2104,13 @@ export function remapSharedSnapshotMessages(originalMessages) {
 
     const sanitizedAttachments = Array.isArray(msg.attachments)
       ? msg.attachments
-          .map((a, i) => sanitizeAttachmentForShare(a, i))
+          .map((/** @type {any} */ a, /** @type {number} */ i) => sanitizeAttachmentForShare(a, i))
           .filter(Boolean)
       : [];
 
     const sanitizedReferencedAttachments = Array.isArray(msg.referencedAttachments)
       ? msg.referencedAttachments
-          .map((a, i) => sanitizeAttachmentForShare(a, i))
+          .map((/** @type {any} */ a, /** @type {number} */ i) => sanitizeAttachmentForShare(a, i))
           .filter(Boolean)
       : [];
 
@@ -2145,8 +2159,8 @@ export function remapSharedSnapshotMessages(originalMessages) {
  * @param {string} params.recipientUserId - Authenticated recipient UID
  * @param {Object} params.recipientUserMessage - First recipient user message
  * @param {Object} params.recipientAssistantMessage - First recipient AI response
- * @param {string} [params.customChatId] - Optional chatId override
- * @returns {{ chatMetadata: Object, messages: Array, newChatId: string }}
+ * @param {string|null} [params.customChatId] - Optional chatId override
+ * @returns {{ chatMetadata: Object, messages: Array<any>, newChatId: string }}
  */
 export function createImportedConversationData({
   shareId,
@@ -2265,7 +2279,7 @@ export function createImportedConversationData({
  * @param {Object} [params.firestoreDb]
  * @param {string} params.userId
  * @param {Object} params.chatMetadata
- * @param {Array} params.messages
+ * @param {Array<any>} params.messages
  * @param {Function} [params.docImpl]
  * @param {Function} [params.writeBatchImpl]
  * @param {number} [params.timeoutMs=15000]
@@ -2330,7 +2344,7 @@ export async function persistImportedConversationToFirestore({
       await withPublishTimeout(batch.commit(), timeoutMs);
       committedBatches.push(chunk);
     }
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     // If a multi-batch commit fails on batch > 1, clean up committed messages to avoid orphaned partial chat
     if (committedBatches.length > 0) {
       try {
@@ -2341,7 +2355,7 @@ export async function persistImportedConversationToFirestore({
           });
         });
         await cleanupBatch.commit();
-      } catch (cleanupErr) {
+      } catch (/** @type {any} */ cleanupErr) {
         console.warn('Import rollback notice:', cleanupErr?.message || cleanupErr);
       }
     }
@@ -2376,8 +2390,8 @@ export async function persistImportedConversationToFirestore({
  * @param {Object} params.recipientUser - Current authenticated Firebase user
  * @param {Object} params.recipientUserMessage - First recipient user message
  * @param {Object} params.recipientAssistantMessage - First recipient AI response
- * @param {Object} [params.options] - Optional overrides for testing
- * @returns {Promise<{ success: boolean, chatId: string, chatMetadata: Object, messages: Array, alreadyImported: boolean }>}
+ * @param {any} [params.options] - Optional overrides for testing
+ * @returns {Promise<{ success: boolean, chatId: string, chatMetadata: Object, messages: Array<any>, alreadyImported: boolean }>}
  */
 export async function importSharedConversationToAccount({
   shareId,
@@ -2583,7 +2597,7 @@ export function getImportedOriginShareId(chat) {
  * @param {Object} params
  * @param {Object} params.originalSnapshot
  * @param {Object} params.reSharedSnapshot
- * @param {Array} params.continuationMessages
+ * @param {Array<any>} [params.continuationMessages]
  * @returns {{ valid: boolean, errors: string[] }}
  */
 export function verifyReshareIntegrity({

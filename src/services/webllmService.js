@@ -90,44 +90,71 @@ export const DEFAULT_WORKER_INIT_STALL_TIMEOUT_MS = 90_000;
 // Lazy Module & Singleton Engine State
 // ============================================================================
 
+/** @type {any} */
 let webllmModulePromise = null;
+/** @type {any} */
 let engineInstance = null;
+/** @type {any} */
 let workerInstance = null;
+/** @type {string | null} */
 let loadedModelId = null;
+/** @type {any} */
 let warmedEngineRef = null;
+/** @type {string | null} */
 let warmedModelId = null;
+/** @type {any} */
 let activeWarmupPromise = null;
+/** @type {string | null} */
 let activeWarmupModelId = null;
+/** @type {any} */
 let activeWarmupEngineRef = null;
+/** @type {any} */
 let activeWarmupAbortController = null;
+/** @type {Set<string>} */
 const warmupTimedOutModels = new Set();
+/** @type {Set<any>} */
 const workerTerminationListeners = new Set();
+/** @type {Set<any>} */
 const runtimeCrashRejectors = new Set();
 let engineGenerationEpoch = 0;
+/** @type {any} */
 let cachedGpuSupportEntry = null;
+/** @type {any} */
 let workerRejectedShaderF16GpuRef = null;
+/** @type {any} */
 let activeGpuSupportCheckPromise = null;
+/** @type {any} */
 let activeInitPromise = null;
+/** @type {string | null} */
 let activeInitModelId = null;
+/** @type {any} */
 let activeInitAbortReject = null;
+/** @type {any} */
 let activeInitAbortController = null;
+/** @type {Promise<any>} */
 let generationQueuePromise = Promise.resolve();
 let isGeneratingNow = false;
 let manualStopRequested = false;
+/** @type {any} */
 let customWorkerFactory = null;
+/** @type {any} */
 let customEngineFactory = null;
+/** @type {any} */
 let customFetchFactory = null;
+/** @type {any} */
 let customDownloadConfig = null;
 
 const GPU_SUPPORT_CACHE_TTL_MS = 60_000;
 const DEFAULT_WARMUP_TIMEOUT_MS = 8_000;
 
 const MAX_DIAGNOSTIC_EVENTS = 80;
+/** @type {any[]} */
 const recentDiagnosticEvents = [];
 
 /**
  * Sanitizes a URL for diagnostic logging so signed CDN query tokens, credentials,
  * or presigned bridge paths are NEVER written to console or diagnostic buffers.
+ * @param {any} rawUrl
  */
 export function sanitizeUrlForDiagnostics(rawUrl) {
   if (!rawUrl) return 'unknown';
@@ -146,6 +173,9 @@ export function sanitizeUrlForDiagnostics(rawUrl) {
 /**
  * Records and logs a development-safe diagnostic event with stage name, app version,
  * and elapsed time without exposing signed URLs or secrets.
+ * @param {string} stage
+ * @param {Record<string, any>} [details]
+ * @param {{ startMs?: number | null, level?: string }} [options]
  */
 export function logWebLLMStage(stage, details = {}, options = {}) {
   const { startMs = null, level = 'log' } = options;
@@ -154,6 +184,7 @@ export function logWebLLMStage(stage, details = {}, options = {}) {
   const elapsedTag = elapsedMs !== null ? ` (+${elapsedMs}ms)` : '';
   const detailParts = [];
 
+  /** @type {Record<string, any>} */
   const sanitizedDetails = {};
   if (details && typeof details === 'object') {
     for (const [key, val] of Object.entries(details)) {
@@ -207,9 +238,13 @@ export function getWebLLMDiagnostics() {
  * Races an async operation against a hard JS timer rejection so hung browser/OS
  * promises (e.g. fetch/reader/cache/GPU calls that ignore AbortSignal) cannot leave
  * the UI stuck at 0% indefinitely.
+ * @param {any} promiseFactory
+ * @param {number} timeoutMs
+ * @param {(ms: number) => any} createTimeoutError
  */
 async function raceWithStageDeadline(promiseFactory, timeoutMs, createTimeoutError) {
   const boundedMs = Math.max(40, Number(timeoutMs) || 10_000);
+  /** @type {any} */
   let timer = null;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -234,11 +269,17 @@ async function raceWithStageDeadline(promiseFactory, timeoutMs, createTimeoutErr
 /**
  * Resettable inactivity watchdog that BOTH invokes `onTimeoutAbort()` AND rejects
  * any raced promise via `watchdog.race(promise)` when no progress occurs within `timeoutMs`.
+ * @param {number} timeoutMs
+ * @param {(ms: number) => any} createStallError
+ * @param {(() => void)|null} [onTimeoutAbort]
  */
-function createResettableStallWatchdog(timeoutMs, createStallError, onTimeoutAbort) {
+function createResettableStallWatchdog(timeoutMs, createStallError, onTimeoutAbort = null) {
   const boundedMs = Math.max(40, Number(timeoutMs) || 30_000);
+  /** @type {any} */
   let timer = null;
+  /** @type {any} */
   let stalledError = null;
+  /** @type {Set<any>} */
   const pendingRejectors = new Set();
 
   const arm = () => {
@@ -281,10 +322,12 @@ function createResettableStallWatchdog(timeoutMs, createStallError, onTimeoutAbo
     getError() {
       return stalledError;
     },
+    /** @param {Promise<any>} promise */
     async race(promise) {
       if (stalledError) {
         throw stalledError;
       }
+      /** @type {any} */
       let registeredReject = null;
       const stallPromise = new Promise((_, reject) => {
         registeredReject = reject;
@@ -308,20 +351,24 @@ function createResettableStallWatchdog(timeoutMs, createStallError, onTimeoutAbo
   };
 }
 
+/** @param {any} factory */
 export function setWebLLMWorkerFactoryForTesting(factory) {
   customWorkerFactory = factory;
 }
 
+/** @param {any} factory */
 export function setWebLLMEngineFactoryForTesting(factory) {
   customEngineFactory = factory;
   workerRejectedShaderF16GpuRef = null;
   cachedGpuSupportEntry = null;
 }
 
+/** @param {any} fetchFn */
 export function setWebLLMFetchForTesting(fetchFn) {
   customFetchFactory = fetchFn;
 }
 
+/** @param {any} configOverrides */
 export function setWebLLMDownloadConfigForTesting(configOverrides) {
   customDownloadConfig = configOverrides || null;
 }
@@ -377,12 +424,17 @@ export function resetWebLLMRuntimeForTesting() {
     timeElapsed: 0,
     isCached: false,
     hasShaderF16: null,
-    error: null
+    error: null,
+    errorCode: null,
+    suggestedFallbackModelId: null,
+    suggestedProvider: null
   });
 }
 
+/** @type {Set<(state: any) => void>} */
 const stateListeners = new Set();
 
+/** @type {Record<string, any>} */
 let engineState = {
   status: 'idle', // 'idle' | 'checking' | 'downloading' | 'loading' | 'ready' | 'generating' | 'error'
   modelId: DEFAULT_WEBLLM_MODEL_ID,
@@ -393,16 +445,29 @@ let engineState = {
   timeElapsed: 0,
   isCached: false,
   hasShaderF16: null,
-  error: null
+  error: null,
+  errorCode: null,
+  suggestedFallbackModelId: null,
+  suggestedProvider: null
 };
 
+/** @param {Record<string, any>} patch */
 function updateEngineState(patch) {
-  const prevSnapshot = getWebLLMState();
+  const prevSnapshot = /** @type {Record<string, any>} */ (getWebLLMState());
+  const normalizedPatch =
+    patch && Object.prototype.hasOwnProperty.call(patch, 'error') && patch.error === null
+      ? {
+          errorCode: null,
+          suggestedFallbackModelId: null,
+          suggestedProvider: null,
+          ...patch
+        }
+      : patch;
   engineState = {
     ...engineState,
-    ...patch
+    ...normalizedPatch
   };
-  const snapshot = getWebLLMState();
+  const snapshot = /** @type {Record<string, any>} */ (getWebLLMState());
   const hasStateChanged = Object.keys(snapshot).some(
     (key) => !Object.is(snapshot[key], prevSnapshot[key])
   );
@@ -421,6 +486,7 @@ function updateEngineState(patch) {
 
 /**
  * Returns whether the active WebLLM engine has completed pipeline warm-up for `modelId`.
+ * @param {string | null} [modelId]
  */
 export function isWebLLMModelWarmed(modelId = loadedModelId) {
   return Boolean(
@@ -434,6 +500,7 @@ export function isWebLLMModelWarmed(modelId = loadedModelId) {
 
 /**
  * Returns a shallow snapshot of the current Browser AI engine state.
+ * @returns {Record<string, any>}
  */
 export function getWebLLMState() {
   return {
@@ -445,7 +512,7 @@ export function getWebLLMState() {
 
 /**
  * Subscribes to Browser AI engine status and initialization/download progress updates.
- * @param {(state: typeof engineState) => void} listener
+ * @param {(state: any) => void} listener
  * @returns {() => void} Unsubscribe callback
  */
 export function subscribeWebLLMState(listener) {
@@ -467,6 +534,7 @@ export function subscribeWebLLMState(listener) {
  * Returns the lightweight main-thread WebLLM RPC client & cache helpers.
  * Heavy inference, WASM, and tokenizer runtimes remain isolated exclusively
  * inside the dedicated Web Worker (src/workers/webllmWorker.js).
+ * @param {number | null} [stageStartMs]
  */
 async function loadWebLLMModule(stageStartMs = null) {
   if (stageStartMs !== null) {
@@ -506,11 +574,13 @@ function normalizeModelBaseUrl(rawModelUrl) {
 
 /**
  * Looks up a ModelRecord in the cataloged @mlc-ai/web-llm@0.2.86 model records.
+ * @param {string} modelId
  */
 function findPrebuiltModelRecord(modelId) {
   return findPrebuiltWebLLMRecord(modelId);
 }
 
+/** @param {string} [message] */
 function createAbortError(message = 'Generation stopped by user') {
   if (typeof DOMException !== 'undefined') {
     return new DOMException(message, 'AbortError');
@@ -520,6 +590,7 @@ function createAbortError(message = 'Generation stopped by user') {
   return err;
 }
 
+/** @param {any} err */
 function isAbortError(err) {
   if (!err) return false;
   if (err.name === 'AbortError') return true;
@@ -533,7 +604,7 @@ function isAbortError(err) {
 
 /**
  * Detects whether an adapter is SwiftShader or a software CPU fallback rasterizer.
- * @param {{ vendor?: string, architecture?: string, device?: string, description?: string } | null} adapterInfo
+ * @param {{ vendor?: string, architecture?: string, device?: string, description?: string, isFallbackAdapter?: boolean } | null} adapterInfo
  * @param {boolean} [isFallbackAdapter=false]
  * @returns {boolean}
  */
@@ -557,6 +628,7 @@ export function isSwiftShaderAdapter(adapterInfo, isFallbackAdapter = false) {
  * Checks whether the current browser, context, and GPU hardware support WebGPU for WebLLM.
  * Does not load @mlc-ai/web-llm or download any model files.
  *
+ * @param {{ forceRefresh?: boolean }} [options]
  * @returns {Promise<{
  *   supported: boolean,
  *   reasonCode: string | null,
@@ -566,11 +638,11 @@ export function isSwiftShaderAdapter(adapterInfo, isFallbackAdapter = false) {
  *   isSwiftShader: boolean,
  *   maxStorageBufferBindingSize: number | null,
  *   maxBufferSize: number | null,
- *   adapterInfo: { vendor?: string, architecture?: string, description?: string } | null
+ *   adapterInfo: { vendor?: string, architecture?: string, device?: string, description?: string, isFallbackAdapter?: boolean } | null
  * }>}
  */
 export async function checkWebGPUSupport(options = {}) {
-  const { forceRefresh = false } = options;
+  const { forceRefresh = false } = options || {};
 
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return {
@@ -645,7 +717,9 @@ export async function checkWebGPUSupport(options = {}) {
   }
 
   const gpuTimeoutMs = customDownloadConfig?.gpuCheckTimeoutMs ?? DEFAULT_GPU_CHECK_TIMEOUT_MS;
-  const probePromise = (async () => {
+  /** @type {Promise<any> | null} */
+  let probePromise = null;
+  probePromise = (async () => {
     try {
       const adapter = await raceWithStageDeadline(
         () =>
@@ -654,7 +728,7 @@ export async function checkWebGPUSupport(options = {}) {
           }),
         gpuTimeoutMs,
         (ms) => {
-          const timeoutErr = new Error(`WebGPU requestAdapter timed out after ${formatDurationSeconds(ms)}`);
+          const timeoutErr = /** @type {any} */ (new Error(`WebGPU requestAdapter timed out after ${formatDurationSeconds(ms)}`));
           timeoutErr.code = 'WEBGPU_ADAPTER_TIMEOUT';
           return timeoutErr;
         }
@@ -785,7 +859,8 @@ export async function checkWebGPUSupport(options = {}) {
         adapterInfo: positiveResult.adapterInfo ? { ...positiveResult.adapterInfo } : null
       };
     } catch (err) {
-      const isTimeout = err?.code === 'WEBGPU_ADAPTER_TIMEOUT';
+      const errObj = /** @type {any} */ (err);
+      const isTimeout = errObj?.code === 'WEBGPU_ADAPTER_TIMEOUT';
       if (isTimeout) {
         logWebLLMStage('init_timeout', { subStage: 'gpu_request_adapter', timeoutMs: gpuTimeoutMs }, { level: 'warn' });
       }
@@ -1006,7 +1081,8 @@ async function verifyBrowserStorageForDownload(modelId) {
       if (err instanceof WebLLMError) {
         throw err;
       }
-      logWebLLMStage('storage_quota_warning', { message: err?.message || String(err) }, { level: 'warn' });
+      const errObj = /** @type {any} */ (err);
+      logWebLLMStage('storage_quota_warning', { message: errObj?.message || String(err) }, { level: 'warn' });
     }
   }
 
@@ -1102,9 +1178,10 @@ export async function isWebLLMModelCached(modelId = DEFAULT_WEBLLM_MODEL_ID) {
       (ms) => new Error(`Cache inspection timed out after ${formatDurationSeconds(ms)}`)
     );
   } catch (err) {
+    const errObj = /** @type {any} */ (err);
     logWebLLMStage(
       'cache_check_warning',
-      { modelId, error: err?.message || String(err) },
+      { modelId, error: errObj?.message || String(err) },
       { level: 'warn' }
     );
     return false;
@@ -1135,7 +1212,8 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
         isCached: false,
         modelId: resolvedId,
         loadedModelId,
-        hasShaderF16: false
+        hasShaderF16: false,
+        suggestedProvider: 'gemini'
       });
     }
     logWebLLMStage(
@@ -1179,12 +1257,27 @@ export async function inspectWebLLMReadiness(preferredModelId = DEFAULT_WEBLLM_M
     }
   }
 
+  // Clear stale error metadata when switching to a different (e.g. lighter fallback) model
+  const isSwitchingAwayFromErroredModel =
+    engineState.status === 'error' && engineState.modelId !== resolvedId;
+  if (isSwitchingAwayFromErroredModel) {
+    nextStatus = 'idle';
+  }
+
   updateEngineState({
     status: nextStatus,
     isCached,
     modelId: resolvedId,
     loadedModelId,
-    hasShaderF16: gpuSupport.hasShaderF16
+    hasShaderF16: gpuSupport.hasShaderF16,
+    ...(isSwitchingAwayFromErroredModel
+      ? {
+          error: null,
+          errorCode: null,
+          suggestedFallbackModelId: null,
+          suggestedProvider: null
+        }
+      : {})
   });
 
   logWebLLMStage(
@@ -1220,6 +1313,7 @@ export async function clearWebLLMModelCache(modelId = loadedModelId || DEFAULT_W
 // Bounded CDN Diagnostic Probe & Streaming Byte-Verified Artifact Downloader
 // ============================================================================
 
+/** @param {any} overrideFetch */
 function getEffectiveFetch(overrideFetch) {
   if (typeof overrideFetch === 'function') return overrideFetch;
   if (typeof customFetchFactory === 'function') return customFetchFactory;
@@ -1231,6 +1325,7 @@ function getEffectiveFetch(overrideFetch) {
   });
 }
 
+/** @param {any} rawUrl */
 function safeExtractHostname(rawUrl) {
   try {
     return new URL(String(rawUrl || '')).hostname || '';
@@ -1239,10 +1334,12 @@ function safeExtractHostname(rawUrl) {
   }
 }
 
+/** @param {any} bytes */
 function formatMegabytes(bytes) {
   return (Math.max(0, Number(bytes) || 0) / (1024 * 1024)).toFixed(1);
 }
 
+/** @param {any} ms */
 function formatDurationSeconds(ms) {
   const numericMs = Math.max(1, Number(ms) || 0);
   if (numericMs < 1000) {
@@ -1307,7 +1404,9 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
     signal.addEventListener('abort', onCallerAbort, { once: true });
   }
 
+  /** @type {any} */
   let response = null;
+  /** @type {any} */
   let reader = null;
   try {
     const probeResult = await raceWithStageDeadline(
@@ -1419,7 +1518,7 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
     );
 
     return probeResult;
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (signal?.aborted) {
       throw createAbortError();
     }
@@ -1517,6 +1616,9 @@ export async function probeWebLLMModelCDN(targetUrl, options = {}) {
 /**
  * Inspects a single Cache Storage entry and verifies its byte length when `expectedBytes` is known.
  * Automatically deletes any truncated or corrupted partial entry so retries self-heal cleanly.
+ * @param {any} cache
+ * @param {any} url
+ * @param {number|null} [expectedBytes=null]
  */
 async function readVerifiedCachedEntry(cache, url, expectedBytes = null) {
   const cacheOpTimeoutMs = customDownloadConfig?.cacheOpTimeoutMs ?? DEFAULT_CACHE_OP_TIMEOUT_MS;
@@ -1605,6 +1707,7 @@ async function readVerifiedCachedEntry(cache, url, expectedBytes = null) {
  * Streams a single model artifact with a resettable per-chunk inactivity watchdog (`stallTimeoutMs`),
  * verifies exact byte length when `expectedBytes` is known, and atomically writes the complete
  * response into Cache Storage ONLY after full verification.
+ * @param {any} options
  */
 async function streamArtifactToCache({
   cache,
@@ -1616,7 +1719,7 @@ async function streamArtifactToCache({
   stallTimeoutMs,
   signal,
   fetchImpl,
-  onBytesProgress,
+  onBytesProgress = undefined,
   returnArrayBuffer = false
 }) {
   if (signal?.aborted) {
@@ -1627,6 +1730,7 @@ async function streamArtifactToCache({
   const effectiveFetch = getEffectiveFetch(fetchImpl);
   const originHost = safeExtractHostname(url) || 'huggingface.co';
   const streamController = new AbortController();
+  /** @type {any} */
   let onCallerAbort = null;
 
   if (signal) {
@@ -1637,7 +1741,9 @@ async function streamArtifactToCache({
     signal.addEventListener('abort', onCallerAbort, { once: true });
   }
 
+  /** @type {any} */
   let response = null;
+  /** @type {any} */
   let reader = null;
   let receivedBytes = 0;
 
@@ -1700,7 +1806,7 @@ async function streamArtifactToCache({
     const totalExpected =
       expectedBytes !== null && expectedBytes > 0
         ? expectedBytes
-        : Number.isFinite(declaredLength) && declaredLength > 0
+        : declaredLength !== null && Number.isFinite(declaredLength) && declaredLength > 0
           ? declaredLength
           : null;
 
@@ -1841,7 +1947,7 @@ async function streamArtifactToCache({
       redirectedHost,
       arrayBuffer: arrayBufferResult
     };
-  } catch (err) {
+  } catch (/** @type {any} */ err) {
     if (signal?.aborted) {
       throw createAbortError();
     }
@@ -1940,6 +2046,8 @@ async function streamArtifactToCache({
  * - Per-chunk stall watchdog so `HTTP 200 Pending` hangs abort cleanly with actionable error messages
  * - Byte-verified atomic `cache.put()` so partial shards never corrupt Cache Storage and Retry resumes
  *   from already-cached shards
+ * @param {any} modelRecord
+ * @param {any} [options={}]
  */
 export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
   const {
@@ -1963,6 +2071,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
   const modelBaseUrl = normalizeModelBaseUrl(modelRecord.model);
   const cacheOpTimeoutMs = customDownloadConfig?.cacheOpTimeoutMs ?? DEFAULT_CACHE_OP_TIMEOUT_MS;
 
+  /** @param {string} scopeName */
   const openScopedCache = (scopeName) =>
     raceWithStageDeadline(
       () => caches.open(scopeName),
@@ -1989,6 +2098,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
 
   let lastEmitMs = 0;
   let lastLoggedPctBucket = -1;
+  /** @param {any} report */
   const emitDownloadProgress = ({ progress, progressPercent, progressText, force = false }) => {
     const now = Date.now();
     if (!force && now - lastEmitMs < 90) {
@@ -2060,7 +2170,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       fetchImpl,
       returnArrayBuffer: true
     });
-    chatConfigObj = JSON.parse(new TextDecoder().decode(dlConfig.arrayBuffer));
+    chatConfigObj = JSON.parse(new TextDecoder().decode(dlConfig.arrayBuffer || undefined));
   }
   logWebLLMStage('metadata_config_ready', { modelId, source: configSource }, { startMs });
 
@@ -2096,7 +2206,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       fetchImpl,
       returnArrayBuffer: true
     });
-    tensorManifest = JSON.parse(new TextDecoder().decode(dlManifest.arrayBuffer));
+    tensorManifest = JSON.parse(new TextDecoder().decode(dlManifest.arrayBuffer || undefined));
   }
 
   const shardRecords = Array.isArray(tensorManifest?.records) ? tensorManifest.records : [];
@@ -2124,6 +2234,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
   // 3. Inspect which shards are already complete & byte-verified in Cache Storage
   let completedBytes = 0;
   let totalExpectedBytes = 0;
+  /** @type {Array<any>} */
   const missingShards = [];
 
   for (const shard of shardItems) {
@@ -2213,7 +2324,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
   }
 
   // 5. Ensure tokenizer & WASM runtime library are cached before GPU reload
-  if (tokenizerUrl && !cachedTokenizer) {
+  if (tokenizerUrl && requiredTokenizerName && !cachedTokenizer) {
     const baseRatio = Math.min(0.99, Math.max(0.01, completedBytes / progressDenominator));
     const basePct = Math.min(99, Math.max(1, Math.round(baseRatio * 100)));
     emitDownloadProgress({
@@ -2232,7 +2343,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       stallTimeoutMs,
       signal,
       fetchImpl,
-      onBytesProgress: (bytesSoFar, totalTok) => {
+      onBytesProgress: (/** @type {any} */ bytesSoFar, /** @type {any} */ totalTok) => {
         emitDownloadProgress({
           progress: baseRatio,
           progressPercent: basePct,
@@ -2262,7 +2373,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
       stallTimeoutMs,
       signal,
       fetchImpl,
-      onBytesProgress: (bytesSoFar, totalWasm) => {
+      onBytesProgress: (/** @type {any} */ bytesSoFar, /** @type {any} */ totalWasm) => {
         emitDownloadProgress({
           progress: baseRatio,
           progressPercent: basePct,
@@ -2288,7 +2399,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
     let completedShardCount = shardItems.length - missingShards.length;
     let queueCursor = 0;
 
-    const reportAggregatedShardProgress = (activeShard, force = false) => {
+    const reportAggregatedShardProgress = (/** @type {any} */ activeShard, force = false) => {
       let currentInFlight = 0;
       for (const b of inFlightBytes.values()) {
         currentInFlight += b;
@@ -2326,7 +2437,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
               stallTimeoutMs,
               signal: batchController.signal,
               fetchImpl,
-              onBytesProgress: (bytesSoFar) => {
+              onBytesProgress: (/** @type {any} */ bytesSoFar) => {
                 inFlightBytes.set(shard.url, bytesSoFar);
                 reportAggregatedShardProgress(shard, false);
               }
@@ -2378,6 +2489,7 @@ export async function downloadModelArtifactsToCache(modelRecord, options = {}) {
 // Error Classification & Recovery Helpers
 // ============================================================================
 
+/** @param {any} rawErr */
 function isFatalEngineError(rawErr) {
   const text = `${rawErr?.name || ''} ${rawErr?.message || rawErr || ''}`.toLowerCase();
   return (
@@ -2404,6 +2516,7 @@ function isFatalEngineError(rawErr) {
   );
 }
 
+/** @param {any} lowerMsg */
 export function isShaderF16ErrorText(lowerMsg) {
   if (!lowerMsg) return false;
   return (
@@ -2423,6 +2536,10 @@ export function isShaderF16ErrorText(lowerMsg) {
   );
 }
 
+/**
+ * @param {any} rawErr
+ * @param {any} [options]
+ */
 export function normalizeWebLLMError(rawErr, { modelId = DEFAULT_WEBLLM_MODEL_ID, phase = 'generate', wasCached = false } = {}) {
   if (rawErr instanceof WebLLMError) {
     return rawErr;
@@ -2628,6 +2745,7 @@ function notifyWorkerTerminationListeners() {
   }
 }
 
+/** @param {any} crashErr */
 function notifyRuntimeCrashListeners(crashErr) {
   if (runtimeCrashRejectors.size > 0) {
     const rejectors = [...runtimeCrashRejectors];
@@ -2642,6 +2760,10 @@ function notifyRuntimeCrashListeners(crashErr) {
   }
 }
 
+/**
+ * @param {any} targetWorker
+ * @param {{ clearGlobals?: boolean }} [options]
+ */
 function terminateSpecificWorker(targetWorker, { clearGlobals = true } = {}) {
   const matchesActiveWorker = Boolean(targetWorker && workerInstance === targetWorker);
   if (targetWorker) {
@@ -2689,6 +2811,10 @@ function terminateWorkerImmediate() {
  * `prefill` / `batch_prefill`, `decode` / `batch_decode`, and sampling compute pipelines,
  * touches paged KV sequence 0, flushes the GPU queue via `device.sync()`, and clears all
  * conversation, KV, and runtime statistics via `resetChat(false, modelId)`.
+ * @param {any} engine
+ * @param {any} modelId
+ * @param {any} gpuSupport
+ * @param {{ signal?: AbortSignal | null, startMs?: number | null }} [options]
  */
 async function runSafeEnginePipelineWarmup(
   engine,
@@ -2764,6 +2890,7 @@ async function runSafeEnginePipelineWarmup(
   activeWarmupModelId = modelId;
   activeWarmupEngineRef = engine;
 
+  /** @type {any} */
   let removeCallerAbort = null;
   if (signal) {
     const forwardAbort = () => warmupController.abort();
@@ -2775,6 +2902,7 @@ async function runSafeEnginePipelineWarmup(
     }
   }
 
+  /** @type {any} */
   let unregisterWorkerTerminated = null;
   const workerTerminatedPromise = new Promise((_, reject) => {
     const onTerminated = () => {
@@ -2791,6 +2919,7 @@ async function runSafeEnginePipelineWarmup(
   // Prevent unhandled rejection when warm-up completes normally without worker termination
   workerTerminatedPromise.catch(() => {});
 
+  /** @type {any} */
   let removeInternalAbortListener = null;
   const warmupAbortPromise = new Promise((_, reject) => {
     const onAborted = () => {
@@ -2806,7 +2935,9 @@ async function runSafeEnginePipelineWarmup(
   });
   warmupAbortPromise.catch(() => {});
 
-  const taskPromise = (async () => {
+  /** @type {Promise<any> | null} */
+  let taskPromise = null;
+  taskPromise = (async () => {
     let touchedPipeline = false;
     let inFlightRpc = false;
     try {
@@ -2866,6 +2997,7 @@ async function runSafeEnginePipelineWarmup(
           ]),
         warmupTimeoutMs,
         (ms) => {
+          /** @type {any} */
           const timeoutErr = new Error(`GPU pipeline warm-up timed out after ${formatDurationSeconds(ms)}`);
           timeoutErr.code = 'WEBLLM_WARMUP_TIMEOUT';
           return timeoutErr;
@@ -2884,7 +3016,7 @@ async function runSafeEnginePipelineWarmup(
       warmedModelId = modelId;
       logWebLLMStage('warmup_done', { modelId }, { startMs: warmupStartMs });
       return { warmed: true, skipped: false, reason: 'warmed' };
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       const isWarmupTimeout = err?.code === 'WEBLLM_WARMUP_TIMEOUT';
       const isCancelled = Boolean(warmupController.signal.aborted || isAbortError(err));
       const workerStillIntact = Boolean(
@@ -3069,7 +3201,9 @@ export const unloadWebLLMEngine = destroyWebLLMEngine;
  * @param {Object} [options]
  * @param {string|null} [options.modelId] - Optional model ID (defaults to Qwen 2.5 1.5B Instruct)
  * @param {boolean} [options.allowF32Fallback=true] - Automatically select q4f32_1 variant if adapter lacks shader-f16
- * @param {(report: { status: string, modelId: string, progress: number, progressPercent: number, progressText: string, timeElapsed: number, isCached: boolean }) => void} [options.onProgress]
+ * @param {boolean} [options.skipWarmup=false]
+ * @param {boolean} [options._callerHoldsGenerationLock=false]
+ * @param {(report: { status: string, modelId: string, progress: number, progressPercent: number | null, progressText: string, timeElapsed: number, isCached: boolean }) => void} [options.onProgress]
  * @param {AbortSignal} [options.signal]
  * @returns {Promise<{ engine: any, modelId: string, isCached: boolean }>}
  */
@@ -3194,6 +3328,7 @@ export async function ensureWebLLMEngine(options = {}) {
           if (recycled) return recycled;
         } else {
           const prevTurn = generationQueuePromise.catch(() => {});
+          /** @type {any} */
           let releaseFastLock;
           generationQueuePromise = new Promise((resolve) => {
             releaseFastLock = resolve;
@@ -3241,6 +3376,7 @@ export async function ensureWebLLMEngine(options = {}) {
 
   // Deduplicate/await active initialization BEFORE touching status or running checkWebGPUSupport()
   // so concurrent callers never clobber an active download/load progress state back to 'checking'.
+  /** @param {Promise<any>} targetPromise */
   const awaitInFlightInitWithProgress = async (targetPromise) => {
     let unsub = null;
     if (typeof onProgress === 'function') {
@@ -3343,7 +3479,9 @@ export async function ensureWebLLMEngine(options = {}) {
     updateEngineState({
       status: 'error',
       hasShaderF16: false,
-      error: gpuError.message
+      error: gpuError.message,
+      errorCode: gpuError.errorCode || gpuError.status || null,
+      suggestedProvider: 'gemini'
     });
     logWebLLMStage(
       'init_error',
@@ -3506,12 +3644,17 @@ export async function ensureWebLLMEngine(options = {}) {
   const initController = new AbortController();
   activeInitAbortController = initController;
   activeInitModelId = resolvedModelId;
-  const currentInitPromise = (async () => {
+  /** @type {Promise<any> | null} */
+  let currentInitPromise = null;
+  currentInitPromise = (async () => {
     const initStartMs = entryStartMs;
     let wasCachedBeforeInit = false;
     let hasVerifiedLocalCache = false;
+    /** @type {any} */
     let removeAbortListener = null;
+    /** @type {any} */
     let clearWorkerWatchdog = null;
+    /** @type {any} */
     let detachWorkerDiagListener = null;
 
     try {
@@ -3622,7 +3765,7 @@ export async function ensureWebLLMEngine(options = {}) {
           modelId: resolvedModelId,
           catalogEntry,
           signal: initController.signal,
-          onProgress: (dlReport) => {
+          onProgress: (/** @type {any} */ dlReport) => {
             updateEngineState({
               status: 'downloading',
               modelId: resolvedModelId,
@@ -3700,6 +3843,7 @@ export async function ensureWebLLMEngine(options = {}) {
       const workerCrashPromise = new Promise((_, reject) => {
         activeInitAbortReject = reject;
 
+        /** @type {any} */
         let watchdogTimer = null;
         resetWorkerWatchdog = () => {
           if (watchdogTimer) {
@@ -3740,7 +3884,7 @@ export async function ensureWebLLMEngine(options = {}) {
         };
         resetWorkerWatchdog();
 
-        worker.onerror = (event) => {
+        worker.onerror = (/** @type {any} */ event) => {
           clearWorkerWatchdog?.();
           const detail = event?.message || 'Dedicated WebLLM worker encountered an unexpected fatal error.';
           logWebLLMStage(
@@ -3793,7 +3937,7 @@ export async function ensureWebLLMEngine(options = {}) {
       // safe RPC lifecycle events (never logging user prompt/chat content).
       if (typeof worker.addEventListener === 'function' && typeof worker.removeEventListener === 'function') {
         let seenInitProgressMessages = 0;
-        const onWorkerInitMessage = (event) => {
+        const onWorkerInitMessage = (/** @type {any} */ event) => {
           resetWorkerWatchdog();
           const kind = typeof event?.data?.kind === 'string' ? event.data.kind : 'unknown';
           if (kind === 'initProgressCallback') {
@@ -3825,7 +3969,7 @@ export async function ensureWebLLMEngine(options = {}) {
 
       let lastLoggedWorkerBucket = -1;
       let lastLoggedWorkerPhase = '';
-      const handleInitProgress = (report) => {
+      const handleInitProgress = (/** @type {any} */ report) => {
         resetWorkerWatchdog();
         const hasNumericProgress =
           typeof report?.progress === 'number' && Number.isFinite(report.progress);
@@ -4011,7 +4155,7 @@ export async function ensureWebLLMEngine(options = {}) {
 
       // Keep runtime worker error & messageerror listeners active after init so runtime crashes
       // unblock any active streaming generator, invalidate stale GPU state, and recover cleanly.
-      const handleRuntimeWorkerFailure = (event, defaultMsg) => {
+      const handleRuntimeWorkerFailure = (/** @type {any} */ event, /** @type {any} */ defaultMsg) => {
         const crashDetail = event?.message || defaultMsg;
         console.error('[Orvix WebLLM] Runtime worker error:', crashDetail);
         cachedGpuSupportEntry = null;
@@ -4038,13 +4182,13 @@ export async function ensureWebLLMEngine(options = {}) {
         });
       };
 
-      worker.onerror = (event) => {
+      worker.onerror = (/** @type {any} */ event) => {
         handleRuntimeWorkerFailure(
           event,
           'Dedicated WebLLM worker encountered an unexpected runtime error.'
         );
       };
-      worker.onmessageerror = (event) => {
+      worker.onmessageerror = (/** @type {any} */ event) => {
         handleRuntimeWorkerFailure(
           event,
           'Communication with the Browser AI worker failed.'
@@ -4094,7 +4238,7 @@ export async function ensureWebLLMEngine(options = {}) {
         modelId: resolvedModelId,
         isCached: true
       };
-    } catch (rawErr) {
+    } catch (/** @type {any} */ rawErr) {
       clearWorkerWatchdog?.();
       detachWorkerDiagListener?.();
       detachWorkerDiagListener = null;
@@ -4185,7 +4329,10 @@ export async function ensureWebLLMEngine(options = {}) {
         progressPercent: null,
         progressText: '',
         isCached: hasVerifiedLocalCache,
-        error: normalizedError.message
+        error: normalizedError.message,
+        errorCode: normalizedError.errorCode || normalizedError.status || null,
+        suggestedFallbackModelId: normalizedError.suggestedFallbackModelId || null,
+        suggestedProvider: normalizedError.suggestedProvider || null
       });
 
       throw normalizedError;
@@ -4216,6 +4363,9 @@ export async function ensureWebLLMEngine(options = {}) {
 /**
  * Builds Orvix's companion system instruction locally in the browser, honoring
  * username, responseLength, beginnerFriendly, and active chat mode.
+ * @param {string|null} [username=null]
+ * @param {any} [preferences=null]
+ * @param {string} [mode='general']
  */
 function buildLocalSystemInstruction(username = null, preferences = null, mode = 'general') {
   const instructions = [
@@ -4263,6 +4413,8 @@ function buildLocalSystemInstruction(username = null, preferences = null, mode =
 /**
  * Bounds multi-turn history so total message characters fit comfortably inside Qwen 2.5's
  * 4,096-token WebGPU KV cache (~12,500 chars total input budget, leaving room for output tokens).
+ * @param {Array<any>} messages
+ * @param {number} [maxInputChars=12500]
  */
 function trimMessagesToContextBudget(messages, maxInputChars = 12_500) {
   if (!Array.isArray(messages) || messages.length <= 2) {
@@ -4344,7 +4496,7 @@ export function stopWebLLMGeneration() {
   if (engineInstance) {
     try {
       engineInstance.interruptGenerate();
-    } catch (err) {
+    } catch (/** @type {any} */ err) {
       console.warn('[Orvix WebLLM] interruptGenerate warning:', err?.message || err);
     }
   }
@@ -4369,6 +4521,7 @@ export async function warmupWebLLMEngine(options = {}) {
   }
 
   const previousTurn = generationQueuePromise.catch(() => {});
+  /** @type {any} */
   let releaseQueue;
   generationQueuePromise = new Promise((resolve) => {
     releaseQueue = resolve;
@@ -4432,19 +4585,7 @@ export async function warmupWebLLMEngine(options = {}) {
 /**
  * Streams a chat completion from the local WebLLM Qwen engine running inside the browser worker.
  *
- * @param {Object} params
- * @param {string} params.prompt - User prompt text
- * @param {Array<{ sender: string, content: string }>} [params.history=[]] - Prior conversation messages
- * @param {string|null} [params.username=null]
- * @param {Object|null} [params.preferences=null]
- * @param {string} [params.mode='general']
- * @param {string|null} [params.model=null] - Optional WebLLM model ID override
- * @param {string|null} [params.conversationId=null] - Optional conversation identifier for semantic retrieval scoping
- * @param {Array<Object>} [params.attachments=[]] - Optional extracted document/OCR attachments
- * @param {({ modelUsed: string, provider: string }) => void} [params.onStart]
- * @param {(chunkText: string, accumulatedText: string) => void} [params.onChunk]
- * @param {(report: Object) => void} [params.onProgress]
- * @param {AbortSignal} [params.signal]
+ * @param {any} [params={}]
  * @returns {Promise<{ text: string, modelUsed: string, provider: string, usage?: Object }>}
  */
 export async function streamWebLLMMessage({
@@ -4553,6 +4694,7 @@ export async function streamWebLLMMessage({
 
   // Serialize concurrent requests on the single WebGPU worker pipeline
   const previousTurn = generationQueuePromise.catch(() => {});
+  /** @type {any} */
   let releaseQueue;
   generationQueuePromise = new Promise((resolve) => {
     releaseQueue = resolve;
@@ -4592,7 +4734,7 @@ export async function streamWebLLMMessage({
     const catalogEntry = WEBLLM_MODEL_CATALOG[modelId];
     const baseSystemInstruction = isRefinedTargetModel(modelId)
       ? buildProfileSystemInstruction(modelId, { username, preferences, mode })
-      : buildLocalSystemInstruction(username, preferences, mode);
+      : buildLocalSystemInstruction(/** @type {any} */ (username), preferences, mode);
 
     // Handle local pre-extracted attachments (PDF, DOCX, TXT, offline Tesseract OCR) without server round-trips
     const rawAttachments = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
@@ -4620,7 +4762,7 @@ export async function streamWebLLMMessage({
       const normalizedDocs = [];
       const seenDocKeys = new Set();
 
-      const normalizeAttToDoc = (att) => {
+      const normalizeAttToDoc = (/** @type {any} */ att) => {
         const ext = att.extraction || att;
         const textBody =
           typeof ext.text === 'string'
@@ -4734,7 +4876,7 @@ export async function streamWebLLMMessage({
         const adapted = adaptDocumentContextForProvider({
           provider: WEBLLM_PROVIDER_ID,
           prompt: cleanPrompt,
-          baseSystemInstruction,
+          baseSystemInstruction: baseSystemInstruction || undefined,
           preparedContext,
           maxCharsOverride: catalogEntry?.maxDocChars || 10_000
         });
@@ -4745,7 +4887,7 @@ export async function streamWebLLMMessage({
     }
 
     const rawMessages = formatOpenAIMessages({
-      systemInstruction: effectiveSystemInstruction,
+      systemInstruction: effectiveSystemInstruction || undefined,
       history,
       prompt: effectivePrompt,
       maxContextMessages: catalogEntry?.maxHistoryMessages || 8
@@ -4818,12 +4960,14 @@ export async function streamWebLLMMessage({
     });
     runtimeCrashPromise.catch(() => {});
 
-    const awaitWithRuntimeGuard = (promise) =>
+    const awaitWithRuntimeGuard = (/** @type {any} */ promise) =>
       Promise.race([Promise.resolve(promise), runtimeCrashPromise]);
 
+    /** @type {any} */
     let asyncIterator = null;
 
     try {
+      /** @type {Record<string, any>} */
       const completionPayload = {
         messages: boundedMessages,
         temperature: genParams.temperature,
@@ -4965,7 +5109,10 @@ export async function streamWebLLMMessage({
       updateEngineState({
         status: engineInstance ? 'ready' : 'error',
         modelId,
-        error: normalized.message
+        error: normalized.message,
+        errorCode: normalized.errorCode || normalized.status || null,
+        suggestedFallbackModelId: normalized.suggestedFallbackModelId || null,
+        suggestedProvider: normalized.suggestedProvider || null
       });
 
       throw normalized;
@@ -4988,6 +5135,7 @@ export async function streamWebLLMMessage({
 
 /**
  * Non-streaming convenience wrapper around streamWebLLMMessage for symmetry with other Orvix provider services.
+ * @param {any} [params={}]
  */
 export async function sendWebLLMMessage(params = {}) {
   return streamWebLLMMessage({

@@ -8,13 +8,7 @@ import { createConversationOrderMemo } from '../../services/alternativeResponseS
  * Renders the sequence of user and AI messages with automatic scroll pinning,
  * error action callbacks, and assistant message controls (Copy, Regenerate, Stop).
  *
- * @param {Object} props
- * @param {Array} props.messages
- * @param {boolean} [props.isLoading=false]
- * @param {(failedMessage: Object) => void} [props.onRetry]
- * @param {(promptText: string) => void} [props.onRestorePrompt]
- * @param {(assistantMessage: Object) => void} [props.onRegenerate]
- * @param {() => void} [props.onStopGenerating]
+ * @param {any} props
  */
 function MessageList({
   messages = [],
@@ -62,7 +56,7 @@ function MessageList({
 
   return (
     <div className="messages-stream" role="log" aria-live="polite">
-      {orderedMessages.map((msg) => (
+      {orderedMessages.map((/** @type {any} */ msg) => (
         <ChatMessage
           key={msg.id}
           message={msg}

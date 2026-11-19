@@ -10,28 +10,9 @@
     "noEmit": true
   },
   "include": [
-    "src/vite-env.d.ts",
-    "src/services/storageEnvelopeService.d.ts",
-    "src/config/appConfig.js",
-    "src/config/aiGuidance.js",
-    "src/config/chatModes.js",
-    "src/config/sampleData.js",
-    "src/config/webllmModels.js",
-    "src/services/ocrLanguagePackService.js",
-    "src/services/semanticConceptModel.js",
-    "src/services/semanticEmbeddingService.js",
-    "src/utils/formatResponseTime.js",
-    "src/utils/legacyStorageMigration.js",
-    "src/utils/shareRouteUtils.js",
-    "src/utils/speechTextCleaner.js",
-    "src/workers/webllmWorker.js",
-    "src/components/ui/Button.jsx",
-    "src/components/ui/OrvixLogo.jsx",
-    "src/components/chat/ComposerAttachmentTray.jsx",
-    "src/components/chat/LiveResponseTimer.jsx",
-    "src/components/chat/SharedConversationBanner.jsx",
-    "src/components/chat/TypingIndicator.jsx",
-    "src/components/chat/WelcomeScreen.jsx"
+    "src/**/*.d.ts",
+    "src/**/*.js",
+    "src/**/*.jsx"
   ],
   "exclude": [
     "node_modules",

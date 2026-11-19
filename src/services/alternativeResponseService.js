@@ -26,23 +26,6 @@ export function generateAlternativeId(provider = 'assistant') {
   return `alt-${cleanProvider}-${timestamp}-${randomPart}`;
 }
 
-/**
- * Creates a well-formed Response Alternative record.
- *
- * @param {Object} params
- * @param {string} [params.id]
- * @param {string|null} [params.parentMessageId=null] - The user message ID that prompted this alternative
- * @param {string} [params.content='']
- * @param {string} [params.provider='gemini']
- * @param {string|null} [params.modelUsed=null]
- * @param {number|null} [params.responseTimeMs=null]
- * @param {string} [params.timestamp='']
- * @param {number} [params.createdAt=Date.now()]
- * @param {Array} [params.referencedAttachments=[]]
- * @param {boolean} [params.isError=false]
- * @param {boolean} [params.isStopped=false]
- * @returns {Object} Clean ResponseAlternative object
- */
 export { sanitizeModelForProvider } from './providerModelSanitizer.js';
 import {
   normalizeProviderId,
@@ -50,6 +33,10 @@ import {
   sanitizeStoredDisplayModel
 } from './providerModelSanitizer.js';
 
+/**
+ * @param {any} target
+ * @param {any} [source={}]
+ */
 function assignOptionalRecoveryFields(target, source = {}) {
   if (!source || typeof source !== 'object') return target;
   if (typeof source.failedPrompt === 'string' && source.failedPrompt.length > 0) {
@@ -76,6 +63,9 @@ function assignOptionalRecoveryFields(target, source = {}) {
   return target;
 }
 
+/**
+ * @param {any} [alt={}]
+ */
 function projectAlternativeRecoveryFields(alt = {}) {
   return {
     isError: Boolean(alt.isError),
@@ -91,6 +81,11 @@ function projectAlternativeRecoveryFields(alt = {}) {
   };
 }
 
+/**
+ * Creates a well-formed Response Alternative record.
+ * @param {any} [params={}]
+ * @returns {any} Clean ResponseAlternative object
+ */
 export function createAlternativeRecord({
   id = null,
   parentMessageId = null,
@@ -146,13 +141,9 @@ export function createAlternativeRecord({
 }
 
 /**
- * Normalizes an assistant message to ensure it contains a valid alternatives list,
- * an activeAlternativeId, and a linked parentMessageId.
- * Gracefully handles legacy messages that do not have alternative-response metadata.
- *
- * @param {Object} message - The assistant message to normalize
- * @param {Object|null} [precedingUserMessage=null] - Preceding user message for parent linking
- * @returns {Object} Normalized message with alternatives structure
+ * @param {any} alternatives
+ * @param {any} activeAlternativeId
+ * @returns {boolean}
  */
 function hasActiveAlternativeRecord(alternatives, activeAlternativeId) {
   if (!activeAlternativeId || !Array.isArray(alternatives) || alternatives.length === 0) {
@@ -167,11 +158,15 @@ function hasActiveAlternativeRecord(alternatives, activeAlternativeId) {
   return false;
 }
 
+/**
+ * @param {any} message
+ * @returns {boolean}
+ */
 function activeAlternativeRequiresProjection(message) {
   if (!message || !Array.isArray(message.alternatives) || !message.activeAlternativeId) {
     return false;
   }
-  const activeAlt = message.alternatives.find((a) => a && a.id === message.activeAlternativeId);
+  const activeAlt = message.alternatives.find((/** @type {any} */ a) => a && a.id === message.activeAlternativeId);
   if (!activeAlt) return false;
   if (
     Boolean(message.isError) !== Boolean(activeAlt.isError) ||
@@ -190,6 +185,15 @@ function activeAlternativeRequiresProjection(message) {
   return false;
 }
 
+/**
+ * Normalizes an assistant message to ensure it contains a valid alternatives list,
+ * an activeAlternativeId, and a linked parentMessageId.
+ * Gracefully handles legacy messages that do not have alternative-response metadata.
+ *
+ * @param {any} message - The assistant message to normalize
+ * @param {any} [precedingUserMessage=null] - Preceding user message for parent linking
+ * @returns {any} Normalized message with alternatives structure
+ */
 export function normalizeAssistantMessage(message, precedingUserMessage = null) {
   if (!message || message.sender === 'user') {
     return message;
@@ -230,11 +234,12 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
       ? baseMessage.createdAtMs
       : createdAt;
 
+  /** @type {any[]} */
   let alternatives = [];
 
   if (Array.isArray(baseMessage.alternatives) && baseMessage.alternatives.length > 0) {
     // Message already has alternatives array; ensure each alternative is well-formed
-    alternatives = message.alternatives.map((alt) =>
+    alternatives = message.alternatives.map((/** @type {any} */ alt) =>
       createAlternativeRecord({
         id: alt.id,
         parentMessageId: alt.parentMessageId || parentMessageId,
@@ -291,7 +296,7 @@ export function normalizeAssistantMessage(message, precedingUserMessage = null) 
 
   // Ensure activeAlternativeId points to an existing alternative in the list
   let activeAlternativeId = message.activeAlternativeId;
-  let activeAlt = alternatives.find((a) => a.id === activeAlternativeId);
+  let activeAlt = alternatives.find((/** @type {any} */ a) => a.id === activeAlternativeId);
 
   if (!activeAlt) {
     activeAlt = alternatives[0];
@@ -369,7 +374,7 @@ export function switchActiveAlternativeInMessage(assistantMessage, targetAlterna
     return assistantMessage;
   }
 
-  const targetAlt = assistantMessage.alternatives.find((a) => a.id === targetAlternativeId);
+  const targetAlt = assistantMessage.alternatives.find((/** @type {any} */ a) => a.id === targetAlternativeId);
   if (!targetAlt) {
     return assistantMessage;
   }
@@ -414,7 +419,7 @@ export function updateActiveAlternativeInMessage(assistantMessage, updates = {})
 
   const activeId = normalized.activeAlternativeId;
 
-  const updatedAlternatives = normalized.alternatives.map((alt) => {
+  const updatedAlternatives = normalized.alternatives.map((/** @type {any} */ alt) => {
     if (alt.id !== activeId) return alt;
     return {
       ...alt,
@@ -423,7 +428,7 @@ export function updateActiveAlternativeInMessage(assistantMessage, updates = {})
     };
   });
 
-  const activeAlt = updatedAlternatives.find((a) => a.id === activeId) || updatedAlternatives[0];
+  const activeAlt = updatedAlternatives.find((/** @type {any} */ a) => a.id === activeId) || updatedAlternatives[0];
 
   return {
     ...normalized,
@@ -515,7 +520,7 @@ export function getActiveAlternative(assistantMessage) {
   const alts = Array.isArray(normalized.alternatives) ? normalized.alternatives : [];
   if (alts.length === 0) return null;
   const activeId = normalized.activeAlternativeId;
-  return alts.find((a) => a.id === activeId) || alts[0] || null;
+  return alts.find((/** @type {any} */ a) => a.id === activeId) || alts[0] || null;
 }
 
 /**
@@ -533,7 +538,9 @@ export function findMatchingAlternative(assistantMessage, targetProvider, target
   const rawProvider =
     typeof targetProvider === 'object' && targetProvider?.provider
       ? targetProvider.provider
-      : targetProvider;
+      : typeof targetProvider === 'string'
+      ? targetProvider
+      : '';
   const rawModel =
     targetModel !== null && targetModel !== undefined
       ? targetModel
@@ -552,7 +559,7 @@ export function findMatchingAlternative(assistantMessage, targetProvider, target
     ? sanitizeModelForProvider(normalizedProvider, rawModel)
     : null;
 
-  const matches = alts.filter((alt) => {
+  const matches = alts.filter((/** @type {any} */ alt) => {
     if (!alt) return false;
     const altProvider = normalizeProviderId(alt.provider);
     if (altProvider !== normalizedProvider) return false;
@@ -567,10 +574,10 @@ export function findMatchingAlternative(assistantMessage, targetProvider, target
 
   if (matches.length === 0) return null;
 
-  const activeMatch = matches.find((a) => a.id === normalized.activeAlternativeId);
+  const activeMatch = matches.find((/** @type {any} */ a) => a.id === normalized.activeAlternativeId);
   if (activeMatch) return activeMatch;
 
-  const healthyMatch = matches.find((a) => !a.isError && !a.isInterrupted);
+  const healthyMatch = matches.find((/** @type {any} */ a) => !a.isError && !a.isInterrupted);
   return healthyMatch || matches[0];
 }
 
@@ -589,7 +596,7 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
   const normalized = normalizeAssistantMessage(assistantMessage);
   const targetAlternativeId = targetId || normalized.activeAlternativeId;
 
-  const updatedAlternatives = normalized.alternatives.map((alt) => {
+  const updatedAlternatives = normalized.alternatives.map((/** @type {any} */ alt) => {
     if (alt.id !== targetAlternativeId) return alt;
     return {
       ...alt,
@@ -599,7 +606,7 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
   });
 
   const activeId = normalized.activeAlternativeId;
-  const activeAlt = updatedAlternatives.find((a) => a.id === activeId) || updatedAlternatives[0];
+  const activeAlt = updatedAlternatives.find((/** @type {any} */ a) => a.id === activeId) || updatedAlternatives[0];
 
   const rootSync = targetAlternativeId === activeId ? updates : {};
 
@@ -619,17 +626,21 @@ export function updateAlternativeByIdInMessage(assistantMessage, targetId, updat
  * Normalizes all messages in a conversation so all assistant messages
  * have parentMessageId and valid alternatives array.
  *
- * @param {Array} messages - Full conversation messages array
- * @returns {Array} Normalized messages array
+ * @param {Array<any>} [messages=[]] - Full conversation messages array
+ * @returns {Array<any>} Normalized messages array
  */
 export function ensureConversationAlternatives(messages = []) {
   if (!Array.isArray(messages)) return [];
   const len = messages.length;
   if (len === 0) return messages;
 
+  /** @type {Map<any, any> | null} */
   let userById = null;
+  /** @type {Map<any, any> | null} */
   let userByInteractionId = null;
+  /** @type {any} */
   let lastUserMessage = null;
+  /** @type {any[] | null} */
   let next = null;
 
   const ensureUserLookups = () => {
@@ -674,8 +685,8 @@ export function ensureConversationAlternatives(messages = []) {
 
       ensureUserLookups();
       const linkedUser =
-        (msg.parentMessageId && userById.get(msg.parentMessageId)) ||
-        (msg.interactionId && userByInteractionId.get(msg.interactionId)) ||
+        (msg.parentMessageId && userById?.get(msg.parentMessageId)) ||
+        (msg.interactionId && userByInteractionId?.get(msg.interactionId)) ||
         lastUserMessage;
       const normalized = normalizeAssistantMessage(msg, linkedUser);
       if (normalized !== msg) {
@@ -690,6 +701,10 @@ export function ensureConversationAlternatives(messages = []) {
   return next !== null ? next : messages;
 }
 
+/**
+ * @param {any} msg
+ * @param {any} parentUser
+ */
 function isFastNormalizedAssistantForUser(msg, parentUser) {
   if (!msg || !parentUser || !parentUser.id) return false;
   if (msg.parentMessageId !== parentUser.id) return false;
@@ -698,6 +713,10 @@ function isFastNormalizedAssistantForUser(msg, parentUser) {
   return !activeAlternativeRequiresProjection(msg);
 }
 
+/**
+ * @param {any} prevMsg
+ * @param {any} nextMsg
+ */
 function canReuseMessageSlotOrder(prevMsg, nextMsg) {
   if (!prevMsg || !nextMsg) return false;
   if (!nextMsg.id || prevMsg.id !== nextMsg.id) return false;
@@ -749,8 +768,8 @@ function canReuseMessageSlotOrder(prevMsg, nextMsg) {
  * 4. Responses never become detached from their parent user request.
  * 5. Conversations restored from history/storage preserve exact parent-child pairing.
  *
- * @param {Array} messages - Unordered or partially ordered message array
- * @returns {Array} Canonically ordered and aligned message array
+ * @param {Array<any>} [messages=[]] - Unordered or partially ordered message array
+ * @returns {Array<any>} Canonically ordered and aligned message array
  */
 export function orderConversationMessages(messages = []) {
   if (!Array.isArray(messages)) {
@@ -837,6 +856,7 @@ export function orderConversationMessages(messages = []) {
 
   // Canonical ordering pass:
   // Step 1: Catalog all user messages
+  /** @type {any[]} */
   const userOrder = [];
   const userMap = new Map();
   const userIndexById = new Map();
@@ -866,8 +886,9 @@ export function orderConversationMessages(messages = []) {
   }
 
   // Lazy lookup table for assistant messages missing parentMessageId that link via interactionId
+  /** @type {Map<any, any> | null} */
   let userIdByInteractionKey = null;
-  const resolveParentIdByInteraction = (interactionKey) => {
+  const resolveParentIdByInteraction = (/** @type {any} */ interactionKey) => {
     if (userIdByInteractionKey === null) {
       userIdByInteractionKey = new Map();
       for (let j = 0; j < userOrder.length; j++) {
@@ -906,7 +927,7 @@ export function orderConversationMessages(messages = []) {
 
       if (parentId && assistantBuckets.has(parentId)) {
         const bucket = assistantBuckets.get(parentId);
-        const existingIdx = bucket.findIndex((a) => a.id === m.id);
+        const existingIdx = bucket.findIndex((/** @type {any} */ a) => a.id === m.id);
         if (existingIdx >= 0) {
           bucket[existingIdx] = m;
         } else {
@@ -944,7 +965,7 @@ export function orderConversationMessages(messages = []) {
     result.push(userMsg);
     const assistants = assistantBuckets.get(userMsg.id) || [];
     if (assistants.length > 1) {
-      assistants.sort((a, b) => {
+      assistants.sort((/** @type {any} */ a, /** @type {any} */ b) => {
         const timeA = typeof a.createdAtMs === 'number' ? a.createdAtMs : (a.createdAt || 0);
         const timeB = typeof b.createdAtMs === 'number' ? b.createdAtMs : (b.createdAt || 0);
         return timeA - timeB;
@@ -973,14 +994,14 @@ export function orderConversationMessages(messages = []) {
  *   links, or creation timestamps.
  *
  * @param {{ onFullOrder?: () => void }} [options]
- * @returns {(messages?: Array) => Array}
+ * @returns {(messages?: Array<any>) => Array<any>}
  */
 export function createConversationOrderMemo(options = {}) {
   const onFullOrder = typeof options?.onFullOrder === 'function' ? options.onFullOrder : null;
-  /** @type {Array | null} */
+  /** @type {Array<any> | null} */
   let prevInput = null;
   let prevInputLength = -1;
-  /** @type {Array | null} */
+  /** @type {Array<any> | null} */
   let prevOutput = null;
 
   return function memoizedOrderConversationMessages(messages = []) {
@@ -1092,8 +1113,8 @@ export function createConversationOrderMemo(options = {}) {
 
 /**
  * Returns alternative navigation metrics for an assistant message.
- * @param {Object} assistantMessage
- * @returns {{ total: number, currentIndex: number, activeAlternativeId: string|null, canGoPrevious: boolean, canGoNext: boolean, alternatives: Array }}
+ * @param {any} assistantMessage
+ * @returns {{ total: number, currentIndex: number, activeAlternativeId: string|null, canGoPrevious: boolean, canGoNext: boolean, alternatives: Array<any> }}
  */
 export function getAlternativeMetrics(assistantMessage) {
   if (!assistantMessage || !Array.isArray(assistantMessage.alternatives)) {
@@ -1110,7 +1131,7 @@ export function getAlternativeMetrics(assistantMessage) {
   const alts = assistantMessage.alternatives;
   const total = Math.max(1, alts.length);
   const activeId = assistantMessage.activeAlternativeId || (alts[0]?.id ?? null);
-  const currentIndex = Math.max(0, alts.findIndex((a) => a.id === activeId));
+  const currentIndex = Math.max(0, alts.findIndex((/** @type {any} */ a) => a.id === activeId));
 
   return {
     total,

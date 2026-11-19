@@ -92,13 +92,20 @@ export const PREBUILT_WEBLLM_MODEL_RECORDS = Object.freeze([
   })
 ]);
 
+/** @type {Map<string, any>} */
 const PREBUILT_MODEL_MAP = new Map(PREBUILT_WEBLLM_MODEL_RECORDS.map((r) => [r.model_id, r]));
 
+/**
+ * @param {any} modelId
+ */
 export function findPrebuiltWebLLMRecord(modelId) {
   if (!modelId) return null;
   return PREBUILT_MODEL_MAP.get(String(modelId).trim()) || null;
 }
 
+/**
+ * @param {any} rawModelUrl
+ */
 function defaultNormalizeModelUrl(rawModelUrl) {
   let url = String(rawModelUrl || '');
   if (!url.endsWith('/')) {
@@ -114,6 +121,8 @@ function defaultNormalizeModelUrl(rawModelUrl) {
  * Checks whether all tensor shards indexed in tensor-cache.json exist in 'webllm/model'
  * using direct Cache Storage lookup (avoiding loading @mlc-ai/web-llm's 6.14 MB JS/WASM bundle
  * and working cleanly with mock caches that only implement match/put/delete).
+ * @param {any} modelId
+ * @param {any} [normalizeBaseUrl]
  */
 export async function hasPrebuiltModelInCache(modelId, normalizeBaseUrl = defaultNormalizeModelUrl) {
   if (typeof caches === 'undefined') {
@@ -147,9 +156,9 @@ export async function hasPrebuiltModelInCache(modelId, normalizeBaseUrl = defaul
   }
 
   const shardUrls = records
-    .map((entry) => entry?.dataPath)
+    .map((/** @type {any} */ entry) => entry?.dataPath)
     .filter(Boolean)
-    .map((dataPath) => new URL(dataPath, modelBaseUrl).href);
+    .map((/** @type {any} */ dataPath) => new URL(dataPath, modelBaseUrl).href);
 
   if (shardUrls.length === 0) {
     return false;
@@ -164,6 +173,8 @@ export async function hasPrebuiltModelInCache(modelId, normalizeBaseUrl = defaul
 /**
  * Removes cached tensor shards, tokenizers, chat config, and compiled WASM library for a model
  * directly from WebLLM's Cache Storage scopes ('webllm/model', 'webllm/config', 'webllm/wasm').
+ * @param {any} modelId
+ * @param {any} [normalizeBaseUrl]
  */
 export async function deletePrebuiltModelFromCache(modelId, normalizeBaseUrl = defaultNormalizeModelUrl) {
   if (typeof caches === 'undefined') {
@@ -191,9 +202,9 @@ export async function deletePrebuiltModelFromCache(modelId, normalizeBaseUrl = d
       const records = Array.isArray(tensorIndex?.records) ? tensorIndex.records : [];
       await Promise.all(
         records
-          .map((entry) => entry?.dataPath)
+          .map((/** @type {any} */ entry) => entry?.dataPath)
           .filter(Boolean)
-          .map((dataPath) => modelCache.delete(new URL(dataPath, modelBaseUrl).href))
+          .map((/** @type {any} */ dataPath) => modelCache.delete(new URL(dataPath, modelBaseUrl).href))
       );
     }
   } catch (_) {
@@ -216,6 +227,11 @@ function generateUuid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/**
+ * @param {any} loadedModelIds
+ * @param {any} requestModel
+ * @param {any} requestName
+ */
 function resolveModelIdForRequest(loadedModelIds, requestModel, requestName) {
   if (!Array.isArray(loadedModelIds) || loadedModelIds.length === 0) {
     const err = new Error(`Model not loaded before calling ${requestName}.`);
@@ -247,13 +263,19 @@ function resolveModelIdForRequest(loadedModelIds, requestModel, requestName) {
  * against WebWorkerMLCEngineHandler in src/workers/webllmWorker.js.
  */
 export class WebWorkerMLCEngine {
+  /**
+   * @param {any} worker
+   * @param {any} [engineConfig]
+   */
   constructor(worker, engineConfig) {
     this.pendingPromise = new Map();
     this.worker = worker;
+    /** @type {any} */
     this.modelId = undefined;
+    /** @type {any} */
     this.chatOpts = undefined;
 
-    worker.onmessage = (event) => {
+    worker.onmessage = (/** @type {any} */ event) => {
       this.onmessage(event);
     };
 
@@ -267,17 +289,20 @@ export class WebWorkerMLCEngine {
 
     this.chat = {
       completions: {
-        create: (request) => this.chatCompletion(request)
+        create: (/** @type {any} */ request) => this.chatCompletion(request)
       }
     };
     this.completions = {
-      create: (request) => this.completion(request)
+      create: (/** @type {any} */ request) => this.completion(request)
     };
     this.embeddings = {
-      create: (request) => this.embedding(request)
+      create: (/** @type {any} */ request) => this.embedding(request)
     };
   }
 
+  /**
+   * @param {any} initProgressCallback
+   */
   setInitProgressCallback(initProgressCallback) {
     this.initProgressCallback = initProgressCallback;
   }
@@ -286,6 +311,9 @@ export class WebWorkerMLCEngine {
     return this.initProgressCallback;
   }
 
+  /**
+   * @param {any} appConfig
+   */
   setAppConfig(appConfig) {
     this.worker.postMessage({
       kind: 'setAppConfig',
@@ -294,6 +322,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} logLevel
+   */
   setLogLevel(logLevel) {
     this.worker.postMessage({
       kind: 'setLogLevel',
@@ -302,10 +333,13 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} msg
+   */
   getPromise(msg) {
     const uuid = msg.uuid;
     const promise = new Promise((resolve, reject) => {
-      this.pendingPromise.set(uuid, (reply) => {
+      this.pendingPromise.set(uuid, (/** @type {any} */ reply) => {
         if (reply.kind === 'return') {
           resolve(reply.content);
         } else if (reply.kind === 'throw') {
@@ -319,6 +353,10 @@ export class WebWorkerMLCEngine {
     return promise;
   }
 
+  /**
+   * @param {any} modelId
+   * @param {any} [chatOpts]
+   */
   async reload(modelId, chatOpts) {
     const modelIds = Array.isArray(modelId) ? modelId : [modelId];
     const normalizedChatOpts =
@@ -352,6 +390,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} [modelId]
+   */
   async getMessage(modelId) {
     return await this.getPromise({
       kind: 'getMessage',
@@ -360,6 +401,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} [modelId]
+   */
   async runtimeStatsText(modelId) {
     return await this.getPromise({
       kind: 'runtimeStatsText',
@@ -386,6 +430,10 @@ export class WebWorkerMLCEngine {
     this.chatOpts = undefined;
   }
 
+  /**
+   * @param {boolean} [keepStats=false]
+   * @param {any} [modelId]
+   */
   async resetChat(keepStats = false, modelId) {
     await this.getPromise({
       kind: 'resetChat',
@@ -397,6 +445,11 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} inputIds
+   * @param {any} isPrefill
+   * @param {any} [modelId]
+   */
   async forwardTokensAndSample(inputIds, isPrefill, modelId) {
     return await this.getPromise({
       kind: 'forwardTokensAndSample',
@@ -409,8 +462,12 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} streamId
+   */
   asyncGenerate(streamId) {
     let completed = false;
+    /** @type {any} */
     let closePromise;
     const getPromise = this.getPromise.bind(this);
 
@@ -455,6 +512,9 @@ export class WebWorkerMLCEngine {
     return iterator;
   }
 
+  /**
+   * @param {any} request
+   */
   async chatCompletion(request) {
     if (this.modelId === undefined) {
       const err = new Error(`${this.constructor.name}: model not loaded.`);
@@ -492,6 +552,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} request
+   */
   async completion(request) {
     if (this.modelId === undefined) {
       const err = new Error(`${this.constructor.name}: model not loaded.`);
@@ -529,6 +592,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} request
+   */
   async embedding(request) {
     if (this.modelId === undefined) {
       const err = new Error(`${this.constructor.name}: model not loaded.`);
@@ -554,6 +620,10 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} sessionId
+   * @param {any} [options]
+   */
   async resumeChatCompletion(sessionId, options) {
     if (options?.continueGeneration === true && options?.stream === true) {
       const streamId = generateUuid();
@@ -574,6 +644,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} sessionId
+   */
   async deleteResumableSession(sessionId) {
     await this.getPromise({
       kind: 'deleteResumableSession',
@@ -582,6 +655,9 @@ export class WebWorkerMLCEngine {
     });
   }
 
+  /**
+   * @param {any} event
+   */
   onmessage(event) {
     const msg =
       (typeof MessageEvent !== 'undefined' && event instanceof MessageEvent) ||
@@ -617,6 +693,12 @@ export class WebWorkerMLCEngine {
   }
 }
 
+/**
+ * @param {any} worker
+ * @param {any} modelId
+ * @param {any} [engineConfig]
+ * @param {any} [chatOpts]
+ */
 export async function CreateWebWorkerMLCEngine(worker, modelId, engineConfig, chatOpts) {
   const engine = new WebWorkerMLCEngine(worker, engineConfig);
   await engine.reload(modelId, chatOpts);

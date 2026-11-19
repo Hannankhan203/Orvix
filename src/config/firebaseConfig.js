@@ -9,10 +9,12 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, disableNetwork, enableNetwork } from 'firebase/firestore';
 
+/** @param {string} key */
 function getEnv(key) {
   try {
-    if (typeof import.meta !== 'undefined' && import.meta?.env?.[key]) {
-      return import.meta.env[key];
+    const metaEnv = /** @type {any} */ (typeof import.meta !== 'undefined' ? import.meta.env : null);
+    if (metaEnv && metaEnv[key]) {
+      return metaEnv[key];
     }
   } catch (_) {
     // Ignore error in non-Vite environments
@@ -88,8 +90,11 @@ export function isFirebaseConfigured() {
 }
 
 // Initialize Firebase App only if valid configuration is present
+/** @type {any} */
 let app = null;
+/** @type {any} */
 let auth = null;
+/** @type {any} */
 let db = null;
 let firestoreNetworkDisabled = false;
 let networkTransitionChain = Promise.resolve();
@@ -119,7 +124,7 @@ export function syncFirestoreNetworkState(online = isBrowserOnline()) {
         }
       } catch (err) {
         // Non-fatal: Firestore network toggling should never disrupt local chat
-        console.warn('Firestore network state transition notice:', err?.message || err);
+        console.warn('Firestore network state transition notice:', /** @type {any} */ (err)?.message || err);
       }
     });
 

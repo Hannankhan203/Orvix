@@ -4,8 +4,10 @@ const PWAInstallContext = createContext(null);
 
 const consumedPromptEvents = new WeakSet();
 const windowStores = new WeakMap();
+/** @type {any} */
 let fallbackStore = null;
 
+/** @param {any} win */
 function detectStandalone(win) {
   if (!win) return false;
   try {
@@ -17,6 +19,7 @@ function detectStandalone(win) {
   }
 }
 
+/** @param {any} win */
 function detectIOS(win) {
   if (!win?.navigator?.userAgent) return false;
   try {
@@ -27,7 +30,9 @@ function detectIOS(win) {
   }
 }
 
+/** @param {any} win */
 function createPWAInstallStore(win) {
+  /** @type {{ deferredPrompt: any, isInstalled: boolean, isIOS: boolean, isInstalling: boolean }} */
   let state = {
     deferredPrompt: null,
     isInstalled: detectStandalone(win),
@@ -46,6 +51,7 @@ function createPWAInstallStore(win) {
     });
   };
 
+  /** @param {any} updater */
   const setState = (updater) => {
     const patch = typeof updater === 'function' ? updater(state) : updater;
     const nextState = { ...state, ...patch };
@@ -65,7 +71,7 @@ function createPWAInstallStore(win) {
     if (!win || windowListenersAttached) return;
     windowListenersAttached = true;
 
-    const handleBeforeInstallPrompt = (e) => {
+    const handleBeforeInstallPrompt = (/** @type {any} */ e) => {
       if (!e || consumedPromptEvents.has(e)) return;
       if (typeof e.preventDefault === 'function') {
         e.preventDefault();
@@ -85,7 +91,7 @@ function createPWAInstallStore(win) {
     };
 
     const standaloneMedia = win.matchMedia?.('(display-mode: standalone)');
-    const handleDisplayModeChange = (e) => {
+    const handleDisplayModeChange = (/** @type {any} */ e) => {
       if (e?.matches) {
         setState({
           isInstalled: true,
@@ -106,6 +112,7 @@ function createPWAInstallStore(win) {
 
   attachWindowListeners();
 
+  /** @param {() => void} listener */
   const subscribe = (listener) => {
     attachWindowListeners();
     listeners.add(listener);
@@ -139,7 +146,7 @@ function createPWAInstallStore(win) {
       console.warn('PWA install prompt failed or was rejected:', err);
       accepted = false;
     } finally {
-      setState((prev) => ({
+      setState((/** @type {any} */ prev) => ({
         deferredPrompt: prev.deferredPrompt === promptEvent ? null : prev.deferredPrompt,
         isInstalled: accepted ? true : prev.isInstalled,
         isInstalling: false
@@ -184,6 +191,7 @@ function getStoreForCurrentWindow() {
  * Optional provider to explicitly scope/share PWA install state via React Context.
  * Even without a provider, usePWAInstall synchronizes across all mounted components
  * sharing the same window (e.g. Header and Sidebar).
+ * @param {{ children?: any }} props
  */
 export function PWAInstallProvider({ children }) {
   const store = getStoreForCurrentWindow();

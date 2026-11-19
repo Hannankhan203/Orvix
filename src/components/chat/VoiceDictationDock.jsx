@@ -14,6 +14,7 @@ import {
  * VoiceDictationDock Component
  * Modern recording dock with animated waveform visualizer, recording timer,
  * recognition language picker, and control buttons (Pause, Resume, Stop, Cancel).
+ * @param {any} props
  */
 export default function VoiceDictationDock({
   recordingState,
@@ -96,7 +97,7 @@ export default function VoiceDictationDock({
             recordingState === 'cancelled';
           const isLangDisabled = Boolean(isPublicSharedViewer || isComposerBlocked || isTerminalState);
           const resolvedLang =
-            (selectedLanguage && supportedLanguages.find((l) => l.code === selectedLanguage)) ||
+            (selectedLanguage && supportedLanguages.find((/** @type {any} */ l) => l.code === selectedLanguage)) ||
             activeLang ||
             supportedLanguages[0];
           const currentSelectedCode = selectedLanguage || resolvedLang?.code || 'en-US';
@@ -149,7 +150,7 @@ export default function VoiceDictationDock({
               {!isLangDisabled && langMenuOpen && (
                 <div className="dictation-lang-dropdown" role="menu" aria-label="Recognition Language">
                   <div className="lang-dropdown-header">Recognition Language</div>
-                  {supportedLanguages.map((lang) => (
+                  {supportedLanguages.map((/** @type {any} */ lang) => (
                     <button
                       key={lang.code}
                       type="button"
@@ -179,7 +180,7 @@ export default function VoiceDictationDock({
         title={isListening ? `Microphone audio level: ${audioLevel}%` : 'Microphone audio visualizer'}
       >
         <div className="waveform-visualizer">
-          {waveformBars.map((barVal, idx) => (
+          {waveformBars.map((/** @type {any} */ barVal, /** @type {number} */ idx) => (
             <span
               key={idx}
               className={`waveform-bar ${isListening ? 'active' : ''}`}

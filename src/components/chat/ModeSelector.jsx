@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Check, Sparkles, Code, PenTool, BookOpen } from 'lucide-react';
 import { CHAT_MODES, CHAT_MODE_LIST, getChatMode } from '../../config/chatModes.js';
 
+/** @type {Record<string, any>} */
 const ICON_COMPONENTS = {
   Sparkles,
   Code,
@@ -39,11 +40,11 @@ export default function ModeSelector({
   useEffect(() => {
     if (!isOpen) return;
 
-    const focusMenuItem = (index) => {
+    const focusMenuItem = (/** @type {number} */ index) => {
       if (!containerRef.current) return;
-      const items = Array.from(
+      const items = /** @type {HTMLElement[]} */ (Array.from(
         containerRef.current.querySelectorAll('.mode-dropdown-item:not(:disabled)')
-      );
+      ));
       if (items.length === 0) return;
       const bounded = ((index % items.length) + items.length) % items.length;
       items[bounded].focus();
@@ -58,26 +59,26 @@ export default function ModeSelector({
       focusMenuItem(selectedIdx >= 0 ? selectedIdx : 0);
     });
 
-    const handleClickOutside = (e) => {
+    const handleClickOutside = (/** @type {any} */ e) => {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
         setIsOpen(false);
       }
     };
 
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         setIsOpen(false);
-        const triggerBtn = containerRef.current?.querySelector('.mode-compact-trigger');
+        const triggerBtn = /** @type {HTMLElement|null|undefined} */ (containerRef.current?.querySelector('.mode-compact-trigger'));
         triggerBtn?.focus();
         return;
       }
       if (!containerRef.current) return;
-      const items = Array.from(
+      const items = /** @type {HTMLElement[]} */ (Array.from(
         containerRef.current.querySelectorAll('.mode-dropdown-item:not(:disabled)')
-      );
+      ));
       if (items.length === 0) return;
-      const currentIdx = items.indexOf(document.activeElement);
+      const currentIdx = items.indexOf(/** @type {HTMLElement} */ (document.activeElement));
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         focusMenuItem(currentIdx === -1 ? 0 : currentIdx + 1);
@@ -105,7 +106,7 @@ export default function ModeSelector({
     };
   }, [isOpen]);
 
-  const handleSelect = (modeId) => {
+  const handleSelect = (/** @type {string} */ modeId) => {
     if (disabled) return;
     if (onSelectMode) {
       onSelectMode(modeId);

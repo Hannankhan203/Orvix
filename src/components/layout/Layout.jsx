@@ -9,7 +9,7 @@ import Header from './Header.jsx';
  * @param {Object} props
  * @param {React.ReactNode} props.children
  * @param {() => void} props.onNewChat
- * @param {Array} [props.recentChats=[]]
+ * @param {Array<any>} [props.recentChats=[]]
  * @param {string|null} [props.activeChatId=null]
  * @param {(chatId: string) => void} [props.onSelectChat]
  * @param {(chatId: string, newTitle: string) => Promise<void>} [props.onRenameChat]
@@ -19,6 +19,17 @@ import Header from './Header.jsx';
  * @param {boolean} [props.isCloudSynced=false]
  * @param {string} [props.selectedProvider='gemini']
  * @param {(provider: string) => void} [props.onSelectProvider]
+ * @param {(chatId: string) => Promise<void>} [props.onTogglePin]
+ * @param {string} [props.activeMode='general']
+ * @param {(mode: string) => void} [props.onSelectMode]
+ * @param {() => void} [props.onExportMarkdown]
+ * @param {() => void} [props.onExportText]
+ * @param {boolean} [props.hasExportableMessages=false]
+ * @param {boolean} [props.isOffline=false]
+ * @param {any} [props.providerConfig=null]
+ * @param {string} [props.selectedModelId]
+ * @param {boolean} [props.isSharedView=false]
+ * @param {() => void} [props.onSignInClick]
  */
 export default function Layout({
   children,
@@ -69,12 +80,14 @@ export default function Layout({
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const vv = window.visualViewport;
+    /** @type {any} */
     const root = document.documentElement;
+    /** @type {number|null} */
     let rafId = null;
     let lastAppliedHeight = 0;
     let maxObservedInnerHeight = window.innerHeight || 0;
 
-    const isEditableElement = (el) => {
+    const isEditableElement = (/** @type {any} */ el) => {
       if (!el || !el.tagName) return false;
       const tag = el.tagName.toLowerCase();
       if (tag === 'textarea' || tag === 'select') return true;
@@ -191,12 +204,12 @@ export default function Layout({
       if (sidebarOpen) {
         requestAnimationFrame(() => {
           const sidebarEl = document.querySelector('.orvix-sidebar');
-          const closeBtn = sidebarEl?.querySelector('.sidebar-collapse-btn');
+          const closeBtn = /** @type {HTMLElement|null|undefined} */ (sidebarEl?.querySelector('.sidebar-collapse-btn'));
           closeBtn?.focus({ preventScroll: true });
         });
       } else {
         requestAnimationFrame(() => {
-          const menuBtn = document.querySelector('.mobile-menu-btn');
+          const menuBtn = /** @type {HTMLElement|null} */ (document.querySelector('.mobile-menu-btn'));
           menuBtn?.focus({ preventScroll: true });
         });
       }
@@ -206,7 +219,7 @@ export default function Layout({
 
   // Handle Escape key to close mobile sidebar
   useEffect(() => {
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape' && sidebarOpen && window.innerWidth < 768) {
         setSidebarOpen(false);
       }
@@ -238,9 +251,13 @@ export default function Layout({
     const INTENT_THRESHOLD_PX = 10;
 
     // --- Isolated Touch State ---
+    /** @type {number|null} */
     let touchStartX = null;
+    /** @type {number|null} */
     let touchStartY = null;
+    /** @type {number|null} */
     let touchCurrentX = null;
+    /** @type {number|null} */
     let touchCurrentY = null;
     let touchStartTime = 0;
     let isTrackingTouch = false;
@@ -257,13 +274,18 @@ export default function Layout({
     };
 
     // --- Isolated Pointer State (for pointer devices / synthetic test dispatchers) ---
+    /** @type {number|null} */
     let pointerStartX = null;
+    /** @type {number|null} */
     let pointerStartY = null;
+    /** @type {number|null} */
     let pointerCurrentX = null;
+    /** @type {number|null} */
     let pointerCurrentY = null;
     let pointerStartTime = 0;
     let isTrackingPointer = false;
     let isHorizontalPointerSwipe = false;
+    /** @type {number|null} */
     let activePointerId = null;
 
     const resetPointerGesture = () => {
@@ -286,7 +308,7 @@ export default function Layout({
      * - Horizontally scrollable elements (code blocks, tables, chips)
      * - Active text selection
      */
-    const isExcludedSwipeTarget = (target, clientX) => {
+    const isExcludedSwipeTarget = (/** @type {any} */ target, /** @type {number} */ clientX) => {
       if (!target || !target.closest) return true;
 
       // 1. Native iOS Back gesture avoidance zone at extreme left edge
@@ -343,7 +365,7 @@ export default function Layout({
     };
 
     // --- Native Touch Event Handlers ---
-    const handleTouchStart = (e) => {
+    const handleTouchStart = (/** @type {any} */ e) => {
       if (window.innerWidth > 1024) return;
       if (!e.touches || e.touches.length !== 1) return;
 
@@ -372,7 +394,7 @@ export default function Layout({
       resetPointerGesture();
     };
 
-    const handleTouchMove = (e) => {
+    const handleTouchMove = (/** @type {any} */ e) => {
       if (!isTrackingTouch || touchStartX === null || touchStartY === null) return;
       if (!e.touches || e.touches.length !== 1) return;
 
@@ -380,8 +402,8 @@ export default function Layout({
       touchCurrentX = touch.clientX;
       touchCurrentY = touch.clientY;
 
-      const deltaX = touchCurrentX - touchStartX;
-      const deltaY = touchCurrentY - touchStartY;
+      const deltaX = (touchCurrentX ?? 0) - touchStartX;
+      const deltaY = (touchCurrentY ?? 0) - touchStartY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
 
@@ -406,7 +428,7 @@ export default function Layout({
       }
     };
 
-    const handleTouchEnd = (e) => {
+    const handleTouchEnd = (/** @type {any} */ e) => {
       if (!isTrackingTouch || touchStartX === null || touchStartY === null) {
         resetTouchGesture();
         return;
@@ -451,7 +473,7 @@ export default function Layout({
     };
 
     // --- Pointer Event Handlers (for environments dispatching PointerEvents / synthetic tests) ---
-    const handlePointerDown = (e) => {
+    const handlePointerDown = (/** @type {any} */ e) => {
       // If a native touch gesture is already tracking, ignore pointer events completely
       if (isTrackingTouch) return;
       if (sidebarOpenRef.current || window.innerWidth > 1024) return;
@@ -472,7 +494,7 @@ export default function Layout({
       activePointerId = e.pointerId;
     };
 
-    const handlePointerMove = (e) => {
+    const handlePointerMove = (/** @type {any} */ e) => {
       if (isTrackingTouch) {
         resetPointerGesture();
         return;
@@ -482,8 +504,8 @@ export default function Layout({
       pointerCurrentX = e.clientX;
       pointerCurrentY = e.clientY;
 
-      const deltaX = pointerCurrentX - pointerStartX;
-      const deltaY = pointerCurrentY - pointerStartY;
+      const deltaX = (pointerCurrentX ?? 0) - pointerStartX;
+      const deltaY = (pointerCurrentY ?? 0) - pointerStartY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
 
@@ -503,7 +525,7 @@ export default function Layout({
       }
     };
 
-    const handlePointerUp = (e) => {
+    const handlePointerUp = (/** @type {any} */ e) => {
       if (isTrackingTouch) {
         resetPointerGesture();
         return;
@@ -532,7 +554,7 @@ export default function Layout({
       resetPointerGesture();
     };
 
-    const handlePointerCancel = (e) => {
+    const handlePointerCancel = (/** @type {any} */ e) => {
       if (e.pointerId === activePointerId) {
         resetPointerGesture();
       }
@@ -579,7 +601,7 @@ export default function Layout({
     setSidebarOpen(false);
   };
 
-  const handleSelectChat = (chatId) => {
+  const handleSelectChat = (/** @type {string} */ chatId) => {
     if (onSelectChat) {
       onSelectChat(chatId);
     }

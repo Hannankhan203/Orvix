@@ -108,6 +108,7 @@ function getModalFormatBadgeClass(ext = '') {
   }
 }
 
+/** @param {{ isOpen?: boolean, onClose: () => void, attachment: any }} props */
 export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -124,6 +125,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   const initialLang = attachment?.extraction?.language || 'eng';
   const [selectedOcrLang, setSelectedOcrLang] = useState(initialLang);
   const [cachedLangs, setCachedLangs] = useState(['eng']);
+  /** @type {[Record<string, any>, React.Dispatch<React.SetStateAction<Record<string, any>>>]} */
   const [extractionsByLang, setExtractionsByLang] = useState(
     attachment?.extraction ? { [initialLang]: attachment.extraction } : {}
   );
@@ -193,7 +195,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
   };
   const isCurrentLangCached = selectedOcrLang === 'eng' || cachedLangs.includes(selectedOcrLang);
 
-  const fetchOcrExtraction = async (langCode) => {
+  const fetchOcrExtraction = async (/** @type {string} */ langCode) => {
     if (!attachment?.id || isUnsubmittedComposerFile) return;
 
     if (extractionsByLang[langCode]) {
@@ -218,7 +220,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
       if (res.ok) {
         const d = await res.json();
         setOcrData(d);
-        setExtractionsByLang((prev) => ({ ...prev, [langCode]: d }));
+        setExtractionsByLang((/** @type {Record<string, any>} */ prev) => ({ ...prev, [langCode]: d }));
         if (d?.text) {
           setTextContent(d.text);
         }
@@ -231,14 +233,14 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     } catch (err) {
       setOcrData({
         status: 'error',
-        error: err.message || 'Failed to extract text from image.'
+        error: /** @type {any} */ (err)?.message || 'Failed to extract text from image.'
       });
     } finally {
       setOcrLoading(false);
     }
   };
 
-  const handleSelectOcrLanguage = async (newLang) => {
+  const handleSelectOcrLanguage = async (/** @type {string} */ newLang) => {
     if (newLang === selectedOcrLang) return;
     setSelectedOcrLang(newLang);
     setDownloadError(null);
@@ -263,7 +265,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     try {
       await downloadLanguagePack(langCode, {
         signal: ctrl.signal,
-        onProgress: (p) => {
+        onProgress: (/** @type {any} */ p) => {
           setDownloadProgress(p);
         }
       });
@@ -272,11 +274,12 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
       setPackDownloading(false);
       await fetchOcrExtraction(langCode);
     } catch (err) {
+      const anyErr = /** @type {any} */ (err);
       setPackDownloading(false);
-      if (err?.name === 'AbortError' || ctrl.signal.aborted) {
+      if (anyErr?.name === 'AbortError' || ctrl.signal.aborted) {
         setDownloadError('Download was cancelled.');
       } else {
-        setDownloadError(err?.message || 'Failed to download language pack.');
+        setDownloadError(anyErr?.message || 'Failed to download language pack.');
       }
     } finally {
       downloadAbortCtrlRef.current = null;
@@ -303,7 +306,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     setActiveView('image');
     setOcrData(attachment?.extraction || null);
 
-    const registerCreatedUrl = (url) => {
+    const registerCreatedUrl = (/** @type {string} */ url) => {
       if (createdObjectUrlRef.current && createdObjectUrlRef.current !== url) {
         try {
           URL.revokeObjectURL(createdObjectUrlRef.current);
@@ -335,7 +338,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
                 if (active && d) {
                   setOcrData(d);
                   const returnedLang = d.language || 'eng';
-                  setExtractionsByLang((prev) => ({ ...prev, [returnedLang]: d }));
+                  setExtractionsByLang((/** @type {Record<string, any>} */ prev) => ({ ...prev, [returnedLang]: d }));
                   if (d.text) setTextContent(d.text);
                 }
               })
@@ -552,7 +555,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
           );
           setLoading(false);
         } else {
-          setError(err.message || 'Unable to preview attachment.');
+          setError(/** @type {any} */ (err)?.message || 'Unable to preview attachment.');
           setLoading(false);
         }
       }
@@ -579,7 +582,7 @@ export default function DocumentPreviewModal({ isOpen, onClose, attachment }) {
     const focusTimer = setTimeout(() => {
       closeBtnRef.current?.focus();
     }, 50);
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (/** @type {any} */ e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         onClose();

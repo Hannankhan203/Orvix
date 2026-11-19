@@ -28,6 +28,7 @@ export const TARGET_REFINED_MODEL_IDS = Object.freeze([
 
 /**
  * Maps model ID to profile key. Returns null for protected/unrefined models.
+ * @param {any} modelId
  */
 export function getModelProfileKey(modelId) {
   if (!modelId || typeof modelId !== 'string') return null;
@@ -47,6 +48,7 @@ export function getModelProfileKey(modelId) {
 /**
  * Returns true strictly if the given modelId is one of the three refined models.
  * Returns false for Qwen 2.5 1.5B and all cloud models.
+ * @param {any} modelId
  */
 export function isRefinedTargetModel(modelId) {
   if (!modelId || typeof modelId !== 'string') return false;
@@ -55,6 +57,7 @@ export function isRefinedTargetModel(modelId) {
 
 /**
  * Profile specifications for the three target models.
+ * @type {Record<string, any>}
  */
 export const BROWSER_AI_PROFILES = Object.freeze({
   [REFINED_MODEL_KEYS.SMOLLM2_135M]: Object.freeze({
@@ -151,6 +154,7 @@ export const BROWSER_AI_PROFILES = Object.freeze({
 
 /**
  * Returns the profile for a given model ID, or null if the model is not one of the 3 target models.
+ * @param {any} modelId
  */
 export function getBrowserAiModelProfile(modelId) {
   const profileKey = getModelProfileKey(modelId);
@@ -161,6 +165,8 @@ export function getBrowserAiModelProfile(modelId) {
 /**
  * Builds a tailored system instruction for the target model.
  * If model is not a target model, returns null.
+ * @param {any} modelId
+ * @param {any} [options={}]
  */
 export function buildProfileSystemInstruction(modelId, { username = null, preferences = null, mode = 'general' } = {}) {
   const profileKey = getModelProfileKey(modelId);
@@ -236,6 +242,8 @@ export function buildProfileSystemInstruction(modelId, { username = null, prefer
 /**
  * Resolves generation parameters for the model.
  * If model is NOT one of the 3 target models, returns baseline Qwen 2.5 1.5B parameters.
+ * @param {any} modelId
+ * @param {any} [options={}]
  */
 export function resolveProfileGenerationParams(modelId, {
   mode = 'general',
@@ -359,6 +367,7 @@ export function resolveProfileGenerationParams(modelId, {
 
 /**
  * Deduplicates trailing runaway loops from small models (e.g. repeated lines at the very end).
+ * @param {any} text
  */
 function deduplicateTrailingLoops(text) {
   if (!text || text.length < 30) return text;
@@ -381,6 +390,8 @@ function deduplicateTrailingLoops(text) {
  * Post-processes model output to strip leaked special tokens, delimiter tags,
  * and internal thought blocks for the three refined models.
  * For unrefined models (Qwen 2.5 1.5B and cloud models), returns rawText unmodified.
+ * @param {any} rawText
+ * @param {any} modelId
  */
 export function cleanModelOutput(rawText, modelId) {
   if (!isRefinedTargetModel(modelId)) {
@@ -459,11 +470,13 @@ export function cleanModelOutput(rawText, modelId) {
 /**
  * Creates a streaming response sanitizer for the target models.
  * For unrefined models, provides pass-through streaming.
+ * @param {any} modelId
+ * @param {any} [options={}]
  */
 export function createStreamingResponseSanitizer(modelId, { onChunk, onStopDetected } = {}) {
   if (!isRefinedTargetModel(modelId)) {
     return {
-      feed(delta, rawAccumulated) {
+      feed(/** @type {any} */ delta, /** @type {any} */ rawAccumulated) {
         onChunk?.(delta, rawAccumulated);
       },
       flush() {},
@@ -496,7 +509,7 @@ export function createStreamingResponseSanitizer(modelId, { onChunk, onStopDetec
   ];
 
   return {
-    feed(delta) {
+    feed(/** @type {any} */ delta) {
       if (stopped) return;
       buffer += delta;
 

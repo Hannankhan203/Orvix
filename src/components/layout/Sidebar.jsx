@@ -8,6 +8,21 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useSettings } from '../../context/SettingsContext.jsx';
 import { usePWAInstall } from '../../hooks/usePWAInstall.js';
 
+/**
+ * @param {Object} props
+ * @param {boolean} props.isOpen
+ * @param {() => void} props.onClose
+ * @param {() => void} props.onNewChat
+ * @param {any[]} [props.recentChats=[]]
+ * @param {string|null} [props.activeChatId=null]
+ * @param {(chatId: string) => void} [props.onSelectChat]
+ * @param {(chatId: string, newTitle: string) => Promise<void>} [props.onRenameChat]
+ * @param {(chatId: string) => Promise<void>} [props.onDeleteChat]
+ * @param {(chatId: string) => Promise<void>} [props.onTogglePin]
+ * @param {boolean} [props.chatsLoading=false]
+ * @param {boolean} [props.isCloudSynced=false]
+ * @param {boolean} [props.isOffline=false]
+ */
 export default function Sidebar({
   isOpen,
   onClose,
@@ -295,3 +310,4 @@ export default function Sidebar({
     </aside>
   );
 }
+w
