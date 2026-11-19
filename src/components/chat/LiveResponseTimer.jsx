@@ -1,7 +1,7 @@
 // @ts-check
 import React, { useState, useEffect, useRef } from 'react';
 import { Timer } from 'lucide-react';
-import { formatLiveElapsed } from '../../utils/formatResponseTime.js';
+import { formatLiveElapsed } from '../../utils/formatResponseTime.ts';
 
 /**
  * Helper to get current timestamp aligned with the origin of startTime.

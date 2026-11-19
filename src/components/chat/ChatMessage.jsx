@@ -30,7 +30,7 @@ const MarkdownContent = React.lazy(() => import('./MarkdownContent.jsx'));
 import { isImageAttachment } from '../../services/documentContextService.js';
 import { useSpeech } from '../../context/SpeechContext.jsx';
 import { PROVIDER_OPTIONS } from '../../services/aiRouter.js';
-import { formatResponseTime, formatLiveElapsed } from '../../utils/formatResponseTime.js';
+import { formatResponseTime, formatLiveElapsed } from '../../utils/formatResponseTime.ts';
 export { formatLiveElapsed };
 import { getAlternativeMetrics, getActiveAlternative } from '../../services/alternativeResponseService.js';
 import { copyFormattedMessage } from '../../utils/clipboardFormatter.js';

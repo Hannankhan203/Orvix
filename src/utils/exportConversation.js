@@ -11,7 +11,7 @@
  * - Purely client-side via Blob and URL.createObjectURL; never uploads data externally.
  */
 
-import { formatResponseTime } from './formatResponseTime.js';
+import { formatResponseTime } from './formatResponseTime.ts';
 import { orderConversationMessages } from '../services/alternativeResponseService.js';
 
 /**

@@ -4,18 +4,18 @@
  *
  * Formatting rules:
  * - Under 60 seconds: seconds with one decimal point (e.g. 0.8s, 1.2s, 4.8s, 12.6s)
- * - 60 seconds to under 1 hour: minutes and seconds (e.g. 1m 8s, 2m 15s)
- * - 1 hour or more: hours, minutes, and seconds (e.g. 1h 2m 5s)
+ * - 60 seconds to under 1 hour: minutes and seconds (e.g. 1m 08s, 2m 15s)
+ * - 1 hour or more: hours, minutes, and seconds (e.g. 1h 02m 05s)
  *
- * @param {number|null|undefined} ms - Duration in milliseconds
- * @returns {string|null} Formatted duration or null if invalid
+ * @param ms - Duration in milliseconds
+ * @returns Formatted duration or null if invalid
  */
-export function formatResponseTime(ms) {
-  if (typeof ms !== 'number' || isNaN(ms) || ms <= 0) {
+export function formatResponseTime(ms: number | null | undefined): string | null {
+  if (typeof ms !== 'number' || Number.isNaN(ms) || ms <= 0) {
     return null;
   }
 
-  // Normalize: if a duration in fractional seconds is supplied (< 100 with decimals or <= 60),
+  // Normalize: if a duration in fractional seconds is supplied (< 60 with decimals),
   // convert to milliseconds so 8.7s is never miscalculated as 8.7ms.
   let durationMs = ms;
   if (ms > 0 && ms < 60 && !Number.isInteger(ms)) {
@@ -50,11 +50,11 @@ export function formatResponseTime(ms) {
  * Formats live elapsed generation duration in mm:ss (or hh:mm:ss if >= 1 hour).
  * Ensures smooth, continuous counting beyond 01:00 without any ceiling, hard limit, or cancellation trigger.
  *
- * @param {number} startTime - performance.now() or Date.now() timestamp when generation began
- * @param {number} [now] - Optional current timestamp override for deterministic testing
- * @returns {string} Formatted elapsed time (e.g., '00:00', '00:50', '00:59', '01:00', '01:01', '02:30', '05:00')
+ * @param startTime - performance.now() or Date.now() timestamp when generation began
+ * @param now - Optional current timestamp override for deterministic testing
+ * @returns Formatted elapsed time (e.g., '00:00', '00:50', '00:59', '01:00', '01:01', '02:30', '05:00')
  */
-export function formatLiveElapsed(startTime, now) {
+export function formatLiveElapsed(startTime: number, now?: number): string {
   if (typeof startTime !== 'number' || startTime <= 0) return '00:00';
   const isEpoch = startTime > 1e11;
   const currentTime =
@@ -62,7 +62,7 @@ export function formatLiveElapsed(startTime, now) {
       ? now
       : isEpoch
       ? Date.now()
-      : typeof performance !== 'undefined' && performance.now
+      : typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now();
   const elapsedMs = Math.max(0, currentTime - startTime);
