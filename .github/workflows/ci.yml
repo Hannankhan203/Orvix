@@ -45,15 +45,27 @@ jobs:
     - name: Type check frontend JS/JSX
       run: bun run lint:js
 
-    - name: Dependency security audit
-      continue-on-error: true
-      run: bun run audit
-
     - name: Run automated tests
       run: bun run test
 
     - name: Build application
       run: bun run build
+
+  security-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    - name: Dependency security audit
+      run: bun run audit
 
   e2e:
     runs-on: ubuntu-latest

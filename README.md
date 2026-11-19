@@ -91,7 +91,7 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
 23. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
     - [Troubleshooting Gemini Timeouts & Streaming](#troubleshooting-gemini-timeouts--streaming)
 24. [Security Architecture](#security-architecture)
-    - [Open Security Advisory](#open-security-advisory)
+    - [Dependency Security Audit](#dependency-security-audit)
 25. [Verification & Security Coverage](#verification--security-coverage)
 26. [Current Limitations](#current-limitations)
 27. [Security, Performance & Architecture Improvements (v0.3.2)](#security-performance--architecture-improvements-v032)
@@ -133,7 +133,7 @@ Built as a full-stack Node.js application, Orvix combines a React 19 single-page
 - **Global Input Auto-Focus**: Type anywhere on the page to automatically focus the composer without losing the first keystroke, protecting active text selection and shortcuts.
 - **Controlled Continuation**: Automatic segmentation of long outputs with continuation notices and an interactive composer chip (`[ → Continue response ]`).
 - **Deep Multimodal Attachments**: Drag-and-drop, clipboard paste (`Ctrl+V`), and file picker staging for documents and images with server-side Tesseract OCR and honest `NO_TEXT_DETECTED` handling.
-- **Zero-Key Simulation Mode**: Runs immediately out of the box without requiring API keys, providing realistic local responses for testing all UI flows.
+- **Zero-Key Browser AI & Optional Demo Mode**: Runs local Browser AI (WebLLM) out of the box without requiring API keys, and supports an opt-in simulated response mode (`ORVIX_ENABLE_DEMO_MODE=true`) for testing UI flows without cloud credentials.
 
 ---
 
@@ -199,8 +199,9 @@ When Browser AI is selected, an interactive dock (`src/components/chat/BrowserAI
 - **Compatibility Feedback**: Alerts if WebGPU is unsupported, hardware acceleration is disabled, or context is non-secure.
 - **Download Progress**: Shows percentage (`0–100%`) and chunk download descriptions.
 - **VRAM Compilation Status**: Signals shader compilation and weight transfer into GPU memory.
-- **Interactive Controls**:
+- **Interactive Controls & Fallback Visibility**:
   - **Model Selector**: Switch between SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, and Qwen2.5 1.5B.
+  - **Fallback Indicators & One-Click Recovery**: Clearly indicates automatic FP32 compatibility fallback across download, load, ready, generating, offline, and error states, and offers one-click **Try `<lighter model>`** or **Switch to Cloud AI** controls on OOM/error or unsupported WebGPU environments.
   - **Load Model**: Triggers on-demand initialization before typing.
   - **Cancel (`✕`)**: Halts an active download cleanly.
   - **Retry (`RotateCcw`)**: Appears on connection or initialization failures.
@@ -400,7 +401,7 @@ Orvix provides a unified voice dictation engine (`src/hooks/useVoiceDictation.js
 Introduced in Phase 6, Orvix provides an ultra-low-latency bi-directional voice streaming pipeline alongside its HTTP endpoints:
 
 1. **Browser-Side Capture (`AudioWorklet`)**: Raw microphone input is captured at native sample rates (e.g., 44.1kHz or 48kHz) via `public/audioWorkletProcessor.js` (with an automatic fallback to an inline Blob worker or `ScriptProcessorNode` on legacy browsers). Audio frames are downsampled and converted to 16-bit linear PCM (`Int16Array`) in real time without blocking the UI rendering loop.
-2. **WebSocket Upgrades (`/api/voice-stream`)**: The client opens an authenticated WebSocket connection (`wss://` or `ws://`). The server immediately initiates a 10-second authentication handshake verifying Firebase ID tokens (or authenticates guest sessions).
+2. **WebSocket Upgrades (`/api/voice-stream`)**: The client opens an authenticated WebSocket connection (`wss://` or `ws://`) supplying a Firebase ID token via `Authorization: Bearer` or the `Sec-WebSocket-Protocol` `orvix-auth` subprotocol (unauthenticated upgrades and `?token=` query parameters are rejected with HTTP `401`).
 3. **Bi-Directional Streaming Protocol**:
    - `start`: Initializes stream sample rate and language.
    - `pause` / `resume`: Suspends audio worklet capture and backend accumulation without tearing down the socket.
@@ -500,7 +501,7 @@ Orvix provides four specialized conversational modes configured in `src/config/c
 
 ### Zero-Key Simulation Mode
 
-Orvix works immediately without API keys. In simulation mode, realistic local responses are generated to test all UI interactions, modes, attachments, and exports. Alternatively, users can switch to **Browser AI (WebLLM)** to run real local AI models on-device without any API keys.
+Orvix supports an opt-in Demo/Simulation Mode (`ORVIX_ENABLE_DEMO_MODE=true`) that generates realistic local responses without cloud API keys for testing UI interactions, modes, attachments, and exports. Even with demo mode disabled, users can switch to **Browser AI (WebLLM)** to run real local AI models on-device without any API keys.
 
 ---
 
@@ -536,7 +537,8 @@ Orvix works immediately without API keys. In simulation mode, realistic local re
 
 ### Server-Side OCR Engine
 
-- Powered by `tesseract.js` running on the Express backend with a 25s timeout.
+- Powered by `tesseract.js` running on the Express backend with a 25s timeout and a locally bundled gzipped English pack (`eng.traineddata.gz`, also served via `/api/ocr/packs/:file`).
+- Supports on-demand multilingual OCR language packs via `src/services/ocrLanguagePackService.js` (English built-in, plus Spanish, French, German, Arabic RTL, and Urdu RTL cached in browser Cache Storage).
 - Extracts clean text, character counts, word counts, and confidence scores.
 
 ### Honest No-Text Handling & Preview Modal
@@ -678,6 +680,7 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 - **Immutable Database Rules**: Firestore security rules enforce `allow update: if false;` and `allow delete: if false;`, ensuring snapshots cannot be tampered with or deleted through client operations.
 - **No Collection Enumeration**: Exact document lookups are permitted (`allow get: if true;`), while collection listing is strictly blocked (`allow list: if false;`) to protect user privacy and prevent link harvesting.
 - **Sanitization Pipeline**: Private user attributes (`userId`, user profile emails, private authentication tokens, local filesystem paths, and raw binary attachments) are strictly stripped during snapshot generation.
+- **Server-Validated Lifecycle, Expiration & Revocation**: Server endpoints (`POST /api/share`, `GET /api/share/:shareId`, `DELETE /api/share/:shareId`, `POST /api/share/:shareId/revoke`) validate message payloads, enforce authoritative `ownerId`, and support optional snapshot expiration (`410 SHARE_EXPIRED`) and owner-initiated revocation (`410 SHARE_REVOKED`).
 - **Strict Boundary Constraints**: Payload size is capped at 900 KB (UTF-8 encoded) to guarantee single-document Firestore integrity, and conversations are constrained to a maximum of 500 messages with titles up to 120 characters.
 
 ### Persistence and Reliability
@@ -747,29 +750,60 @@ Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, an
 ## Project Structure
 
 ```text
-├── api/                             # Serverless API routes (chat, config, transcribe, upload)
-├── public/                          # Static assets, icons, manifest.webmanifest
+├── .github/workflows/ci.yml         # CI workflow (build-and-test, security-audit, e2e)
+├── api/                             # Vercel serverless API entry points (chat, config, health, share, transcribe, upload)
+├── e2e/                             # Playwright E2E specs (auth, chat, settings, sharing, responsive-a11y)
+├── public/                          # Static assets, icons, manifest.webmanifest, audioWorkletProcessor.js
+├── server/                          # Modular Express backend subsystems:
+│   ├── chatSubsystem.ts             # Multi-provider chat routing, failover, and SSE streaming
+│   ├── geminiStreamHandler.ts       # Google Gen AI SDK streaming client and timeout stages
+│   ├── uploadSubsystem.ts           # Multipart/direct uploads, signed URLs, OCR packs, and extraction
+│   ├── transcriptionSubsystem.ts    # Groq Whisper & Gemini audio transcription
+│   ├── shareSubsystem.ts            # Server-validated Share Chat create, fetch, and revoke endpoints
+│   ├── voiceWebSocketSubsystem.ts   # Authenticated PCM WebSocket voice streaming (/api/voice-stream)
+│   ├── rateLimiter.ts               # Redis Lua & in-memory rate limiting policies
+│   ├── redisClient.ts               # Managed Redis client with TLS & mock/fallback controls
+│   ├── trustedProxy.ts              # Explicit reverse-proxy hop/CIDR & client IP resolution
+│   ├── supabaseClient.ts            # Supabase Storage client initialization
+│   ├── supabaseStorageService.ts    # Per-user private attachment storage operations
+│   ├── supabaseAttachmentCleanupService.ts # Scheduled expired attachment cleanup
+│   ├── uploadQuotaService.ts        # Atomic daily PKT upload quota enforcement
+│   ├── directUploadTicketService.ts # Durable direct-to-Supabase upload tickets
+│   ├── firebaseAuthHelper.ts        # Firebase ID token verification
+│   ├── serverConfig.ts              # Environment validation, CORS allowlist, timeouts
+│   ├── sentryService.ts             # Backend Sentry integration
+│   ├── diagnosticLogger.ts          # Sanitized structured diagnostics
+│   └── serverTypes.ts               # Shared backend TypeScript types
 ├── src/
 │   ├── components/
 │   │   ├── auth/                    # AuthScreen & Guest mode components
-│   │   ├── chat/                    # ChatArea, ChatMessage, ModelSelector, CodeBlock, etc.
-│   │   ├── layout/                  # Layout, Header, Sidebar
+│   │   ├── chat/                    # ChatArea, BrowserAIStatusBar, ChatMessage, ModelSelector, CodeBlock, etc.
+│   │   ├── layout/                  # Layout, Header, Sidebar, SidebarChatItem
 │   │   ├── settings/                # SettingsModal
 │   │   └── ui/                      # Button, OrvixLogo
-│   ├── config/                      # appConfig, chatModes, aiGuidance, firebaseConfig
+│   ├── config/                      # appConfig, chatModes, aiGuidance, firebaseConfig, sampleData, webllmModels
 │   ├── context/                     # AuthContext, SettingsContext, SpeechContext
 │   ├── hooks/                       # useVoiceDictation, usePWAInstall
 │   ├── pages/                       # ChatPage
-│   ├── services/                    # aiRouter, webllmService, browserAiProfiles,
+│   ├── services/                    # aiRouter, webllmService, browserAiProfiles, attachmentStorageService,
 │   │                                # smartCompressionService, storageEnvelopeService,
 │   │                                # attachmentCompressionCoordinator, officeDocumentExtractors,
-│   │                                # documentExtractor, browserDocumentExtractor, imageOcrService, etc.
+│   │                                # documentExtractor, browserDocumentExtractor, imageOcrService,
+│   │                                # ocrLanguagePackService, semanticChunkingService, semanticEmbeddingService,
+│   │                                # semanticRetrievalService, semanticVectorStorage, shareChatService,
+│   │                                # voiceStreamClient, etc.
 │   ├── styles/                      # Tailwind CSS v4 global stylesheet
-│   ├── utils/                       # clipboardFormatter, exportConversation, speechTextCleaner
-│   └── workers/                     # webllmWorker.js (off-thread WebGPU execution)
-├── server.ts                        # Express development & production server
-├── vite.config.ts                   # Vite configuration & Workbox PWA plugin
+│   ├── utils/                       # clipboardFormatter, exportConversation, speechTextCleaner, etc.
+│   └── workers/                     # webllmWorker.js, pdfExtractorWorker.js
+├── tests/                           # Node unit & integration test suites
+├── eng.traineddata.gz               # Gzipped offline English Tesseract OCR pack
+├── firestore.rules                  # Firestore security rules for private chats and sharedChats
+├── playwright.config.ts             # Playwright E2E configuration (Bun-compatible webServer)
+├── server.ts                        # Express development & production server entry point
 ├── tsconfig.json                    # TypeScript compiler configuration
+├── tsconfig.checkjs.json            # Full src/ JS/JSX static checking configuration
+├── vercel.json                      # Vercel serverless functions, rewrites, and headers
+├── vite.config.ts                   # Vite configuration & Workbox PWA plugin
 ├── package.json                     # Dependencies and scripts
 └── README.md                        # Project documentation
 ```
@@ -831,7 +865,7 @@ RATE_LIMIT_VOICE_WS_MAX=20
 RATE_LIMIT_VOICE_WS_WINDOW_MS=60000
 ```
 
-*Note*: API keys are kept strictly server-side. Orvix runs fully in Simulated Mode or Browser AI mode when keys are absent. Sentry monitoring is disabled gracefully when no DSN is provided. Redis (`REDIS_URL`) is optional: when configured, rate-limit counters are shared atomically across server instances via a Lua script (`server/rateLimiter.ts` + `server/redisClient.ts`) using hashed UID/IP keys; when omitted or unreachable, Orvix automatically falls back to per-process in-memory rate limiting without disrupting local development or requests.
+*Note*: See `.env.example` for the complete list of operational variables including CORS (`ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGINS`, `APP_URL`, `VITE_PUBLIC_APP_URL`), trusted proxy handling (`TRUST_PROXY`), demo mode (`ORVIX_ENABLE_DEMO_MODE`), Firebase Admin, Supabase storage & cleanup intervals, signed URL/guest secrets, distributed rate-limit failure modes (`RATE_LIMIT_REQUIRE_DISTRIBUTED`, `RATE_LIMIT_FAILURE_MODE`), and upstream Gemini timeouts. API keys are kept strictly server-side. Browser AI (WebLLM) works without API keys, and opt-in simulated responses can be enabled via `ORVIX_ENABLE_DEMO_MODE=true`. Sentry monitoring is disabled gracefully when no DSN is provided. Redis (`REDIS_URL`) is optional: when configured, rate-limit counters are shared atomically across server instances via a Lua script (`server/rateLimiter.ts` + `server/redisClient.ts`) using hashed UID/IP keys; when omitted or unreachable, Orvix falls back to per-process in-memory rate limiting (unless `RATE_LIMIT_FAILURE_MODE=fail-closed` or `RATE_LIMIT_REQUIRE_DISTRIBUTED=true` is configured).
 
 ---
 
@@ -888,9 +922,12 @@ bun run start
 
 ### Vercel Serverless Deployment
 Configured via `vercel.json` with handlers in `api/`:
-- `api/chat.ts`: Serverless proxy for streaming AI completions.
-- `api/transcribe.ts`: Serverless audio transcription handler.
-- `api/upload.ts`: Serverless in-memory upload and OCR handler.
+- `api/chat.ts`: Serverless proxy for streaming AI completions (bundles `eng.traineddata*` and Tesseract assets for OCR-assisted attachments).
+- `api/config.ts`: Public runtime capability and provider availability endpoint (`/api/config`).
+- `api/health.ts`: Health and persistence readiness endpoint (`/api/health`).
+- `api/share.ts`: Server-validated Share Chat creation, lookup, expiration, and revocation handler (`/api/share/:shareId`).
+- `api/transcribe.ts`: Serverless audio transcription handler (`/api/transcribe`).
+- `api/upload.ts`: Serverless in-memory upload, direct-upload tickets, quota, signed download, OCR pack serving, and extraction handler (`/api/upload/*`, `/api/ocr/packs/:file`).
 
 ### Firestore Security Rules Deployment for Share Chat
 > **Important Production Deployment Note for Share Chat**: Production deployment of Share Chat requires deploying the security rules in `firestore.rules` to enforce the immutability of `sharedChats/{shareId}`, prevent collection listing, and isolate user private data. The required Firestore security rules have **not yet been deployed** and must be deployed via Firebase CLI before enabling Share Chat in production:
@@ -931,23 +968,9 @@ Configured via `vercel.json` with handlers in `api/`:
 6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 900 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
 7. **Envelope Integrity & Signed Download URLs**: `orvix-gzip-v1` payloads enforce CRC-32, SHA-256, extension/MIME parity, and bounded decompression caps (25 MB). Attachment retrieval URLs (`/api/upload/:id/file`) are HMAC-SHA256 signed (`ORVIX_SIGNED_URL_SECRET`, failing closed in production when missing or weak) and enforce Firebase user ownership checks.
 
-### Open Security Advisory
+### Dependency Security Audit
 
-The project currently tracks one open transitive dependency advisory identified by `bun audit`:
-
-| Field | Details |
-| :--- | :--- |
-| **Package** | `picomatch@4.0.7` |
-| **Advisory** | `GHSA-fc5q-39xc-vjpf` |
-| **CVE** | `CVE-2026-112366` |
-| **Severity** | High (CVSS 7.5 — Regular Expression Denial of Service via single-branch repeated extglobs) |
-| **Vulnerable range** | `<=4.0.7` |
-| **First patched version** | Not yet published |
-| **Dependency paths** | Vite (`vite > tinyglobby > fdir > picomatch`) and `vite-plugin-pwa` (`vite-plugin-pwa > tinyglobby > fdir > picomatch`) build toolchains |
-| **Status** | **Open — Blocked upstream, not resolved.** |
-
-- **Usage & Risk Context**: `picomatch` is currently used in Vite and `vite-plugin-pwa` build/development tooling rather than Express runtime request handlers. That limits exposure during normal runtime request handling, though build tooling remains exposed to ReDoS if malicious/untrusted extglob patterns are evaluated and dependency audit status is not clean while this advisory remains open.
-- **Remediation Condition**: Update to a verified upstream patched release of `picomatch` (or updated parent build packages pulling the patched release) once published, regenerate `bun.lock`, and confirm `bun audit` reports no remaining advisory.
+Dependency vulnerabilities are checked with Bun (`bun run audit` / `bun audit --json`) in a dedicated `security-audit` CI job (`.github/workflows/ci.yml`) that reports audit failures visibly without blocking unrelated build, test, or E2E jobs. As of the latest `bun audit` check across `bun.lock`, **0 open vulnerabilities** are reported (the previously tracked transitive `picomatch@4.0.7` advisory is no longer reported by `bun audit`).
 
 ---
 
@@ -1007,7 +1030,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 
 - **Vulnerability / Context**: Client-side storage of image attachments and document previews in browser IndexedDB can exhaust available disk quotas (especially on mobile devices or browsers with strict per-origin limits), throwing unhandled `QuotaExceededError` exceptions that crash the client or break conversation states.
 - **Resolution**:
-  - Implemented defensive quota exhaustion detection and interceptors in `src/services/attachmentService.js`.
+  - Implemented defensive quota exhaustion detection and interceptors in `src/services/attachmentStorageService.js`.
   - Added self-healing recovery workflows that automatically purge stale cached attachments and run least-recently-used (LRU) cache evictions when storage limits are approached.
   - Provided graceful degradation to in-memory attachment blobs with clear, non-technical UI alerts informing users if storage limits prevent persistent offline caching.
 
@@ -1019,7 +1042,7 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
     - `server/serverConfig.ts`: Environment validation, CORS whitelist, and port management.
     - `server/serverTypes.ts`: Strongly typed interfaces and request schemas.
     - `server/diagnosticLogger.ts`: Sanitized development-safe structured logging.
-    - `server/geminiStream.ts`: Google Gen AI SDK streaming client with keepalive priming.
+    - `server/geminiStreamHandler.ts`: Google Gen AI SDK streaming client with keepalive priming.
     - `server/uploadSubsystem.ts`: In-memory Multer storage, magic-number validation, and Tesseract OCR.
     - `server/transcriptionSubsystem.ts`: Groq Whisper Large v3 Turbo transcription with fallback.
     - `server/chatSubsystem.ts`: Unified multi-provider chat routing, model fallback failover, and SSE formatting.
@@ -1102,12 +1125,12 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Orphan Prevention & Automated Cleanup**: Enforced `conversationId` validation on uploads, added binary magic-number verification on direct upload completion, preserved 2-hour TTL expiry cleanup (`supabaseAttachmentCleanupService.ts`), and integrated durable attachment cleanup queues for conversation deletion and edit/resend branch truncation.
 
 ### V 0.3.2 — Security, Performance & Architecture Improvements
-- **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered remediation for those nine v0.3.2 application security, performance, storage, and architectural findings (separate from any later open transitive dependency advisories tracked under [Open Security Advisory](#open-security-advisory)).
+- **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered remediation for those nine v0.3.2 application security, performance, storage, and architectural findings (separate from ongoing dependency audits tracked under [Dependency Security Audit](#dependency-security-audit)).
 - **Server-Side Credential Isolation (ORVIX-001)**: Prevented accidental client-bundle credential leakage by enforcing server-only API key resolution and rejecting `VITE_`-prefixed backend secrets.
 - **Serverless In-Memory Upload Processing (ORVIX-002)**: Replaced disk-backed file storage with in-memory Multer processing and clear documentation of ephemeral storage boundaries.
 - **Strict CORS Domain Whitelisting (ORVIX-003)**: Hardened cross-origin request policies, eliminating wildcard access on credentialed and sensitive API routes.
 - **Self-Healing IndexedDB Quota Management (ORVIX-004)**: Implemented automated LRU cache eviction and in-memory fallback for browser attachment storage exhaustion.
-- **Server Architecture Modularization (ORVIX-005)**: Decoupled monolithic `server.ts` into structured modules (`serverConfig`, `geminiStream`, `uploadSubsystem`, `transcriptionSubsystem`, `chatSubsystem`).
+- **Server Architecture Modularization (ORVIX-005)**: Decoupled monolithic `server.ts` into structured modules (`serverConfig`, `geminiStreamHandler`, `uploadSubsystem`, `transcriptionSubsystem`, `chatSubsystem`).
 - **High-Efficiency Response Timer (ORVIX-006)**: Reduced streaming timer overhead by >90% through second-boundary synchronization and memoization.
 - **Clean Script Modernization (ORVIX-007)**: Removed obsolete `server.js` references from `package.json` clean script.
 - **WebGPU SwiftShader FP32 Fallback (ORVIX-008)**: Added automatic capability detection ensuring graceful fallback to FP32 models on software rasterizers lacking `shader-f16`.
@@ -1217,7 +1240,6 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 
 ## Future Roadmap
 
-- **Client-Side Vector Search / RAG**: Semantic vector chunk search for large documents using local embeddings.
-- **Multilingual OCR Enhancements**: Dynamic language pack downloads for non-Latin script optical character recognition.
-- **Streaming Voice Input**: Real-time server-side audio streaming via WebSockets for low-latency Whisper transcription.
 - **Image Generation Integration**: Generative visual creation tools alongside existing conversational modes.
+- **Multimodal Vision Reasoning**: Direct spatial/visual image understanding alongside existing OCR text extraction.
+- **Expanded On-Device WebLLM Model Tiers**: Additional quantized local models as WebGPU browser memory limits and MLC runtimes evolve.
