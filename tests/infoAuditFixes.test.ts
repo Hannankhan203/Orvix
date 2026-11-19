@@ -97,9 +97,11 @@ test('ORVIX-INFO-03: eng.traineddata is losslessly gzipped on disk, scoped to OC
   const publicFiles = fs.readdirSync(publicDir);
   assert.equal(publicFiles.some((f) => f.includes('traineddata')), false, 'public/ must not ship traineddata into client shell');
 
-  // Verify vercel.json scopes OCR bundle files to api/*.ts functions
+  // Verify vercel.json scopes OCR bundle files only to OCR serverless endpoints (api/chat.ts and api/upload.ts)
   const vercelCfg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'vercel.json'), 'utf8'));
-  assert.ok(vercelCfg.functions?.['api/*.ts']?.includeFiles?.includes('eng.traineddata*'));
+  assert.equal(vercelCfg.functions?.['api/*.ts'], undefined, 'vercel.json must not apply OCR bundle and 1024MB/300s limits via wildcard api/*.ts');
+  assert.ok(vercelCfg.functions?.['api/chat.ts']?.includeFiles?.includes('eng.traineddata*'));
+  assert.ok(vercelCfg.functions?.['api/upload.ts']?.includeFiles?.includes('eng.traineddata*'));
 
   // Verify offline asset resolver picks up eng.traineddata.gz cleanly and Tesseract OCR executes offline
   const info = resolveLocalTrainedDataInfo();

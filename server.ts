@@ -49,6 +49,7 @@ import {
   applyCorsMiddleware,
   applyJsonBodyMiddleware,
   isServerless,
+  getServerPersistenceStatus,
   getServerProviderConfigStatus,
   getConfiguredFallbackProviders,
   getUpstreamHeadersTimeoutMs,
@@ -137,10 +138,13 @@ applyJsonBodyMiddleware(app);
 
 // API Health Check (supports both standalone and Vercel sub-route paths)
 app.get(['/api/health', '/health'], (_req, res) => {
+  const persistence = getServerPersistenceStatus(isServerless);
   res.json({
     status: 'ok',
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    persistence,
+    warnings: persistence.warnings
   });
 });
 
@@ -387,6 +391,7 @@ export {
   consumeGeminiStreamWithWatchdog,
   formatGeminiHistory,
   getConfiguredFallbackProviders,
+  getServerPersistenceStatus,
   getServerProviderConfigStatus,
   getUpstreamHeadersTimeoutMs,
   fileRegistry,

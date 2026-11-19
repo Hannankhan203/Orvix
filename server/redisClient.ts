@@ -38,6 +38,7 @@ export interface RedisOptions {
 export class InMemoryRedisMock extends EventEmitter implements RedisLikeClient {
   public status: string = 'wait';
   public readonly isMock = true;
+  private kvStore = new Map<string, any>();
   private expirations = new Map<string, { wallExpiresAt: number; logicalExpiresAt: number }>();
   private zsets = new Map<string, Map<string, number>>();
 
@@ -50,9 +51,16 @@ export class InMemoryRedisMock extends EventEmitter implements RedisLikeClient {
     this.emit('ready');
   }
 
-  private setKeyExpiration(key: string, ttlMs: number, logicalNowMs?: number): void {
-    const wallNow = Date.now();
-    const logicalNow = logicalNowMs !== undefined && Number.isFinite(logicalNowMs) ? logicalNowMs : wallNow;
+  private setKeyExpiration(
+    key: string,
+    ttlMs: number,
+    logicalNowMs?: number,
+    wallNowMs?: number
+  ): void {
+    const wallNow =
+      wallNowMs !== undefined && Number.isFinite(wallNowMs) ? wallNowMs : Date.now();
+    const logicalNow =
+      logicalNowMs !== undefined && Number.isFinite(logicalNowMs) ? logicalNowMs : wallNow;
     this.expirations.set(key, {
       wallExpiresAt: wallNow + ttlMs,
       logicalExpiresAt: logicalNow + ttlMs
@@ -67,7 +75,7 @@ export class InMemoryRedisMock extends EventEmitter implements RedisLikeClient {
         ? logicalNowMs >= exp.logicalExpiresAt
         : Date.now() >= exp.wallExpiresAt;
     if (isExpired) {
-      store.delete(key);
+      this.kvStore.delete(key);
       this.zsets.delete(key);
       this.expirations.delete(key);
       return true;
@@ -184,19 +192,22 @@ export class InMemoryRedisMock extends EventEmitter implements RedisLikeClient {
     // 4. Default / Fixed-Window Rate Limit (ATOMIC_RATE_LIMIT_LUA: INCR + PEXPIRE + PTTL)
     const windowMs = Number(args[1]) || 60_000;
     const now = Date.now();
-    this.expireKeyIfNeeded(key);
+    this.expireKeyIfNeeded(key, now);
 
-    const count = await redis.incr(key);
+    const count = (Number(this.kvStore.get(key)) || 0) + 1;
+    this.kvStore.set(key, count);
+
     let currentExp = this.expirations.get(key);
     if (!currentExp || now >= currentExp.wallExpiresAt) {
-      this.setKeyExpiration(key, windowMs, now);
+      this.setKeyExpiration(key, windowMs, now, now);
       currentExp = this.expirations.get(key)!;
     }
-    const pttl = Math.max(1, currentExp.wallExpiresAt - now);
+    const pttl = Math.min(windowMs, Math.max(1, currentExp.wallExpiresAt - now));
     return [count, pttl];
   }
 
   clearAllForTesting(): void {
+    this.kvStore.clear();
     store.clear();
     this.expirations.clear();
     this.zsets.clear();
@@ -237,9 +248,12 @@ function shouldAllowInMemoryRedisFallback(): boolean {
   if (explicitMock === 'true' || explicitMock === '1') {
     return true;
   }
-  const explicitDisable = String(process.env.REDIS_FALLBACK_TO_MOCK || '').trim().toLowerCase();
-  if (explicitDisable === 'false' || explicitDisable === '0') {
+  const explicitFallback = String(process.env.REDIS_FALLBACK_TO_MOCK || '').trim().toLowerCase();
+  if (explicitFallback === 'false' || explicitFallback === '0') {
     return false;
+  }
+  if (explicitFallback === 'true' || explicitFallback === '1') {
+    return true;
   }
   const requireDistributed = String(process.env.RATE_LIMIT_REQUIRE_DISTRIBUTED || '').trim().toLowerCase();
   if (requireDistributed === 'true' || requireDistributed === '1') {
@@ -247,6 +261,22 @@ function shouldAllowInMemoryRedisFallback(): boolean {
   }
   const failureMode = String(process.env.RATE_LIMIT_FAILURE_MODE || '').trim().toLowerCase();
   if (failureMode === 'fail-closed') {
+    return false;
+  }
+  const isTestContext =
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.env.TESTING === '1' ||
+    process.env.TESTING === 'true';
+  const isProdOrServerless =
+    process.env.NODE_ENV === 'production' ||
+    (!isTestContext &&
+      Boolean(
+        process.env.VERCEL ||
+          process.env.AWS_LAMBDA_FUNCTION_NAME ||
+          process.env.LAMBDA_TASK_ROOT ||
+          process.env.SERVERLESS
+      ));
+  if (isProdOrServerless) {
     return false;
   }
   return true;
@@ -731,6 +761,13 @@ export function getRedisHealthStatus(): RedisHealthStatus {
   }
 
   const client = singletonClient;
+  if (client && client.isFallbackMock) {
+    return {
+      configured: true,
+      connected: false,
+      status: 'fallback-mock'
+    };
+  }
   const status = client ? String(client.status) : 'idle';
   return {
     configured: true,

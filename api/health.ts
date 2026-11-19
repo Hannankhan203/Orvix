@@ -1,15 +1,21 @@
 import express from 'express';
 import type { Request, Response } from 'express';
-import { applyCorsMiddleware } from '../server/serverConfig.ts';
+import {
+  applyCorsMiddleware,
+  getServerPersistenceStatus
+} from '../server/serverConfig.ts';
 
 const app = express();
 applyCorsMiddleware(app);
 
 app.get(['/api/health', '/health'], (_req, res) => {
+  const persistence = getServerPersistenceStatus(true);
   res.json({
     status: 'ok',
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    persistence,
+    warnings: persistence.warnings
   });
 });
 

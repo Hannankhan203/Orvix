@@ -439,3 +439,40 @@ test('ORVIX-MED-05: Route-specific and global JSON request body limits reject ov
   }
 });
 
+test('MED-01, MED-02, MED-03: InMemoryRedisMock deterministic TTL + instance isolation, scoped Vercel OCR functions, and serverless persistence safeguards', async () => {
+  const { InMemoryRedisMock } = await import('../server/redisClient.ts');
+  const { ATOMIC_RATE_LIMIT_LUA } = await import('../server/rateLimiter.ts');
+  const { getServerPersistenceStatus } = await import('../server/serverConfig.ts');
+
+  // MED-01: Instance-scoped kvStore and deterministic PTTL bounded by windowMs
+  const mockA = new InMemoryRedisMock();
+  const mockB = new InMemoryRedisMock();
+  await mockA.connect();
+  await mockB.connect();
+  const windowMs = 10_000;
+  for (let i = 0; i < 20; i++) {
+    const resA = (await mockA.eval(ATOMIC_RATE_LIMIT_LUA, 1, `med01:key:${i}`, windowMs)) as [number, number];
+    assert.equal(resA[0], 1);
+    assert.ok(resA[1] >= 1 && resA[1] <= windowMs, `Expected pttl in [1, ${windowMs}], got ${resA[1]}`);
+  }
+  const isolatedResB = (await mockB.eval(ATOMIC_RATE_LIMIT_LUA, 1, 'med01:key:0', windowMs)) as [number, number];
+  assert.equal(isolatedResB[0], 1, 'Separate InMemoryRedisMock instances must not leak key counters');
+
+  // MED-02: vercel.json scopes OCR bundle and 300s/1024MB limits only to api/chat.ts and api/upload.ts
+  const vercelRaw = fs.readFileSync(path.resolve(process.cwd(), 'vercel.json'), 'utf8');
+  const vercelJson = JSON.parse(vercelRaw);
+  assert.equal(vercelJson.functions['api/*.ts'], undefined, 'Wildcard api/*.ts function config must be removed');
+  assert.deepEqual(Object.keys(vercelJson.functions).sort(), ['api/chat.ts', 'api/upload.ts']);
+  assert.equal(vercelJson.functions['api/chat.ts'].maxDuration, 300);
+  assert.equal(vercelJson.functions['api/upload.ts'].maxDuration, 300);
+
+  // MED-03: getServerPersistenceStatus reports non-persistent backends and warnings in serverless mode when unconfigured
+  const status = getServerPersistenceStatus(true);
+  assert.equal(status.runtime, 'serverless');
+  if (!status.firestoreConfigured || !status.supabaseConfigured || !status.redisConfigured) {
+    assert.equal(status.persistenceReady, false);
+    assert.ok(status.warnings.length > 0, 'Unconfigured serverless persistence must emit explicit health warnings');
+  }
+});
+
+

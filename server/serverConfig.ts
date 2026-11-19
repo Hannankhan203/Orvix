@@ -657,6 +657,106 @@ export const PROVIDER_ENV_REQUIREMENTS: Record<string, string> = {
   cloudflare: 'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN'
 };
 
+export interface ServerPersistenceStatus {
+  runtime: 'serverless' | 'production' | 'development';
+  isProduction: boolean;
+  isServerless: boolean;
+  firestoreConfigured: boolean;
+  supabaseConfigured: boolean;
+  redisConfigured: boolean;
+  signedUrlSecretConfigured: boolean;
+  persistenceReady: boolean;
+  backends: {
+    attachmentRegistry: 'firestore' | 'memory';
+    conversationDocuments: 'firestore' | 'memory';
+    uploadQuotas: 'firestore' | 'memory';
+    binaryStorage: 'supabase' | 'local-ephemeral';
+    rateLimiting: 'redis' | 'fail-closed' | 'memory';
+  };
+  warnings: string[];
+}
+
+export function getServerPersistenceStatus(serverlessRuntime = false): ServerPersistenceStatus {
+  const inServerless = Boolean(serverlessRuntime || isServerless);
+  const inProd = isSignedDecodeProductionMode();
+  const runtime: 'serverless' | 'production' | 'development' = inServerless
+    ? 'serverless'
+    : inProd
+      ? 'production'
+      : 'development';
+
+  const firebaseProjectId = resolveEnvCredential(
+    'FIREBASE_PROJECT_ID',
+    'VITE_FIREBASE_PROJECT_ID',
+    'NEXT_PUBLIC_FIREBASE_PROJECT_ID'
+  );
+  const firebaseAdminCred = resolveEnvCredential(
+    'FIREBASE_SERVICE_ACCOUNT',
+    'FIREBASE_SERVICE_ACCOUNT_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS'
+  );
+  const firestoreConfigured = Boolean(firebaseProjectId && firebaseAdminCred);
+  const supabaseConfigured = isSupabaseStorageConfigured();
+  const rawRedisUrl = resolveEnvCredential('REDIS_URL', 'ORVIX_REDIS_URL');
+  const redisConfigured = Boolean(rawRedisUrl && /^rediss?:\/\//i.test(rawRedisUrl));
+  const signedUrlSecretConfigured = resolveConfiguredSignedDecodeUrlSecret().valid;
+  const requireDistributedRateLimit = ['true', '1', 'yes'].includes(
+    String(process.env.RATE_LIMIT_REQUIRE_DISTRIBUTED || '').trim().toLowerCase()
+  );
+
+  const warnings: string[] = [];
+  if (inProd || inServerless) {
+    if (!firestoreConfigured) {
+      warnings.push(
+        'Firebase Admin Firestore is not configured (missing FIREBASE_PROJECT_ID or FIREBASE_SERVICE_ACCOUNT). Attachment registry, conversation documents, and upload quotas require durable Firestore persistence in serverless/production deployments.'
+      );
+    }
+    if (!supabaseConfigured) {
+      warnings.push(
+        'Supabase Storage is not configured (missing SUPABASE_URL or SUPABASE_SECRET_KEY). Binary attachment files require Supabase Storage for durable cross-instance persistence.'
+      );
+    }
+    if (!redisConfigured) {
+      warnings.push(
+        'Redis is not configured (missing REDIS_URL). Rate limiting and WebSocket connection slots are using non-distributed per-instance memory unless RATE_LIMIT_REQUIRE_DISTRIBUTED=true is enabled.'
+      );
+    }
+    if (!signedUrlSecretConfigured) {
+      warnings.push(
+        'ORVIX_SIGNED_URL_SECRET is missing or invalid. A shared secret of at least 32 characters is required in production/serverless deployments.'
+      );
+    }
+  }
+
+  const persistenceReady =
+    !inProd && !inServerless
+      ? true
+      : firestoreConfigured && redisConfigured && signedUrlSecretConfigured;
+
+  return {
+    runtime,
+    isProduction: inProd,
+    isServerless: inServerless,
+    firestoreConfigured,
+    supabaseConfigured,
+    redisConfigured,
+    signedUrlSecretConfigured,
+    persistenceReady,
+    backends: {
+      attachmentRegistry: firestoreConfigured ? 'firestore' : 'memory',
+      conversationDocuments: firestoreConfigured ? 'firestore' : 'memory',
+      uploadQuotas: firestoreConfigured ? 'firestore' : 'memory',
+      binaryStorage: supabaseConfigured ? 'supabase' : 'local-ephemeral',
+      rateLimiting: redisConfigured
+        ? 'redis'
+        : requireDistributedRateLimit
+          ? 'fail-closed'
+          : 'memory'
+    },
+    warnings
+  };
+}
+
 export function getServerProviderConfigStatus(serverlessRuntime = false) {
   const geminiKey = getGeminiApiKey();
   const groqKey = getGroqApiKey();

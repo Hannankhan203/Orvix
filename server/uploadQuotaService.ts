@@ -696,6 +696,7 @@ export function createSimulatedFirestoreInstance(): any {
 
 let simulatedFirestoreSingleton: any = null;
 let forceProductionModeForTesting: boolean | null = null;
+let inMemoryFirestoreWarningLogged = false;
 
 /**
  * Test hook to simulate production deployment fail-closed behavior during automated test suites.
@@ -724,6 +725,45 @@ export function isProductionEnvironment(): boolean {
 }
 
 /**
+ * Returns true when running in a strict serverless production runtime where
+ * non-persistent in-memory storage is prohibited for upload quotas, attachment registry,
+ * and conversation documents.
+ */
+export function isStrictServerlessProduction(): boolean {
+  if (!isProductionEnvironment()) {
+    return false;
+  }
+  return (
+    forceProductionModeForTesting === true ||
+    Boolean(
+      process.env.VERCEL ||
+        process.env.AWS_LAMBDA_FUNCTION_NAME ||
+        process.env.LAMBDA_TASK_ROOT ||
+        process.env.SERVERLESS
+    )
+  );
+}
+
+/**
+ * Returns true when durable Firebase Admin Firestore credentials and project ID are configured.
+ */
+export function isDurableFirestoreConfigured(): boolean {
+  if (customFirestoreOverride) {
+    return true;
+  }
+  const projectId = getConfiguredFirebaseProjectId();
+  if (!projectId) {
+    return false;
+  }
+  if (getApps().length > 0) {
+    return true;
+  }
+  const hasServiceAccount = Boolean(getFirebaseServiceAccountCredentials());
+  const hasGoogleCredentials = Boolean((process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim());
+  return hasServiceAccount || hasGoogleCredentials;
+}
+
+/**
  * Sets a custom Firestore database instance for testing (e.g. simulated serverless instances).
  */
 export function setFirestoreForTesting(db: any): void {
@@ -737,6 +777,7 @@ export function resetFirestoreForTesting(): void {
   customFirestoreOverride = null;
   forceProductionModeForTesting = null;
   customLockTimeoutMsForTesting = null;
+  inMemoryFirestoreWarningLogged = false;
   clearAllQuotaLocksForTesting();
   sharedInMemoryFirestoreStore.clear();
 }
@@ -1057,7 +1098,14 @@ export function getFirestoreDb(): any {
     }
   } catch (_) {}
 
-  // Fallback to resilient in-memory simulated Firestore exclusively in tests and development
+  if (isProd && !inMemoryFirestoreWarningLogged) {
+    inMemoryFirestoreWarningLogged = true;
+    console.warn(
+      '[UploadQuota] Warning: Running in production without Firebase Admin credentials (FIREBASE_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS). Falling back to non-persistent in-memory storage for upload quotas, attachment registry, and conversation documents.'
+    );
+  }
+
+  // Fallback to resilient in-memory simulated Firestore exclusively in tests, development, or single-container non-serverless fallback
   if (!simulatedFirestoreSingleton) {
     simulatedFirestoreSingleton = createSimulatedFirestoreInstance();
   }

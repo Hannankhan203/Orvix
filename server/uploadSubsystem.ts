@@ -71,6 +71,7 @@ import {
   getUtcDayString,
   getNextUtcMidnight,
   getFirestoreDb,
+  isStrictServerlessProduction,
   pruneExpiredQuotaReservations,
   type QuotaIdentity,
   type QuotaReservation,
@@ -709,6 +710,9 @@ export async function saveDurableUploadRecord(record: UploadedFileRecord): Promi
       await docRef.set(JSON.parse(JSON.stringify(payload)), { merge: true });
     }
   } catch (err: any) {
+    if (isStrictServerlessProduction() || err?._loggedUploadDiagnostic || err?.diagnosticStage) {
+      throw err;
+    }
     console.warn('[UploadRegistry] Warning: Could not save upload record to Firestore:', err?.message || err);
   }
 }
@@ -786,6 +790,9 @@ export async function getDurableUploadRecord(fileId: string): Promise<UploadedFi
       }
     }
   } catch (err: any) {
+    if (isStrictServerlessProduction() || err?._loggedUploadDiagnostic || err?.diagnosticStage) {
+      throw err;
+    }
     console.warn('[UploadRegistry] Notice: Firestore upload record lookup failed:', err?.message || err);
   }
   return null;
@@ -838,6 +845,9 @@ export async function getDurableConversationUploadRecords(
       }
     }
   } catch (err: any) {
+    if (isStrictServerlessProduction() || err?._loggedUploadDiagnostic || err?.diagnosticStage) {
+      throw err;
+    }
     console.warn('[UploadRegistry] Notice: Firestore conversation upload lookup failed:', err?.message || err);
   }
   return results;
@@ -1990,14 +2000,6 @@ export function registerUploadRoutes(app: express.Express) {
         }
       }
 
-      if (isServerless) {
-        return res.json({
-          id: fileId,
-          status: 'ready',
-          serverless: true,
-          message: 'Attachment active in client session.'
-        });
-      }
       return res.status(404).json({ error: 'Attachment not found or has expired.', code: 'ATTACHMENT_NOT_FOUND' });
     }
 

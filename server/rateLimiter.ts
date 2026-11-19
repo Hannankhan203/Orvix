@@ -303,7 +303,14 @@ export function isDistributedProductionRuntime(): boolean {
   if (process.env.NODE_ENV === 'production') {
     return true;
   }
-  if (Boolean(process.env.VERCEL)) {
+  if (
+    Boolean(
+      process.env.VERCEL ||
+        process.env.AWS_LAMBDA_FUNCTION_NAME ||
+        process.env.LAMBDA_TASK_ROOT ||
+        process.env.SERVERLESS
+    )
+  ) {
     return !process.env.NODE_TEST_CONTEXT;
   }
   if (Boolean(process.env.K_SERVICE)) {
@@ -514,7 +521,8 @@ export async function consumeRateLimit(
 
   if (redisClient) {
     const ready = await ensureRedisReady(redisClient, Math.min(timeoutMs, 1000));
-    if (ready) {
+    const usingFallbackMock = Boolean((redisClient as any).isFallbackMock);
+    if (ready && !usingFallbackMock) {
       try {
         const { count, ttlMs } = await runRedisEvalWithTimeout(redisClient, key, windowMs, timeoutMs);
         const resetAtMs = nowMs + ttlMs;
