@@ -9,12 +9,21 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, disableNetwork, enableNetwork } from 'firebase/firestore';
 
-/** @param {string} key */
-function getEnv(key) {
+/**
+ * Reads an explicit Vite build-time env value with Node/test process.env fallback.
+ * Uses static `import.meta.env.VITE_FIREBASE_*` accesses so Vite inlines only the
+ * Firebase config keys instead of serializing the entire `import.meta.env` object
+ * (including `DEV`/`MODE`/`PROD`/`SSR` metadata and unrelated `VITE_*` variables).
+ *
+ * @param {() => string | undefined} readViteEnv
+ * @param {string} key
+ * @returns {string}
+ */
+function resolveFirebaseEnv(readViteEnv, key) {
   try {
-    const metaEnv = /** @type {any} */ (typeof import.meta !== 'undefined' ? import.meta.env : null);
-    if (metaEnv && metaEnv[key]) {
-      return metaEnv[key];
+    const viteVal = readViteEnv();
+    if (viteVal) {
+      return viteVal;
     }
   } catch (_) {
     // Ignore error in non-Vite environments
@@ -26,12 +35,15 @@ function getEnv(key) {
 }
 
 export const firebaseConfig = {
-  apiKey: getEnv('VITE_FIREBASE_API_KEY'),
-  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
-  projectId: getEnv('VITE_FIREBASE_PROJECT_ID'),
-  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
-  appId: getEnv('VITE_FIREBASE_APP_ID')
+  apiKey: resolveFirebaseEnv(() => import.meta.env.VITE_FIREBASE_API_KEY, 'VITE_FIREBASE_API_KEY'),
+  authDomain: resolveFirebaseEnv(() => import.meta.env.VITE_FIREBASE_AUTH_DOMAIN, 'VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: resolveFirebaseEnv(() => import.meta.env.VITE_FIREBASE_PROJECT_ID, 'VITE_FIREBASE_PROJECT_ID'),
+  storageBucket: resolveFirebaseEnv(() => import.meta.env.VITE_FIREBASE_STORAGE_BUCKET, 'VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: resolveFirebaseEnv(
+    () => import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+    'VITE_FIREBASE_MESSAGING_SENDER_ID'
+  ),
+  appId: resolveFirebaseEnv(() => import.meta.env.VITE_FIREBASE_APP_ID, 'VITE_FIREBASE_APP_ID')
 };
 
 /**

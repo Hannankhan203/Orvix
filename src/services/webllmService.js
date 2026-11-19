@@ -190,11 +190,7 @@ function isQuietTestLogsEnabled() {
     Boolean(process.env.JEST_WORKER_ID) ||
     Boolean(process.env.PLAYWRIGHT_TEST);
 
-  if (process.env.NODE_ENV === 'production' && !isTestContext) {
-    return false;
-  }
-
-  return true;
+  return isTestContext;
 }
 
 /**

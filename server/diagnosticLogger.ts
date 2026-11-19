@@ -56,11 +56,7 @@ export function isQuietTestLogsEnabled(): boolean {
     Boolean(process.env.JEST_WORKER_ID) ||
     Boolean(process.env.PLAYWRIGHT_TEST);
 
-  if (process.env.NODE_ENV === 'production' && !isTestContext) {
-    return false;
-  }
-
-  return true;
+  return isTestContext;
 }
 
 // Sanitizes error messages to ensure no API keys, tokens, PEM private keys, or headers are ever logged or sent to users

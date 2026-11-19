@@ -19,6 +19,30 @@
 export const DICTATION_DIAGNOSTICS_STORAGE_KEY = 'orvix_dictation_diagnostics';
 
 /**
+ * Returns true when verbose test-time diagnostic console output should be suppressed
+ * via `ORVIX_QUIET_TEST_LOGS=true` during automated tests.
+ * Never suppresses diagnostics in production runtimes outside a test runner.
+ *
+ * @returns {boolean}
+ */
+export function isQuietTestLogsEnabled() {
+  if (typeof process === 'undefined' || !process?.env) return false;
+  const quietFlag = String(process.env.ORVIX_QUIET_TEST_LOGS || '').trim().toLowerCase() === 'true';
+  if (!quietFlag) return false;
+
+  const isTestContext =
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.TESTING === '1' ||
+    process.env.TESTING === 'true' ||
+    Boolean(process.env.VITEST) ||
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.PLAYWRIGHT_TEST);
+
+  return isTestContext;
+}
+
+/**
  * Checks whether voice dictation diagnostics are currently enabled.
  * Defaults to false (explicit opt-in required for privacy).
  *
@@ -51,12 +75,16 @@ export function setDictationDiagnosticsEnabled(enabled) {
     window.__ORVIX_DICTATION_DIAGNOSTICS__ = isBool;
     if (isBool) {
       localStorage.setItem(DICTATION_DIAGNOSTICS_STORAGE_KEY, 'true');
-      console.info(
-        '[Orvix Dictation Diagnostics] [ACTIVE] Diagnostics enabled. Session events will be logged to console. To disable, run setDictationDiagnosticsEnabled(false) or remove localStorage item.'
-      );
+      if (!isQuietTestLogsEnabled()) {
+        console.info(
+          '[Orvix Dictation Diagnostics] [ACTIVE] Diagnostics enabled. Session events will be logged to console. To disable, run setDictationDiagnosticsEnabled(false) or remove localStorage item.'
+        );
+      }
     } else {
       localStorage.removeItem(DICTATION_DIAGNOSTICS_STORAGE_KEY);
-      console.info('[Orvix Dictation Diagnostics] [DISABLED] Diagnostics disabled.');
+      if (!isQuietTestLogsEnabled()) {
+        console.info('[Orvix Dictation Diagnostics] [DISABLED] Diagnostics disabled.');
+      }
     }
   } catch (_) {}
 }
@@ -207,37 +235,39 @@ export function finalizeDiagnosticSession(session) {
     }
   }
 
-  // Log structured diagnostic report to the browser console
-  try {
-    const header = `[Orvix Dictation Diagnostic] Session: ${report.sessionId} | ${report.engineMode} | ${report.language}`;
-    if (typeof console.groupCollapsed === 'function') {
-      console.groupCollapsed(header);
-    } else {
-      console.log(`=== ${header} ===`);
-    }
+  // Log structured diagnostic report to the browser console unless suppressed for quiet test runs
+  if (!isQuietTestLogsEnabled()) {
+    try {
+      const header = `[Orvix Dictation Diagnostic] Session: ${report.sessionId} | ${report.engineMode} | ${report.language}`;
+      if (typeof console.groupCollapsed === 'function') {
+        console.groupCollapsed(header);
+      } else {
+        console.log(`=== ${header} ===`);
+      }
 
-    console.log('1. Session ID:                  ', report.sessionId);
-    console.log('2. Engine Mode:                 ', report.engineMode);
-    console.log('3. Selected Language (BCP-47):  ', report.language);
-    console.log('4. MediaRecorder MIME Type:     ', report.mimeType);
-    console.log(`5. Audio Blob Size & Duration:   ${report.audioBlobSizeFormatted} (${report.audioBlobSizeBytes} bytes), ${report.durationSec}s (Valid: ${report.audioBlobValid})`);
-    console.log('6. Native Speech Initialized:   ', report.nativeInitialized);
-    console.log('7. Native Completed Normally:   ', report.recognitionEndedNormally);
-    console.log('8. Native Had Final Results:    ', report.hadFinalResults);
-    console.log('9. Raw Native Transcript:       ', report.rawNativeTranscript ? `"${report.rawNativeTranscript}"` : '[EMPTY]');
-    console.log('10. Server Transcription Invoked:', report.serverTranscriptionInvoked);
-    console.log('11. Invocation / Bypass Reason: ', report.fallbackReason);
-    console.log(`12. Actual Provider & Model:    ${report.provider} (${report.model})`);
-    console.log(`13. Provider Status & Latency:  HTTP ${report.providerStatus}, ${report.latencyMs}ms (Success: ${report.providerSuccess}${report.providerFailureReason !== 'none' ? `, Failure: ${report.providerFailureReason}` : ''})`);
-    console.log('14. Raw Provider Transcript:    ', report.rawProviderTranscript ? `"${report.rawProviderTranscript}"` : '[NONE]');
-    console.log(`15. Final Transcript Source:    ${report.finalTranscriptSource} (Decision: ${report.reconciliationDecision}, Reason: ${report.reconciliationReason})`);
-    console.log('16. Cleaned / Formatted Speech: ', report.cleanedTranscript ? `"${report.cleanedTranscript}"` : '[EMPTY]');
-    console.log('17. Final Emitted to Composer:  ', report.finalComposerTranscript ? `"${report.finalComposerTranscript}"` : '[EMPTY]');
+      console.log('1. Session ID:                  ', report.sessionId);
+      console.log('2. Engine Mode:                 ', report.engineMode);
+      console.log('3. Selected Language (BCP-47):  ', report.language);
+      console.log('4. MediaRecorder MIME Type:     ', report.mimeType);
+      console.log(`5. Audio Blob Size & Duration:   ${report.audioBlobSizeFormatted} (${report.audioBlobSizeBytes} bytes), ${report.durationSec}s (Valid: ${report.audioBlobValid})`);
+      console.log('6. Native Speech Initialized:   ', report.nativeInitialized);
+      console.log('7. Native Completed Normally:   ', report.recognitionEndedNormally);
+      console.log('8. Native Had Final Results:    ', report.hadFinalResults);
+      console.log('9. Raw Native Transcript:       ', report.rawNativeTranscript ? `"${report.rawNativeTranscript}"` : '[EMPTY]');
+      console.log('10. Server Transcription Invoked:', report.serverTranscriptionInvoked);
+      console.log('11. Invocation / Bypass Reason: ', report.fallbackReason);
+      console.log(`12. Actual Provider & Model:    ${report.provider} (${report.model})`);
+      console.log(`13. Provider Status & Latency:  HTTP ${report.providerStatus}, ${report.latencyMs}ms (Success: ${report.providerSuccess}${report.providerFailureReason !== 'none' ? `, Failure: ${report.providerFailureReason}` : ''})`);
+      console.log('14. Raw Provider Transcript:    ', report.rawProviderTranscript ? `"${report.rawProviderTranscript}"` : '[NONE]');
+      console.log(`15. Final Transcript Source:    ${report.finalTranscriptSource} (Decision: ${report.reconciliationDecision}, Reason: ${report.reconciliationReason})`);
+      console.log('16. Cleaned / Formatted Speech: ', report.cleanedTranscript ? `"${report.cleanedTranscript}"` : '[EMPTY]');
+      console.log('17. Final Emitted to Composer:  ', report.finalComposerTranscript ? `"${report.finalComposerTranscript}"` : '[EMPTY]');
 
-    if (typeof console.groupEnd === 'function') {
-      console.groupEnd();
-    }
-  } catch (_) {}
+      if (typeof console.groupEnd === 'function') {
+        console.groupEnd();
+      }
+    } catch (_) {}
+  }
 
   return report;
 }
