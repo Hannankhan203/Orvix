@@ -62,23 +62,44 @@ test('ORVIX-INFO-02: incremental JS/JSX static checking configuration exists and
 
   assert.equal(fs.existsSync(checkJsConfigPath), true, 'tsconfig.checkjs.json must exist');
   const checkJsConfig = JSON.parse(fs.readFileSync(checkJsConfigPath, 'utf8'));
+  const compilerOptions = checkJsConfig.compilerOptions || {};
+  const isStrictSubFlagEnabled = (flag: string) =>
+    compilerOptions[flag] === true || (compilerOptions.strict === true && compilerOptions[flag] !== false);
 
-  assert.equal(checkJsConfig.compilerOptions?.checkJs, true);
-  assert.equal(checkJsConfig.compilerOptions?.noImplicitAny, true);
-  assert.equal(checkJsConfig.compilerOptions?.strictFunctionTypes, true);
-  assert.equal(checkJsConfig.compilerOptions?.noImplicitThis, true);
-  assert.equal(checkJsConfig.compilerOptions?.noEmit, true);
-  assert.ok(Array.isArray(checkJsConfig.include) && checkJsConfig.include.length >= 20);
+  assert.equal(compilerOptions.checkJs, true);
+  assert.equal(compilerOptions.strict, true);
+  assert.equal(isStrictSubFlagEnabled('strictNullChecks'), true);
+  assert.equal(isStrictSubFlagEnabled('useUnknownInCatchVariables'), true);
+  assert.equal(isStrictSubFlagEnabled('noImplicitAny'), true);
+  assert.equal(isStrictSubFlagEnabled('strictFunctionTypes'), true);
+  assert.equal(isStrictSubFlagEnabled('noImplicitThis'), true);
+  assert.equal(isStrictSubFlagEnabled('strictBindCallApply'), true);
+  assert.equal(isStrictSubFlagEnabled('alwaysStrict'), true);
+  assert.equal(compilerOptions.noEmit, true);
+  assert.ok(Array.isArray(checkJsConfig.include) && checkJsConfig.include.length > 0);
 
-  // Verify frontend files retain .js/.jsx extensions without unnecessary migration renames
+  // Verify full project src/ JS/JSX coverage without unnecessary migration renames
   assert.ok(checkJsConfig.include.some((f: string) => f.endsWith('.js')));
   assert.ok(checkJsConfig.include.some((f: string) => f.endsWith('.jsx')));
 
   assert.equal(pkg.scripts?.['lint:js'], 'tsc -p tsconfig.checkjs.json --noEmit');
-  assert.match(ciContent, /bun run lint:js/, 'CI workflow must run incremental JS/JSX static check');
+  assert.match(ciContent, /bun run lint:js/, 'CI workflow must run JS/JSX static check');
 
-  // Execute tsc against tsconfig.checkjs.json directly to ensure 0 diagnostics
+  // Execute tsc against tsconfig.checkjs.json directly to verify full coverage and 0 diagnostics
   const tscBin = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsc');
+  const listedFiles = execSync(`"${tscBin}" -p tsconfig.checkjs.json --listFilesOnly`, {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    stdio: 'pipe'
+  })
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.endsWith('.js') || line.endsWith('.jsx'));
+
+  assert.ok(
+    listedFiles.length >= 89,
+    `Expected CheckJS to cover all eligible src JS/JSX files (>= 89), got ${listedFiles.length}`
+  );
   execSync(`"${tscBin}" -p tsconfig.checkjs.json --noEmit`, { cwd: REPO_ROOT, encoding: 'utf8', stdio: 'pipe' });
 });
 

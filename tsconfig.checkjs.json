@@ -2,6 +2,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "checkJs": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "useUnknownInCatchVariables": true,
     "noImplicitAny": true,
     "noImplicitThis": true,
     "strictFunctionTypes": true,
