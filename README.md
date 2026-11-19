@@ -1243,3 +1243,4 @@ Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectura
 - **Image Generation Integration**: Generative visual creation tools alongside existing conversational modes.
 - **Multimodal Vision Reasoning**: Direct spatial/visual image understanding alongside existing OCR text extraction.
 - **Expanded On-Device WebLLM Model Tiers**: Additional quantized local models as WebGPU browser memory limits and MLC runtimes evolve.
+ 
