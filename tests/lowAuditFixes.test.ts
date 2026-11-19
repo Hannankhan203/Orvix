@@ -161,18 +161,20 @@ test('ORVIX-LOW-01: server.ts registers single /sw.js and /manifest.webmanifest 
 // ORVIX-LOW-02: Application Version Mismatch
 // ============================================================================
 
-test('ORVIX-LOW-02: package.json, APP_CONFIG.version, and README.md current version align on 0.4.3', () => {
+test('ORVIX-LOW-02: package.json, APP_CONFIG.version, and README.md current version align on 5.3.0', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
   const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
 
-  const readmeMatch = readme.match(/\*\*Version:\s*V\s*([0-9]+\.[0-9]+\.[0-9]+)\*\*/i);
-  assert.ok(readmeMatch, 'README.md must declare current **Version: V X.Y.Z**');
+  const readmeMatch = readme.match(/^#\s+.*Orvix.*?\|\s*.*?\bv?([0-9]+\.[0-9]+\.[0-9]+)\b/im);
+  assert.ok(readmeMatch, 'README.md top heading must declare current version vX.Y.Z');
 
-  const changelogMatch = readme.match(/## Version History & Release Changelog[\s\S]*?###\s*V\s*([0-9]+\.[0-9]+\.[0-9]+)/i);
+  const changelogMatch = readme.match(
+    /##\s*(?:27\.\s*)?Version History and Release Changelog[\s\S]*?###\s*v?([0-9]+\.[0-9]+\.[0-9]+)\b/i
+  );
   assert.ok(changelogMatch, 'README.md changelog must list latest release header');
 
-  assert.equal(pkg.version, '0.4.3');
-  assert.equal(APP_CONFIG.version, '0.4.3');
+  assert.equal(pkg.version, '5.3.0');
+  assert.equal(APP_CONFIG.version, '5.3.0');
   assert.equal(readmeMatch![1], pkg.version);
   assert.equal(changelogMatch![1], pkg.version);
 });

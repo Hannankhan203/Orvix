@@ -1,41 +1,39 @@
-# Orvix
+# 🤖 Orvix | 🚀 v5.3.0
 
-**Version: V 0.4.3**
-
-An intelligent, multi-model AI conversational workspace featuring on-device Browser AI (WebGPU & WebLLM), offline PWA app-shell caching, client-side and server-side document extraction (including PDF, Word, PowerPoint, and Excel), a quality-verified Smart Compression Pipeline with transparent `orvix-gzip-v1` storage envelopes, dual-format clipboard formatting, mobile swipe navigation, live voice dictation with Whisper refinement, four specialized chat modes, and immutable Share Chat conversation collaboration.
+Orvix is a multi-model AI chatbot built for flexibility, privacy, and everyday productivity. It combines cloud AI models with private, on-device Browser AI powered by WebGPU and WebLLM, offline PWA support, local and cloud document and image understanding, real-time voice dictation, and shareable conversations for seamless collaboration.
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#project-overview)
-2. [Key Features](#key-features)
-3. [Browser AI (WebLLM) & On-Device WebGPU Inference](#browser-ai-webllm--on-device-webgpu-inference)
+1. [Project Overview](#1-project-overview)
+2. [Key Features](#2-key-features)
+3. [Browser AI, WebLLM and On-Device WebGPU Inference](#3-browser-ai-webllm-and-on-device-webgpu-inference)
    - [Local Browser Execution & Privacy](#local-browser-execution--privacy)
    - [Integrated Browser AI Models & Quantization Tiers](#integrated-browser-ai-models--quantization-tiers)
    - [Dedicated Web Worker Architecture](#dedicated-web-worker-architecture)
    - [Browser AI Status Bar & Interactive Controls](#browser-ai-status-bar--interactive-controls)
-4. [Offline Functionality & PWA Caching Architecture](#offline-functionality--pwa-caching-architecture)
+4. [Offline Functionality and PWA Caching](#4-offline-functionality-and-pwa-caching)
    - [App Shell Precache vs. Model Weight Cache](#app-shell-precache-vs-model-weight-cache)
    - [Prerequisites for Reliable Offline Use](#prerequisites-for-reliable-offline-use)
    - [Model Weight Retention & Storage Lifecycle](#model-weight-retention--storage-lifecycle)
    - [Behavior of Cloud Providers When Offline](#behavior-of-cloud-providers-when-offline)
-5. [Browser-Side Document Extraction (Offline & Local)](#browser-side-document-extraction-offline--local)
+5. [Browser-Side Document Extraction (Offline and Local)](#5-browser-side-document-extraction-offline-and-local)
    - [Supported Offline Document Formats](#supported-offline-document-formats)
    - [Document Structure Preservation & Context Formatting](#document-structure-preservation--context-formatting)
    - [Scanned PDF, Encrypted Office & Image OCR Boundaries](#scanned-pdf-encrypted-office--image-ocr-boundaries)
    - [IndexedDB Attachment Caching](#indexeddb-attachment-caching)
-6. [Step-by-Step Guide: Using Browser AI Offline](#step-by-step-guide-using-browser-ai-offline)
-7. [Message Copying & Dual-Format Clipboard](#message-copying--dual-format-clipboard)
+6. [Step-by-Step Guide: Using Browser AI Offline](#6-step-by-step-guide-using-browser-ai-offline)
+7. [Message Copying and Dual-Format Clipboard](#7-message-copying-and-dual-format-clipboard)
    - [Dual-Format Clipboard Generation (`text/html` and `text/plain`)](#dual-format-clipboard-generation-texthtml-and-textplain)
    - [Structured Plain-Text Record Layout for Messaging Apps](#structured-plain-text-record-layout-for-messaging-apps)
    - [Rich HTML Table Styling for Documents](#rich-html-table-styling-for-documents)
    - [Three-Tier Clipboard Writing Strategy](#three-tier-clipboard-writing-strategy)
-8. [Mobile Responsiveness & Swipe Navigation](#mobile-responsiveness--swipe-navigation)
+8. [Mobile Responsiveness and Swipe Navigation](#8-mobile-responsiveness-and-swipe-navigation)
    - [Main Conversation Swipe-Right Gesture](#main-conversation-swipe-right-gesture)
    - [Excluded Zones & Interaction Safeguards](#excluded-zones--interaction-safeguards)
    - [Horizontal Intent Disambiguation](#horizontal-intent-disambiguation)
-9. [Voice Dictation & Speech Architecture](#voice-dictation--speech-architecture)
+9. [Voice Dictation and Speech Architecture](#9-voice-dictation-and-speech-architecture)
    - [Bi-Directional WebSocket Voice Streaming (AudioWorklet + PCM)](#bi-directional-websocket-voice-streaming-audioworklet--pcm)
    - [Vercel Serverless & Deployment Architecture Considerations](#vercel-serverless--deployment-architecture-considerations)
    - [Hybrid Recognition & Whisper Refinement](#hybrid-recognition--whisper-refinement)
@@ -43,36 +41,36 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
    - [Smart Punctuation & Typography Formatting](#smart-punctuation--typography-formatting)
    - [Text-to-Speech (Read Aloud)](#text-to-speech-read-aloud)
    - [iOS 15 & Mobile Device Compatibility](#ios-15--mobile-device-compatibility)
-10. [Chatbot Modes](#chatbot-modes)
-    - [1. General Assistant Mode](#1-general-assistant-mode)
-    - [2. Learning Mode](#2-learning-mode)
-    - [3. Writing Mode](#3-writing-mode)
-    - [4. Coding Mode](#4-coding-mode)
-11. [AI Providers & Supported Models](#ai-providers--supported-models)
+10. [Chat Modes](#10-chat-modes)
+    - [General Assistant Mode](#general-assistant-mode)
+    - [Learning Mode](#learning-mode)
+    - [Writing Mode](#writing-mode)
+    - [Coding Mode](#coding-mode)
+11. [AI Providers and Supported Models](#11-ai-providers-and-supported-models)
     - [Supported Providers & Models](#supported-providers--models)
     - [Provider Context Budgets](#provider-context-budgets)
     - [Streaming & Fallback System](#streaming--fallback-system)
     - [Zero-Key Simulation Mode](#zero-key-simulation-mode)
-12. [Attachments & Document Understanding](#attachments--document-understanding)
+12. [Attachment and Document Understanding](#12-attachment-and-document-understanding)
     - [Attachment Methods & Rules](#attachment-methods--rules)
     - [Supported Formats & Targeted Questioning](#supported-formats--targeted-questioning)
-13. [Image Attachments & Optical Character Recognition (OCR)](#image-attachments--optical-character-recognition-ocr)
+13. [Image Attachment and Optical Character Recognition (OCR)](#13-image-attachment-and-optical-character-recognition-ocr)
     - [Supported Image Formats & Verification](#supported-image-formats--verification)
     - [Server-Side OCR Engine](#server-side-ocr-engine)
     - [Honest No-Text Handling & Preview Modal](#honest-no-text-handling--preview-modal)
-14. [Smart Compression Pipeline](#smart-compression-pipeline)
+14. [Smart Compression Pipeline](#14-smart-compression-pipeline)
     - [Image Compression](#image-compression)
     - [PDF Compression](#pdf-compression)
     - [Office Document Compression](#office-document-compression)
     - [Transparent Storage Compression (`orvix-gzip-v1`)](#transparent-storage-compression-orvix-gzip-v1)
-15. [Chat Management & Usability Enhancements](#chat-management--usability-enhancements)
+15. [Chat Management and Usability Enhancements](#15-chat-management-and-usability-enhancements)
     - [Multi-Model Alternative Responses](#multi-model-alternative-responses)
     - [Automatic Chat-Input Focus](#automatic-chat-input-focus)
     - [Live Response-Time Measurement](#live-response-time-measurement)
     - [Controlled Large-Response Continuation](#controlled-large-response-continuation)
     - [Edit & Resend with Branch Truncation](#edit--resend-with-branch-truncation)
     - [Conversation Pinning & Client-Side Export](#conversation-pinning--client-side-export)
-16. [Share Chat & Conversation Collaboration](#share-chat--conversation-collaboration)
+16. [Shared Chat and Conversation Collaboration](#16-shared-chat-and-conversation-collaboration)
     - [Share Entire Conversations](#share-entire-conversations)
     - [Public Shared Conversation Viewer](#public-shared-conversation-viewer)
     - [Sign In and Continue](#sign-in-and-continue)
@@ -80,66 +78,51 @@ An intelligent, multi-model AI conversational workspace featuring on-device Brow
     - [Imported Chat Management](#imported-chat-management)
     - [Security and Data Isolation](#security-and-data-isolation)
     - [Persistence and Reliability](#persistence-and-reliability)
-17. [Architecture & Technology Stack](#architecture--technology-stack)
+17. [Architecture and Technology Stack](#17-architecture-and-technology-stack)
     - [Verified Platform & Device Compatibility](#verified-platform--device-compatibility)
-18. [Authentication & Persistence Architecture](#authentication--persistence-architecture)
-19. [Project Structure](#project-structure)
-20. [Environment Variables & Configuration](#environment-variables--configuration)
-21. [Installation & Running Locally](#installation--running-locally)
-22. [Build & Deployment Instructions](#build--deployment-instructions)
+18. [Authentication and Persistence Architecture](#18-authentication-and-persistence-architecture)
+19. [Project Structure](#19-project-structure)
+20. [Environment Variables and Configuration](#20-environment-variables-and-configuration)
+21. [Installation and Running Locally](#21-installation-and-running-locally)
+22. [Build and Deployment Instructions](#22-build-and-deployment-instructions)
     - [Firestore Security Rules Deployment for Share Chat](#firestore-security-rules-deployment-for-share-chat)
-23. [Troubleshooting & Common Issues](#troubleshooting--common-issues)
+23. [Troubleshooting Common Issues](#23-troubleshooting-common-issues)
     - [Troubleshooting Gemini Timeouts & Streaming](#troubleshooting-gemini-timeouts--streaming)
-24. [Security Architecture](#security-architecture)
+24. [Security Architecture](#24-security-architecture)
     - [Dependency Security Audit](#dependency-security-audit)
-25. [Verification & Security Coverage](#verification--security-coverage)
-26. [Current Limitations](#current-limitations)
-27. [Security, Performance & Architecture Improvements (v0.3.2)](#security-performance--architecture-improvements-v032)
-    - [ORVIX-001 — Secure Server-Side Credential Resolution](#orvix-001--secure-server-side-credential-resolution)
-    - [ORVIX-002 — Serverless-Safe File Upload Handling](#orvix-002--serverless-safe-file-upload-handling)
-    - [ORVIX-003 — Strict CORS Origin Whitelisting](#orvix-003--strict-cors-origin-whitelisting)
-    - [ORVIX-004 — Self-Healing IndexedDB Storage Quotas](#orvix-004--self-healing-indexeddb-storage-quotas)
-    - [ORVIX-005 — Modularization of Monolithic Server Architecture](#orvix-005--modularization-of-monolithic-server-architecture)
-    - [ORVIX-006 — High-Efficiency Live Response Timer](#orvix-006--high-efficiency-live-response-timer)
-    - [ORVIX-007 — Clean Script Redundant Server Reference Removal](#orvix-007--clean-script-redundant-server-reference-removal)
-    - [ORVIX-008 — WebGPU SwiftShader FP32 Defensive Fallback](#orvix-008--webgpu-swiftshader-fp32-defensive-fallback)
-    - [ORVIX-009 — Centralized Gemini Model Configuration & Secondary Fallback](#orvix-009--centralized-gemini-model-configuration--secondary-fallback)
-    - [Audit Verification Summary](#audit-verification-summary)
-28. [Version History & Release Changelog](#version-history--release-changelog)
-29. [Future Roadmap](#future-roadmap)
+25. [Verification and Security Coverage](#25-verification-and-security-coverage)
+26. [Current Limitations](#26-current-limitations)
+27. [Version History and Release Changelog](#27-version-history-and-release-changelog)
 
 ---
 
-## Project Overview
+## 1. Project Overview
 
-**Orvix** is an intelligent, multi-model conversational workspace engineered for privacy, flexibility, and offline resilience. It pairs flexible cloud-hosted models (Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI) with **100% on-device AI generation via WebGPU and WebLLM**, enabling private and responsive AI chat both connected to the cloud and entirely offline.
-
-Built as a full-stack Node.js application, Orvix combines a React 19 single-page application with an Express backend running Vite in middleware mode. When internet access is present, cloud model completions, audio transcriptions, and OCR operations execute server-side to guarantee credentials remain secure. When offline, Orvix leverages Workbox PWA precaching, on-device WebLLM inference across four integrated models, and client-side document extraction to maintain an uninterrupted local experience.
+**Orvix** is a privacy-focused, multi-model AI chat workspace built with React and Express that works seamlessly both online and offline. When connected, it routes requests securely through the backend to cloud providers including Google Gemini, Groq, OpenRouter, and Cloudflare Workers AI, while supporting voice dictation, OCR, cloud attachment storage, and shareable conversations for collaboration. When offline, Orvix uses PWA caching, local document extraction, and on-device WebGPU/WebLLM inference across four integrated models so conversations continue privately on your own device.
 
 ---
 
-## Key Features
+## 2. Key Features
 
-- **Share Chat & Immutable Public Snapshots**: Share complete conversations via unique URLs with instant Copy Link, WhatsApp, and native OS share dialogs. Public visitors can view, copy, and listen read-only without accounts; authenticated users can preview and fork conversations into independent, full-featured private chats upon their first message turn ([learn more](#share-chat--conversation-collaboration)).
-- **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker without external API calls or telemetry.
-- **Offline PWA App-Shell Caching**: Workbox service worker precaches application assets, WASM bundles, and offline document extractors for instant offline re-access.
-- **Client-Side Document Extraction & Semantic RAG**: Extracts and grounds text locally (and server-side) from Word (`.docx`, `.doc`), PDF (`.pdf`), PowerPoint (`.pptx`, `.ppt`), Excel (`.xlsx`, `.xls`), CSV, TSV, JSON, XML, and Markdown files, paired with client-side semantic chunking and retrieval (`semanticChunkingService.js`, `semanticRetrievalService.js`).
-- **Smart Compression Pipeline & Transparent Storage Envelopes**: Pre-upload client-side optimization for PNG, JPEG, WebP, GIF (static and animated), PDF, DOCX, PPTX, and XLSX attachments with strict quality/protection gates, plus lossless `orvix-gzip-v1` envelope compression for TXT, MD, DOC, PPT, and XLS cloud storage.
-- **Dual-Format Table & Clipboard Copying**: Copies assistant responses as both styled `text/html` (with zebra striping and borders for Word, Docs, and Slack) and structured `text/plain` key-value records (`• Header: Value`) that never distort in messaging apps like WhatsApp or Telegram.
-- **Mobile Swipe Navigation**: Natural swipe-right gesture across the main conversation area on mobile and tablet viewports (`<= 1024px`) to open the chat history sidebar, complete with safe exclusions for inputs, headers, code blocks, and iOS back-navigation edges.
-- **Voice Dictation with Whisper Refinement**: Real-time browser speech recognition rendering interim transcript snapshots as you speak, reconciled with server-side Groq Whisper Large v3 Turbo (with Gemini audio fallback) upon completion.
-- **Four Specialized Chat Modes**: Dedicated modes for **General Assistant**, **Learning** (educational callouts), **Writing** (editorial layout), and **Coding** (VS Code styling with locked 22px line heights).
-- **Multi-Model Response Alternatives**: Compare and regenerate answers across multiple AI providers (such as Gemini, Grok, and others) using `< X of Y >` model navigation without overwriting prior outputs, preserving valid response history across regenerations, retries, and prompt restoration.
-- **Global Input Auto-Focus**: Type anywhere on the page to automatically focus the composer without losing the first keystroke, protecting active text selection and shortcuts.
-- **Controlled Continuation**: Automatic segmentation of long outputs with continuation notices and an interactive composer chip (`[ → Continue response ]`).
-- **Deep Multimodal Attachments**: Drag-and-drop, clipboard paste (`Ctrl+V`), and file picker staging for documents and images with server-side Tesseract OCR and honest `NO_TEXT_DETECTED` handling.
-- **Zero-Key Browser AI & Optional Demo Mode**: Runs local Browser AI (WebLLM) out of the box without requiring API keys, and supports an opt-in simulated response mode (`ORVIX_ENABLE_DEMO_MODE=true`) for testing UI flows without cloud credentials.
+- **Share Chat & Public Snapshots**: Share immutable conversation links via Copy Link, WhatsApp, or native OS sharing, allowing anyone to view read-only without an account and signed-in users to fork chats on their first message ([learn more](#16-shared-chat-and-conversation-collaboration)).
+- **On-Device Browser AI (WebLLM)**: Run four integrated open-weight models (SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, and Qwen2.5 1.5B) directly on your GPU via WebGPU and a dedicated Web Worker with zero API keys or external data transmission.
+- **Offline PWA Support**: Precaches the app shell, WASM bundles, and local document extractors via Workbox so Orvix launches and operates offline.
+- **Local Document Extraction & Semantic RAG**: Extracts and grounds text locally and on the server from Word (`.docx`, `.doc`), PDF (`.pdf`), PowerPoint (`.pptx`, `.ppt`), Excel (`.xlsx`, `.xls`), CSV, TSV, JSON, XML, and Markdown with semantic chunking and retrieval.
+- **Smart Compression Pipeline**: Optimizes PNG, JPEG, WebP, GIF (static and animated), PDF, DOCX, PPTX, and XLSX uploads client-side under strict quality and protection gates, and compresses TXT, MD, DOC, PPT, and XLS cloud payloads in `orvix-gzip-v1` envelopes.
+- **Dual-Format Clipboard & Table Copying**: Copies responses as styled HTML tables for Google Docs, Word, and Slack alongside clean plain-text records (`• Header: Value`) that never distort in messaging apps like WhatsApp.
+- **Mobile Swipe Navigation**: Swipe right across the conversation area on mobile and tablet screens (`<= 1024px`) to open chat history while protecting inputs, headers, code blocks, and iOS back gestures.
+- **Voice Dictation & Read Aloud**: Streams live browser speech previews refined on completion by server-side Groq Whisper Large v3 Turbo (with Gemini fallback), paired with built-in Text-to-Speech playback.
+- **Four Specialized Chat Modes**: Switch between **General Assistant**, **Learning**, **Writing**, and **Coding** modes, each tailored with dedicated directives and visual formatting.
+- **Multi-Model Alternatives & History Preservation**: Compare or regenerate answers across AI providers using `< X of Y >` navigation while keeping prior valid responses intact across regenerations, retries, and prompt restores.
+- **Smart Composer & Continuation Controls**: Type anywhere on the page to focus the composer automatically, and fetch subsequent parts of long responses via the `[ → Continue response ]` chip.
+- **Multimodal Attachments & OCR**: Stage documents or images via file picker, paste (`Ctrl+V`), or drag-and-drop with server-side Tesseract OCR and explicit `NO_TEXT_DETECTED` reporting.
+- **Zero-Key Browser AI & Demo Mode**: Run local Browser AI out of the box without credentials, or set `ORVIX_ENABLE_DEMO_MODE=true` for simulated cloud responses during UI testing.
 
 ---
 
-## Browser AI (WebLLM) & On-Device WebGPU Inference
+## 3. Browser AI, WebLLM and On-Device WebGPU Inference
 
-Orvix features an on-device local AI engine implemented in `src/services/webllmService.js` and executed inside a dedicated background worker (`src/workers/webllmWorker.js`). Powered by `@mlc-ai/web-llm` and the browser's native **WebGPU API**, Browser AI allows visitors to run compact, highly capable language models directly on their device's graphics processor.
+Orvix features an on-device local AI engine implemented in `src/services/webllmService.js` and executed inside a dedicated background worker (`src/workers/webllmWorker.js`). Powered by `@mlc-ai/web-llm` and the browser's native **WebGPU API**, Browser AI lets users run compact language models directly on their device GPU.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -165,9 +148,9 @@ Orvix features an on-device local AI engine implemented in `src/services/webllmS
 ### Local Browser Execution & Privacy
 
 - **Zero API Keys or Cloud Accounts**: Browser AI requires no credentials, external tokens, or third-party accounts.
-- **Complete Data Confidentiality**: Input prompts, conversation history, and attached document contents remain strictly on the visitor's physical device.
-- **Zero Server Dependencies**: Inference executes on the local GPU. Generation operates even when the Orvix backend server is unreachable.
-- **Peer Provider Integration**: Browser AI is integrated as a peer option alongside cloud providers in the model selector.
+- **Complete Data Confidentiality**: Prompts, conversation history, and attached document contents stay strictly on the user's physical device.
+- **Zero Server Dependencies**: Inference executes on the local GPU and continues working even when the Orvix backend is unreachable.
+- **Peer Provider Integration**: Browser AI appears alongside cloud providers in the model selector.
 
 ### Integrated Browser AI Models & Quantization Tiers
 
@@ -185,31 +168,27 @@ Orvix integrates four verified Browser AI models ordered in the UI from least re
 | **Qwen2.5 1.5B (FP32 Fallback)** | `Qwen2.5-1.5B-Instruct-q4f32_1-MLC` | 4-bit (`q4f32_1`) | ~1,120 MB | ~1,890 MB | 4,096 tokens | Desktop GPUs without `shader-f16` |
 
 - **Automatic Shader-F16 Fallback**: `checkWebGPUSupport()` inspects the GPU adapter for the 16-bit float extension (`shader-f16`). If unsupported, `resolveWebLLMModelId()` routes automatically to the compatible FP32 variant.
-- **Partitioned Cache Storage**: Shards are downloaded into partitioned browser Cache Storage (`webllm/model`, `webllm/config`, `webllm/wasm`) so interruptions can resume without re-downloading completed chunks.
+- **Partitioned Cache Storage**: Shards are downloaded into partitioned browser Cache Storage (`webllm/model`, `webllm/config`, `webllm/wasm`) so interrupted downloads can resume without re-fetching completed chunks.
 
 ### Dedicated Web Worker Architecture
 
-- **Off-Thread Execution**: All WebLLM computation runs inside `src/workers/webllmWorker.js` via `CreateWebWorkerMLCEngine`, keeping the main UI thread responsive at 60 FPS.
+- **Off-Thread Execution**: WebLLM computation runs inside `src/workers/webllmWorker.js` via `CreateWebWorkerMLCEngine`, keeping the UI responsive at 60 FPS.
 - **Generation Serialization**: Requests are queued via `generationQueuePromise` to prevent WebGPU buffer contention.
-- **Instant Interruption**: Clicking **Stop** (`Square` icon) calls `engine.interruptGenerate()` in the worker to halt token generation immediately and preserve partial output.
+- **Instant Interruption**: Clicking **Stop** (`Square` icon) calls `engine.interruptGenerate()` in the worker to halt generation immediately and keep partial output.
 
 ### Browser AI Status Bar & Interactive Controls
 
-When Browser AI is selected, an interactive dock (`src/components/chat/BrowserAIStatusBar.jsx`) appears above the composer:
-- **Compatibility Feedback**: Alerts if WebGPU is unsupported, hardware acceleration is disabled, or context is non-secure.
-- **Download Progress**: Shows percentage (`0–100%`) and chunk download descriptions.
-- **VRAM Compilation Status**: Signals shader compilation and weight transfer into GPU memory.
-- **Interactive Controls & Fallback Visibility**:
+When Browser AI is selected, `src/components/chat/BrowserAIStatusBar.jsx` displays above the composer:
+- **Compatibility Feedback**: Alerts if WebGPU is unsupported, hardware acceleration is disabled, or the context is insecure.
+- **Download & VRAM Status**: Shows download percentage (`0–100%`), chunk progress, and GPU shader compilation state.
+- **Interactive Controls & Recovery**:
   - **Model Selector**: Switch between SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, and Qwen2.5 1.5B.
-  - **Fallback Indicators & One-Click Recovery**: Clearly indicates automatic FP32 compatibility fallback across download, load, ready, generating, offline, and error states, and offers one-click **Try `<lighter model>`** or **Switch to Cloud AI** controls on OOM/error or unsupported WebGPU environments.
-  - **Load Model**: Triggers on-demand initialization before typing.
-  - **Cancel (`✕`)**: Halts an active download cleanly.
-  - **Retry (`RotateCcw`)**: Appears on connection or initialization failures.
-  - **Unload (`Trash2`)**: Releases GPU VRAM while retaining cached model shards on disk.
+  - **Fallback Indicators & One-Click Recovery**: Displays FP32 fallback status across all lifecycle states and offers **Try `<lighter model>`** or **Switch to Cloud AI** actions on OOM/error or unsupported WebGPU environments.
+  - **Load Model / Cancel (`✕`) / Retry (`RotateCcw`) / Unload (`Trash2`)**: Initialize on demand, abort downloads cleanly, retry failures, or release GPU VRAM while keeping cached shards on disk.
 
 ---
 
-## Offline Functionality & PWA Caching Architecture
+## 4. Offline Functionality and PWA Caching
 
 Orvix is built with Progressive Web App (PWA) compliance, enabling offline reopening and chat generation without internet connectivity.
 
@@ -231,31 +210,29 @@ Orvix is built with Progressive Web App (PWA) compliance, enabling offline reope
 ### App Shell Precache vs. Model Weight Cache
 
 1. **Application Shell Precache**: Configured via `vite-plugin-pwa` in `vite.config.ts`. Precaches HTML, CSS, client scripts, icons, web manifest, WebLLM worker script, and document parsers (~15.4 MB total). API routes (`/api/*`, `/health`, `/chat`, `/config`, `/transcribe`, `/upload`) are excluded from navigation fallbacks and use `NetworkOnly`.
-2. **Model Weight Cache**: Model weights (~210 MB to ~1.15 GB) are **never** bundled into the service worker precache manifest to prevent page-load stalls. Instead, WebLLM manages shards inside dedicated Cache Storage buckets on demand.
+2. **Model Weight Cache**: Model weights (~210 MB to ~1.15 GB) are **never** bundled into the service worker precache manifest to prevent page-load stalls; WebLLM manages shards inside dedicated Cache Storage buckets on demand.
 
 ### Prerequisites for Reliable Offline Use
 
-1. **Initial Online Visit**: Visit the Orvix site over HTTPS or localhost while online to let the service worker install and precache the application shell.
-2. **Model Download Completion**: Select **Browser AI (WebLLM)**, choose your preferred model, and let it download until the status displays `"Ready on device"`.
-
-Once cached, you can disconnect from the internet and chat offline at any time.
+1. **Initial Online Visit**: Visit Orvix over HTTPS or localhost while online so the service worker installs and precaches the application shell.
+2. **Model Download Completion**: Select **Browser AI (WebLLM)**, choose a model, and wait until the status displays `"Ready on device"`.
 
 ### Model Weight Retention & Storage Lifecycle
 
-- **Closing Browser / PWA**: Does not evict the cached model. Shards persist in Cache Storage across reloads and device reboots.
-- **Storage Persistence**: Orvix requests `navigator.storage.persist()` where available to prevent OS storage eviction.
-- **Eviction Triggers**: Manually clearing browser site data, using Incognito/Private windows, or critical disk space pressure can clear cached models.
+- **Closing Browser / PWA**: Cached model shards persist in Cache Storage across reloads and device reboots.
+- **Storage Persistence**: Orvix requests `navigator.storage.persist()` where available to reduce OS storage eviction.
+- **Eviction Triggers**: Clearing site data manually, using Incognito/Private windows, or low disk space can clear cached models.
 
 ### Behavior of Cloud Providers When Offline
 
-If a user submits a prompt to a cloud provider (Gemini, Groq, OpenRouter, Cloudflare) while offline, Orvix intercepts the request immediately with an actionable banner:
+Submitting a prompt to a cloud provider (Gemini, Groq, OpenRouter, Cloudflare) while offline immediately displays an actionable notice:
 `"[Provider] requires an internet connection. Switch to Browser AI (WebLLM) to chat offline on this device."` with a one-click **"Switch to Browser AI"** button.
 
 ---
 
-## Browser-Side Document Extraction (Offline & Local)
+## 5. Browser-Side Document Extraction (Offline and Local)
 
-When running offline, document processing cannot rely on backend endpoints. Orvix includes a browser-side extraction pipeline (`src/services/browserDocumentExtractor.js`) to parse text, headings, tables, and presentation slides locally.
+When running offline, Orvix parses text, headings, tables, and presentation slides locally using `src/services/browserDocumentExtractor.js`.
 
 ### Supported Offline Document Formats
 
@@ -275,47 +252,41 @@ When running offline, document processing cannot rely on backend endpoints. Orvi
 
 ### Document Structure Preservation & Context Formatting
 
-- **Reusing Extractions**: Documents parsed during the session are cached in memory to eliminate re-parsing overhead.
-- **Context Allocation & Semantic RAG**: Extracted text is bounded and sanitized before injection into the prompt context via `prepareDocumentContext`, and large extracted documents are indexed into semantic chunks (`semanticChunkingService.js`, `semanticRetrievalService.js`) across PDF pages, PPT/PPTX slides and speaker notes, DOCX/DOC sections, and XLSX/XLS sheets.
-- **Targeted Lookups**: Page markers (`--- Page N ---`), slide markers (`--- Slide N: Title ---`, `[Speaker Notes]: ...`), and worksheet Markdown tables enable pinpoint queries (e.g., *"Summarize slide 3 notes"* or *"Compare Q2 totals in Sheet 2"*).
+- **Reusing Extractions**: Documents parsed during a session are cached in memory to avoid redundant parsing.
+- **Context Allocation & Semantic RAG**: Extracted text is bounded and sanitized via `prepareDocumentContext`, and large documents are indexed into semantic chunks (`semanticChunkingService.js`, `semanticRetrievalService.js`) across PDF pages, PPT/PPTX slides and speaker notes, DOCX/DOC sections, and XLSX/XLS sheets.
+- **Targeted Lookups**: Page markers (`--- Page N ---`), slide markers (`--- Slide N: Title ---`, `[Speaker Notes]: ...`), and worksheet Markdown tables support targeted queries (e.g., *"Summarize slide 3 notes"* or *"Compare Q2 totals in Sheet 2"*).
 
 ### Scanned PDF, Encrypted Office & Image OCR Boundaries
 
-- **Scanned PDFs**: If a PDF contains only rasterized images without an embedded text layer (`nonWhitespaceChars < 10`), Orvix detects the condition and notifies the user that OCR is required.
-- **Image OCR**: Image text recognition requires the server-side Tesseract engine (or cached browser OCR language packs in preview workflows) and is otherwise unavailable offline.
-- **Encrypted & Corrupted Office Files**: Both server-side (`documentExtractor.js`) and browser-side (`browserDocumentExtractor.js` via `officeDocumentExtractors.js`) parsers support legacy OLE2 binary formats (`.doc`, `.ppt`, `.xls`) as well as OpenXML (`.docx`, `.pptx`, `.xlsx`). Encrypted, password-protected (`EncryptedPackage`, `EncryptionInfo`, BIFF `FILEPASS`), or corrupted files are cleanly detected and reported with actionable errors rather than crashing extraction.
+- **Scanned PDFs**: PDFs containing only rasterized images without an embedded text layer (`nonWhitespaceChars < 10`) are detected and flagged as requiring OCR.
+- **Image OCR**: Image text recognition relies on the server-side Tesseract engine (or cached browser OCR language packs in preview workflows) and is otherwise unavailable offline.
+- **Encrypted & Corrupted Office Files**: Both server-side (`documentExtractor.js`) and browser-side (`browserDocumentExtractor.js` via `officeDocumentExtractors.js`) parsers detect password-protected or corrupted files (`EncryptedPackage`, `EncryptionInfo`, BIFF `FILEPASS`) and return clear diagnostic errors without crashing.
 
 ### IndexedDB Attachment Caching
 
-File attachments are cached locally in the browser's IndexedDB database (`orvix_attachments_db`), allowing previews, file card rendering, and downloads to persist offline across page reloads.
+File attachments are cached locally in the browser's IndexedDB database (`orvix_attachments_db`), preserving previews, file cards, and downloads across offline reloads.
 
 ---
 
-## Step-by-Step Guide: Using Browser AI Offline
+## 6. Step-by-Step Guide: Using Browser AI Offline
 
-Follow these steps to set up and use Orvix offline:
-
-1. **Open the Site Online**: Navigate to Orvix in a WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+). The PWA service worker precaches the app shell automatically.
-2. **Select Browser AI**: Choose **Browser AI (WebLLM)** from the model selector dropdown in the header.
-3. **Choose Your Preferred Model**: Select one of the four integrated offline models in the status bar:
+1. **Open the Site Online**: Visit Orvix in a WebGPU-compatible browser (Chrome 113+, Edge 113+, Safari 18+) so the PWA service worker precaches the app shell.
+2. **Select Browser AI**: Choose **Browser AI (WebLLM)** from the model selector in the header.
+3. **Choose Your Preferred Model**: Pick one of the four integrated models in the status bar:
    - **SmallLM2 135M**: Ultra-lightweight (~270 MB download, ~360 MB VRAM), fastest initialization.
    - **SmallLM2 360M**: Compact (~210 MB download, ~380 MB VRAM), efficient everyday queries.
    - **Qwen3 0.6B**: Lightweight (~335 MB download, ~1,403 MB VRAM), solid modern reasoning.
    - **Qwen2.5 1.5B**: Standard default (~960 MB download, ~1,630 MB VRAM), highest quality.
-4. **Download and Initialize**: Click **Load Model** in the status bar (or submit a prompt). Wait for the progress bar to complete and display:
-   `"Qwen3 0.6B — Ready on device"` *(or your chosen model)*.
-5. **Send a Test Message**: Send a quick prompt (e.g., *"What is WebGPU?"*) to verify local execution.
-6. **Close Orvix**: Close the tab, window, or installed PWA.
-7. **Disconnect Internet**: Turn off Wi-Fi or toggle DevTools Network to **Offline**.
-8. **Reopen Orvix Offline**: Relaunch Orvix or open the installed PWA. The app shell loads instantly from cache, and the status bar displays:
-   `"Offline — Model is cached locally. Ready to run on your device via WebGPU."`
-9. **Chat and Analyze Documents Offline**: Submit prompts or attach supported files (`.pdf`, `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.txt`, `.md`, `.csv`, `.json`). Responses generate locally on your GPU.
+4. **Download and Initialize**: Click **Load Model** (or send a prompt) and wait until the status shows `"Qwen3 0.6B — Ready on device"` *(or your selected model)*.
+5. **Send a Test Message**: Send a quick prompt (e.g., *"What is WebGPU?"*) to confirm local execution.
+6. **Close & Disconnect**: Close the browser/PWA, turn off internet access, and reopen Orvix.
+7. **Chat and Analyze Documents Offline**: The app shell loads from cache, the status bar confirms the cached model is ready, and prompts plus supported attachments (`.pdf`, `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.txt`, `.md`, `.csv`, `.json`) run locally on your GPU.
 
 ---
 
-## Message Copying & Dual-Format Clipboard
+## 7. Message Copying and Dual-Format Clipboard
 
-Orvix features a clipboard formatting pipeline (`src/utils/clipboardFormatter.js`) that produces two simultaneous payloads when copying assistant messages:
+Orvix includes a clipboard formatting pipeline (`src/utils/clipboardFormatter.js`) that writes two simultaneous payloads whenever an assistant message is copied:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -332,11 +303,11 @@ Orvix features a clipboard formatting pipeline (`src/utils/clipboardFormatter.js
 
 ### Dual-Format Clipboard Generation (`text/html` and `text/plain`)
 
-When you click **Copy**, Orvix parses markdown tables, code blocks, lists, and headings, writing both a rich `text/html` fragment and an optimized `text/plain` string via `ClipboardItem` in one atomic operation.
+Clicking **Copy** parses markdown tables, code blocks, lists, and headings, writing both a styled `text/html` fragment and an optimized `text/plain` string via `ClipboardItem` in one atomic operation.
 
 ### Structured Plain-Text Record Layout for Messaging Apps
 
-Raw ASCII markdown tables (`| Column 1 | Column 2 |`) misalign badly in messaging apps that use variable-width proportional fonts (WhatsApp, Telegram). Orvix transforms tables in the `text/plain` payload into clear, structured record entries:
+Because variable-width fonts in WhatsApp and Telegram break ASCII markdown tables (`| Col 1 | Col 2 |`), Orvix converts tables in `text/plain` into structured records:
 
 ```text
 • Feature: Operational Logic
@@ -348,129 +319,112 @@ Raw ASCII markdown tables (`| Column 1 | Column 2 |`) misalign badly in messagin
   AI: Continuously refines from context
 ```
 
-Each data row becomes an indented record where values remain clearly paired with their column header regardless of font or screen width.
-
 ### Rich HTML Table Styling for Documents
 
-For rich text destinations (Google Docs, Microsoft Word, Slack, Outlook), Orvix writes an inline-styled `<table>`:
-- **Headers (`<thead>`)**: Background `#f1f5f9`, border `#cbd5e1`, semi-bold `#0f172a`.
-- **Data Rows (`<tbody>`)**: Subtle zebra striping (`#ffffff` and `#f8fafc`) with `#e2e8f0` dividers.
-- **Column Alignments**: Respects GFM delimiters (`left`, `center`, `right`).
+For rich-text targets (Google Docs, Microsoft Word, Slack, Outlook), Orvix writes an inline-styled `<table>`:
+- **Headers (`<thead>`)**: `#f1f5f9` background, `#cbd5e1` border, semi-bold `#0f172a` text.
+- **Data Rows (`<tbody>`)**: Alternating `#ffffff` / `#f8fafc` zebra striping with `#e2e8f0` dividers.
+- **Column Alignments**: Preserves GFM column alignments (`left`, `center`, `right`).
 
 ### Three-Tier Clipboard Writing Strategy
 
-1. **Tier 1 — Asynchronous Clipboard API (`ClipboardItem`)**: Writes binary `Blob`s for both `text/html` and `text/plain`.
-2. **Tier 2 — Clipboard Text API (`writeText`)**: Falls back to writing plain text if HTML clipboard permissions are restricted.
-3. **Tier 3 — Off-Screen Textarea Fallback (`document.execCommand`)**: Uses an off-screen `<textarea>` for older environments or strict security sandboxes.
+1. **Tier 1 — `ClipboardItem`**: Writes both `text/html` and `text/plain` blobs simultaneously.
+2. **Tier 2 — `navigator.clipboard.writeText`**: Falls back to plain text if HTML clipboard access is restricted.
+3. **Tier 3 — `document.execCommand`**: Off-screen `<textarea>` fallback for restricted or legacy browser environments.
 
 ---
 
-## Mobile Responsiveness & Swipe Navigation
+## 8. Mobile Responsiveness and Swipe Navigation
 
-Orvix includes a responsive touch gesture pipeline in `src/components/layout/Layout.jsx`, allowing mobile and tablet users (`<= 1024px`) to open conversation history smoothly.
+Orvix provides a touch gesture pipeline in `src/components/layout/Layout.jsx` so mobile and tablet users (`<= 1024px`) can open the sidebar naturally.
 
 ### Main Conversation Swipe-Right Gesture
 
-- **Full-Viewport Activation**: Users can initiate the swipe across the main chat area without needing an awkward edge-only touch.
-- **Responsive Viewport Support**: Active on screens `<= 1024px` when the sidebar is closed.
+- **Full-Viewport Activation**: Swipe right anywhere across the neutral conversation area on screens `<= 1024px` when the sidebar is closed.
 
 ### Excluded Zones & Interaction Safeguards
 
-To prevent gesture conflicts, `isExcludedSwipeTarget()` ignores touches originating from:
-1. **iOS Native Back Margin (`< 16px`)**: Preserves native iOS Safari edge navigation.
-2. **Top Navigation Header**: Excludes menu buttons, model selector, and new chat actions.
-3. **Message Composer**: Excludes text input, voice dictation, and attachment tray.
-4. **Interactive Controls & Code Blocks**: Excludes buttons, links, markdown tables, and horizontally scrolling `pre`/`code` blocks.
-5. **Text Selection**: Suspends gesture tracking when user has selected text.
+`isExcludedSwipeTarget()` ignores touches starting inside:
+1. **iOS Native Back Margin (`< 16px`)**: Preserves native Safari edge swipe-back.
+2. **Top Navigation Header**: Menu button, model selector, and new chat controls.
+3. **Message Composer**: Text input, microphone button, and attachment tray.
+4. **Interactive Controls & Code Blocks**: Buttons, links, tables, and horizontally scrollable `pre`/`code` blocks.
+5. **Text Selection**: Suspends swipe tracking while text is selected.
 
 ### Horizontal Intent Disambiguation
 
-- **Movement Threshold**: Tracks initial movement until passing `10px` displacement.
-- **Dominance Formula**: Confirms a horizontal swipe only if rightward movement clearly exceeds vertical motion:
+- **Movement Threshold & Dominance Formula**: Tracks initial movement past `10px` displacement and confirms a swipe only when rightward motion clearly dominates vertical scrolling:
   $$\Delta X > 0 \quad \text{and} \quad |\Delta X| > |\Delta Y| \times 1.25$$
-- **Immediate Scroll Release**: If vertical scroll or leftward movement is detected, gesture tracking aborts immediately, letting native vertical scrolling proceed smoothly.
+- **Immediate Scroll Release**: Vertical scrolling or leftward movement cancels swipe tracking immediately.
 
 ---
 
-## Voice Dictation & Speech Architecture
+## 9. Voice Dictation and Speech Architecture
 
-Orvix provides a unified voice dictation engine (`src/hooks/useVoiceDictation.js`) combining real-time browser speech recognition with server-side Whisper refinement.
+Orvix unifies real-time browser speech recognition with server-side Whisper refinement in `src/hooks/useVoiceDictation.js`.
 
 ### Bi-Directional WebSocket Voice Streaming (AudioWorklet + PCM)
 
-Introduced in Phase 6, Orvix provides an ultra-low-latency bi-directional voice streaming pipeline alongside its HTTP endpoints:
-
-1. **Browser-Side Capture (`AudioWorklet`)**: Raw microphone input is captured at native sample rates (e.g., 44.1kHz or 48kHz) via `public/audioWorkletProcessor.js` (with an automatic fallback to an inline Blob worker or `ScriptProcessorNode` on legacy browsers). Audio frames are downsampled and converted to 16-bit linear PCM (`Int16Array`) in real time without blocking the UI rendering loop.
-2. **WebSocket Upgrades (`/api/voice-stream`)**: The client opens an authenticated WebSocket connection (`wss://` or `ws://`) supplying a Firebase ID token via `Authorization: Bearer` or the `Sec-WebSocket-Protocol` `orvix-auth` subprotocol (unauthenticated upgrades and `?token=` query parameters are rejected with HTTP `401`).
-3. **Bi-Directional Streaming Protocol**:
-   - `start`: Initializes stream sample rate and language.
-   - `pause` / `resume`: Suspends audio worklet capture and backend accumulation without tearing down the socket.
-   - `audio` (Binary PCM chunks): Streamed continuously to the server.
-   - `interim`: Backend returns incremental transcriptions to update the composer live.
-   - `stop`: Triggers final WAV synthesis (with standard 44-byte RIFF header) and high-accuracy Whisper transcription.
-   - `done`: Emits final polished transcript with performance metrics.
-4. **Resilience & Resource Safeguards**:
-   - Max 25 MB accumulated PCM audio buffer per session to protect server memory.
-   - 15-minute maximum session duration timeout.
-   - Heartbeat watchdog ping/pong every 30 seconds to clean up dropped mobile connections.
+1. **Browser-Side Capture (`AudioWorklet`)**: Captures microphone audio via `public/audioWorkletProcessor.js` (with inline Blob worker or `ScriptProcessorNode` fallback on legacy browsers), downsampling frames to 16-bit linear PCM (`Int16Array`) off the UI thread.
+2. **Authenticated WebSocket (`/api/voice-stream`)**: Supplies a Firebase ID token via `Authorization: Bearer` or the `Sec-WebSocket-Protocol` `orvix-auth` subprotocol (unauthenticated upgrades and `?token=` query params return HTTP `401`).
+3. **Streaming Messages**: Supports `start`, `pause`/`resume`, binary `audio` PCM chunks, live `interim` updates, `stop` (triggering WAV synthesis with a 44-byte RIFF header), and final `done` transcripts.
+4. **Resource Safeguards**: Caps accumulated PCM buffers at 25 MB per session, enforces a 15-minute session limit, and runs 30-second heartbeat ping/pong watchdogs.
 
 ### Vercel Serverless & Deployment Architecture Considerations
 
-- **Serverless WebSocket Incompatibility**: Vercel Serverless and Edge Functions do not support persistent stateful WebSocket connections. When deployed to Vercel, the backend configuration automatically detects the serverless environment (`websocketStreamingSupported: false`).
-- **Safe Graceful Fallback**: If the WebSocket connection fails, times out during handshake, or if WebSocket streaming is unsupported in the current deployment, `useVoiceDictation` immediately and seamlessly falls back to the native Web Speech API and HTTP multipart Whisper refinement (`/api/transcribe`).
-- **Dedicated Hosting for Persistent WebSockets**: For full real-time WebSocket streaming support in production, deploy the Node.js/Express server to a persistent container runtime (e.g. Google Cloud Run, Railway, Render, Fly.io, or AWS ECS/EC2) or run an external WebSocket proxy gateway.
+- **Graceful HTTP Fallback**: Because Vercel Serverless Functions do not support persistent WebSockets (`websocketStreamingSupported: false`), `useVoiceDictation` automatically falls back to native Web Speech API previews plus HTTP multipart Whisper refinement (`/api/transcribe`).
+- **Persistent WebSocket Hosting**: For live WebSocket voice streaming in production, host the Express server on a persistent container runtime (e.g., Google Cloud Run, Railway, Render, Fly.io, or AWS ECS/EC2).
 
 ### Hybrid Recognition & Whisper Refinement
 
-1. **Live Preview While Speaking**: Spoken words stream immediately into the composer using native browser `SpeechRecognition`.
-2. **On Stop**: Tapping **Done** finalizes recorded audio and submits the audio `Blob` to `/api/transcribe`.
-3. **Server Whisper Refinement**: Groq Whisper Large v3 Turbo (with Gemini audio fallback) transcribes the recording with technical vocabulary conditioning.
-4. **Reconciliation**: The high-accuracy server transcript replaces the rough live preview while preserving any manual text edits made by the user.
+1. **Live Preview**: Native `SpeechRecognition` displays words in the composer as you speak.
+2. **Whisper Refinement**: Tapping **Done** submits recorded audio to `/api/transcribe`, where Groq Whisper Large v3 Turbo (with Gemini audio fallback) generates a technical-vocabulary-conditioned transcript.
+3. **Reconciliation**: Replaces the rough live preview while preserving any manual text edits.
 
 ### Interim Transcript Handling & Deduplication
 
-Browser speech engines emit temporary interim hypotheses before committing final utterances. Naive concatenation causes stuttering duplication (`"I I want I want you"`). Orvix separates permanent final segments from the active interim hypothesis, replacing the interim buffer on each event:
+Orvix separates committed final segments from the active interim buffer so speech engines never stutter or duplicate phrases:
 $$\text{Composer Text} = \text{Base Text} + \sum \text{Committed Segments} + \text{Active Interim Snapshot}$$
 
 ### Smart Punctuation & Typography Formatting
 
 - **Spoken Commands**: Converts verbal punctuation (`"comma"` → `,`, `"period"` → `.`, `"question mark"` → `?`, `"new line"` → `\n`, `"new paragraph"` → `\n\n`) across 9 supported languages.
-- **Technical Acronyms**: Automatically cleans and formats programming terminology (`JavaScript`, `TypeScript`, `Python`, `JSON`, `HTML`, `CSS`, `APIs`, `Math.random`).
+- **Technical Acronyms**: Normalizes programming terms (`JavaScript`, `TypeScript`, `Python`, `JSON`, `HTML`, `CSS`, `APIs`, `Math.random`).
 
 ### Text-to-Speech (Read Aloud)
 
-Assistant messages include audio playback controls (Play, Pause, Stop) powered by the Web Speech Synthesis API. Text is cleaned of markdown syntax and split into ~140-character clauses to avoid Chromium speech synthesis timeouts.
+Assistant messages include Play, Pause, and Stop controls via the Web Speech Synthesis API, stripping markdown syntax and splitting text into ~140-character clauses to avoid Chromium synthesis timeouts.
 
 ### iOS 15 & Mobile Device Compatibility
 
-- **Safari on iPhone 7 (iOS 15.8.8)**: Voice dictation works successfully in Safari on iOS 15.8.8. Long-form dictation has been manually tested and verified with real-time interim previews and server-side Whisper refinement. Safari is currently the recommended environment for voice dictation on iOS 15.
-- **Standalone PWA Microphone Platform Limitation**: On iOS 15, microphone access may remain unavailable inside the standalone Home Screen PWA even after the user grants microphone permission. This appears to be an iOS/WebKit standalone-PWA limitation rather than a core Orvix dictation failure. Safari should be used for voice dictation on iOS 15 when this occurs.
+- **Safari on iPhone 7 (iOS 15.8.8)**: Long-form dictation with interim previews and Whisper refinement is verified in Safari on iOS 15.8.8.
+- **Standalone PWA Microphone Limitation**: On iOS 15, WebKit may block microphone access inside standalone Home Screen PWAs even after permission is granted; use Safari for voice dictation on iOS 15 when this occurs.
 
 ---
 
-## Chatbot Modes
+## 10. Chat Modes
 
 Orvix provides four specialized conversational modes configured in `src/config/chatModes.js`:
 
-### 1. General Assistant Mode
-- **Purpose**: Everyday questions, versatile brainstorming, and general tasks.
-- **Directives**: Clear, direct answers with balanced tone, hierarchical headings, and markdown tables.
+### General Assistant Mode
+- **Purpose**: Everyday questions, brainstorming, and general tasks.
+- **Directives**: Clear, balanced answers with structured headings and markdown tables.
 
-### 2. Learning Mode
-- **Purpose**: Concept breakdowns, intuitive analogies, and educational recall.
-- **Educational Callout Blocks**: Recognizes 8 callout types: **Important** (rose), **Warning** (amber), **Note** (sky blue), **Tip** (emerald), **Key Takeaway** (violet), **Definition** (indigo), **Example** (cyan), and **Comparison** (purple).
+### Learning Mode
+- **Purpose**: Concept breakdowns, intuitive analogies, and study recall.
+- **Educational Callout Blocks**: Renders 8 themed callouts: **Important**, **Warning**, **Note**, **Tip**, **Key Takeaway**, **Definition**, **Example**, and **Comparison**.
 
-### 3. Writing Mode
-- **Purpose**: Drafting, prose polishing, tone adjustment, and editorial refinement.
-- **Styling**: Constrained 76ch reading column, relaxed line height (1.78), memo headers (`Subject:`, `To:`, `From:`), and warm quote styling.
+### Writing Mode
+- **Purpose**: Drafting, prose polishing, tone shifts, and editorial formatting.
+- **Styling**: Constrained `76ch` reading column, relaxed `1.78` line height, memo headers (`Subject:`, `To:`, `From:`), and quote styling.
 
-### 4. Coding Mode
-- **Purpose**: Implementation, architecture, bug diagnostics, and syntax review.
-- **CodeBlock Component**: VS Code-style header, locked 22px line height (`--code-line-height: 22px;`) to eliminate vertical line-number drift over 500+ lines, sticky line gutters, syntax highlighting for 20+ languages, and pure code copying.
+### Coding Mode
+- **Purpose**: Implementation, architecture, debugging, and code review.
+- **CodeBlock Component**: VS Code-style header, locked `22px` line height (`--code-line-height: 22px;`) preventing gutter drift across 500+ lines, sticky line numbers, syntax highlighting for 20+ languages, and one-click code copy.
 
 ---
 
-## AI Providers & Supported Models
+## 11. AI Providers and Supported Models
 
 ### Supported Providers & Models
 
@@ -494,132 +448,118 @@ Orvix provides four specialized conversational modes configured in `src/config/c
 
 ### Streaming & Fallback System
 
-- **Immediate SSE Header Priming**: Server flushes `: prime\n\n` within 50ms to establish sub-second TTFB and satisfy edge reverse proxy timeouts.
-- **Heartbeat Keepalive**: Emits `: keepalive\n\n` every 8s during complex generation to prevent socket drops.
-- **Error Boundaries**: Errors occurring *before* any chunk is emitted permit automatic failover (`canFallback: true`). Errors *mid-stream* strictly forbid failover (`canFallback: false`) to avoid duplicate text output.
-- **Client Abort Wiring**: Closing the tab or clicking **Stop** triggers an `AbortController` signal that cancels upstream API requests immediately.
+- **Immediate SSE Priming & Keepalives**: Sends `: prime\n\n` within 50ms and `: keepalive\n\n` every 8s to satisfy edge proxy timeouts.
+- **Safe Failover Boundaries**: Errors before the first emitted chunk allow automatic failover (`canFallback: true`); mid-stream errors forbid failover (`canFallback: false`) to avoid duplicated text.
+- **Client Abort Wiring**: Closing a tab or clicking **Stop** aborts upstream requests immediately via `AbortController`.
 
 ### Zero-Key Simulation Mode
 
-Orvix supports an opt-in Demo/Simulation Mode (`ORVIX_ENABLE_DEMO_MODE=true`) that generates realistic local responses without cloud API keys for testing UI interactions, modes, attachments, and exports. Even with demo mode disabled, users can switch to **Browser AI (WebLLM)** to run real local AI models on-device without any API keys.
+Set `ORVIX_ENABLE_DEMO_MODE=true` to generate simulated local cloud responses for testing UI flows without API keys. With demo mode off, **Browser AI (WebLLM)** still runs real local models with zero API keys.
 
 ---
 
-## Attachments & Document Understanding
+## 12. Attachment and Document Understanding
 
 ### Attachment Methods & Rules
 
 - **Three Staging Methods**: File picker dialog, clipboard paste (`Ctrl+V`), or drag-and-drop onto the chat area.
-- **Constraints**: Strictly 1 attachment per message; maximum file size of 25 MB.
-- **Authenticated Cloud Storage (v0.4.0)**: Attachment uploads require a verified Firebase account (guest/unauthenticated uploads return HTTP `401 UNAUTHENTICATED`) and persist in private per-user Supabase Storage (`{userId}/{conversationId}/{attachmentId}.{ext}`). Files `>= 4 MB` use signed direct-to-Supabase uploads to bypass serverless body limits, with IndexedDB caching for offline preview and a 2-hour TTL cleanup lifecycle for temporary attachments.
-- **Daily Upload Quota & Midnight PKT Reset (v0.4.1)**: Each authenticated student account is limited to **5 attachment uploads per PKT calendar day** across both standard (`/api/upload`) and direct (`/api/upload/direct/*`) upload flows. The daily quota resets automatically at **midnight Pakistan Standard Time (`12:00 AM Asia/Karachi`, UTC+05:00 — `19:00:00.000Z`)**, independent of server host or browser local timezones. Remaining uploads display live in the composer (`"5 of 5 uploads remaining today"` to `"0 of 5 uploads remaining today"`) synchronized strictly with backend `X-RateLimit-*` headers and `GET /api/upload/quota`.
+- **Constraints**: 1 attachment per message; maximum 25 MB per file.
+- **Authenticated Cloud Storage**: Uploads require a verified Firebase account (guest uploads return HTTP `401 UNAUTHENTICATED`) and persist in private per-user Supabase Storage (`{userId}/{conversationId}/{attachmentId}.{ext}`). Files `>= 4 MB` use signed direct-to-Supabase uploads to bypass serverless body limits, with IndexedDB caching for offline preview and a 2-hour TTL cleanup lifecycle for temporary attachments.
+- **Daily Upload Quota & Midnight PKT Reset**: Authenticated accounts are limited to **5 attachment uploads per PKT calendar day** across standard (`/api/upload`) and direct (`/api/upload/direct/*`) uploads. Quotas reset at **midnight Pakistan Standard Time (`12:00 AM Asia/Karachi`, UTC+05:00 — `19:00:00.000Z`)** and sync live in the composer via `X-RateLimit-*` headers and `GET /api/upload/quota`.
 - **Docked Preview**: Staged files display a format icon, filename, size, and remove button (`✕`).
 
 ### Supported Formats & Targeted Questioning
 
-- **PDF (`.pdf`)**: Page-by-page text layer extraction with `unpdf`.
-- **Word (`.docx`, `.doc`)**: Heading, list, and table extraction for `.docx` via `mammoth`, and OLE2 MS-DOC binary text extraction for `.doc` via `cfb` and `officeDocumentExtractors.js`.
-- **PowerPoint (`.pptx`, `.ppt`)**: Slide-by-slide body text and presenter notes extraction for `.pptx` via `jszip` and legacy `.ppt` binary streams via `cfb`.
-- **Excel Spreadsheets (`.xlsx`, `.xls`)**: Multi-sheet workbook parsing via `@e965/xlsx` (with `jszip` for `.xlsx` and `cfb` for BIFF5/BIFF8 `.xls`), rendering structured Markdown tables and worksheet metadata (bounded safely up to 50 sheets, 2,000 rows, and 64 columns per sheet).
+- **PDF (`.pdf`)**: Page-by-page text layer extraction via `unpdf`.
+- **Word (`.docx`, `.doc`)**: Heading, list, and table extraction for `.docx` via `mammoth`, and OLE2 MS-DOC text extraction for `.doc` via `cfb` and `officeDocumentExtractors.js`.
+- **PowerPoint (`.pptx`, `.ppt`)**: Slide text and speaker notes extraction for `.pptx` via `jszip` and legacy `.ppt` binary streams via `cfb`.
+- **Excel (`.xlsx`, `.xls`)**: Multi-sheet workbook parsing via `@e965/xlsx` (`jszip` for `.xlsx`, `cfb` for `.xls`), emitting structured Markdown tables (bounded up to 50 sheets, 2,000 rows, and 64 columns per sheet).
 - **Data & Text**: CSV, TSV, JSON, XML, Markdown, and TXT.
-- **Server-Side, Browser/Offline & Preview Support**: All supported formats extract identically across the Express backend (`src/services/documentExtractor.js`) and client-side offline workflows (`src/services/browserDocumentExtractor.js`), integrate with Semantic RAG chunking/retrieval (`semanticChunkingService.js`, `semanticRetrievalService.js`), and open in `DocumentPreviewModal` (transparently decompressing `orvix-gzip-v1` storage envelopes when needed).
-- **Encrypted & Corrupted File Handling**: Password-protected/encrypted documents (`EncryptedPackage`, `EncryptionInfo`, BIFF `FILEPASS`, or encrypted PDFs) and malformed containers return explicit, non-fatal diagnostic errors.
-- **Targeted Lookups**: Inquire about specific slides, pages, or sheets (e.g., *"What does slide 3 say?"*, *"Summarize page 2"*, *"Analyze the Revenue sheet"*).
+- **Unified Extraction & Semantic RAG**: Server (`documentExtractor.js`) and browser (`browserDocumentExtractor.js`) pipelines produce consistent output, feed Semantic RAG (`semanticChunkingService.js`, `semanticRetrievalService.js`), open in `DocumentPreviewModal`, and report encrypted or corrupted files cleanly.
+- **Targeted Lookups**: Ask about specific pages, slides, or sheets (e.g., *"What does slide 3 say?"*, *"Summarize page 2"*, *"Analyze the Revenue sheet"*).
 
 ---
 
-## Image Attachments & Optical Character Recognition (OCR)
+## 13. Image Attachment and Optical Character Recognition (OCR)
 
 ### Supported Image Formats & Verification
 
-- Formats: JPEG, PNG, WebP, GIF, BMP, and HEIC/HEIF.
-- Validates binary magic numbers (`\xFF\xD8\xFF` for JPEG, `\x89PNG` for PNG, etc.) to prevent disguised files.
+- Supports JPEG, PNG, WebP, GIF, BMP, and HEIC/HEIF with binary magic-number validation (`\xFF\xD8\xFF`, `\x89PNG`, etc.).
 
 ### Server-Side OCR Engine
 
-- Powered by `tesseract.js` running on the Express backend with a 25s timeout and a locally bundled gzipped English pack (`eng.traineddata.gz`, also served via `/api/ocr/packs/:file`).
-- Supports on-demand multilingual OCR language packs via `src/services/ocrLanguagePackService.js` (English built-in, plus Spanish, French, German, Arabic RTL, and Urdu RTL cached in browser Cache Storage).
-- Extracts clean text, character counts, word counts, and confidence scores.
+- Powered by `tesseract.js` on the Express backend (25s timeout) using the bundled gzipped English pack (`eng.traineddata.gz`, also served via `/api/ocr/packs/:file`) plus on-demand multilingual packs (Spanish, French, German, Arabic RTL, Urdu RTL) cached in browser Cache Storage via `src/services/ocrLanguagePackService.js`.
 
 ### Honest No-Text Handling & Preview Modal
 
-- If an image contains no readable text, Orvix displays `NO_TEXT_DETECTED` to prevent model hallucinations.
-- Clicking an image card opens a preview modal with two tabs: **Image View** (high-res inspection with zoom) and **Extracted Text** (clean OCR text with copy button).
+- Images without readable text return `NO_TEXT_DETECTED` to avoid model hallucinations.
+- Clicking an image card opens a dual-tab modal with **Image View** (zoomable inspection) and **Extracted Text** (clean OCR output with copy).
 
 ---
 
-## Smart Compression Pipeline
+## 14. Smart Compression Pipeline
 
-Orvix includes a quality-first, client-side **Smart Compression Pipeline** (`src/services/smartCompressionService.js`, coordinated by `src/services/attachmentCompressionCoordinator.js`) alongside **Transparent Storage Compression** (`src/services/storageEnvelopeService.js`) to reduce upload bandwidth and cloud storage footprint without compromising visual fidelity, document integrity, or OCR readability.
+Orvix applies client-side pre-upload optimization (`smartCompressionService.js`, `attachmentCompressionCoordinator.js`) alongside transparent storage compression (`storageEnvelopeService.js`):
 
-Every compression stage enforces strict safety gates:
-- **Minimum 10% Savings Gate**: Candidates saving less than `10%` (`minSavingsRatio = 0.10`) are rejected in favor of the untouched original `File`.
-- **Deduplication & Fail-Safe Fallback**: `WeakMap`/`WeakSet` caches guarantee an already-evaluated or compressed `File` is never re-compressed across retries, and any error, timeout (20s per-file default), validation failure, or `AbortSignal` cancellation falls back cleanly to the original file (or halts before upload on user abort).
-- **Binary Signature Verification**: Formats are resolved via magic bytes (`detectFormatFromSignature`) rather than trusting declared MIME types or extensions alone.
+- **Minimum 10% Savings Gate**: Candidates saving less than `10%` are discarded in favor of the untouched original `File`.
+- **Deduplication & Fail-Safe Fallback**: `WeakMap`/`WeakSet` tracking avoids re-compressing files across retries, and timeouts (20s default), errors, or `AbortSignal` cancellations fall back safely to the original file.
+- **Binary Signature Verification**: Formats are identified via magic bytes (`detectFormatFromSignature`).
 
 ### Image Compression
 
-- **PNG**: Uses `@jsquash/oxipng` WASM optimization for lossless byte reduction, with a browser Canvas fallback when WASM is unavailable or fails. Preserves exact dimensions and alpha transparency.
-- **JPEG and WebP**: First attempts lossless metadata stripping (`optimizeJpegMetadataLossless` / `optimizeWebpMetadataLossless`, removing redundant EXIF/XMP/COM markers while preserving Orientation, ICC profiles, VP8/VP8L bitstreams, ALPH, and ANIM chunks). When canvas optimization runs, pixel analysis (`detectFineDetailAndText`) applies conservative quality settings for text, screenshots, and diagrams while preserving dimensions and transparency.
-- **GIF**: Runs lossless optimization via `@fe-daily/gifsicle-wasm-browser` (`-O2`) inside a dedicated Web Worker with `AbortSignal` and timeout termination. Supports both static and animated GIFs while verifying dimensions, transparency, frame count/order, loop counts, and per-frame timing/delays.
+- **PNG**: Lossless `@jsquash/oxipng` WASM optimization (with Canvas fallback), preserving dimensions and transparency.
+- **JPEG and WebP**: Attempts lossless metadata stripping first (`optimizeJpegMetadataLossless` / `optimizeWebpMetadataLossless`, preserving Orientation, ICC profiles, VP8/VP8L, ALPH, and ANIM chunks); canvas optimization uses pixel detail detection (`detectFineDetailAndText`) to protect screenshots, diagrams, and text.
+- **GIF**: Lossless `@fe-daily/gifsicle-wasm-browser` (`-O2`) inside a dedicated Web Worker with timeout/`AbortSignal` support, verifying dimensions, transparency, frame order, loops, and per-frame delays for static and animated GIFs.
 
 ### PDF Compression
 
-- Uses `pdf-lib` (`useObjectStreams: true`) for lossless structural object-stream compaction and cross-reference cleanup without rasterizing pages or modifying selectable text, fonts, or layout.
-- **Digital Signature & Encryption Protection**: Pre-parse marker checks and parsed object inspection (`hasRawPdfProtectionMarkers`, `hasParsedPdfProtectionMarkers`) detect encrypted PDFs and digitally signed PDFs (`/Encrypt`, `/Sig`, `/ByteRange`, `SigFlags`, `Perms`) and skip them untouched so cryptographic signatures are never invalidated.
+- Uses `pdf-lib` (`useObjectStreams: true`) for lossless structural compaction without rasterizing pages or altering text/fonts, skipping encrypted and digitally signed PDFs (`/Encrypt`, `/Sig`, `/ByteRange`, `SigFlags`, `Perms`) untouched.
 
 ### Office Document Compression
 
-- **DOCX, PPTX, and XLSX**: Recompresses OpenXML ZIP containers via `jszip` (`DEFLATE` level 9) and selectively optimizes eligible embedded PNG, JPEG, and WebP assets under `word/media/`, `ppt/media/`, and `xl/media/`.
-- **Strict Decoded-Pixel Quality Verification**: Lossy re-encoding of opaque embedded continuous-tone photos is permitted only when decoded RGBA verification passes strict fidelity thresholds (`PSNR >= 41.0 dB`, `SSIM >= 0.985`, `edgeSharpnessRetentionPct >= 95.0%`, zero alpha channel drift); lossless WebP (`VP8L`), transparent assets, text/diagrams, GIFs, and vector graphics (`SVG`, `EMF`, `WMF`) are never degraded.
-- **Structural & Protection Preservation**: Preserves XML parts, formulas (`<f>`), relationships (`_rels`), styles, speaker notes, and VBA macros (`vbaProject.bin`), and skips encrypted, signed, or write-protected packages (`EncryptedPackage`, `EncryptionInfo`, `_xmlsignatures/`, `documentProtection`, `modifyVerifier`, `workbookProtection`).
+- **DOCX, PPTX, and XLSX**: Recompresses ZIP containers via `jszip` (`DEFLATE` level 9) and selectively optimizes eligible embedded media under `word/media/`, `ppt/media/`, and `xl/media/`.
+- **Decoded-Pixel Quality Gates**: Lossy re-encoding is allowed only for opaque continuous-tone photos meeting `PSNR >= 41.0 dB`, `SSIM >= 0.985`, `edgeSharpnessRetentionPct >= 95.0%`, and zero alpha drift; lossless WebP (`VP8L`), transparency, text/diagrams, GIFs, and vector graphics (`SVG`, `EMF`, `WMF`) are never degraded.
+- **Protection Preservation**: Keeps formulas, styles, notes, and VBA macros intact, and skips encrypted, signed, or write-protected documents.
 
 ### Transparent Storage Compression (`orvix-gzip-v1`)
 
-- **Supported Formats**: Losslessly compresses **TXT, MD (`.md`, `.markdown`), DOC, PPT, and XLS** attachments into a self-describing binary `orvix-gzip-v1` envelope (`ORVXENV\0` magic header) powered by `fflate` streaming `Gzip`/`Gunzip`, while keeping the user's local `File` object untouched.
-- **Integrity & Safety Bounds**: Enforces the `>= 10%` net byte savings threshold, stores and verifies IEEE 802.3 **CRC-32** and **SHA-256** digests (with a pure-JS SHA-256 fallback for HTTP/Safari 15 contexts lacking `crypto.subtle`), checks extension/MIME consistency, and enforces bounded streaming decompression (25 MB limit) to block decompression bombs and truncated/corrupted payloads.
-- **Transparent Decompression Lifecycle**: `server/uploadSubsystem.ts` and `src/services/attachmentStorageService.js` transparently decode `orvix-gzip-v1` envelopes during `/api/upload/:id/file` downloads, `DocumentPreviewModal` previews, server-side and client-side document extraction, and IndexedDB/chat rehydration—ensuring raw compressed envelopes are never exposed to users or parsers.
+- Losslessly wraps **TXT, MD, DOC, PPT, and XLS** uploads in a binary `orvix-gzip-v1` envelope (`ORVXENV\0`) via `fflate` streaming gzip when saving `>= 10%`, verifying CRC-32 and SHA-256 digests (with a pure-JS SHA-256 fallback for Safari 15 / non-HTTPS contexts) and bounding streaming decompression to 25 MB.
+- `server/uploadSubsystem.ts` and `src/services/attachmentStorageService.js` decode envelopes transparently across downloads, previews, extraction, and IndexedDB rehydration.
 
 ---
 
-## Chat Management & Usability Enhancements
+## 15. Chat Management and Usability Enhancements
 
 ### Multi-Model Alternative Responses
 
-- Click **Another Model** (`Sparkles` icon) or **Regenerate** on any assistant response to generate a fresh output as a newly appended alternative without overwriting existing answers from Gemini, Grok, or other AI models.
-- Navigate between all generated responses using the `< X of Y >` pager on the message card.
-- Error-recovery actions (**Retry**, **Switch Provider & Retry**, and **Restore Prompt**) preserve previously successful alternatives, while Firestore snapshot handling protects active streaming responses from stale updates.
+- Click **Another Model** (`Sparkles`) or **Regenerate** to append a new response alternative and browse options with the `< X of Y >` pager without overwriting prior answers from Gemini, Grok, or other providers.
+- Error recovery (**Retry**, **Switch Provider & Retry**, **Restore Prompt**) preserves valid alternatives, while Firestore snapshot subscriptions guard active streaming messages from stale updates.
 
 ### Automatic Chat-Input Focus
 
-- Typing alphanumeric keys anywhere on the page automatically focuses the composer without dropping the first character.
-- Safeguards ignore keystrokes during active text selection, modifier shortcuts (`Ctrl+C`, `Cmd+V`), open modals, and form controls.
+- Typing alphanumeric keys anywhere on the page focuses the composer without losing the first keystroke, while ignoring active text selections, modifier shortcuts (`Ctrl+C`, `Cmd+V`), open modals, and inputs.
 
 ### Live Response-Time Measurement
 
-- Displays a live duration counter (`Thinking... 1.4s`) updating every 100ms during streaming.
-- Replaces with an immutable badge upon completion (e.g., `Response time: 2.1s`), preserved across sessions and exports.
+- Displays a live counter (`Thinking... 1.4s`) during streaming and saves an immutable `Response time: 2.1s` badge upon completion.
 
 ### Controlled Large-Response Continuation
 
-- Automatically detects extensive response intents and segments outputs cleanly.
-- Displays an interactive **`[ → Continue response ]`** chip above the composer to fetch subsequent parts seamlessly.
+- Automatically segments long responses and displays an interactive **`[ → Continue response ]`** composer chip to fetch subsequent parts.
 
 ### Edit & Resend with Branch Truncation
 
-- Clicking **Edit** (`Pencil` icon) allows modifying prior user messages.
-- Resending truncates downstream messages from that point forward, providing the AI model with a clean context window. In-flight requests are aborted to avoid state corruption.
+- Clicking **Edit** (`Pencil`) updates prior user prompts and truncates downstream messages cleanly, aborting any in-flight generation.
 
 ### Conversation Pinning & Client-Side Export
 
-- Pin up to 5 priority chats to the top of the sidebar.
-- Export conversations to **Markdown (`.md`)**, **Plain Text (`.txt`)**, or **JSON (`.json`)** completely client-side.
+- Pin up to 5 chats to the top of the sidebar and export conversations client-side as **Markdown (`.md`)**, **Plain Text (`.txt`)**, or **JSON (`.json`)**.
 
 ---
 
-## Share Chat & Conversation Collaboration
+## 16. Shared Chat and Conversation Collaboration
 
-Orvix Share Chat provides privacy-preserving conversation sharing and collaborative branching. It allows authenticated users to publish immutable snapshots of their conversations, enables public visitors to inspect conversations in a high-fidelity read-only viewer, and empowers authenticated recipients to fork conversations into their own independent chat history.
+Orvix Share Chat lets authenticated users publish immutable conversation snapshots for read-only public viewing and interaction-gated private forking.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -650,49 +590,29 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 ```
 
 ### Share Entire Conversations
-- **One-Click Sharing**: Authenticated users can share any saved conversation using the **Share** button in the top navigation header or via the conversation action menu in the sidebar.
-- **Versatile Distribution Options**: The Share modal provides one-click **Copy Link**, direct sharing to **WhatsApp**, and native OS share dialogs via the Web Share API (`navigator.share`).
-- **Immutable Snapshot Creation**: Sharing freezes the conversation at that exact point in time and publishes an immutable snapshot document. Subsequent messages sent by the owner in their private chat do not alter the published snapshot.
+- Click **Share** in the top bar or sidebar menu to publish a frozen snapshot and distribute via **Copy Link**, **WhatsApp**, or native OS sharing (`navigator.share`).
 
 ### Public Shared Conversation Viewer
-- **No Account Required for Viewing**: Anyone with the unique share URL (`/share/{shareId}`) can open and read the complete conversation transcript immediately without creating an account or logging in.
-- **Strict Read-Only Enforcement**: Public visitors cannot alter, overwrite, or delete the shared snapshot. The message input composer is safely disabled with an informational callout prompting visitors to sign in to continue or fork the conversation.
-- **Full Reading Utility**: Public visitors retain access to core reading tools, including dual-format clipboard copying (`text/html` and `text/plain`), syntax-highlighted code blocks with line numbers, and browser-native Text-to-Speech (Read Aloud).
+- Anyone with `/share/{shareId}` can read, copy messages/code, and listen via Read Aloud without signing in; editing is disabled.
 
 ### Sign In and Continue
-- **Frictionless Onboarding**: Authenticated users opening a shared URL enter an **Authenticated Temporary Preview** state.
-- **Temporary Preview Safety**: The shared conversation is presented in the chat window with the composer unlocked, but it is **not** immediately added to the recipient's private chat history or persisted to their database.
-- **Owner Conversation Protection**: The original owner's private conversation and the shared snapshot remain entirely protected and immutable.
+- Signed-in visitors enter an **Authenticated Temporary Preview** with the composer unlocked and zero account history mutations until they submit a message.
 
 ### Independent Conversation Import
-- **Interaction-Gated Forking**: The temporary preview is imported into the recipient's account **only** after they successfully send their first prompt and the AI model finishes generating a complete response (`status: 'completed'`).
-- **Zero Ghost Chats on Failure**: If the recipient cancels generation, closes the tab, or encounters an upstream API error during the first turn, no orphan chat document or history entry is left in their account.
-- **Combined Transcript**: Once the first turn completes successfully, an independent private chat document is atomically created containing all original shared messages followed by the recipient's new prompt and assistant response.
-- **Complete Decoupling**: The imported chat is 100% independent. Deleting, modifying, or continuing the imported chat has zero effect on the original conversation or shared snapshot.
+- A private forked chat is created in the recipient's account **only** after their first prompt receives a completed AI response (`status: 'completed'`); aborted or failed first turns leave no ghost chats, and edits/deletions to the fork never affect the original snapshot.
 
 ### Imported Chat Management
-- **Provenance Indicator**: Imported conversations feature an **Imported** indicator badge in the conversation header and sidebar, along with a deep link back to the source shared snapshot.
-- **Standard Conversation Controls**: Recipients can rename, pin (up to 5 priority chats), search, delete, and export (Markdown, TXT, JSON) their imported chats just like any native conversation.
-- **Resharing Support**: Recipients can continue chatting and choose to reshare the extended conversation at any time. Resharing creates a brand-new, independent shared snapshot with its own unique URL.
+- Imported chats show an **Imported** provenance badge linked to the source snapshot and support renaming, pinning, searching, deleting, exporting, and resharing under a new snapshot ID.
 
 ### Security and Data Isolation
-- **Collection Isolation**: Shared snapshots reside in a distinct top-level `sharedChats/{shareId}` Firestore collection, completely segregated from private user paths (`users/{uid}/chats/{chatId}`).
-- **Immutable Database Rules**: Firestore security rules enforce `allow update: if false;` and `allow delete: if false;`, ensuring snapshots cannot be tampered with or deleted through client operations.
-- **No Collection Enumeration**: Exact document lookups are permitted (`allow get: if true;`), while collection listing is strictly blocked (`allow list: if false;`) to protect user privacy and prevent link harvesting.
-- **Sanitization Pipeline**: Private user attributes (`userId`, user profile emails, private authentication tokens, local filesystem paths, and raw binary attachments) are strictly stripped during snapshot generation.
-- **Server-Validated Lifecycle, Expiration & Revocation**: Server endpoints (`POST /api/share`, `GET /api/share/:shareId`, `DELETE /api/share/:shareId`, `POST /api/share/:shareId/revoke`) validate message payloads, enforce authoritative `ownerId`, and support optional snapshot expiration (`410 SHARE_EXPIRED`) and owner-initiated revocation (`410 SHARE_REVOKED`).
-- **Strict Boundary Constraints**: Payload size is capped at 900 KB (UTF-8 encoded) to guarantee single-document Firestore integrity, and conversations are constrained to a maximum of 500 messages with titles up to 120 characters.
+- Snapshots reside in `sharedChats/{shareId}` with immutable Firestore rules (`allow update: if false;`, `allow delete: if false;`, `allow list: if false;`), strip private user fields, enforce server-side ownership, expiration (`410 SHARE_EXPIRED`), and revocation (`410 SHARE_REVOKED`) via `/api/share/*`, and cap payloads at 900 KB UTF-8, 500 messages, and 120-character titles.
 
 ### Persistence and Reliability
-- **History Cleanliness**: Merely visiting or reloading `/share/{shareId}` never injects placeholder entries into local storage or account history.
-- **Reload Resilience**: Reloading a `/share/{shareId}` URL cleanly restores the temporary preview with full fidelity.
-- **Deduplication Lock**: Fast double-submissions or concurrent import attempts are protected by an in-flight import mutex lock, preventing duplicate chats.
-- **Multi-Tab Sync**: When an import completes in one tab, a lightweight `BroadcastChannel` event notifies open tabs to synchronize their sidebar history without interrupting active conversations.
-- **Offline Resilience**: If network connectivity drops after an import has been established, subsequent conversation edits and new messages are buffered in the local offline write queue and replayed once the connection recovers.
+- Reloading `/share/{shareId}` preserves the temporary preview cleanly; concurrent imports are guarded by a mutex lock, synchronized across tabs via `BroadcastChannel`, and buffered offline once imported.
 
 ---
 
-## Architecture & Technology Stack
+## 17. Architecture and Technology Stack
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -711,43 +631,35 @@ Orvix Share Chat provides privacy-preserving conversation sharing and collaborat
 ```
 
 - **Frontend**: React 19, Vite 8 (`target: ['es2020', 'safari15']`), Tailwind CSS v4, Lucide React, `react-markdown`, `remark-gfm`.
-- **Local AI & Web Workers**: `@mlc-ai/web-llm` running inside `src/workers/webllmWorker.js` via WebGPU and WASM shaders, alongside a dedicated Web Worker for WASM GIF optimization (`@fe-daily/gifsicle-wasm-browser`) with `AbortSignal` termination so heavy processing never blocks the UI thread.
-- **Backend**: Express 4 running via `tsx` in TypeScript (`server.ts`) with Vite middlewares mounted on port 3000 (`0.0.0.0`).
-- **Cloud AI**: `@google/genai` TypeScript SDK (Gemini), REST streaming for Groq, OpenRouter, and Cloudflare Workers AI.
-- **Smart Compression & Storage Envelopes**: `@jsquash/oxipng` (WASM lossless PNG optimization with Canvas fallback), `@fe-daily/gifsicle-wasm-browser` (Web Worker WASM GIF compression), `pdf-lib` (lossless structural PDF compaction), `jszip` (OpenXML DEFLATE container optimization), and `fflate` (streaming gzip `orvix-gzip-v1` storage envelopes with CRC-32 and SHA-256 integrity checks).
-- **Audio & Documents**: Web Speech API, MediaRecorder, `AudioWorklet` PCM streaming, Groq Whisper Large v3 Turbo, `unpdf`, `mammoth`, `jszip`, `cfb` (OLE2 `.doc`/`.ppt`/`.xls` binary parsing), `@e965/xlsx` (Excel `.xlsx`/`.xls` workbook extraction), and `tesseract.js`.
-- **Browser & iOS 15 Compatibility**: Vite builds target `['es2020', 'safari15']` with build-time regex lookbehind sanitization (`safariLookbehindPlugin`), pure-JS SHA-256 and Windows-1252/UTF-16LE decoding fallbacks for Safari 15 or non-secure HTTP contexts lacking `crypto.subtle`, and capability detection for WebGPU, WebAssembly, Web Workers, and Canvas APIs so unsupported environments fall back safely without blocking uploads or UI rendering.
-- **Persistence & Sharing**: IndexedDB for local file blobs and offline queues, Firebase Auth, Cloud Firestore (`users/{uid}/chats` for private sync and `sharedChats/{shareId}` for immutable snapshots), Supabase Storage for private attachments, and `localStorage` for Guest Mode.
+- **Local AI & Web Workers**: `@mlc-ai/web-llm` in `src/workers/webllmWorker.js` via WebGPU and WASM shaders, plus a dedicated GIF compression worker (`@fe-daily/gifsicle-wasm-browser`).
+- **Backend**: Express 4 running in TypeScript via `tsx` (`server.ts`) with Vite middlewares on `0.0.0.0:3000`.
+- **Cloud AI**: `@google/genai` TypeScript SDK (Gemini) and REST SSE streaming for Groq, OpenRouter, and Cloudflare Workers AI.
+- **Compression & Extraction**: `@jsquash/oxipng`, `@fe-daily/gifsicle-wasm-browser`, `pdf-lib`, `jszip`, `fflate`, `unpdf`, `mammoth`, `cfb`, `@e965/xlsx`, and `tesseract.js`.
+- **Browser & iOS 15 Compatibility**: Vite targets `['es2020', 'safari15']` with `safariLookbehindPlugin`, pure-JS SHA-256 and Windows-1252/UTF-16LE decoding fallbacks, and runtime capability detection.
+- **Persistence & Sharing**: IndexedDB (`orvix_attachments_db`), Firebase Auth, Cloud Firestore (`users/{uid}/chats` and `sharedChats/{shareId}`), Supabase Storage, Redis/in-memory rate limiting, and `localStorage` for Guest Mode.
 
 ### Verified Platform & Device Compatibility
 
-Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, and standalone environments:
-
-- **Windows 11** — Chrome
-- **Windows 11** — Microsoft Edge
-- **Windows 11** — Brave
-- **Windows 11** — PWA
+- **Windows 11** — Chrome, Microsoft Edge, Brave, PWA
 - **Windows 7** — Chrome
-- **Android** — Chrome
-- **Android** — PWA
-- **iPhone 7** — iOS 15.8.8 Safari
-- **iPhone 7** — iOS 15.8.8 PWA
+- **Android** — Chrome, PWA
+- **iPhone 7** — iOS 15.8.8 Safari, iOS 15.8.8 PWA
 - **Modern iPhones** — Safari
 
 ---
 
-## Authentication & Persistence Architecture
+## 18. Authentication and Persistence Architecture
 
-1. **Client-Side IndexedDB (`orvix_attachments_db`)**: Caches uploaded files in the browser so thumbnails and previews persist across reloads.
-2. **In-Memory Server Staging**: Uploads stage in memory via `multer.memoryStorage()`, preventing read-only filesystem errors (`EROFS`) in serverless environments.
-3. **Cloud Firestore**: Authenticated users sync chats and preferences under `users/{uid}/chats/{chatId}/messages/{messageId}`.
-4. **Guest Mode**: Full functionality for unauthenticated visitors with persistence in `localStorage`.
-5. **Immutable Shared Snapshots (`sharedChats/{shareId}`)**: Public conversation snapshots are stored separately from private user partitions. Forked conversations are imported to `users/{uid}/chats/{newChatId}` only after the recipient's first prompt and assistant response complete successfully.
-6. **Private Supabase Attachment Storage & Quota State**: Authenticated user attachments persist in private Supabase Storage (`{userId}/{conversationId}/{attachmentId}.{ext}`), while server-only Firestore collections (`uploadQuotas` and `uploadTickets`) enforce atomic 5-upload/day PKT quota transactions and durable direct-upload ticket verification.
+1. **Client-Side IndexedDB (`orvix_attachments_db`)**: Caches uploaded attachment blobs for offline previews across reloads.
+2. **In-Memory Server Staging**: `multer.memoryStorage()` processes uploads in memory to avoid read-only filesystem (`EROFS`) failures in serverless runtimes.
+3. **Cloud Firestore**: Syncs authenticated user conversations and preferences under `users/{uid}/chats/{chatId}/messages/{messageId}`.
+4. **Guest Mode**: Stores unauthenticated sessions locally in `localStorage`.
+5. **Immutable Shared Snapshots (`sharedChats/{shareId}`)**: Isolates public snapshots from private user trees and materializes forks under `users/{uid}/chats/{newChatId}` only after the first completed turn.
+6. **Private Supabase Attachment Storage & Quota State**: Stores authenticated files privately under `{userId}/{conversationId}/{attachmentId}.{ext}`, while server-only Firestore collections (`uploadQuotas` and `uploadTickets`) enforce atomic 5-upload/day PKT transactions and direct-upload verification.
 
 ---
 
-## Project Structure
+## 19. Project Structure
 
 ```text
 ├── .github/workflows/ci.yml         # CI workflow (build-and-test, security-audit, e2e)
@@ -810,7 +722,7 @@ Orvix is tested and verified across a wide matrix of desktop, mobile, legacy, an
 
 ---
 
-## Environment Variables & Configuration
+## 20. Environment Variables and Configuration
 
 Create a `.env` file in the root directory based on `.env.example`:
 
@@ -865,11 +777,11 @@ RATE_LIMIT_VOICE_WS_MAX=20
 RATE_LIMIT_VOICE_WS_WINDOW_MS=60000
 ```
 
-*Note*: See `.env.example` for the complete list of operational variables including CORS (`ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGINS`, `APP_URL`, `VITE_PUBLIC_APP_URL`), trusted proxy handling (`TRUST_PROXY`), demo mode (`ORVIX_ENABLE_DEMO_MODE`), Firebase Admin, Supabase storage & cleanup intervals, signed URL/guest secrets, distributed rate-limit failure modes (`RATE_LIMIT_REQUIRE_DISTRIBUTED`, `RATE_LIMIT_FAILURE_MODE`), and upstream Gemini timeouts. API keys are kept strictly server-side. Browser AI (WebLLM) works without API keys, and opt-in simulated responses can be enabled via `ORVIX_ENABLE_DEMO_MODE=true`. Sentry monitoring is disabled gracefully when no DSN is provided. Redis (`REDIS_URL`) is optional: when configured, rate-limit counters are shared atomically across server instances via a Lua script (`server/rateLimiter.ts` + `server/redisClient.ts`) using hashed UID/IP keys; when omitted or unreachable, Orvix falls back to per-process in-memory rate limiting (unless `RATE_LIMIT_FAILURE_MODE=fail-closed` or `RATE_LIMIT_REQUIRE_DISTRIBUTED=true` is configured).
+*Note*: See `.env.example` for the complete list of operational variables including CORS (`ALLOWED_ORIGINS`, `CORS_ALLOWED_ORIGINS`, `APP_URL`, `VITE_PUBLIC_APP_URL`), trusted proxy handling (`TRUST_PROXY`), demo mode (`ORVIX_ENABLE_DEMO_MODE`), Firebase Admin, Supabase storage & cleanup intervals, signed URL/guest secrets, distributed rate-limit failure modes (`RATE_LIMIT_REQUIRE_DISTRIBUTED`, `RATE_LIMIT_FAILURE_MODE`), and upstream Gemini timeouts. API keys stay strictly server-side; Browser AI (WebLLM) works with zero keys, Sentry disables gracefully without a DSN, and Redis (`REDIS_URL`) falls back to per-process in-memory rate limiting when omitted unless fail-closed mode is enabled.
 
 ---
 
-## Installation & Running Locally
+## 21. Installation and Running Locally
 
 ### Prerequisites
 - **Node.js**: Version 18.0.0 or higher (`engines.node: ">=18.0.0"`, Node.js 22 LTS recommended).
@@ -884,7 +796,7 @@ bun install
 ```bash
 bun run dev
 ```
-The server will start on `http://localhost:3000` (`0.0.0.0:3000`).
+The server starts on `http://localhost:3000` (`0.0.0.0:3000`).
 
 ### 3. Verify Types & Linting
 ```bash
@@ -907,340 +819,188 @@ bun run test:e2e
 bun run test:e2e:desktop
 bun run test:e2e:mobile
 ```
-Playwright automatically starts an isolated development server on port `3100` (`PLAYWRIGHT_PORT=3100`) and executes deterministic specs under `e2e/` (`auth`, `chat`, `settings`, `sharing`, `responsive-a11y`) across `desktop-chromium` (`1280x800`) and `mobile-chromium` (`Pixel 7`, `390x844`).
+Playwright starts an isolated server on port `3100` (`PLAYWRIGHT_PORT=3100`) and executes deterministic specs under `e2e/` (`auth`, `chat`, `settings`, `sharing`, `responsive-a11y`) across `desktop-chromium` (`1280x800`) and `mobile-chromium` (`Pixel 7`, `390x844`).
 
 ---
 
-## Build & Deployment Instructions
+## 22. Build and Deployment Instructions
 
 ### Full-Stack Production Build
 ```bash
 bun run build
 bun run start
 ```
-`bun run start` executes `tsx server.ts` (with `tsx` included in production `dependencies`), allowing the TypeScript backend to run reliably across all supported Node.js versions (`>=18.0.0`, including versions below Node.js 22.6 that lack native `.ts` strip-types execution). In production (`NODE_ENV=production`), the Express server serves prebuilt static client assets from `dist/` with SPA routing and API proxying.
+`bun run start` runs `tsx server.ts`, supporting Node.js `>=18.0.0` (including versions prior to Node.js 22.6). In production (`NODE_ENV=production`), Express serves static client assets from `dist/` alongside SPA routing and API routes.
 
 ### Vercel Serverless Deployment
 Configured via `vercel.json` with handlers in `api/`:
-- `api/chat.ts`: Serverless proxy for streaming AI completions (bundles `eng.traineddata*` and Tesseract assets for OCR-assisted attachments).
-- `api/config.ts`: Public runtime capability and provider availability endpoint (`/api/config`).
-- `api/health.ts`: Health and persistence readiness endpoint (`/api/health`).
-- `api/share.ts`: Server-validated Share Chat creation, lookup, expiration, and revocation handler (`/api/share/:shareId`).
-- `api/transcribe.ts`: Serverless audio transcription handler (`/api/transcribe`).
-- `api/upload.ts`: Serverless in-memory upload, direct-upload tickets, quota, signed download, OCR pack serving, and extraction handler (`/api/upload/*`, `/api/ocr/packs/:file`).
+- `api/chat.ts`: Streaming AI proxy (bundles `eng.traineddata*` and Tesseract assets for OCR).
+- `api/config.ts`: Public runtime capability and provider availability (`/api/config`).
+- `api/health.ts`: Health and persistence readiness (`/api/health`).
+- `api/share.ts`: Server-validated Share Chat create, lookup, expiration, and revocation (`/api/share/:shareId`).
+- `api/transcribe.ts`: Serverless audio transcription (`/api/transcribe`).
+- `api/upload.ts`: In-memory upload, direct-upload tickets, quota, signed downloads, OCR packs, and extraction (`/api/upload/*`, `/api/ocr/packs/:file`).
 
 ### Firestore Security Rules Deployment for Share Chat
-> **Important Production Deployment Note for Share Chat**: Production deployment of Share Chat requires deploying the security rules in `firestore.rules` to enforce the immutability of `sharedChats/{shareId}`, prevent collection listing, and isolate user private data. The required Firestore security rules have **not yet been deployed** and must be deployed via Firebase CLI before enabling Share Chat in production:
+> **Important Production Deployment Note for Share Chat**: Production Share Chat requires deploying `firestore.rules` to enforce `sharedChats/{shareId}` immutability, block collection listing, and isolate private user data:
 > ```bash
 > firebase deploy --only firestore:rules
 > ```
 
 ---
 
-## Troubleshooting & Common Issues
+## 23. Troubleshooting Common Issues
 
 | Issue | Likely Cause | Resolution |
 | :--- | :--- | :--- |
 | **WebGPU not supported** | Browser lacks WebGPU or graphics acceleration is disabled | Use Chrome 113+, Edge 113+, or Safari 18+ over HTTPS or localhost; enable hardware acceleration in browser settings. |
 | **Model download fails** | Network interruption during shard fetch | Click **Retry** (`RotateCcw`) in the status bar; completed shards in Cache Storage are preserved. |
-| **Offline mode shows model not cached** | Cache Storage was cleared or Incognito window used | Reconnect to internet, open Orvix, and download the model until status shows `"Ready on device"`. |
+| **Offline mode shows model not cached** | Cache Storage was cleared or Incognito window used | Reconnect to the internet, open Orvix, and download the model until status shows `"Ready on device"`. |
 | **Cloud provider fails offline** | Cloud models require internet connectivity | Click **"Switch to Browser AI"** in the offline notice to run models locally on-device. |
 | **Pasted table distorted in WhatsApp** | Messaging app uses proportional fonts | Use Orvix's **Copy** button; it formats tables as clean plain-text records (`• Header: Value`). |
 | **Swipe gesture does not open drawer** | Touching inside composer, header, or code block | Initiate the swipe from the neutral conversation area. |
-| **Port 3000 in use (`EADDRINUSE`)** | Another process is bound to port 3000 | Stop conflicting process or run `PORT=3001 bun run dev`. |
+| **Port 3000 in use (`EADDRINUSE`)** | Another process is bound to port 3000 | Stop the conflicting process or run `PORT=3001 bun run dev`. |
 | **`EROFS: read-only file system`** | Serverless disk write restriction | Orvix stages uploads in memory via `multer.memoryStorage()`, avoiding local disk writes. |
 | **Gemini timeout (504 DEADLINE_EXCEEDED)** | Upstream model demand spike | Orvix automatically fails over to `gemini-2.5-flash-lite`. If all cloud attempts fail, switch to Groq, OpenRouter, or Browser AI. |
 
 ### Troubleshooting Gemini Timeouts & Streaming
 
-1. **Vercel Runtime Logs**: Check your Vercel deployment logs and filter by `/api/chat` or HTTP status `504`/`503`. Orvix outputs structured logs via `logAIDiagnostic` and `sanitizeErrorLog`, keeping keys and user data redacted.
-2. **DevTools EventStream Inspection**: Open Developer Tools (`F12`) > **Network** > **Fetch/XHR** > select `/api/chat` > **EventStream**. Confirm `: prime` arrives within 50ms, followed by `: keepalive` heartbeats and streaming `data:` frames.
+1. **Vercel Runtime Logs**: Filter `/api/chat` logs or HTTP `504`/`503` responses; `logAIDiagnostic` and `sanitizeErrorLog` keep keys and user payloads redacted.
+2. **DevTools EventStream Inspection**: Open **DevTools (`F12`) > Network > Fetch/XHR > `/api/chat` > EventStream** and verify `: prime` arrives within 50ms followed by `: keepalive` heartbeats and `data:` frames.
 
 ---
 
-## Security Architecture
+## 24. Security Architecture
 
-1. **Zero Credential Exposure**: Cloud API keys remain on the backend server; client bundles never contain secrets.
-2. **Binary Magic Number Validation**: Uploaded files undergo binary header checks to block disguised executables.
-3. **Text Sanitization**: Document and OCR text is stripped of non-printable control characters before insertion into prompts.
-4. **Memory Management**: Object URLs are revoked upon unmounting to avoid browser memory leaks.
-5. **Microphone Release**: Audio tracks stop immediately when the tab is hidden or closed to release hardware.
-6. **Share Chat Data Isolation & Immutability**: Shared snapshots exclude private user credentials, emails, and local file paths. Snapshots in `sharedChats/{shareId}` cannot be updated or deleted by clients. Collection listing is prohibited, and payload boundaries (max 900 KB UTF-8, max 500 messages, max 120 character title) are verified before document creation.
-7. **Envelope Integrity & Signed Download URLs**: `orvix-gzip-v1` payloads enforce CRC-32, SHA-256, extension/MIME parity, and bounded decompression caps (25 MB). Attachment retrieval URLs (`/api/upload/:id/file`) are HMAC-SHA256 signed (`ORVIX_SIGNED_URL_SECRET`, failing closed in production when missing or weak) and enforce Firebase user ownership checks.
+1. **Zero Credential Exposure**: Cloud API keys remain strictly server-side; client bundles never embed server secrets.
+2. **Binary Magic Number Validation**: Uploaded files undergo header verification to block disguised executables.
+3. **Text Sanitization**: Extracted document and OCR text strips non-printable control characters before prompt insertion.
+4. **Memory & Microphone Hygiene**: Object URLs revoke on unmount, and microphone tracks stop immediately when hidden or closed.
+5. **Share Chat Isolation & Immutability**: Snapshots strip private user metadata, block client updates/deletes/collection listing, and cap payloads at 900 KB UTF-8, 500 messages, and 120-character titles.
+6. **Envelope Integrity & Signed Download URLs**: `orvix-gzip-v1` payloads validate CRC-32, SHA-256, extension/MIME parity, and 25 MB decompression bounds; `/api/upload/:id/file` URLs require valid HMAC-SHA256 signatures (`ORVIX_SIGNED_URL_SECRET`) and Firebase user ownership checks.
 
 ### Dependency Security Audit
 
-Dependency vulnerabilities are checked with Bun (`bun run audit` / `bun audit --json`) in a dedicated `security-audit` CI job (`.github/workflows/ci.yml`) that reports audit failures visibly without blocking unrelated build, test, or E2E jobs. As of the latest `bun audit` check across `bun.lock`, **0 open vulnerabilities** are reported (the previously tracked transitive `picomatch@4.0.7` advisory is no longer reported by `bun audit`).
+Dependency vulnerabilities are checked with Bun (`bun run audit` / `bun audit --json`) in the `security-audit` CI job (`.github/workflows/ci.yml`) and currently report **0 open vulnerabilities** across `bun.lock`.
 
 ---
 
-## Verification & Security Coverage
+## 25. Verification and Security Coverage
 
-Orvix includes robust automated verification coverage across core compression, extraction, security, and offline resilience modules:
+Orvix includes automated test suites across compression, extraction, security, and offline resilience:
 
-- **Smart Compression Coverage**: Validates format/signature detection, `>= 10%` savings gates, quality protection for text/diagrams, signed/encrypted PDF skipping, OpenXML protection gates, and fail-safe original-file fallback.
-- **Upload Integration & Envelope Integrity Tests**: Validates end-to-end compression inside `ChatPage`/`ChatArea`, `/api/upload`, direct signed-to-Supabase uploads, deduplication, abort safety, encoding/decoding, CRC-32/SHA-256 integrity, and decompression bounds.
-- **Semantic RAG Coverage**: Verifies `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, and `.xls` extraction across server and browser extractors, encrypted/corrupted file handling, and semantic chunking/retrieval.
-- **Authentication, Quotas & Offline Resilience**: Verifies Firebase ID token enforcement, per-user path ownership, atomic upload quota accounting, signed download URLs, and cancellation/fallback behavior.
-
----
-
-## Current Limitations
-
-1. **Messaging App Plain Text**: Plain-text platforms like WhatsApp cannot render HTML tables or grid borders; Orvix formats them as structured records (`• Header: Value`).
-2. **Gesture Variations**: Swipe sensitivity may vary based on touch hardware or OS gesture navigation overlays.
-3. **OCR vs. Multimodal Vision**: Orvix extracts printed text via OCR; it does not perform spatial visual reasoning on image content.
-4. **Binary Storage TTL**: Raw binary attachments are cached locally in browser IndexedDB; temporary server files expire after a 2-hour TTL.
-5. **Initial Online Requirement**: Browser AI requires one initial online visit to precache the PWA app shell and download model weights.
-6. **Online Snapshot Generation**: Creating a shared conversation snapshot requires active internet connectivity to contact Cloud Firestore; offline snapshot creation is disabled to prevent invalid or unreachable share links.
-7. **Shared Snapshot Size & Message Boundaries**: Individual shared snapshots are limited to 900 KB UTF-8 and a maximum of 500 messages to ensure single-document atomic storage limits.
-8. **iOS 15 Standalone PWA Microphone Limitation**: On iOS 15, microphone access may remain unavailable inside the standalone Home Screen PWA even after the user grants microphone permission. This appears to be an iOS/WebKit standalone-PWA limitation rather than a core Orvix dictation failure. Safari should be used for voice dictation on iOS 15 when this occurs.
+- **Smart Compression Coverage**: Verifies magic-byte detection, `>= 10%` savings gates, quality thresholds for text/diagrams, signed/encrypted PDF skipping, OpenXML protection gates, and fail-safe original-file fallbacks.
+- **Upload Integration & Envelope Integrity**: Validates end-to-end compression in `ChatPage`/`ChatArea`, `/api/upload`, direct signed-to-Supabase uploads, deduplication, abort safety, CRC-32/SHA-256 verification, and decompression limits.
+- **Document Extraction & Semantic RAG**: Verifies `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, and `.xls` extraction across server and browser extractors, encrypted/corrupted file errors, and semantic chunking/retrieval.
+- **Auth, Quotas & Offline Resilience**: Verifies Firebase ID token checks, per-user path isolation, atomic PKT upload quota accounting, signed download URLs, and offline fallbacks.
 
 ---
 
-## Security, Performance & Architecture Improvements (v0.3.2)
+## 26. Current Limitations
 
-Orvix v0.3.2 delivers a comprehensive suite of security hardenings, architectural modularizations, browser runtime optimizations, and configuration centralizations resolving nine critical audit findings (ORVIX-001 through ORVIX-009).
-
-### ORVIX-001 — Secure Server-Side Credential Resolution
-
-- **Vulnerability / Context**: Previously, server-side credential lookups accepted `VITE_`-prefixed environment variables as fallbacks when primary server variables were omitted. Because Vite bundles all environment variables prefixed with `VITE_` into client-side production JavaScript, storing backend API keys under `VITE_` variable names created an acute risk of secret exposure.
-- **Resolution**:
-  - Strictly separated server-only API credentials (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) from client-exposed `VITE_` configurations.
-  - Hardened backend credential resolution in `server/serverConfig.ts` to reject any `VITE_`-prefixed secret lookups on the server.
-  - Ensured sensitive provider API keys remain strictly confidential on the backend, preventing accidental exposure through client builds or bundle manifests.
-
-### ORVIX-002 — Serverless-Safe File Upload Handling
-
-- **Vulnerability / Context**: Storing uploaded files on the local filesystem (`fs.writeFile`) to temporary directories fails unpredictably in serverless execution environments (such as Vercel or AWS Lambda) due to read-only root filesystems (`EROFS`) and stateless, ephemeral instances where subsequent requests may route to different compute nodes.
-- **Resolution**:
-  - Implemented in-memory upload handling via `multer.memoryStorage()`, allowing file uploads, document extraction, and optical character recognition (OCR) to process directly from in-memory buffers without local disk writes.
-  - Clarified architectural boundaries honestly: without a dedicated external object store (such as Google Cloud Storage or AWS S3), uploaded attachments are handled ephemerally in memory or cached locally in browser IndexedDB.
-  - Eliminated transient filesystem collisions, disk exhaustion risks, and cross-instance file retrieval failures across distributed serverless environments.
-
-### ORVIX-003 — Strict CORS Origin Whitelisting
-
-- **Vulnerability / Context**: Permissive wildcard (`*`) Cross-Origin Resource Sharing (CORS) configurations combined with credentialed requests violate modern Web standards and allow malicious third-party origins to make unauthorized cross-origin requests to private API endpoints.
-- **Resolution**:
-  - Eliminated wildcard origin access across credentialed and authenticated API routes (`/api/chat`, `/api/upload`, `/api/transcribe`, `/api/config`).
-  - Configured a dynamic origin whitelist restricting incoming requests strictly to trusted domains, local development environments (`http://localhost:3000`, `http://localhost:5173`), and explicit production hostnames.
-  - Properly secured preflight `OPTIONS` requests, allowed request headers, and cache control directives while preserving legitimate client-server API interactions.
-
-### ORVIX-004 — Self-Healing IndexedDB Storage Quotas
-
-- **Vulnerability / Context**: Client-side storage of image attachments and document previews in browser IndexedDB can exhaust available disk quotas (especially on mobile devices or browsers with strict per-origin limits), throwing unhandled `QuotaExceededError` exceptions that crash the client or break conversation states.
-- **Resolution**:
-  - Implemented defensive quota exhaustion detection and interceptors in `src/services/attachmentStorageService.js`.
-  - Added self-healing recovery workflows that automatically purge stale cached attachments and run least-recently-used (LRU) cache evictions when storage limits are approached.
-  - Provided graceful degradation to in-memory attachment blobs with clear, non-technical UI alerts informing users if storage limits prevent persistent offline caching.
-
-### ORVIX-005 — Modularization of Monolithic Server Architecture
-
-- **Vulnerability / Context**: The central `server.ts` file had expanded into a monolithic implementation exceeding 7,000 lines, coupling HTTP routing, Express setup, Gemini streaming, alternative provider handling, document OCR, audio transcription, and configuration into a single hard-to-maintain file.
-- **Resolution**:
-  - Decomposed the monolith into clean, single-responsibility subsystems under `server/`:
-    - `server/serverConfig.ts`: Environment validation, CORS whitelist, and port management.
-    - `server/serverTypes.ts`: Strongly typed interfaces and request schemas.
-    - `server/diagnosticLogger.ts`: Sanitized development-safe structured logging.
-    - `server/geminiStreamHandler.ts`: Google Gen AI SDK streaming client with keepalive priming.
-    - `server/uploadSubsystem.ts`: In-memory Multer storage, magic-number validation, and Tesseract OCR.
-    - `server/transcriptionSubsystem.ts`: Groq Whisper Large v3 Turbo transcription with fallback.
-    - `server/chatSubsystem.ts`: Unified multi-provider chat routing, model fallback failover, and SSE formatting.
-  - Reduced `server.ts` to ~270 lines of clean orchestration while maintaining 100% backward compatibility with existing API contracts.
-
-### ORVIX-006 — High-Efficiency Live Response Timer
-
-- **Vulnerability / Context**: During active AI response streaming, the duration badge (`LiveResponseTimer.jsx`) executed rapid, unthrottled timer state updates (every 100ms), triggering excessive React re-renders and CPU overhead while rendering streamed markdown tokens.
-- **Resolution**:
-  - Replaced high-frequency unthrottled intervals with second-boundary synchronized intervals, ensuring timer updates fire only when the displayed second changes.
-  - Added memoization and duplicate dispatch suppression, cutting component re-render frequency by over 90% during active response generation.
-  - Preserved precise start, elapsed, and completion timestamps, ensuring an immutable elapsed duration badge is saved to message metadata without CPU lag or memory leaks.
-
-### ORVIX-007 — Clean Script Redundant Server Reference Removal
-
-- **Vulnerability / Context**: The `clean` script in `package.json` included a legacy reference targeting a nonexistent `server.js` file (`rm -rf dist server.js`). Because Orvix runs directly via `tsx server.ts` and Vite, `server.js` was obsolete and confusing for build automation and deployment pipelines.
-- **Resolution**:
-  - Verified that `server.js` is not generated, required, or referenced by any active build, test, development, or production workflow.
-  - Cleaned the `clean` script in `package.json` to strictly target the build output directory (`rm -rf dist`).
-  - Preserved full build integrity and all developer tooling scripts without phantom file dependencies.
-
-### ORVIX-008 — WebGPU SwiftShader FP32 Defensive Fallback
-
-- **Vulnerability / Context**: WebGPU environments running on software rasterizers (such as Google SwiftShader in headless Chrome, CI environments, or virtual machines without discrete hardware acceleration) throw fatal shader compilation errors or crash when attempting to load FP16 (`shader-f16`) quantized model weights.
-- **Resolution**:
-  - Implemented automatic hardware capability sniffing in `src/services/webllmService.js` and `src/workers/webllmWorker.js` to detect SwiftShader software adapters and test for `shader-f16` feature support.
-  - Added an automatic defensive fallback pipeline that transparently selects FP32 quantized models (e.g., `q4f32_1` instead of `q4f16_1`) when `shader-f16` is unsupported.
-  - Preserved optimal FP16 execution speed on physical hardware supporting half-precision floating-point arithmetic while ensuring graceful execution on virtualized and software-rendered devices.
-
-### ORVIX-009 — Centralized Gemini Model Configuration & Secondary Fallback
-
-- **Vulnerability / Context**: Google Gemini model identifier literals (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, etc.) were scattered across `appConfig.js`, `providerModelSanitizer.js`, `chatSubsystem.ts`, and `server.ts`. Additionally, transient upstream Gemini outages or model deprecation errors lacked automated secondary model fallback.
-- **Resolution**:
-  - Centralized all Gemini model configuration in `src/config/appConfig.js`, establishing canonical exports: `GEMINI_PRIMARY_MODEL` (`gemini-2.5-flash`), `GEMINI_FALLBACK_MODEL` (`gemini-2.5-flash-lite`), `GEMINI_FALLBACK_CANDIDATES`, and the frozen `GEMINI_MODELS_CONFIG` object.
-  - Updated `providerModelSanitizer.js`, `server.ts`, and `server/chatSubsystem.ts` to consume the single source of truth, eliminating hardcoded model strings across the stack.
-  - Configured intelligent automated fallback: when the primary model encounters transient upstream errors (such as 404 Model Not Found, 429 Rate Limit, 503 Unavailable, or 504 Deadline Exceeded), the request seamlessly fails over to the configured secondary model without dropping the connection.
-  - Built strict guardrails preventing fallback on non-recoverable client errors (e.g., 400 Bad Request, 401/403 Authentication/API Key Failure) to prevent duplicate invalid requests or infinite loops.
-
-### Audit Verification Summary
-
-| ID | Category | Resolution |
-| :--- | :--- | :--- |
-| **ORVIX-001** | Security & Credentials | **Resolved** — Separated server-only secrets from client `VITE_` variables; hardened backend resolution. |
-| **ORVIX-002** | Storage & Reliability | **Resolved** — Replaced fragile disk writes with serverless-safe in-memory staging; clear architectural boundaries. |
-| **ORVIX-003** | Network Security | **Resolved** — Eliminated wildcard CORS on credentialed routes; enforced strict domain whitelisting. |
-| **ORVIX-004** | Storage & Resilience | **Resolved** — Added defensive `QuotaExceededError` detection, LRU eviction, and in-memory fallback. |
-| **ORVIX-005** | Architecture & Maintainability | **Resolved** — Modularized 7,000+ line `server.ts` into single-responsibility subsystem modules under `server/`. |
-| **ORVIX-006** | Performance & Rendering | **Resolved** — Optimized live response timer to second-boundary intervals, cutting re-renders by >90%. |
-| **ORVIX-007** | Build & Automation | **Resolved** — Removed obsolete `server.js` artifact from `package.json` clean script. |
-| **ORVIX-008** | Browser AI & WebGPU | **Resolved** — Added SwiftShader capability sniffing and automatic defensive FP32 model fallback. |
-| **ORVIX-009** | AI Routing & Reliability | **Resolved** — Centralized Gemini model configuration and implemented automated secondary fallback failover. |
+1. **Messaging App Plain Text**: Apps like WhatsApp cannot render HTML tables; Orvix converts tables in `text/plain` into structured records (`• Header: Value`).
+2. **Gesture Variations**: Swipe sensitivity can vary by touch hardware or OS gesture overlays.
+3. **OCR vs. Multimodal Vision**: Orvix extracts printed text via OCR rather than performing spatial visual reasoning on images.
+4. **Binary Storage TTL**: Raw binary attachments cache locally in IndexedDB, while temporary server/cloud files expire after a 2-hour TTL.
+5. **Initial Online Requirement**: Browser AI requires one online visit to precache the PWA app shell and download model weights.
+6. **Online Snapshot Generation**: Creating a shared snapshot requires internet connectivity to write to Cloud Firestore.
+7. **Shared Snapshot Boundaries**: Snapshots are capped at 900 KB UTF-8 and 500 messages to fit single-document Firestore limits.
+8. **iOS 15 Standalone PWA Microphone Limitation**: WebKit on iOS 15 may block microphone access in standalone Home Screen PWAs; use Safari on iOS 15 for voice dictation.
 
 ---
 
-## Version History & Release Changelog
+## 27. Version History and Release Changelog
 
-### V 0.4.3 — Smart Compression Pipeline & Expanded Office Document Extraction
-- **Smart Compression Pipeline**: Added client-side pre-upload optimization (`smartCompressionService.js`, `attachmentCompressionCoordinator.js`) supporting lossless PNG optimization (`@jsquash/oxipng` WASM + Canvas fallback), lossless metadata stripping & quality-verified JPEG/WebP compression, lossless static/animated GIF optimization (`@fe-daily/gifsicle-wasm-browser` in a dedicated Web Worker), lossless structural PDF compaction (`pdf-lib`, skipping encrypted or digitally signed PDFs), and OpenXML container & embedded media optimization for DOCX/PPTX/XLSX (`jszip` DEFLATE level 9 with PSNR/SSIM/edge-sharpness pixel gates).
-- **Transparent Storage Compression (`orvix-gzip-v1`)**: Added `storageEnvelopeService.js` (`fflate` streaming gzip) for TXT, MD, DOC, PPT, and XLS attachments with a `>= 10%` savings threshold, CRC-32 and SHA-256 integrity verification, 25 MB decompression-bomb bounds, and transparent decompression across downloads, previews, extraction, and IndexedDB rehydration.
-- **Expanded Office Document Extraction**: Added `.doc`, `.ppt`, `.xls`, and `.xlsx` extraction across both server (`documentExtractor.js`) and browser/offline (`browserDocumentExtractor.js`) pipelines via `officeDocumentExtractors.js`, `cfb`, and `@e965/xlsx`, including Markdown spreadsheet tables, Semantic RAG integration, `DocumentPreviewModal` support, and safe encrypted/corrupted file handling.
-- **Automated Verification Suites**: Added comprehensive unit, upload integration, storage envelope audit, office extraction, and browser verification test suites.
+### v5.3.0 — Smart Compression Pipeline and Expanded Office Document Extraction
+- **Smart Compression Pipeline**: Added client-side pre-upload optimization (`smartCompressionService.js`, `attachmentCompressionCoordinator.js`) for PNG (`@jsquash/oxipng`), JPEG/WebP metadata stripping and quality-gated optimization, Web Worker GIF optimization (`@fe-daily/gifsicle-wasm-browser`), structural PDF compaction (`pdf-lib`, skipping signed/encrypted PDFs), and DOCX/PPTX/XLSX optimization (`jszip` with PSNR/SSIM/sharpness gates).
+- **Transparent Storage Compression (`orvix-gzip-v1`)**: Added `storageEnvelopeService.js` (`fflate` streaming gzip) for TXT, MD, DOC, PPT, and XLS uploads with a `>= 10%` savings gate, CRC-32/SHA-256 checks, 25 MB decompression bounds, and transparent decoding across downloads, previews, and extraction.
+- **Expanded Office Extraction**: Added `.doc`, `.ppt`, `.xls`, and `.xlsx` parsing across server and browser extractors via `officeDocumentExtractors.js`, `cfb`, and `@e965/xlsx`, with Semantic RAG support, `DocumentPreviewModal` rendering, and encrypted/corrupted file handling.
 
-### V 0.4.2 — Non-Destructive Response Regeneration & History Preservation
-- **Non-Destructive Normal Regeneration**: Normal regeneration now appends a new alternative record rather than overwriting the active response in place, keeping original and subsequent generations intact across local and Firestore persistence.
-- **Preserved Multi-Model Navigation**: Previous responses from Gemini, Grok, and other AI models remain preserved and accessible through `< X of Y >` model navigation after regenerating.
-- **Retry & Switch-Provider History Preservation**: Retry and switch-provider recovery actions append a fresh alternative when previously successful alternatives exist instead of replacing the existing assistant message.
-- **Restore Prompt History Preservation**: Restoring a prompt after a failed attempt removes or bypasses only the failed attempt and restores access to the most recent valid alternative when valid response history exists.
-- **Active Stream Snapshot Protection**: Firestore snapshot synchronization (`subscribeToChatMessages`) protects in-progress streaming assistant messages and their alternatives from being overwritten or reverted by stale snapshots during active requests.
+### v5.2.0 — Non-Destructive Response Regeneration and History Preservation
+- **Non-Destructive Regeneration & Recovery**: Normal regeneration, retries, and switch-provider actions append new alternatives rather than overwriting existing valid responses from Gemini, Grok, or other providers, preserving `< X of Y >` navigation and prompt-restore history while protecting active streams from stale Firestore snapshots.
 
-### V 0.4.1 — Daily Attachment Upload Quota & Midnight PKT Reset
-- **5 Uploads per PKT Calendar Day**: Enforced a strict daily limit of **5 attachment uploads per authenticated student account** across both standard multipart uploads (`POST /api/upload`) and signed direct cloud uploads (`POST /api/upload/direct/signed-url` and `/complete`).
-- **Automatic Midnight PKT Reset (`Asia/Karachi`, UTC+05:00)**: Configured daily quota counters and next-reset timestamps (`X-RateLimit-Reset-UTC` ending in `T19:00:00.000Z`) to reset automatically at **12:00 AM Pakistan Standard Time (`Asia/Karachi`)** on both backend (`server/uploadQuotaService.ts`) and frontend (`src/services/uploadQuotaClientService.js`), remaining invariant across server and browser local timezones.
-- **Atomic Firestore Quota Transactions**: Implemented atomic reservation, commit, and rollback/release transactions in the server-only `uploadQuotas` collection with 120-second reservation TTL reclamation and safe cross-midnight accounting (reservations created before midnight PKT finalize on their originating PKT day while returning updated current-day quota status).
-- **Live Composer Quota Indicator & Header Synchronization**: Added an accessible composer quota indicator synchronized strictly with authoritative backend `X-RateLimit-Remaining`, `X-RateLimit-Limit`, and `X-RateLimit-Reset-UTC` headers plus `GET /api/upload/quota`, including rollover detection and stale previous-day response protection.
-- **Authentication & Bypass Protection**: Enforced mandatory Firebase authentication on upload and quota status endpoints (HTTP `401 UNAUTHENTICATED` for guests), blocked local Browser AI extraction fallback on HTTP `429 QUOTA_EXCEEDED`, and prevented direct base64 image quota bypasses.
+### v5.1.0 — Daily Attachment Upload Quota and Midnight PKT Reset
+- **5 Uploads per PKT Calendar Day**: Enforced a 5-upload/day limit per authenticated account across `/api/upload` and `/api/upload/direct/*`, resetting at midnight Pakistan Standard Time (`Asia/Karachi`, `T19:00:00.000Z`) via atomic Firestore `uploadQuotas` transactions and synced live in the composer via `X-RateLimit-*` headers and `GET /api/upload/quota`.
 
-### V 0.4.0 — Supabase Private Cloud Storage & Attachment Lifecycle
-- **Supabase Cloud Attachment Storage**: Introduced Supabase Storage integration (`server/supabaseStorageService.ts`, `server/supabaseClient.ts`) storing authenticated users' attachments privately under `{userId}/{conversationId}/{attachmentId}.{ext}` with automatic bucket provisioning and per-user path ownership validation.
-- **Durable Direct Cloud Uploads**: Added signed upload URL initiation, completion verification, and cancellation routes (`POST /api/upload/direct/signed-url`, `/complete`, `/cancel`) backed by durable Firestore tickets (`uploadTickets`) so files `>= 4 MB` upload directly to Supabase Storage without hitting serverless payload limits.
-- **Orphan Prevention & Automated Cleanup**: Enforced `conversationId` validation on uploads, added binary magic-number verification on direct upload completion, preserved 2-hour TTL expiry cleanup (`supabaseAttachmentCleanupService.ts`), and integrated durable attachment cleanup queues for conversation deletion and edit/resend branch truncation.
+### v5.0.0 — Supabase Private Cloud Storage and Attachment Lifecycle
+- **Private Cloud Attachments & Direct Uploads**: Integrated per-user Supabase Storage (`{userId}/{conversationId}/{attachmentId}.{ext}`), signed direct-upload URLs for files `>= 4 MB` backed by Firestore `uploadTickets`, magic-number verification, and automated 2-hour TTL plus conversation/branch deletion cleanup.
 
-### V 0.3.2 — Security, Performance & Architecture Improvements
-- **Resolved Nine Core Audit Findings (ORVIX-001 through ORVIX-009)**: Delivered remediation for those nine v0.3.2 application security, performance, storage, and architectural findings (separate from ongoing dependency audits tracked under [Dependency Security Audit](#dependency-security-audit)).
-- **Server-Side Credential Isolation (ORVIX-001)**: Prevented accidental client-bundle credential leakage by enforcing server-only API key resolution and rejecting `VITE_`-prefixed backend secrets.
-- **Serverless In-Memory Upload Processing (ORVIX-002)**: Replaced disk-backed file storage with in-memory Multer processing and clear documentation of ephemeral storage boundaries.
-- **Strict CORS Domain Whitelisting (ORVIX-003)**: Hardened cross-origin request policies, eliminating wildcard access on credentialed and sensitive API routes.
-- **Self-Healing IndexedDB Quota Management (ORVIX-004)**: Implemented automated LRU cache eviction and in-memory fallback for browser attachment storage exhaustion.
-- **Server Architecture Modularization (ORVIX-005)**: Decoupled monolithic `server.ts` into structured modules (`serverConfig`, `geminiStreamHandler`, `uploadSubsystem`, `transcriptionSubsystem`, `chatSubsystem`).
-- **High-Efficiency Response Timer (ORVIX-006)**: Reduced streaming timer overhead by >90% through second-boundary synchronization and memoization.
-- **Clean Script Modernization (ORVIX-007)**: Removed obsolete `server.js` references from `package.json` clean script.
-- **WebGPU SwiftShader FP32 Fallback (ORVIX-008)**: Added automatic capability detection ensuring graceful fallback to FP32 models on software rasterizers lacking `shader-f16`.
-- **Centralized Gemini Configuration & Failover (ORVIX-009)**: Centralized model identifiers into `appConfig.js` and implemented intelligent secondary model fallback for upstream outages.
+### v4.0.0 — Security, Performance and Architecture Improvements
+- **Audit Remediation (ORVIX-001 through ORVIX-009)**: Enforced server-only credential isolation, serverless in-memory Multer staging, strict CORS origin allowlisting, self-healing IndexedDB LRU quota recovery, modular `server/` subsystems, second-boundary `LiveResponseTimer` optimization, cleaned `package.json` `clean` script, WebGPU SwiftShader FP32 fallback, and centralized Gemini model config with automated failover (separate from ongoing dependency audits tracked under [Dependency Security Audit](#dependency-security-audit)).
 
-### V 0.3.1 — iOS 15 Compatibility & Production Reliability Release
-- **Fixed iPhone 7 / iOS 15.8.8 Safari Blank-Screen Issue**: Resolved the critical startup failure where Orvix consistently displayed a completely blank screen in Safari and the installed PWA on iPhone 7 running iOS 15.8.8.
-- **Removed Unsupported Regular-Expression Lookbehind Assertions**: Completely removed JavaScript regular-expression lookbehind assertions (`(?<=...)` and `(?<!...)`) from application bundles. WebKit versions prior to Safari 16.4 (such as WebKit 605.1.15 in iOS 15.8.8) do not support RegExp lookbehinds and threw a fatal compile-time `SyntaxError` during initial module evaluation.
-- **Safari-Compatible Speech-Text Cleaning & Dictation Formatting**: Updated speech-text cleaning in `src/utils/speechTextCleaner.js` and voice-dictation formatting in `src/hooks/useVoiceDictation.js` to use standard capturing groups and backward-compatible replacer functions, preserving "palindrome" phonetic correction, `Math.random` API protection, abbreviation spacing (`i.e.`, `e.g.`), and decimal number formats without lookbehinds.
-- **Safari-Compatible Markdown/GFM Autolinking Dependency**: Updated the Markdown/GFM autolinking dependency (`mdast-util-gfm-autolink-literal`) to a Safari-compatible version (`2.0.0`) via package overrides, combined with build-time regex sanitization, eliminating the un-transpiled positive lookbehind in `remark-gfm`.
-- **Safari 15 Production Build Targeting**: Added Safari 15 compatibility targeting (`target: ['es2020', 'safari15']`) to the production Vite build configuration in `vite.config.ts`.
-- **iOS 15 Compatibility Verification**: Validated speech cleaning, punctuation formatting, ReactMarkdown GFM email autolinking, and zero lookbehinds in production chunks.
-- **Zero Lookbehinds Verified**: Verified that the production JavaScript bundle contains zero `(?<=...)` and `(?<!...)` lookbehind assertions across all emitted JavaScript chunks.
-- **Preserved Markdown/GFM Autolinking Functionality**: Verified that Markdown/GFM email (`mailto:`) and URL autolinking functionality remains fully operational.
-- **Preserved Voice Dictation Functionality**: Verified that live voice dictation and Whisper audio refinement remain fully operational.
-- **Improved Production Vendor Chunk Separation**: Refined production vendor chunk separation so Markdown dependencies do not unnecessarily block initial application startup, isolating React runtime into `vendor-react`.
-- **Existing Regression Suites Passing**: Existing regression suites for voice dictation, message alignment/ordering, multi-tab synchronization, IndexedDB quota handling, and offline reliability remained 100% passing.
-- **Successfully Verified iPhone 7 Safari Launch**: Successfully verified Orvix launches in Safari on an iPhone 7 running iOS 15.8.8.
-- **Successfully Verified iPhone 7 PWA Launch**: Successfully verified the Orvix Home Screen PWA launches on an iPhone 7 running iOS 15.8.8.
+### v3.3.0 — iOS 15 Compatibility and Production Reliability Release
+- **iPhone 7 / iOS 15.8.8 Reliability**: Eliminated unsupported regex lookbehind assertions across speech/dictation utilities and `remark-gfm` (`mdast-util-gfm-autolink-literal@2.0.0` + `safariLookbehindPlugin`), set `target: ['es2020', 'safari15']`, isolated `vendor-react` chunks, and verified Safari and Home Screen PWA launches on iOS 15.8.8.
 
-### V 0.3.0 — Orvix Share Chat, Public Previews & Independent Fork Imports
-- **Orvix Share Chat Complete Lifecycle**: Implemented complete 8-stage conversation sharing architecture allowing authenticated users to create immutable snapshots of their conversations accessible via `/share/{shareId}`.
-- **Public Read-Only Viewer**: Direct URL access to shared conversations without requiring authentication. Visitors can read, copy formatted code/text, and listen via Text-to-Speech (Read Aloud) while message input is locked.
-- **Authenticated Temporary Preview**: Seamless transition for authenticated recipients into a temporary preview mode where composer is available without polluting account history before interaction.
-- **Interaction-Gated Independent Import**: Atomic conversation forking into recipient's private history triggered only upon recipient's first message turn receiving a successfully completed AI response (`status: 'completed'`).
-- **Zero Ghost Chats on Abort/Failure**: Generation errors or cancellations during the first turn cleanly leave no orphan chat documents or partial history items.
-- **Provenance & Resharing**: Imported conversations display an Imported indicator badge, maintain deep-link provenance to the source snapshot, and support standard chat operations including renaming, pinning, client-side export, and resharing under a new distinct snapshot ID.
-- **Data Sanitization & Strict Security Boundaries**: Automated stripping of private credentials, local file paths, and large binary attachments before snapshot generation; strict enforcement of 900 KB UTF-8 payload limit and 500-message ceiling.
-- **Multi-Tab & Offline Resilience**: Integrated cross-tab `BroadcastChannel` synchronization and offline write queue protection for imported conversations.
+### v3.2.0 — Orvix Shared Chat Public Previews and Independent Fork Imports
+- **8-Stage Share Chat & Forking**: Added immutable `/share/{shareId}` snapshots (`sharedChats`), public read-only viewing with TTS/copy, authenticated temporary previews, interaction-gated independent forks upon first completed turn, `BroadcastChannel` multi-tab sync, and 900 KB / 500-message sanitization bounds.
 
-### V 0.2.9 — AI Model Selection Guidance and Provider Ordering
-- **AI Model Selection Guidance UX**: Integrated concise, static informational guidance explaining characteristics and trade-offs of all AI options across Cloud AI and Browser AI. Dynamic model-specific resolution updates immediately upon switching selections in `ModelSelector` and `BrowserAIStatusBar` with accessible `aria-describedby` announcements and zero network/generation overhead.
-- **AI Provider and Model Selector Ordering**: Reordered provider and model selector options strictly in sequence from least resource-intensive to most reliable:
-  - *Cloud AI Providers*: Google Gemini, Groq, OpenRouter, Cloudflare Workers AI.
-  - *Browser AI Models*: SmallLM2 135M, SmallLM2 360M, Qwen3 0.6B, Qwen2.5 1.5B (Standard Default).
+### v3.1.0 — AI Model Selection Guidance and Provider Ordering
+- **Guidance UX & Selector Ordering**: Added static `aria-describedby` selection guidance in `ModelSelector` and `BrowserAIStatusBar`, and ordered cloud providers (Gemini, Groq, OpenRouter, Cloudflare) and Browser AI models (SmallLM2 135M to Qwen2.5 1.5B) from lightest to most capable.
 
-### V 0.2.8 — Refined Responses and Profiling for SmallLM2 and Qwen3
-- **Refined Responses & Profiling for SmallLM2 135M, SmallLM2 360M, and Qwen3 0.6B**: Tuned response profiles, positive instruction formatting, calibrated temperatures, repetition penalties, stop tokens, and streaming sanitizers to eliminate token loops, thinking block leakage, and unprompted refusals in small parameter models while strictly preserving baseline defaults for Qwen2.5 1.5B and cloud providers.
+### v3.0.0 — Refined Responses and Profiling for SmallLM2 and Qwen3
+- **Refined Responses & Profiling**: Tuned response profiles, positive instruction formatting, calibrated temperatures, repetition penalties, stop tokens, and streaming sanitizers to eliminate token loops, thinking-block leakage, and unprompted refusals in SmallLM2 135M, SmallLM2 360M, and Qwen3 0.6B while preserving defaults for Qwen2.5 1.5B and cloud providers.
 
-### V 0.2.7 — Qwen3 0.6B Browser AI Lightweight Model
-- **Qwen3 0.6B Browser AI Lightweight Model**: Added `Qwen3-0.6B-q4f16_1-MLC` (~335 MB download, 4,096-token context window) and its FP32 fallback `Qwen3-0.6B-q4f32_1-MLC` as a selectable offline Browser AI model with WebGPU shader compilation and cache isolation.
+### v2.7.0 — Qwen3 0.6B Browser AI Lightweight Model
+- **Qwen3 0.6B**: Added `Qwen3-0.6B-q4f16_1-MLC` (~335 MB download, 4,096-token context window) and its FP32 fallback `Qwen3-0.6B-q4f32_1-MLC` as a selectable offline Browser AI model with WebGPU shader compilation and cache isolation.
 
-### V 0.2.6 — SmallLM2 360M Browser AI Compact Model
-- **SmallLM2 360M Browser AI Compact Model**: Added `SmolLM2-360M-Instruct-q4f16_1-MLC` (~210 MB download, ~380 MB VRAM) and its FP32 fallback `SmolLM2-360M-Instruct-q4f32_1-MLC` as a user-selectable model under the Browser AI provider.
+### v2.6.0 — SmallLM2 360M Browser AI Compact Model
+- **SmallLM2 360M**: Added `SmolLM2-360M-Instruct-q4f16_1-MLC` (~210 MB download, ~380 MB VRAM) and its FP32 fallback `SmolLM2-360M-Instruct-q4f32_1-MLC` under the Browser AI provider.
 
-### V 0.2.5 — SmallLM2 135M Browser AI Ultra-Lightweight Model
-- **SmallLM2 135M Browser AI Ultra-Lightweight Model**: Added the ultra-lightweight `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 fallback `SmolLM2-135M-Instruct-q0f32-MLC` under the Browser AI provider.
+### v2.5.0 — SmallLM2 135M Browser AI Ultra-Lightweight Model
+- **SmallLM2 135M**: Added `SmolLM2-135M-Instruct-q0f16-MLC` (~135M parameters, ~270 MB download, ~360 MB VRAM) and its FP32 fallback `SmolLM2-135M-Instruct-q0f32-MLC` under the Browser AI provider.
 
-### V 0.2.4 — Legacy Fallback Hardening
+### v2.4.0 — Legacy Fallback Hardening
 - **Legacy Fallback Hardening**: Hardened provider fallback normalization and legacy session handling to ensure smooth failover across supported providers.
 
-### V 0.2.2 — Gemini Reliability and Fallback Hardening
-- **Gemini Reliability & Fallback Hardening**: Configured `gemini-2.5-flash` as primary default and `gemini-2.5-flash-lite` as automatic fallback candidate for rate limits and timeouts. Added 50ms SSE header priming (`: prime`) and 8s keepalive heartbeats.
+### v2.2.0 — Gemini Reliability and Fallback Handling
+- **Gemini Reliability & Fallback**: Configured `gemini-2.5-flash` as primary default and `gemini-2.5-flash-lite` as automatic fallback for rate limits and timeouts, plus 50ms SSE priming (`: prime`) and 8s keepalive heartbeats.
 
-### V 0.2.1 — Empty New Chat Hero and Responsive CSS Refinements
-- **Empty New Chat Hero & Responsive CSS Refinement**: Refined empty-state layout with fluid clamp sizing across screen widths from 320px mobile to 2560px widescreen.
+### v2.1.0 — Empty New Chat Hero and Responsive CSS Refinement
+- **Empty New Chat Hero**: Refined the empty-state layout with fluid clamp sizing across screen widths from 320px mobile to 2560px widescreen.
 
-### V 0.2.0 — Mobile UI/UX and Viewport Refinement
-- **Mobile UI/UX & Viewport Refinement**: Dynamic viewport height management (`--app-viewport-height`), virtual keyboard adaptivity, compact header bar, and full-screen document preview modal.
+### v2.0.0 — Mobile UI/UX and Viewport Refinement
+- **Mobile UI/UX & Viewport**: Added dynamic viewport height management (`--app-viewport-height`), virtual keyboard adaptivity, a compact header bar, and a full-screen document preview modal.
 
-### V 0.1.0 — Desktop UI/UX, Accessibility and Multi-Provider Core
-- **Desktop UI/UX, Accessibility & Performance**: Progressive desktop scaling, memoized message rendering, accessible keyboard navigation, and unified multi-provider streaming core.
+### v1.0.0 — Desktop UI/UX Accessibility and Multi-Provider Core
+- **Desktop UI/UX & Core**: Introduced progressive desktop scaling, memoized message rendering, accessible keyboard navigation, and a unified multi-provider streaming core.
 
-### V 0.9.4 — Browser AI, Backend Offline PWA, Pre-Caching and Document Extraction
-- Embedded `@mlc-ai/web-llm` running on-device models directly on visitor GPUs via WebGPU and dedicated worker.
-- Workbox service worker precaching UI assets, WASM bundles, and offline document extractors.
-- Client-side document parsing for `.docx`, `.pdf`, `.pptx`, `.csv`, `.tsv`, `.json`, and `.txt`.
+### v0.9.4 — Browser AI Backend, Offline PWA Pre-Caching and Document Extraction
+- Embedded `@mlc-ai/web-llm` running on-device models on visitor GPUs via WebGPU and a dedicated worker.
+- Added Workbox service worker precaching for UI assets, WASM bundles, and offline document extractors.
+- Added client-side parsing for `.docx`, `.pdf`, `.pptx`, `.csv`, `.tsv`, `.json`, and `.txt`.
 
-### V 0.9.3 — Mobile PWA Live Dictation and Interim Transcript Deduplication
-- Live speech recognition displaying words in composer during speech.
-- Interim snapshot replacement eliminating duplicate phrase concatenation.
-- Concurrent live recognition followed by server Whisper Large v3 Turbo refinement.
+### v0.9.3 — Mobile PWA Live Dictation Interim Transcript Deduplication
+- Added live speech recognition rendering in the composer during speech.
+- Replaced naive concatenation with interim snapshot replacement to eliminate duplicate phrase stuttering.
+- Added server-side Whisper Large v3 Turbo refinement after live recognition completes.
 
-### V 0.9.2 — Table Copying, Mobile Swipe Navigation and Dictation Hardening
-- Dual-payload clipboard formatting: HTML tables and structured plain-text records (`• Header: Value`).
-- Mobile swipe-right gesture on screens `<= 1024px` to open chat history.
-- Audio transcription pipeline with Groq Whisper Large v3 Turbo and Gemini fallback.
+### v0.9.2 — Table Copying, Mobile Swipe Navigation and Dictation Hardening
+- Added dual-format clipboard output (styled HTML tables and `• Header: Value` plain-text records).
+- Added mobile swipe-right sidebar navigation on viewports `<= 1024px`.
+- Hardened audio transcription with Groq Whisper Large v3 Turbo and Gemini fallback.
 
-### V 0.9.1 — High-Accuracy Voice Dictation Pipeline
-- Server-side Whisper transcription at `/api/transcribe`.
-- Hybrid desktop dictation and Direct-Audio mode with 9 supported locales.
-- Context-aware technical polishing for programming terms.
+### v0.9.1 — High-Accuracy Voice Dictation Pipeline
+- Added server-side Whisper transcription at `/api/transcribe`.
+- Implemented hybrid desktop dictation and Direct-Audio mode across 9 supported locales with technical term polishing.
 
-### V 0.9.0 — Four Chatbot Modes
-- Purpose-built modes for General Assistant, Learning, Writing, and Coding with custom directives and CSS themes.
+### v0.9.0 — Four Chatbot Modes
+- Added General Assistant, Learning, Writing, and Coding modes with custom directives and CSS themes.
 
-### V 0.8.0 — Multi-Model Response Alternatives
-- Regenerate responses with alternative providers and navigate using `< X of Y >` pager.
+### v0.8.0 — Multi-Model Response Alternative Version
+- Added alternative response regeneration across providers with `< X of Y >` navigation.
 
-### V 0.7.1 — Automatic Chat-Input Focus and Code Alignment
-- Global typing capture focusing the composer without dropped keystrokes.
-- Locked 22px line height eliminating line-number drift.
+### v0.7.1 — Automatic Chat Input Focus and Code Alignment
+- Added global keystroke focus capture for the composer.
+- Locked code block line height to 22px to eliminate line-number gutter drift.
 
-### V 0.7.0 — Live Response-Time Measurement
-- Real-time duration timer updating every 100ms during streaming, saved as an immutable badge.
+### v0.7.0 — Live Response Time Management
+- Added a real-time duration timer during streaming, saved as an immutable completion badge.
 
-### V 0.6.0 — Controlled Large-Response Continuation
-- Multi-part output segmentation with interactive composer continuation chip.
+### v0.6.0 — Controlled Large Response Continuation
+- Added multi-part output segmentation with an interactive composer continuation chip.
 
-### V 0.5.0 — Serverless Upload Architecture
-- In-memory staging via `multer.memoryStorage()` eliminating serverless read-only filesystem errors.
+### v0.5.0 — Serverless Upload Architecture
+- Switched uploads to in-memory staging via `multer.memoryStorage()` to eliminate serverless `EROFS` errors.
 
-### V 0.4.0 — Image Attachments and OCR
-- Server-side Tesseract OCR with magic number verification and dual-tab preview modal.
-
----
-
-## Future Roadmap
-
-- **Image Generation Integration**: Generative visual creation tools alongside existing conversational modes.
-- **Multimodal Vision Reasoning**: Direct spatial/visual image understanding alongside existing OCR text extraction.
-- **Expanded On-Device WebLLM Model Tiers**: Additional quantized local models as WebGPU browser memory limits and MLC runtimes evolve.
- 
+### v0.4.0 — Image Attachment and OCR
+- Added server-side Tesseract OCR with magic-number validation and a dual-tab preview modal.
