@@ -37,6 +37,32 @@ export function shouldLog(level: LogLevel): boolean {
   return LOG_LEVEL_HIERARCHY[level] >= LOG_LEVEL_HIERARCHY[current];
 }
 
+/**
+ * Returns true when verbose test-time diagnostic console output should be suppressed
+ * via `ORVIX_QUIET_TEST_LOGS=true` during automated tests.
+ * Never suppresses diagnostics in production runtimes outside an automated test runner.
+ */
+export function isQuietTestLogsEnabled(): boolean {
+  if (typeof process === 'undefined' || !process.env) return false;
+  const quietFlag = String(process.env.ORVIX_QUIET_TEST_LOGS || '').trim().toLowerCase() === 'true';
+  if (!quietFlag) return false;
+
+  const isTestContext =
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.TESTING === '1' ||
+    process.env.TESTING === 'true' ||
+    Boolean(process.env.VITEST) ||
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.PLAYWRIGHT_TEST);
+
+  if (process.env.NODE_ENV === 'production' && !isTestContext) {
+    return false;
+  }
+
+  return true;
+}
+
 // Sanitizes error messages to ensure no API keys, tokens, PEM private keys, or headers are ever logged or sent to users
 export function sanitizeErrorLog(msg: string): string {
   if (!msg) return '';

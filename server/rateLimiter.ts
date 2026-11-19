@@ -10,7 +10,7 @@ import {
   isRedisConfigured,
   type RedisLikeClient
 } from './redisClient.ts';
-import { sanitizeErrorLog } from './diagnosticLogger.ts';
+import { isQuietTestLogsEnabled, sanitizeErrorLog } from './diagnosticLogger.ts';
 import {
   extractClientIp,
   resolveTrustedProxyPolicy,
@@ -114,6 +114,7 @@ const FALLBACK_LOG_THROTTLE_MS = 30_000;
 let lastFallbackLogMs = 0;
 
 function logFallbackWarningThrottled(message: string): void {
+  if (isQuietTestLogsEnabled()) return;
   const now = Date.now();
   if (now - lastFallbackLogMs >= FALLBACK_LOG_THROTTLE_MS) {
     lastFallbackLogMs = now;

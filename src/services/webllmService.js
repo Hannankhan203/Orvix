@@ -171,6 +171,33 @@ export function sanitizeUrlForDiagnostics(rawUrl) {
 }
 
 /**
+ * Returns true when verbose test-time diagnostic console output should be suppressed
+ * via `ORVIX_QUIET_TEST_LOGS=true` during automated tests.
+ * Never suppresses diagnostics in production runtimes outside a test runner.
+ * @returns {boolean}
+ */
+function isQuietTestLogsEnabled() {
+  if (typeof process === 'undefined' || !process?.env) return false;
+  const quietFlag = String(process.env.ORVIX_QUIET_TEST_LOGS || '').trim().toLowerCase() === 'true';
+  if (!quietFlag) return false;
+
+  const isTestContext =
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.TESTING === '1' ||
+    process.env.TESTING === 'true' ||
+    Boolean(process.env.VITEST) ||
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.PLAYWRIGHT_TEST);
+
+  if (process.env.NODE_ENV === 'production' && !isTestContext) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Records and logs a development-safe diagnostic event with stage name, app version,
  * and elapsed time without exposing signed URLs or secrets.
  * @param {string} stage
@@ -223,10 +250,12 @@ export function logWebLLMStage(stage, details = {}, options = {}) {
 
   if (level === 'error') {
     console.error(line);
-  } else if (level === 'warn') {
-    console.warn(line);
-  } else {
-    console.log(line);
+  } else if (!isQuietTestLogsEnabled()) {
+    if (level === 'warn') {
+      console.warn(line);
+    } else {
+      console.log(line);
+    }
   }
 }
 
@@ -4497,7 +4526,9 @@ export function stopWebLLMGeneration() {
     try {
       engineInstance.interruptGenerate();
     } catch (/** @type {any} */ err) {
-      console.warn('[Orvix WebLLM] interruptGenerate warning:', err?.message || err);
+      if (!isQuietTestLogsEnabled()) {
+        console.warn('[Orvix WebLLM] interruptGenerate warning:', err?.message || err);
+      }
     }
   }
 }

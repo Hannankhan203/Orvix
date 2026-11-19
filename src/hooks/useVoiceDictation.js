@@ -7,6 +7,7 @@ import {
   finalizeDiagnosticSession,
   formatDiagnosticByteSize,
   isDictationDiagnosticsEnabled,
+  isQuietTestLogsEnabled,
   setDictationDiagnosticsEnabled,
   getLastDictationDiagnostic
 } from '../utils/dictationDiagnostics.js';
@@ -16,6 +17,20 @@ export {
   setDictationDiagnosticsEnabled,
   getLastDictationDiagnostic
 };
+
+/**
+ * Emits a dictation diagnostic log/warning unless quiet test logs are enabled.
+ * @param {'log' | 'warn'} level
+ * @param {...any} args
+ */
+function logDictationDiagnostic(level, ...args) {
+  if (isQuietTestLogsEnabled()) return;
+  if (level === 'warn') {
+    console.warn(...args);
+  } else {
+    console.log(...args);
+  }
+}
 
 /**
  * Supported Speech Recognition Languages with BCP 47 language tags.
@@ -1119,7 +1134,7 @@ export function useVoiceDictation({
         try {
           recorder = new MediaRecorder(stream, { mimeType });
         } catch (mimeErr) {
-          console.warn('Preferred MIME type rejected by MediaRecorder, falling back to default:', mimeErr);
+          logDictationDiagnostic('warn', 'Preferred MIME type rejected by MediaRecorder, falling back to default:', mimeErr);
           recorder = new MediaRecorder(stream);
         }
       } else {
@@ -1136,7 +1151,7 @@ export function useVoiceDictation({
 
         // Memory safeguard: prevent unbounded memory growth during long dictation sessions
         if (recordedBytesRef.current + event.data.size > MAX_RECORDED_BYTES) {
-          console.warn('Orvix dictation audio buffer reached maximum memory limit (25MB). Capping capture.');
+          logDictationDiagnostic('warn', 'Orvix dictation audio buffer reached maximum memory limit (25MB). Capping capture.');
           return;
         }
 
@@ -1145,13 +1160,13 @@ export function useVoiceDictation({
       };
 
       recorder.onerror = (err) => {
-        console.warn('MediaRecorder error during dictation:', err);
+        logDictationDiagnostic('warn', 'MediaRecorder error during dictation:', err);
       };
 
       recorder.start(CHUNK_TIMESLICE_MS);
       mediaRecorderRef.current = recorder;
     } catch (recErr) {
-      console.warn('MediaRecorder initialization failed:', recErr);
+      logDictationDiagnostic('warn', 'MediaRecorder initialization failed:', recErr);
     }
   }, []);
 
@@ -1323,7 +1338,7 @@ export function useVoiceDictation({
               updateRecordingState('listening');
             })
             .catch((streamErr) => {
-              console.warn('[Dictation] Microphone stream acquisition failed:', streamErr);
+              logDictationDiagnostic('warn', '[Dictation] Microphone stream acquisition failed:', streamErr);
               hasFatalErrorRef.current = true;
               stopAudioResources();
               setDictationError('Microphone access was denied. Please allow microphone permissions.');
@@ -1367,7 +1382,7 @@ export function useVoiceDictation({
             }
           })
           .catch((streamErr) => {
-            console.warn('[Dictation] Microphone stream acquisition notice:', streamErr);
+            logDictationDiagnostic('warn', '[Dictation] Microphone stream acquisition notice:', streamErr);
             if (!recognitionRef.current) {
               isStartingRef.current = false;
               hasFatalErrorRef.current = true;
@@ -1393,7 +1408,8 @@ export function useVoiceDictation({
         recognition.lang = selectedLanguageRef.current;
 
         if (isDictationDiagnosticsEnabled()) {
-          console.log(
+          logDictationDiagnostic(
+            'log',
             `[Dictation] Initializing recognition (continuous: true, interimResults: true, lang: ${selectedLanguageRef.current})`
           );
         }
@@ -1403,7 +1419,7 @@ export function useVoiceDictation({
         recognition.onstart = () => {
           if (instanceCounterRef.current !== currentInstanceId) return;
           if (isDictationDiagnosticsEnabled()) {
-            console.log('[Dictation] Speech recognition service active');
+            logDictationDiagnostic('log', '[Dictation] Speech recognition service active');
           }
           isStartingRef.current = false;
           updateRecordingState('listening');
@@ -1530,7 +1546,8 @@ export function useVoiceDictation({
           if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
             if (!isNewSession && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
               if (isDictationDiagnosticsEnabled()) {
-                console.warn(
+                logDictationDiagnostic(
+                  'warn',
                   '[Dictation] SpeechRecognition auto-restart not allowed, maintaining active MediaRecorder session.'
                 );
               }
@@ -1545,7 +1562,8 @@ export function useVoiceDictation({
           } else if (errorType === 'audio-capture') {
             if (!isNewSession && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
               if (isDictationDiagnosticsEnabled()) {
-                console.warn(
+                logDictationDiagnostic(
+                  'warn',
                   '[Dictation] SpeechRecognition auto-restart audio-capture error, maintaining active MediaRecorder session.'
                 );
               }
@@ -1565,7 +1583,7 @@ export function useVoiceDictation({
             consecutiveErrorsRef.current += 1;
             if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
               if (isDictationDiagnosticsEnabled()) {
-                console.warn('[Dictation] Speech recognition network error; MediaRecorder active.');
+                logDictationDiagnostic('warn', '[Dictation] Speech recognition network error; MediaRecorder active.');
               }
               return;
             }
@@ -1589,7 +1607,8 @@ export function useVoiceDictation({
             if (consecutiveErrorsRef.current > 3) {
               if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
                 if (isDictationDiagnosticsEnabled()) {
-                  console.warn(
+                  logDictationDiagnostic(
+                    'warn',
                     '[Dictation] SpeechRecognition error threshold reached, maintaining active MediaRecorder session.'
                   );
                 }
@@ -1643,7 +1662,7 @@ export function useVoiceDictation({
             if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
               hasFatalErrorRef.current = false;
               if (isDictationDiagnosticsEnabled()) {
-                console.warn('[Dictation] SpeechRecognition fatal error flagged, but MediaRecorder is actively recording.');
+                logDictationDiagnostic('warn', '[Dictation] SpeechRecognition fatal error flagged, but MediaRecorder is actively recording.');
               }
               return;
             }
@@ -1670,7 +1689,7 @@ export function useVoiceDictation({
             if (isIOS) {
               if (isMediaRecorderHealthy) {
                 if (isDictationDiagnosticsEnabled()) {
-                  console.warn('[Dictation] SpeechRecognition ended on iOS; MediaRecorder continues recording.');
+                  logDictationDiagnostic('warn', '[Dictation] SpeechRecognition ended on iOS; MediaRecorder continues recording.');
                 }
                 return;
               }
@@ -1690,7 +1709,8 @@ export function useVoiceDictation({
               consecutiveSilenceRestartsRef.current = 0;
               if (isMediaRecorderHealthy) {
                 if (isDictationDiagnosticsEnabled()) {
-                  console.warn(
+                  logDictationDiagnostic(
+                    'warn',
                     '[Dictation] SpeechRecognition max silence restarts reached; MediaRecorder continues recording.'
                   );
                 }
@@ -1708,11 +1728,11 @@ export function useVoiceDictation({
                 } catch (restartErr) {
                   if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
                     if (isDictationDiagnosticsEnabled()) {
-                      console.warn('[Dictation] SpeechRecognition restart invocation threw:', restartErr);
+                      logDictationDiagnostic('warn', '[Dictation] SpeechRecognition restart invocation threw:', restartErr);
                     }
                     return;
                   }
-                  console.warn('[Dictation] SpeechRecognition restart invocation threw:', restartErr);
+                  logDictationDiagnostic('warn', '[Dictation] SpeechRecognition restart invocation threw:', restartErr);
                   pauseListening();
                 }
               }
@@ -1728,7 +1748,7 @@ export function useVoiceDictation({
           ) {
             if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
               if (isDictationDiagnosticsEnabled()) {
-                console.warn('[Dictation] SpeechRecognition onend reached fallback, but MediaRecorder is recording.');
+                logDictationDiagnostic('warn', '[Dictation] SpeechRecognition onend reached fallback, but MediaRecorder is recording.');
               }
               return;
             }
@@ -1745,27 +1765,29 @@ export function useVoiceDictation({
           // Auto-restart rejected by browser gesture restriction (expected on iOS Safari after silence)
           if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
             if (isDictationDiagnosticsEnabled()) {
-              console.warn('Auto-restart rejected by browser gesture restriction:', initErr);
-              console.warn(
+              logDictationDiagnostic('warn', 'Auto-restart rejected by browser gesture restriction:', initErr);
+              logDictationDiagnostic(
+                'warn',
                 '[Dictation] SpeechRecognition auto-restart failed but MediaRecorder is active; maintaining recording session.'
               );
             }
             return;
           }
-          console.warn('Auto-restart rejected by browser gesture restriction:', initErr);
+          logDictationDiagnostic('warn', 'Auto-restart rejected by browser gesture restriction:', initErr);
           pauseListening();
           return;
         }
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           if (isDictationDiagnosticsEnabled()) {
-            console.warn('SpeechRecognition initialization error:', initErr);
-            console.warn(
+            logDictationDiagnostic('warn', 'SpeechRecognition initialization error:', initErr);
+            logDictationDiagnostic(
+              'warn',
               '[Dictation] SpeechRecognition init failed but MediaRecorder is active; maintaining recording session.'
             );
           }
           return;
         }
-        console.warn('SpeechRecognition initialization error:', initErr);
+        logDictationDiagnostic('warn', 'SpeechRecognition initialization error:', initErr);
         hasFatalErrorRef.current = true;
         stopAudioResources();
         setDictationError('Unable to activate microphone. Please verify device permissions.');
@@ -1946,7 +1968,7 @@ export function useVoiceDictation({
               }
             },
             onError: (/** @type {any} */ wsErr) => {
-              console.warn('[Dictation] WebSocket streaming error:', wsErr);
+              logDictationDiagnostic('warn', '[Dictation] WebSocket streaming error:', wsErr);
               if (wsErr?.code === 'INVALID_LANGUAGE' || wsErr?.code === 'INVALID_CONFIG') {
                 pendingLanguageRef.current = null;
                 const authoritativeLang =
@@ -2017,7 +2039,7 @@ export function useVoiceDictation({
           }
           return;
         } catch (wsStartErr) {
-          console.warn('[Dictation] WebSocket streaming setup failed, falling back to Web Speech / HTTP:', wsStartErr);
+          logDictationDiagnostic('warn', '[Dictation] WebSocket streaming setup failed, falling back to Web Speech / HTTP:', wsStartErr);
           if (voiceStreamClientRef.current) {
             voiceStreamClientRef.current.disconnect();
             voiceStreamClientRef.current = null;
@@ -2186,7 +2208,7 @@ export function useVoiceDictation({
               mediaRecorderRef.current.resume();
               recorderResumedOrStarted = mediaRecorderRef.current.state === 'recording';
             } catch (resumeErr) {
-              console.warn('[Dictation] MediaRecorder resume failed, re-initializing recorder:', resumeErr);
+              logDictationDiagnostic('warn', '[Dictation] MediaRecorder resume failed, re-initializing recorder:', resumeErr);
               startMediaRecorder(stream);
               recorderResumedOrStarted = mediaRecorderRef.current?.state === 'recording';
             }
@@ -2242,7 +2264,7 @@ export function useVoiceDictation({
           await startRecognitionSession(false);
         } catch (recErr) {
           if (isDictationDiagnosticsEnabled()) {
-            console.warn('[Dictation] SpeechRecognition resume notice:', recErr);
+            logDictationDiagnostic('warn', '[Dictation] SpeechRecognition resume notice:', recErr);
           }
         }
 
@@ -2335,7 +2357,7 @@ export function useVoiceDictation({
 
           return formattedSpeech;
         } catch (wsStopErr) {
-          console.warn('[Dictation] WebSocket stop notice:', wsStopErr);
+          logDictationDiagnostic('warn', '[Dictation] WebSocket stop notice:', wsStopErr);
           stopAudioResources();
           if (voiceStreamClientRef.current) {
             voiceStreamClientRef.current.disconnect();
@@ -2362,7 +2384,7 @@ export function useVoiceDictation({
               if (timeoutId) clearTimeout(timeoutId);
               pendingRecognitionShutdownResolveRef.current = null;
               if (isTimeout) {
-                console.warn('[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
+                logDictationDiagnostic('warn', '[Dictation] Stop lifecycle safety timeout reached waiting for recognition onend');
                 recognitionEndedNormallyRef.current = false;
               }
               resolve(undefined);
@@ -2379,7 +2401,7 @@ export function useVoiceDictation({
           try {
             rec.stop();
           } catch (stopErr) {
-            console.warn('[Dictation] rec.stop() threw:', stopErr);
+            logDictationDiagnostic('warn', '[Dictation] rec.stop() threw:', stopErr);
             finishShutdown(true);
           }
         });
@@ -2564,7 +2586,7 @@ export function useVoiceDictation({
             }
           }
         } catch (/** @type {any} */ fErr) {
-          console.warn('[Dictation] Recorded audio transcription notice:', fErr);
+          logDictationDiagnostic('warn', '[Dictation] Recorded audio transcription notice:', fErr);
           const failureReason = fErr?.message || 'provider_request_failed';
 
           if (diag) {
@@ -2701,7 +2723,7 @@ export function useVoiceDictation({
       }, 750);
       return finalCombined;
     } catch (err) {
-      console.warn('[Dictation] Finalize transcription error:', err);
+      logDictationDiagnostic('warn', '[Dictation] Finalize transcription error:', err);
       if (transcriptionSessionCounterRef.current === currentSessionId) {
         updateRecordingState('idle');
       }
@@ -2895,7 +2917,7 @@ export function useVoiceDictation({
       if (transcriptionSessionCounterRef.current !== currentSessionId) return;
       if (err?.name === 'AbortError') return;
 
-      console.warn('[Transcription] Retry failed:', err);
+      logDictationDiagnostic('warn', '[Transcription] Retry failed:', err);
       const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
       setTranscriptionNotice({
         type: 'fallback',

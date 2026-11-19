@@ -1,23 +1,7 @@
 import EventEmitter from 'events';
 import { Redis, type RedisOptions as IoRedisOptions } from 'ioredis';
 import { isConfiguredCredential, resolveEnvCredential } from './serverConfig.ts';
-import { sanitizeErrorLog } from './diagnosticLogger.ts';
-
-// Shared in-memory store for fallback / mock rate-limit counters
-const store = new Map<string, any>();
-export const redis = {
-  get: async (k: string) => store.get(k) ?? null,
-  set: async (k: string, v: any) => {
-    store.set(k, v);
-    return 'OK';
-  },
-  del: async (k: string) => store.delete(k),
-  incr: async (k: string) => {
-    const n = (Number(store.get(k)) || 0) + 1;
-    store.set(k, n);
-    return n;
-  }
-};
+import { isQuietTestLogsEnabled, sanitizeErrorLog } from './diagnosticLogger.ts';
 
 export interface RedisOptions {
   lazyConnect?: boolean;
@@ -206,9 +190,34 @@ export class InMemoryRedisMock extends EventEmitter implements RedisLikeClient {
     return [count, pttl];
   }
 
+  async get(k: string): Promise<any> {
+    this.expireKeyIfNeeded(k);
+    return this.kvStore.get(k) ?? null;
+  }
+
+  async set(k: string, v: any): Promise<'OK'> {
+    this.expirations.delete(k);
+    this.kvStore.set(k, v);
+    return 'OK';
+  }
+
+  async del(k: string): Promise<boolean> {
+    this.expireKeyIfNeeded(k);
+    const deletedKv = this.kvStore.delete(k);
+    const deletedZset = this.zsets.delete(k);
+    this.expirations.delete(k);
+    return deletedKv || deletedZset;
+  }
+
+  async incr(k: string): Promise<number> {
+    this.expireKeyIfNeeded(k);
+    const n = (Number(this.kvStore.get(k)) || 0) + 1;
+    this.kvStore.set(k, n);
+    return n;
+  }
+
   clearAllForTesting(): void {
     this.kvStore.clear();
-    store.clear();
     this.expirations.clear();
     this.zsets.clear();
   }
@@ -224,6 +233,16 @@ export class InMemoryRedisMock extends EventEmitter implements RedisLikeClient {
     this.emit('end');
   }
 }
+
+// Legacy compatibility helper backed by its own dedicated InMemoryRedisMock instance
+// so KV storage logic is not duplicated and state is never shared with other mock instances.
+const legacyRedisHelperInstance = new InMemoryRedisMock('redis://legacy-helper');
+export const redis = {
+  get: (k: string) => legacyRedisHelperInstance.get(k),
+  set: (k: string, v: any) => legacyRedisHelperInstance.set(k, v),
+  del: (k: string) => legacyRedisHelperInstance.del(k),
+  incr: (k: string) => legacyRedisHelperInstance.incr(k)
+};
 
 export interface RedisLikeClient {
   status: string;
@@ -528,14 +547,18 @@ export function getConfiguredRedisUrl(): string {
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol !== 'redis:' && parsed.protocol !== 'rediss:') {
-      console.warn(
-        `[Redis] Ignoring REDIS_URL with unsupported protocol '${parsed.protocol}'. Expected 'redis://' or 'rediss://'.`
-      );
+      if (!isQuietTestLogsEnabled()) {
+        console.warn(
+          `[Redis] Ignoring REDIS_URL with unsupported protocol '${parsed.protocol}'. Expected 'redis://' or 'rediss://'.`
+        );
+      }
       return '';
     }
     return rawUrl;
   } catch (_) {
-    console.warn('[Redis] Ignoring malformed REDIS_URL environment variable.');
+    if (!isQuietTestLogsEnabled()) {
+      console.warn('[Redis] Ignoring malformed REDIS_URL environment variable.');
+    }
     return '';
   }
 }
@@ -548,6 +571,7 @@ export function isRedisConfigured(): boolean {
 }
 
 function logRedisWarningThrottled(message: string): void {
+  if (isQuietTestLogsEnabled()) return;
   const now = Date.now();
   if (now - lastErrorLogMs >= ERROR_LOG_THROTTLE_MS) {
     lastErrorLogMs = now;
@@ -594,7 +618,7 @@ function attachRedisLifecycleListeners(client: ManagedRedisClient): void {
         logRedisWarningThrottled(
           '[Redis] Using in-memory Redis fallback mock for rate limiting and WebSocket slots.'
         );
-      } else {
+      } else if (!isQuietTestLogsEnabled()) {
         console.log('[Redis] Connected and ready for distributed rate limiting.');
       }
     }
@@ -835,7 +859,7 @@ export async function resetRedisClientForTesting(): Promise<void> {
   testClientOverride = null;
   lastErrorLogMs = 0;
   lastLoggedStatus = null;
-  store.clear();
+  legacyRedisHelperInstance.clearAllForTesting();
   await closeRedisClient();
   isShuttingDown = false;
 }
