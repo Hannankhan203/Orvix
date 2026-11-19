@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import http from 'node:http';
+import dotenv from 'dotenv';
 import { WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 
@@ -28,6 +29,8 @@ import {
   getOpenRouterApiKey,
   getCloudflareCredentials,
   resolveEnvCredential,
+  isConfiguredCredential,
+  sanitizeCredentialValue,
   warnIfPublicPrefixedSecretsConfigured,
   resetPublicPrefixedSecretsWarningForTesting
 } from '../server/serverConfig.ts';
@@ -296,23 +299,299 @@ test('ORVIX-M04 & ORVIX-CRIT-01 Frontend credential isolation: zero server secre
   const visionWithoutKey = await extractImageTextWithGeminiVision(Buffer.from('test'), 'image/png', null);
   assert.equal(visionWithoutKey, null);
 
-  // 4. Verify production client bundle in dist/assets does not contain raw server API keys or VITE_GEMINI_API_KEY
+  // 4. Verify production client bundle in dist/assets does not contain server API keys or VITE_* provider secrets,
+  // while permitting only the configured public Firebase Web API key (VITE_FIREBASE_API_KEY) for the Firebase SDK.
+  const GOOGLE_API_KEY_FORMAT = /^AIzaSy[A-Za-z0-9_-]{33}$/;
+  const GOOGLE_API_KEY_GLOBAL = /AIzaSy[A-Za-z0-9_-]{33}/g;
+  const SERVER_GOOGLE_SECRET_ENV_KEYS = [
+    'GEMINI_API_KEY',
+    'ORVIX_GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'GOOGLE_GENERATIVE_AI_API_KEY',
+    'VITE_GEMINI_API_KEY',
+    'NEXT_PUBLIC_GEMINI_API_KEY',
+    'REACT_APP_GEMINI_API_KEY',
+    'VITE_GOOGLE_API_KEY',
+    'NEXT_PUBLIC_GOOGLE_API_KEY',
+    'REACT_APP_GOOGLE_API_KEY',
+    'VITE_ORVIX_GEMINI_API_KEY',
+    'NEXT_PUBLIC_ORVIX_GEMINI_API_KEY',
+    'REACT_APP_ORVIX_GEMINI_API_KEY'
+  ] as const;
+  const OTHER_SERVER_SECRET_ENV_KEYS = [
+    'GROQ_API_KEY',
+    'ORVIX_GROQ_API_KEY',
+    'GROQ_KEY',
+    'GROQ_API_TOKEN',
+    'GROQ_API_SECRET',
+    'VITE_GROQ_API_KEY',
+    'OPENROUTER_API_KEY',
+    'ORVIX_OPENROUTER_API_KEY',
+    'OPEN_ROUTER_API_KEY',
+    'OPENROUTER_KEY',
+    'OPENROUTER_API_TOKEN',
+    'OPENROUTER_API_SECRET',
+    'VITE_OPENROUTER_API_KEY',
+    'CLOUDFLARE_API_TOKEN',
+    'ORVIX_CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_TOKEN',
+    'CLOUDFLARE_API_KEY',
+    'VITE_CLOUDFLARE_API_TOKEN',
+    'VITE_CLOUDFLARE_API_KEY',
+    'VITE_CLOUDFLARE_ACCOUNT_ID',
+    'SUPABASE_SECRET_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'ORVIX_SUPABASE_SECRET_KEY',
+    'ORVIX_SUPABASE_SERVICE_ROLE_KEY',
+    'ORVIX_SIGNED_URL_SECRET',
+    'SIGNED_DECODE_URL_SECRET',
+    'SESSION_SECRET'
+  ] as const;
+  const DISALLOWED_CLIENT_BUNDLE_ENV_NAMES = [
+    'VITE_GEMINI_API_KEY',
+    'VITE_GOOGLE_API_KEY',
+    'VITE_ORVIX_GEMINI_API_KEY',
+    'VITE_GROQ_API_KEY',
+    'VITE_OPENROUTER_API_KEY',
+    'VITE_CLOUDFLARE_API_TOKEN',
+    'VITE_CLOUDFLARE_API_KEY',
+    'VITE_CLOUDFLARE_ACCOUNT_ID'
+  ] as const;
+
+  const readDotenvCandidates = (rootDir: string): Array<Record<string, string>> => {
+    const parsedFiles: Array<Record<string, string>> = [];
+    for (const envFile of ['.env', '.env.local', '.env.production', '.env.production.local']) {
+      const fullPath = path.join(rootDir, envFile);
+      if (!fs.existsSync(fullPath)) continue;
+      try {
+        parsedFiles.push(dotenv.parse(fs.readFileSync(fullPath, 'utf8')));
+      } catch (_) {
+        // Ignore unreadable local env files
+      }
+    }
+    return parsedFiles;
+  };
+
+  const isUsableFirebaseWebApiKey = (val: unknown): val is string => {
+    if (typeof val !== 'string') return false;
+    const sanitized = sanitizeCredentialValue(val);
+    return (
+      GOOGLE_API_KEY_FORMAT.test(sanitized) &&
+      isConfiguredCredential(sanitized) &&
+      !sanitized.includes('YOUR_')
+    );
+  };
+
+  const extractBundledFirebaseWebApiKeys = (bundleFiles: Array<{ file: string; content: string }>): Set<string> => {
+    const extracted = new Set<string>();
+    const viteEnvPropPattern = /(["'])VITE_FIREBASE_API_KEY\1\s*:\s*(["'])(AIzaSy[A-Za-z0-9_-]{33})\2/g;
+    const firebaseConfigCallPattern =
+      /\(\s*\)\s*=>\s*(["'])(AIzaSy[A-Za-z0-9_-]{33})\1\s*,\s*(["'])VITE_FIREBASE_API_KEY\3/g;
+
+    for (const { content } of bundleFiles) {
+      let match: RegExpExecArray | null;
+      while ((match = viteEnvPropPattern.exec(content)) !== null) {
+        if (isUsableFirebaseWebApiKey(match[3])) {
+          extracted.add(match[3]);
+        }
+      }
+      while ((match = firebaseConfigCallPattern.exec(content)) !== null) {
+        if (isUsableFirebaseWebApiKey(match[2])) {
+          extracted.add(match[2]);
+        }
+      }
+    }
+    return extracted;
+  };
+
+  const assertClientBundlesIsolateServerCredentials = (
+    bundleFiles: Array<{ file: string; content: string }>,
+    env: Record<string, string | undefined>,
+    dotenvMaps: Array<Record<string, string>>,
+    includeRuntimeServerGetters: boolean
+  ) => {
+    const serverGoogleKeys = new Set<string>();
+    const otherServerSecrets = new Set<string>();
+
+    const collectValues = (keyName: string): string[] => {
+      const vals: string[] = [];
+      if (typeof env[keyName] === 'string') vals.push(env[keyName] as string);
+      for (const map of dotenvMaps) {
+        if (typeof map[keyName] === 'string') vals.push(map[keyName]);
+      }
+      return vals;
+    };
+
+    for (const keyName of SERVER_GOOGLE_SECRET_ENV_KEYS) {
+      for (const rawVal of collectValues(keyName)) {
+        const sanitized = sanitizeCredentialValue(rawVal);
+        if (isConfiguredCredential(sanitized) && sanitized.length >= 12) {
+          serverGoogleKeys.add(sanitized);
+        }
+      }
+    }
+
+    for (const keyName of OTHER_SERVER_SECRET_ENV_KEYS) {
+      for (const rawVal of collectValues(keyName)) {
+        const sanitized = sanitizeCredentialValue(rawVal);
+        if (isConfiguredCredential(sanitized) && sanitized.length >= 12) {
+          otherServerSecrets.add(sanitized);
+        }
+      }
+    }
+
+    if (includeRuntimeServerGetters) {
+      const activeGeminiKey = sanitizeCredentialValue(getGeminiApiKey());
+      if (isConfiguredCredential(activeGeminiKey) && activeGeminiKey.length >= 12) {
+        serverGoogleKeys.add(activeGeminiKey);
+      }
+      for (const runtimeSecret of [
+        getGroqApiKey(),
+        getOpenRouterApiKey(),
+        getCloudflareCredentials().apiToken
+      ]) {
+        const sanitized = sanitizeCredentialValue(runtimeSecret);
+        if (isConfiguredCredential(sanitized) && sanitized.length >= 12) {
+          otherServerSecrets.add(sanitized);
+        }
+      }
+    }
+
+    const explicitFirebaseWebApiKeys = new Set<string>();
+    for (const rawVal of collectValues('VITE_FIREBASE_API_KEY')) {
+      const sanitized = sanitizeCredentialValue(rawVal);
+      if (isUsableFirebaseWebApiKey(sanitized) && !serverGoogleKeys.has(sanitized)) {
+        explicitFirebaseWebApiKeys.add(sanitized);
+      }
+    }
+
+    let allowedFirebaseWebApiKeys = explicitFirebaseWebApiKeys;
+    if (allowedFirebaseWebApiKeys.size === 0) {
+      const bundledFirebaseKeys = new Set(
+        Array.from(extractBundledFirebaseWebApiKeys(bundleFiles)).filter((key) => !serverGoogleKeys.has(key))
+      );
+      if (bundledFirebaseKeys.size === 1) {
+        allowedFirebaseWebApiKeys = bundledFirebaseKeys;
+      }
+    }
+
+    for (const { file, content } of bundleFiles) {
+      for (const disallowedVar of DISALLOWED_CLIENT_BUNDLE_ENV_NAMES) {
+        assert.equal(
+          content.includes(disallowedVar),
+          false,
+          `Production client bundle (${file}) must not reference ${disallowedVar}`
+        );
+      }
+
+      for (const secret of serverGoogleKeys) {
+        assert.equal(
+          content.includes(secret),
+          false,
+          `Production client bundle (${file}) must not embed configured server-side Google/Gemini credentials`
+        );
+      }
+
+      for (const secret of otherServerSecrets) {
+        assert.equal(
+          content.includes(secret),
+          false,
+          `Production client bundle (${file}) must not embed configured server-side provider secrets`
+        );
+      }
+
+      const googleKeyMatches = content.match(GOOGLE_API_KEY_GLOBAL) || [];
+      for (const matchedKey of googleKeyMatches) {
+        assert.equal(
+          serverGoogleKeys.has(matchedKey),
+          false,
+          `Production client bundle (${file}) must not embed raw server-side Google/Gemini API keys`
+        );
+        assert.equal(
+          allowedFirebaseWebApiKeys.has(matchedKey),
+          true,
+          `Production client bundle (${file}) must not embed non-Firebase Google API keys`
+        );
+      }
+    }
+  };
+
+  // Verify synthetic isolation scenarios (allows configured VITE_FIREBASE_API_KEY, rejects server Google/Gemini keys and VITE_GEMINI_API_KEY)
+  const syntheticFirebaseKey = `AIzaSy${'F'.repeat(33)}`;
+  const syntheticGeminiKey = `AIzaSy${'G'.repeat(33)}`;
+  assert.doesNotThrow(() =>
+    assertClientBundlesIsolateServerCredentials(
+      [
+        {
+          file: 'synthetic-auth.js',
+          content: `var firebaseConfig = { apiKey: resolveFirebaseEnv(() => "${syntheticFirebaseKey}", "VITE_FIREBASE_API_KEY") };`
+        }
+      ],
+      { VITE_FIREBASE_API_KEY: syntheticFirebaseKey, GEMINI_API_KEY: syntheticGeminiKey },
+      [],
+      false
+    )
+  );
+  assert.throws(
+    () =>
+      assertClientBundlesIsolateServerCredentials(
+        [{ file: 'synthetic-leak.js', content: `const k = "${syntheticGeminiKey}";` }],
+        { VITE_FIREBASE_API_KEY: syntheticFirebaseKey, GEMINI_API_KEY: syntheticGeminiKey },
+        [],
+        false
+      ),
+    /must not embed/
+  );
+  assert.throws(
+    () =>
+      assertClientBundlesIsolateServerCredentials(
+        [
+          {
+            file: 'synthetic-unconfigured.js',
+            content: `const k = "${syntheticGeminiKey}";`
+          }
+        ],
+        { VITE_FIREBASE_API_KEY: syntheticFirebaseKey },
+        [],
+        false
+      ),
+    /must not embed non-Firebase Google API keys/
+  );
+  assert.throws(
+    () =>
+      assertClientBundlesIsolateServerCredentials(
+        [
+          {
+            file: 'synthetic-collision.js',
+            content: `var firebaseConfig = { apiKey: resolveFirebaseEnv(() => "${syntheticFirebaseKey}", "VITE_FIREBASE_API_KEY") };`
+          }
+        ],
+        { VITE_FIREBASE_API_KEY: syntheticFirebaseKey, GEMINI_API_KEY: syntheticFirebaseKey },
+        [],
+        false
+      ),
+    /must not embed/
+  );
+  assert.throws(
+    () =>
+      assertClientBundlesIsolateServerCredentials(
+        [{ file: 'synthetic-vite-gemini.js', content: `const env = { VITE_GEMINI_API_KEY: "x" };` }],
+        {},
+        [],
+        false
+      ),
+    /must not reference VITE_GEMINI_API_KEY/
+  );
+
   const distAssetsDir = path.join(process.cwd(), 'dist', 'assets');
   if (fs.existsSync(distAssetsDir)) {
     const jsFiles = fs.readdirSync(distAssetsDir).filter((f) => f.endsWith('.js'));
-    for (const jsFile of jsFiles) {
-      const content = fs.readFileSync(path.join(distAssetsDir, jsFile), 'utf8');
-      assert.equal(
-        /AIzaSy[A-Za-z0-9_-]{33}/.test(content),
-        false,
-        `Production client bundle (${jsFile}) must not embed raw server-side Google API keys`
-      );
-      assert.equal(
-        content.includes('VITE_GEMINI_API_KEY'),
-        false,
-        `Production client bundle (${jsFile}) must not reference VITE_GEMINI_API_KEY`
-      );
-    }
+    const bundleFiles = jsFiles.map((jsFile) => ({
+      file: jsFile,
+      content: fs.readFileSync(path.join(distAssetsDir, jsFile), 'utf8')
+    }));
+    const dotenvMaps = readDotenvCandidates(process.cwd());
+    assertClientBundlesIsolateServerCredentials(bundleFiles, process.env, dotenvMaps, true);
   }
 });
 
