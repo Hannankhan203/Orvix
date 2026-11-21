@@ -1,6 +1,5 @@
 import {
   doc,
-  getDoc,
   writeBatch,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -1580,21 +1579,43 @@ export function validateSharedSnapshotPayload(data, expectedShareId = null, opti
 }
 
 /**
- * Fetches a shared conversation snapshot through the server `/api/share/:shareId` endpoint.
- * Used as a diagnostic fallback when Firestore denies direct reads (revoked/expired)
- * or when Firebase client SDK is unconfigured in browser contexts.
+ * Fetches a shared conversation snapshot through the sanitized server `/api/share/:shareId` endpoint.
+ * Direct client Firestore reads to `sharedChats/{shareId}` are disabled in security rules so
+ * server-side ownership metadata (`ownerId`) is never exposed to unauthenticated visitors.
  * @param {string} shareId
  * @param {any} fetchFn
  * @param {number} [timeoutMs=10000]
  */
 async function fetchSharedSnapshotViaServerApi(shareId, fetchFn, timeoutMs = 10000) {
-  const res = await withPublishTimeout(
-    fetchFn(`/api/share/${encodeURIComponent(shareId)}`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    }),
-    timeoutMs
-  );
+  let res;
+  try {
+    res = await withPublishTimeout(
+      fetchFn(`/api/share/${encodeURIComponent(shareId)}`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      }),
+      timeoutMs
+    );
+  } catch (/** @type {any} */ err) {
+    if (err instanceof ShareChatError) {
+      throw err;
+    }
+    const rawMsg = String(err?.message || '').toLowerCase();
+    if (
+      !isBrowserOnline() ||
+      (typeof navigator !== 'undefined' && navigator.onLine === false) ||
+      rawMsg.includes('offline')
+    ) {
+      throw new ShareChatError(
+        'Unable to load shared conversation while offline. Please check your internet connection.',
+        'OFFLINE'
+      );
+    }
+    throw new ShareChatError(
+      'Failed to load shared conversation. Please check your connection and try again.',
+      'LOAD_FAILED'
+    );
+  }
 
   /** @type {any} */
   let body = {};
@@ -1611,21 +1632,39 @@ async function fetchSharedSnapshotViaServerApi(shareId, fetchFn, timeoutMs = 100
         ? 'NOT_FOUND'
         : res.status === 400
         ? 'INVALID_SHARE_ID'
+        : res.status === 403
+        ? 'PERMISSION_DENIED'
         : 'LOAD_FAILED');
+    if (code === 'SHARE_REVOKED' || code === 'SHARE_EXPIRED' || code === 'NOT_FOUND') {
+      clearSharedSnapshotSession(shareId);
+    }
     throw new ShareChatError(
       body?.error || 'This shared conversation is unavailable.',
       code
     );
   }
 
-  const validated = validateSharedSnapshotPayload(body?.snapshot || body, shareId);
+  let validated;
+  try {
+    validated = validateSharedSnapshotPayload(body?.snapshot || body, shareId);
+  } catch (validationErr) {
+    if (
+      validationErr instanceof ShareChatError &&
+      (validationErr.code === 'SHARE_REVOKED' || validationErr.code === 'SHARE_EXPIRED')
+    ) {
+      clearSharedSnapshotSession(shareId);
+    }
+    throw validationErr;
+  }
+
   setSharedSnapshotSession(shareId, validated);
   return validated;
 }
 
 /**
- * Loads and validates a single shared chat snapshot from Firestore (`sharedChats/{shareId}`)
- * using a single getDoc() call (no collection querying or enumeration).
+ * Loads and validates a single shared chat snapshot through the sanitized server API
+ * (`GET /api/share/:shareId`). Direct client Firestore reads to `sharedChats/{shareId}`
+ * are never performed so private owner metadata (`ownerId`) is never exposed to clients.
  *
  * Implements strict error handling:
  * - Validates shareId format before attempting network call
@@ -1637,12 +1676,9 @@ async function fetchSharedSnapshotViaServerApi(shareId, fetchFn, timeoutMs = 100
  *
  * @param {string} shareId
  * @param {Object} [options]
- * @param {Object} [options.firestoreDb] - Optional Firestore instance override for testing
- * @param {Function} [options.docImpl] - Optional `doc` override for testing
- * @param {Function} [options.getDocImpl] - Optional `getDoc` override for testing
  * @param {Function} [options.fetchImpl] - Optional `fetch` override for testing server API reads
  * @param {boolean} [options.forceNetwork=false] - If true, bypasses session cache
- * @param {number} [options.timeoutMs=10000] - Firestore operation timeout
+ * @param {number} [options.timeoutMs=10000] - Network operation timeout
  * @returns {Promise<Object>} The validated shared snapshot
  */
 export async function loadSharedChatSnapshot(shareId, options = {}) {
@@ -1662,69 +1698,25 @@ export async function loadSharedChatSnapshot(shareId, options = {}) {
     }
   }
 
-  const hasBrowserWindow = typeof window !== 'undefined';
-  const fetchCandidate =
-    typeof options.fetchImpl === 'function'
-      ? options.fetchImpl
-      : typeof fetch === 'function'
-      ? fetch
-      : null;
+  const timeoutMs = options.timeoutMs || 10000;
 
-  // 3. Ensure Firestore is configured if using live database (allow server API fallback in browser or explicit fetchImpl)
-  if (!options.getDocImpl) {
-    if (typeof options.fetchImpl === 'function') {
-      return await fetchSharedSnapshotViaServerApi(shareId, options.fetchImpl, options.timeoutMs || 10000);
-    }
-    if (!isFirebaseConfigured() || !db) {
-      if (hasBrowserWindow && fetchCandidate) {
-        return await fetchSharedSnapshotViaServerApi(shareId, fetchCandidate, options.timeoutMs || 10000);
-      }
-      throw new ShareChatError(
-        'Shared conversations are currently unavailable because Firebase is not configured.',
-        'FIREBASE_UNAVAILABLE'
-      );
-    }
+  // 3. Explicit fetchImpl override (testing or custom transport) always uses the server API
+  if (typeof options.fetchImpl === 'function') {
+    return await fetchSharedSnapshotViaServerApi(shareId, options.fetchImpl, timeoutMs);
   }
 
-  const targetDb = options.firestoreDb !== undefined ? options.firestoreDb : db;
-  const docFn = options.docImpl || doc;
-  const getDocFn = options.getDocImpl || getDoc;
-
-  let docSnap;
-  try {
-    const docRef = docFn(targetDb, 'sharedChats', shareId);
-    docSnap = await withPublishTimeout(getDocFn(docRef), options.timeoutMs || 10000);
-  } catch (/** @type {any} */ err) {
-    if (err instanceof ShareChatError) {
-      throw err;
-    }
-    const rawMsg = String(err?.message || '');
-    if (rawMsg.includes('permission-denied') || err?.code === 'permission-denied') {
-      // Firestore rules block reads of revoked or expired sharedChats; consult server API if available to distinguish why
-      if ((!options.getDocImpl || typeof options.fetchImpl === 'function') && fetchCandidate) {
-        try {
-          return await fetchSharedSnapshotViaServerApi(shareId, fetchCandidate, options.timeoutMs || 10000);
-        } catch (apiErr) {
-          if (apiErr instanceof ShareChatError && (apiErr.code === 'SHARE_REVOKED' || apiErr.code === 'SHARE_EXPIRED' || apiErr.code === 'NOT_FOUND')) {
-            clearSharedSnapshotSession(shareId);
-            throw apiErr;
-          }
-        }
-      }
-      throw new ShareChatError(
-        'Access to this shared conversation was denied.',
-        'PERMISSION_DENIED'
-      );
-    }
-    if (
-      err?.code === 'unavailable' ||
-      rawMsg.includes('offline') ||
-      (typeof navigator !== 'undefined' && navigator.onLine === false)
-    ) {
+  // 4. Browser contexts always load via the sanitized server API (`/api/share/:shareId`)
+  //    rather than direct Firestore client SDK reads so `ownerId` is never exposed.
+  const hasBrowserWindow = typeof window !== 'undefined';
+  if (hasBrowserWindow) {
+    if (!isBrowserOnline() || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
       throw new ShareChatError(
         'Unable to load shared conversation while offline. Please check your internet connection.',
         'OFFLINE'
       );
+    }
+    if (typeof fetch === 'function') {
+      return await fetchSharedSnapshotViaServerApi(shareId, fetch, timeoutMs);
     }
     throw new ShareChatError(
       'Failed to load shared conversation. Please check your connection and try again.',
@@ -1732,31 +1724,18 @@ export async function loadSharedChatSnapshot(shareId, options = {}) {
     );
   }
 
-  if (!docSnap || (typeof docSnap.exists === 'function' && !docSnap.exists())) {
+  // 5. Non-browser/Node environments without an explicit fetchImpl cannot reach a relative API path
+  if (!isFirebaseConfigured() || !db) {
     throw new ShareChatError(
-      'This shared conversation no longer exists or the link is invalid.',
-      'NOT_FOUND'
+      'Shared conversations are currently unavailable because Firebase is not configured.',
+      'FIREBASE_UNAVAILABLE'
     );
   }
 
-  const rawData = typeof docSnap.data === 'function' ? docSnap.data() : docSnap;
-  let validated;
-  try {
-    validated = validateSharedSnapshotPayload(rawData, shareId);
-  } catch (validationErr) {
-    if (
-      validationErr instanceof ShareChatError &&
-      (validationErr.code === 'SHARE_REVOKED' || validationErr.code === 'SHARE_EXPIRED')
-    ) {
-      clearSharedSnapshotSession(shareId);
-    }
-    throw validationErr;
-  }
-
-  // Cache in session storage for fast reload resilience
-  setSharedSnapshotSession(shareId, validated);
-
-  return validated;
+  throw new ShareChatError(
+    'Shared conversations must be loaded through the server API endpoint.',
+    'LOAD_FAILED'
+  );
 }
 
 /**

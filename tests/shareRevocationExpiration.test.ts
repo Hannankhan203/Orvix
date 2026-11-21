@@ -11,6 +11,7 @@ import { applyCorsMiddleware, applyJsonBodyMiddleware } from '../server/serverCo
 import { registerShareRoutes } from '../server/shareSubsystem.ts';
 import {
   buildValidatedSharedSnapshot,
+  createImportedConversationData,
   createSharedChatSnapshot,
   getSharedSnapshotSession,
   isShareSnapshotExpired,
@@ -487,18 +488,11 @@ test('ORVIX-OPT-02 client helpers: revokeSharedChatSnapshot, loadSharedChatSnaps
     assert.equal(revokedRes.revoked, true);
     assert.equal(getSharedSnapshotSession(shareId), null);
 
-    // loadSharedChatSnapshot surfaces SHARE_REVOKED when Firestore throws permission-denied and API reports 410
+    // loadSharedChatSnapshot routes exclusively via the server API and surfaces SHARE_REVOKED on 410
     await assert.rejects(
       () =>
         loadSharedChatSnapshot(shareId, {
           forceNetwork: true,
-          firestoreDb: {},
-          docImpl: () => ({ id: shareId }),
-          getDocImpl: async () => {
-            const err: any = new Error('Missing or insufficient permissions');
-            err.code = 'permission-denied';
-            throw err;
-          },
           fetchImpl: mockFetch
         }),
       (err: unknown) => err instanceof ShareChatError && err.code === 'SHARE_REVOKED'
@@ -509,13 +503,170 @@ test('ORVIX-OPT-02 client helpers: revokeSharedChatSnapshot, loadSharedChatSnaps
   }
 });
 
-test('ORVIX-OPT-02 firestore.rules enforces revocation and timestamp expiration for sharedChats/{shareId}', () => {
+test('ORVIX-OPT-02 firestore.rules denies all direct client reads and writes on sharedChats/{shareId} to protect ownerId', () => {
   const rulesText = fs.readFileSync(path.join(process.cwd(), 'firestore.rules'), 'utf8');
-  assert.match(rulesText, /match \/sharedChats\/\{shareId\}/);
-  assert.match(rulesText, /function isActiveSharedChat\(data\)/);
-  assert.match(rulesText, /data\.revoked != true/);
-  assert.match(rulesText, /request\.time < data\.expiresAt/);
-  assert.match(rulesText, /allow get:\s*if isActiveSharedChat\(resource\.data\)/);
-  assert.match(rulesText, /allow list:\s*if false/);
-  assert.match(rulesText, /allow create, update, delete:\s*if false/);
+  const sharedMatch = rulesText.match(/match \/sharedChats\/\{shareId\}\s*\{([\s\S]*?)\n\s*\}/);
+  assert.ok(sharedMatch, 'firestore.rules must define a match /sharedChats/{shareId} block');
+  const block = sharedMatch[1];
+
+  // Direct client get/list/create/update/delete MUST all be denied so unauthenticated visitors
+  // cannot bypass /api/share/:shareId and read the server-side ownerId field from Firestore.
+  assert.match(block, /allow get:\s*if false;/);
+  assert.match(block, /allow list:\s*if false;/);
+  assert.match(block, /allow create, update, delete:\s*if false;/);
+  assert.doesNotMatch(block, /allow (get|read):\s*if\s+(?!false\b)/);
+});
+
+test('Shared chat privacy regression: ownerId is never exposed via public API, client loader, or authenticated forking while server ownership checks stay intact', async () => {
+  resetRateLimitersForTesting();
+  const { ownerToken, otherUserToken } = setupAuthKeys();
+  const fakeFs = createFakeShareFirestore();
+  setFirestoreForTesting(fakeFs.db);
+
+  const storageMap = new Map<string, string>();
+  (globalThis as any).sessionStorage = {
+    getItem: (k: string) => (storageMap.has(k) ? storageMap.get(k)! : null),
+    setItem: (k: string, v: string) => storageMap.set(k, String(v)),
+    removeItem: (k: string) => storageMap.delete(k)
+  };
+
+  const srv = await startTestServer();
+  const { baseUrl } = srv;
+  const shareId = 'PrivacyRegShare_001';
+  const expiredShareId = 'PrivacyExpShare_002';
+
+  try {
+    // 1. Authenticated owner creates a shared chat
+    const createRes = await fetch(`${baseUrl}/api/share`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken}`
+      },
+      body: JSON.stringify({
+        shareId,
+        chat: { id: 'c-priv', title: 'Private UID Audit Chat', mode: 'general' },
+        messages: [
+          { id: 'm1', sender: 'user', content: 'Summarize clean architecture.', createdAtMs: 1700000001000 },
+          { id: 'm2', sender: 'assistant', content: 'Separate domain logic from delivery.', createdAtMs: 1700000002000 }
+        ],
+        expirationPreset: '7d'
+      })
+    });
+    assert.equal(createRes.status, 200);
+    const createBody: any = await createRes.json();
+    assert.equal(createBody.ownerId, undefined, 'POST /api/share response must not expose ownerId');
+    assert.ok(!JSON.stringify(createBody).includes('owner-uid-001'), 'POST /api/share body must not contain owner UID');
+
+    // Confirm server-side Firestore document retains authoritative ownerId for authorization
+    const storedDoc = fakeFs.store.get(`sharedChats/${shareId}`);
+    assert.equal(storedDoc?.ownerId, 'owner-uid-001');
+
+    // 2. Unauthenticated visitor fetches via GET /api/share/:shareId
+    const publicGetRes = await fetch(`${baseUrl}/api/share/${shareId}`);
+    assert.equal(publicGetRes.status, 200);
+    const publicGetBody: any = await publicGetRes.json();
+    const serializedPublic = JSON.stringify(publicGetBody);
+    assert.equal(publicGetBody.id, shareId);
+    assert.equal(publicGetBody.messages.length, 2);
+    assert.equal('ownerId' in publicGetBody, false, 'Public GET must not contain ownerId key');
+    assert.equal('userId' in publicGetBody, false, 'Public GET must not contain userId key');
+    assert.equal('revokedAt' in publicGetBody, false, 'Public GET must not leak internal revokedAt');
+    assert.equal('revokedAtMs' in publicGetBody, false, 'Public GET must not leak internal revokedAtMs');
+    assert.ok(!serializedPublic.includes('owner-uid-001'), 'Public GET payload must never contain the owner UID');
+
+    // 3. Client loadSharedChatSnapshot loads via /api/share/:shareId and NEVER invokes direct Firestore getDoc
+    let directFirestoreReadAttempted = false;
+    const loadedSnapshot: any = await loadSharedChatSnapshot(shareId, {
+      forceNetwork: true,
+      // Passing legacy Firestore overrides must still never trigger direct client Firestore reads
+      ...({
+        firestoreDb: {},
+        docImpl: () => {
+          directFirestoreReadAttempted = true;
+          throw new Error('Direct Firestore doc() must not be called');
+        },
+        getDocImpl: async () => {
+          directFirestoreReadAttempted = true;
+          throw new Error('Direct Firestore getDoc() must not be called');
+        }
+      } as any),
+      fetchImpl: (url: string, init?: any) => fetch(`${baseUrl}${url}`, init)
+    });
+    assert.equal(directFirestoreReadAttempted, false, 'Client loader must never perform direct Firestore reads');
+    assert.equal(loadedSnapshot.id, shareId);
+    assert.equal('ownerId' in loadedSnapshot, false, 'Client snapshot must not contain ownerId');
+    assert.ok(!JSON.stringify(loadedSnapshot).includes('owner-uid-001'));
+
+    // 4. Authenticated recipient forks the API-loaded snapshot cleanly without owner UID leakage
+    const forked = createImportedConversationData({
+      shareId,
+      snapshot: loadedSnapshot,
+      recipientUserId: 'recipient-uid-777',
+      recipientUserMessage: {
+        id: 'rec-u1',
+        sender: 'user',
+        content: 'Can you give a concrete example?',
+        createdAtMs: 1700000005000
+      },
+      recipientAssistantMessage: {
+        id: 'rec-a1',
+        sender: 'assistant',
+        content: 'Sure — isolate HTTP handlers from business rules.',
+        createdAtMs: 1700000006000
+      }
+    });
+    assert.equal((forked.chatMetadata as any).userId, 'recipient-uid-777');
+    assert.equal((forked.chatMetadata as any).importedFromShareId, shareId);
+    assert.equal(forked.messages.length, 4);
+    assert.ok(!JSON.stringify(forked).includes('owner-uid-001'), 'Forked conversation must never contain original owner UID');
+
+    // 5. Server-side ownership check still blocks non-owner revocation and permits owner revocation
+    const nonOwnerRevoke = await fetch(`${baseUrl}/api/share/${shareId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${otherUserToken}` }
+    });
+    assert.equal(nonOwnerRevoke.status, 403);
+    const nonOwnerBody = await nonOwnerRevoke.json();
+    assert.ok(!JSON.stringify(nonOwnerBody).includes('owner-uid-001'));
+
+    const ownerRevoke = await fetch(`${baseUrl}/api/share/${shareId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${ownerToken}` }
+    });
+    assert.equal(ownerRevoke.status, 200);
+    const ownerRevokeBody = await ownerRevoke.json();
+    assert.ok(!JSON.stringify(ownerRevokeBody).includes('owner-uid-001'));
+
+    // 6. Post-revocation public read returns 410 SHARE_REVOKED without leaking ownerId or messages
+    const postRevokeGet = await fetch(`${baseUrl}/api/share/${shareId}`);
+    assert.equal(postRevokeGet.status, 410);
+    const postRevokeBody: any = await postRevokeGet.json();
+    assert.equal(postRevokeBody.code, 'SHARE_REVOKED');
+    assert.equal(postRevokeBody.messages, undefined);
+    assert.ok(!JSON.stringify(postRevokeBody).includes('owner-uid-001'));
+
+    // 7. Expired share returns 410 SHARE_EXPIRED without leaking ownerId or messages
+    fakeFs.store.set(`sharedChats/${expiredShareId}`, {
+      ...storedDoc,
+      id: expiredShareId,
+      revoked: false,
+      expiresAtMs: Date.now() - 60_000,
+      expiresAt: null
+    });
+    const expiredGet = await fetch(`${baseUrl}/api/share/${expiredShareId}`);
+    assert.equal(expiredGet.status, 410);
+    const expiredBody: any = await expiredGet.json();
+    assert.equal(expiredBody.code, 'SHARE_EXPIRED');
+    assert.equal(expiredBody.messages, undefined);
+    assert.ok(!JSON.stringify(expiredBody).includes('owner-uid-001'));
+  } finally {
+    clearSharedSnapshotSession(shareId);
+    clearSharedSnapshotSession(expiredShareId);
+    delete (globalThis as any).sessionStorage;
+    await srv.close();
+    resetFirestoreForTesting();
+    resetFirebaseAuthForTesting();
+    resetRateLimitersForTesting();
+  }
 });

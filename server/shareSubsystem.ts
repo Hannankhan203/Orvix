@@ -214,6 +214,28 @@ export async function handleShareChatRequest(req: express.Request, res: express.
 }
 
 /**
+ * Constructs a strictly allowlisted public shared-chat payload for GET /api/share/:shareId.
+ * Guarantees internal ownership and revocation-audit fields (`ownerId`, `revokedAt`, `revokedAtMs`,
+ * `userId`, etc.) can never be exposed to unauthenticated or third-party visitors.
+ */
+function buildPublicSharedSnapshotResponse(sanitizedSnapshot: any, createdAtMs: number | null) {
+  return {
+    id: sanitizedSnapshot.id,
+    title: sanitizedSnapshot.title,
+    mode: sanitizedSnapshot.mode,
+    createdAt: createdAtMs !== null && Number.isFinite(createdAtMs) ? createdAtMs : null,
+    expiresAtMs:
+      typeof sanitizedSnapshot.expiresAtMs === 'number' && Number.isFinite(sanitizedSnapshot.expiresAtMs)
+        ? sanitizedSnapshot.expiresAtMs
+        : null,
+    revoked: false,
+    messageCount: sanitizedSnapshot.messageCount,
+    messages: sanitizedSnapshot.messages,
+    isSharedSnapshot: true
+  };
+}
+
+/**
  * Express handler for GET /api/share/:shareId
  * Retrieves an active shared conversation snapshot while enforcing revocation and expiration.
  * Never leaks `ownerId` or private owner fields in the public response.
@@ -284,10 +306,9 @@ export async function handleGetShareChatRequest(req: express.Request, res: expre
 
     const createdAtMs = extractShareTimestampMs(data.createdAtMs ?? data.createdAt);
 
-    return res.status(200).json({
-      ...sanitizedSnapshot,
-      createdAt: createdAtMs !== null && Number.isFinite(createdAtMs) ? createdAtMs : null
-    });
+    return res.status(200).json(
+      buildPublicSharedSnapshotResponse(sanitizedSnapshot, createdAtMs)
+    );
   } catch (err: any) {
     console.error('[ShareSubsystem] Error retrieving shared conversation:', err);
     return res.status(500).json({

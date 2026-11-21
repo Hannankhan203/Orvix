@@ -123,17 +123,13 @@ service cloud.firestore {
       }
     }
 
-    function isActiveSharedChat(data) {
-      return (!('revoked' in data) || data.revoked != true)
-             && (!('expiresAt' in data)
-                 || data.expiresAt == null
-                 || (data.expiresAt is timestamp && request.time < data.expiresAt));
-    }
-
-    // Deliberately published shared conversation snapshots with owner revocation & optional expiration
+    // Deliberately published shared conversation snapshots with owner revocation & optional expiration.
+    // Documents store server-side `ownerId` for revocation authorization, so direct client reads and
+    // writes are strictly denied. Public read-only access is mediated by GET /api/share/:shareId,
+    // which enforces revocation/expiration and strips owner metadata before returning the snapshot.
     match /sharedChats/{shareId} {
-      // Allow reading an individual active (unrevoked and unexpired) shared conversation by exact shareId
-      allow get: if isActiveSharedChat(resource.data);
+      // Never allow direct client reads; prevents unauthenticated visitors from reading `ownerId`
+      allow get: if false;
 
       // Never allow listing or querying the sharedChats collection to prevent enumeration
       allow list: if false;
