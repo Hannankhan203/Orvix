@@ -1,9 +1,11 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import { applyCorsMiddleware, applyJsonBodyMiddleware } from '../server/serverConfig.ts';
+import { applySecurityHeadersMiddleware } from '../server/securityHeaders.ts';
 import { registerShareRoutes } from '../server/shareSubsystem.ts';
 
 const app = express();
+applySecurityHeadersMiddleware(app);
 applyCorsMiddleware(app);
 applyJsonBodyMiddleware(app);
 registerShareRoutes(app);

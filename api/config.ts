@@ -5,10 +5,12 @@ import {
   isServerless,
   getServerProviderConfigStatus
 } from '../server/serverConfig.ts';
+import { applySecurityHeadersMiddleware } from '../server/securityHeaders.ts';
 import { APP_CONFIG } from '../src/config/appConfig.js';
 import { createRateLimiterMiddleware } from '../server/rateLimiter.ts';
 
 const app = express();
+applySecurityHeadersMiddleware(app);
 applyCorsMiddleware(app);
 const configRateLimiter = createRateLimiterMiddleware({ policy: 'config' });
 

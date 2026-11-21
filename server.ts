@@ -59,6 +59,7 @@ import {
   validateSignedDecodeUrlSecretValue,
   setForceProductionSignedUrlSecretCheckForTesting
 } from './server/serverConfig.ts';
+import { applySecurityHeadersMiddleware } from './server/securityHeaders.ts';
 import {
   logGeminiLifecycleEvent,
   sanitizeErrorLog,
@@ -132,6 +133,8 @@ const portArgIndex = process.argv.indexOf('--port');
 const portFromArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
 const PORT = Number(portFromArg) || Number(process.env.PORT) || 3000;
 
+// HTTP security headers middleware (CSP, HTTPS-only HSTS, nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy)
+applySecurityHeadersMiddleware(app);
 // Controlled CORS middleware enforcing an explicit origin allowlist (ORVIX-003)
 applyCorsMiddleware(app);
 applyJsonBodyMiddleware(app);

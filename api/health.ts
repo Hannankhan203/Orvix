@@ -4,8 +4,10 @@ import {
   applyCorsMiddleware,
   getServerPersistenceStatus
 } from '../server/serverConfig.ts';
+import { applySecurityHeadersMiddleware } from '../server/securityHeaders.ts';
 
 const app = express();
+applySecurityHeadersMiddleware(app);
 applyCorsMiddleware(app);
 
 app.get(['/api/health', '/health'], (_req, res) => {

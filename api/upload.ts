@@ -1,9 +1,11 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import { applyCorsMiddleware, applyJsonBodyMiddleware } from '../server/serverConfig.ts';
+import { applySecurityHeadersMiddleware } from '../server/securityHeaders.ts';
 import { registerUploadRoutes } from '../server/uploadSubsystem.ts';
 
 const app = express();
+applySecurityHeadersMiddleware(app);
 applyCorsMiddleware(app);
 applyJsonBodyMiddleware(app);
 registerUploadRoutes(app);
